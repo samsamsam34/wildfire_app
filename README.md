@@ -27,6 +27,14 @@ export WF_LAYER_FIRE_PERIMETERS_GEOJSON="/path/to/fire_perimeters.geojson"
 uvicorn backend.main:app --reload
 ```
 
+## Layer-Backed vs Fallback Mode
+
+The app only runs in true layer-backed mode when both are available:
+- geospatial packages from `requirements.txt` (`numpy`, `rasterio`, `pyproj`, `shapely`)
+- configured and reachable layer files via `WF_LAYER_*` environment variables
+
+If packages are missing or layer paths are not configured/available, the API still runs but uses fallback/proxy assumptions. In that case, scores are suitable for scaffold/demo workflows, not full production-grade layer-backed underwriting.
+
 ## Endpoints
 
 - `GET /health` (public)

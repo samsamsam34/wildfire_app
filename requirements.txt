@@ -1,8 +1,13 @@
 fastapi==0.116.1
 uvicorn==0.35.0
 pydantic==2.11.7
+
+# Geo/layer-backed wildfire data dependencies (backend/wildfire_data.py)
 numpy==2.3.2
 rasterio==1.4.3
 pyproj==3.7.1
 shapely==2.1.1
+
+# Test dependencies (tests/test_risk_assessment.py)
 pytest==8.3.5
+httpx==0.28.1
