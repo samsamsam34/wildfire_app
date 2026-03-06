@@ -24,7 +24,7 @@ from backend.risk_engine import RiskEngine
 from backend.version import MODEL_VERSION
 from backend.wildfire_data import WildfireDataClient
 
-app = FastAPI(title="WildfireRisk Advisor API", version="0.5.0")
+app = FastAPI(title="WildfireRisk Advisor API", version="0.5.2")
 
 app.add_middleware(
     CORSMiddleware,
@@ -38,6 +38,8 @@ risk_engine = RiskEngine()
 geocoder = Geocoder()
 wildfire_data = WildfireDataClient()
 store = AssessmentStore()
+
+ACCESS_PROVISIONAL_NOTE = "Access risk is provisional and not included in total scoring."
 
 
 def _build_assumption_tracking(payload: AddressRequest, assumptions_used: list[str], data_sources: list[str]) -> AssumptionsBlock:
@@ -117,7 +119,7 @@ def _build_confidence(assumptions: AssumptionsBlock) -> ConfidenceBlock:
     confidence -= important_missing * 8.0
     confidence -= inferred_count * 4.0
     confidence -= external_fail_count * 7.0
-    confidence -= max(0, len(assumptions.assumptions_used) - external_fail_count) * 2.0
+    confidence -= max(0, len(assumptions.assumptions_used) - external_fail_count) * 1.5
     confidence = max(0.0, min(100.0, round(confidence, 1)))
 
     low_confidence_flags: list[str] = []
@@ -127,6 +129,8 @@ def _build_confidence(assumptions: AssumptionsBlock) -> ConfidenceBlock:
         low_confidence_flags.append("At least one external provider or layer fetch failed")
     if inferred_count >= 3:
         low_confidence_flags.append("Several core property attributes were inferred")
+    if any("provisional" in note.lower() for note in assumptions.assumptions_used):
+        low_confidence_flags.append("Access scoring is provisional and not yet parcel/egress-based")
     if confidence < 70:
         low_confidence_flags.append("Overall confidence below recommended underwriting threshold")
 
@@ -139,12 +143,12 @@ def _build_confidence(assumptions: AssumptionsBlock) -> ConfidenceBlock:
         confidence_score=confidence,
         data_completeness_score=data_completeness_score,
         assumption_count=len(assumptions.assumptions_used),
-        low_confidence_flags=low_confidence_flags,
+        low_confidence_flags=sorted(set(low_confidence_flags)),
         requires_user_verification=confidence < 70.0 or len(low_confidence_flags) > 0,
     )
 
 
-def _build_top_risk_drivers(factors: EnvironmentalFactors, factor_breakdown: FactorBreakdown) -> list[str]:
+def _build_top_risk_drivers(factors: EnvironmentalFactors) -> list[str]:
     candidates = [
         ("steep terrain slope", factors.slope_topography),
         ("dense vegetation/fuel near the property", factors.vegetation_fuel),
@@ -153,7 +157,6 @@ def _build_top_risk_drivers(factors: EnvironmentalFactors, factor_breakdown: Fac
         ("historical wildfire activity nearby", factors.historical_fire_recurrence),
         ("close proximity to wildland vegetation", factors.fuel_proximity),
         ("dry fuel/moisture conditions", factors.drought_moisture),
-        ("high access-related exposure", factor_breakdown.access_risk),
     ]
     return [name for name, _ in sorted(candidates, key=lambda x: x[1], reverse=True)[:3]]
 
@@ -224,12 +227,17 @@ def assess_risk(payload: AddressRequest) -> AssessmentResult:
     assumptions_block = _build_assumption_tracking(payload, all_assumptions, all_sources)
     confidence_block = _build_confidence(assumptions_block)
 
-    top_risk_drivers = _build_top_risk_drivers(factors, breakdown)
+    top_risk_drivers = _build_top_risk_drivers(factors)
     top_protective_factors = _build_top_protective_factors(payload, factors)
+
+    scoring_notes = [ACCESS_PROVISIONAL_NOTE]
+    if any("fallback" in a.lower() or "unavailable" in a.lower() for a in all_assumptions):
+        scoring_notes.append("One or more providers/layers required fallback assumptions.")
 
     explanation_summary = (
         f"Risk is driven primarily by {', '.join(top_risk_drivers[:2])}. "
-        f"Key protective factors: {', '.join(top_protective_factors[:2])}."
+        f"Key protective factors: {', '.join(top_protective_factors[:2])}. "
+        f"{ACCESS_PROVISIONAL_NOTE}"
     )
 
     risk_scores = RiskScores(
@@ -241,17 +249,6 @@ def assess_risk(payload: AddressRequest) -> AssessmentResult:
     result = AssessmentResult(
         assessment_id=str(uuid4()),
         address=payload.address,
-        coordinates=coordinates,
-        risk_scores=risk_scores,
-        factor_breakdown=breakdown,
-        mitigation_recommendations=plan,
-        assumptions=assumptions_block,
-        confidence=confidence_block,
-        top_risk_drivers=top_risk_drivers,
-        top_protective_factors=top_protective_factors,
-        explanation_summary=explanation_summary,
-        model_version=MODEL_VERSION,
-        # Backward compatibility fields
         latitude=lat,
         longitude=lon,
         wildfire_risk_score=risk.total_score,
@@ -261,10 +258,27 @@ def assess_risk(payload: AddressRequest) -> AssessmentResult:
             structural=risk.drivers.structural,
             access_exposure=risk.drivers.access_exposure,
         ),
-        environmental_factors=factors,
+        factor_breakdown=breakdown,
+        top_risk_drivers=top_risk_drivers,
+        top_protective_factors=top_protective_factors,
+        explanation_summary=explanation_summary,
+        observed_inputs=assumptions_block.observed_inputs,
+        inferred_inputs=assumptions_block.inferred_inputs,
+        missing_inputs=assumptions_block.missing_inputs,
         assumptions_used=all_assumptions,
+        confidence_score=confidence_block.confidence_score,
+        low_confidence_flags=confidence_block.low_confidence_flags,
         data_sources=all_sources,
         mitigation_plan=plan,
+        model_version=MODEL_VERSION,
+        scoring_notes=scoring_notes,
+        # Structured mirrors for compatibility
+        coordinates=coordinates,
+        risk_scores=risk_scores,
+        assumptions=assumptions_block,
+        confidence=confidence_block,
+        mitigation_recommendations=plan,
+        environmental_factors=factors,
         explanation=explanation_summary,
     )
 

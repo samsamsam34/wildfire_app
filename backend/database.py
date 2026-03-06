@@ -33,9 +33,7 @@ class AssessmentStore:
             )
             cols = {row["name"] for row in conn.execute("PRAGMA table_info(assessments)").fetchall()}
             if "model_version" not in cols:
-                conn.execute(
-                    "ALTER TABLE assessments ADD COLUMN model_version TEXT NOT NULL DEFAULT '1.0.0'"
-                )
+                conn.execute("ALTER TABLE assessments ADD COLUMN model_version TEXT NOT NULL DEFAULT '1.0.0'")
 
     def save(self, result: AssessmentResult) -> None:
         with self._connect() as conn:
@@ -53,19 +51,19 @@ class AssessmentStore:
             )
 
     def _upgrade_payload(self, payload: dict[str, Any], db_model_version: str) -> dict[str, Any]:
-        if "model_version" not in payload:
-            payload["model_version"] = db_model_version or LEGACY_MODEL_VERSION
+        payload.setdefault("model_version", db_model_version or LEGACY_MODEL_VERSION)
 
-        if "coordinates" not in payload:
-            payload["coordinates"] = {
-                "latitude": payload.get("latitude", 0.0),
-                "longitude": payload.get("longitude", 0.0),
-            }
+        payload.setdefault("latitude", payload.get("coordinates", {}).get("latitude", 0.0))
+        payload.setdefault("longitude", payload.get("coordinates", {}).get("longitude", 0.0))
+        payload.setdefault("wildfire_risk_score", payload.get("risk_scores", {}).get("wildfire_risk_score", 0.0))
+        payload.setdefault("insurance_readiness_score", payload.get("risk_scores", {}).get("insurance_readiness_score", 0.0))
 
-        if "risk_scores" not in payload:
-            payload["risk_scores"] = {
-                "wildfire_risk_score": payload.get("wildfire_risk_score", 0.0),
-                "insurance_readiness_score": payload.get("insurance_readiness_score", 0.0),
+        if "risk_drivers" not in payload:
+            fb = payload.get("factor_breakdown", {}) or {}
+            payload["risk_drivers"] = {
+                "environmental": fb.get("environmental_risk", 0.0),
+                "structural": fb.get("structural_risk", 0.0),
+                "access_exposure": fb.get("access_risk", 0.0),
             }
 
         if "factor_breakdown" not in payload:
@@ -74,31 +72,60 @@ class AssessmentStore:
                 "environmental_risk": drivers.get("environmental", 0.0),
                 "structural_risk": drivers.get("structural", 0.0),
                 "access_risk": drivers.get("access_exposure", 0.0),
-            }
-
-        payload.setdefault("mitigation_recommendations", payload.get("mitigation_plan", []))
-
-        if "assumptions" not in payload:
-            assumptions_used = payload.get("assumptions_used", [])
-            payload["assumptions"] = {
-                "observed_inputs": {},
-                "inferred_inputs": {},
-                "missing_inputs": [],
-                "assumptions_used": assumptions_used,
-            }
-
-        if "confidence" not in payload:
-            payload["confidence"] = {
-                "confidence_score": 60.0,
-                "data_completeness_score": 50.0,
-                "assumption_count": len(payload.get("assumptions_used", [])),
-                "low_confidence_flags": payload.get("assumptions_used", []),
-                "requires_user_verification": True,
+                "access_risk_provisional": True,
+                "access_included_in_total": False,
+                "access_risk_note": "Access exposure is provisional and not included in total score until real parcel/egress inputs are integrated.",
             }
 
         payload.setdefault("top_risk_drivers", [])
         payload.setdefault("top_protective_factors", [])
         payload.setdefault("explanation_summary", payload.get("explanation", ""))
+
+        payload.setdefault("observed_inputs", payload.get("assumptions", {}).get("observed_inputs", {}))
+        payload.setdefault("inferred_inputs", payload.get("assumptions", {}).get("inferred_inputs", {}))
+        payload.setdefault("missing_inputs", payload.get("assumptions", {}).get("missing_inputs", []))
+        payload.setdefault("assumptions_used", payload.get("assumptions", {}).get("assumptions_used", []))
+
+        if "confidence_score" not in payload:
+            payload["confidence_score"] = payload.get("confidence", {}).get("confidence_score", 60.0)
+        if "low_confidence_flags" not in payload:
+            payload["low_confidence_flags"] = payload.get("confidence", {}).get("low_confidence_flags", [])
+
+        payload.setdefault("data_sources", [])
+        payload.setdefault("mitigation_plan", payload.get("mitigation_recommendations", []))
+        payload.setdefault("scoring_notes", ["Access risk is provisional and not included in total scoring."])
+
+        payload.setdefault(
+            "coordinates",
+            {"latitude": payload["latitude"], "longitude": payload["longitude"]},
+        )
+        payload.setdefault(
+            "risk_scores",
+            {
+                "wildfire_risk_score": payload["wildfire_risk_score"],
+                "insurance_readiness_score": payload["insurance_readiness_score"],
+            },
+        )
+        payload.setdefault(
+            "assumptions",
+            {
+                "observed_inputs": payload["observed_inputs"],
+                "inferred_inputs": payload["inferred_inputs"],
+                "missing_inputs": payload["missing_inputs"],
+                "assumptions_used": payload["assumptions_used"],
+            },
+        )
+        payload.setdefault(
+            "confidence",
+            {
+                "confidence_score": payload["confidence_score"],
+                "data_completeness_score": 50.0,
+                "assumption_count": len(payload["assumptions_used"]),
+                "low_confidence_flags": payload["low_confidence_flags"],
+                "requires_user_verification": True,
+            },
+        )
+        payload.setdefault("mitigation_recommendations", payload["mitigation_plan"])
 
         return payload
 

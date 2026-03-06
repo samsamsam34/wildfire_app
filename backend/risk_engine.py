@@ -70,13 +70,15 @@ class RiskEngine:
 
         structural = max(0, min(100, structural))
 
-        # Access/exposure now depends on layer-derived proximity and recurrence, not coordinate hash proxies.
+        # Provisional placeholder only; not weighted into total until real road/egress inputs exist.
         access_exposure = round(
             0.65 * context.wildland_distance_index + 0.35 * context.historic_fire_index,
             1,
         )
 
-        total = 0.55 * environmental + 0.30 * structural + 0.15 * access_exposure
+        weighted_without_access = 0.55 * environmental + 0.30 * structural
+        total = weighted_without_access / 0.85
+        assumptions.append("Access exposure is provisional and excluded from final weighted score.")
 
         return RiskComputation(
             total_score=round(total, 1),

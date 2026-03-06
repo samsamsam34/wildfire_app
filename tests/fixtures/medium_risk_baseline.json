@@ -1,0 +1,37 @@
+{
+  "address": "456 Mid St, Denver, CO",
+  "latitude": 39.7392,
+  "longitude": -104.9903,
+  "wildfire_risk_score": 50.8,
+  "insurance_readiness_score": 63.2,
+  "risk_drivers": {
+    "environmental": 55.0,
+    "structural": 43.0,
+    "access_exposure": 53.2
+  },
+  "factor_breakdown": {
+    "environmental_risk": 55.0,
+    "structural_risk": 43.0,
+    "access_risk": 53.2,
+    "access_risk_provisional": true,
+    "access_included_in_total": false
+  },
+  "top_risk_drivers": [
+    "steep terrain slope",
+    "dense vegetation/fuel near the property",
+    "high burn probability"
+  ],
+  "top_protective_factors": [
+    "no strong structural or site-level protective factors detected"
+  ],
+  "confidence_score": 66.0,
+  "low_confidence_flags": [
+    "Access scoring is provisional and not yet parcel/egress-based",
+    "Overall confidence below recommended underwriting threshold",
+    "Several core property attributes were inferred"
+  ],
+  "model_version": "1.1.0",
+  "scoring_notes": [
+    "Access risk is provisional and not included in total scoring."
+  ]
+}

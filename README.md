@@ -35,28 +35,35 @@ uvicorn backend.main:app --reload
 
 ## Assessment Transparency
 
-Each assessment now includes:
-- `model_version`: Scoring model identifier (`1.1.0` for current outputs).
-- `factor_breakdown`: Deterministic component scores (`environmental_risk`, `structural_risk`, `access_risk`).
-- `confidence`: Includes `confidence_score`, `data_completeness_score`, `assumption_count`, and confidence flags.
-- `assumptions`: Structured `observed_inputs`, `inferred_inputs`, `missing_inputs`, and `assumptions_used`.
+Each assessment includes:
+- `model_version`: scoring model identifier (`1.1.0` current, legacy rows default `1.0.0`).
+- `observed_inputs`, `inferred_inputs`, `missing_inputs`, `assumptions_used`.
+- `confidence_score` and `low_confidence_flags` for trust/debug workflow.
+- `factor_breakdown` with explicit provisional metadata for access scoring.
 
-This makes outputs more auditable and easier to debug for underwriting and QA workflows.
-
-## Example request
-
-```bash
-curl -X POST "http://127.0.0.1:8000/risk/assess" \
-  -H "Content-Type: application/json" \
-  -H "X-API-Key: dev-key-1" \
-  -d '{"address":"123 Main St, Boulder, CO","attributes":{"roof_type":"class a","defensible_space_ft":20}}'
-```
+Current limitation:
+- `access_risk` is **provisional** and currently **excluded from final weighted scoring**.
+- Real parcel/road/egress access modeling is planned for the next major refactor.
 
 ## Storage
 
-Assessments are persisted to `wildfire_app.db` in the project root.
-Legacy rows without `model_version` are treated as `1.0.0`.
+Assessments are persisted to `wildfire_app.db`.
+Rows lacking `model_version` are read as `1.0.0` automatically.
 
 ## Tests
 
-Regression tests are in `tests/test_risk_assessment.py`.
+Deterministic regression tests are in `tests/test_risk_assessment.py`.
+They cover low/medium/high scenarios, model version presence, transparency fields, and provisional access behavior.
+
+## Baseline Fixtures
+
+Deterministic benchmark fixtures live in `tests/fixtures/`:
+- `low_risk_baseline.json`
+- `medium_risk_baseline.json`
+- `high_risk_baseline.json`
+
+Regression tests compare assessment outputs against these fixtures to detect unintended model/output drift before larger refactors.
+
+## Scoring Notes
+
+Each response includes `scoring_notes`, a centralized list of model caveats/conditions for downstream consumers (for example, provisional access scoring status and fallback usage).

@@ -1,0 +1,35 @@
+{
+  "address": "789 High St, Colorado Springs, CO",
+  "latitude": 39.7392,
+  "longitude": -104.9903,
+  "wildfire_risk_score": 87.8,
+  "insurance_readiness_score": 27.8,
+  "risk_drivers": {
+    "environmental": 85.0,
+    "structural": 93.0,
+    "access_exposure": 86.5
+  },
+  "factor_breakdown": {
+    "environmental_risk": 85.0,
+    "structural_risk": 93.0,
+    "access_risk": 86.5,
+    "access_risk_provisional": true,
+    "access_included_in_total": false
+  },
+  "top_risk_drivers": [
+    "close proximity to wildland vegetation",
+    "steep terrain slope",
+    "dense vegetation/fuel near the property"
+  ],
+  "top_protective_factors": [
+    "no strong structural or site-level protective factors detected"
+  ],
+  "confidence_score": 98.5,
+  "low_confidence_flags": [
+    "Access scoring is provisional and not yet parcel/egress-based"
+  ],
+  "model_version": "1.1.0",
+  "scoring_notes": [
+    "Access risk is provisional and not included in total scoring."
+  ]
+}

@@ -31,6 +31,9 @@ class FactorBreakdown(BaseModel):
     environmental_risk: float
     structural_risk: float
     access_risk: float
+    access_risk_provisional: bool = True
+    access_included_in_total: bool = False
+    access_risk_note: str = "Access exposure is provisional and not included in total score until real parcel/egress inputs are integrated."
 
 
 class RiskDrivers(BaseModel):
@@ -79,25 +82,31 @@ class MitigationAction(BaseModel):
 class AssessmentResult(BaseModel):
     assessment_id: str
     address: str
-    coordinates: Coordinates
-    risk_scores: RiskScores
+    latitude: float
+    longitude: float
+    wildfire_risk_score: float
+    insurance_readiness_score: float
+    risk_drivers: RiskDrivers
     factor_breakdown: FactorBreakdown
-    mitigation_recommendations: List[MitigationAction]
-    assumptions: AssumptionsBlock
-    confidence: ConfidenceBlock
     top_risk_drivers: List[str]
     top_protective_factors: List[str]
     explanation_summary: str
+    observed_inputs: Dict[str, object]
+    inferred_inputs: Dict[str, object]
+    missing_inputs: List[str]
+    assumptions_used: List[str]
+    confidence_score: float
+    low_confidence_flags: List[str]
+    data_sources: List[str]
+    mitigation_plan: List[MitigationAction]
     model_version: str
+    scoring_notes: List[str] = Field(default_factory=list)
 
-    # Backward compatibility fields
-    latitude: Optional[float] = None
-    longitude: Optional[float] = None
-    wildfire_risk_score: Optional[float] = None
-    insurance_readiness_score: Optional[float] = None
-    risk_drivers: Optional[RiskDrivers] = None
+    # Compatibility and richer structured mirrors
+    coordinates: Optional[Coordinates] = None
+    risk_scores: Optional[RiskScores] = None
+    assumptions: Optional[AssumptionsBlock] = None
+    confidence: Optional[ConfidenceBlock] = None
+    mitigation_recommendations: List[MitigationAction] = Field(default_factory=list)
     environmental_factors: Optional[EnvironmentalFactors] = None
-    assumptions_used: List[str] = Field(default_factory=list)
-    data_sources: List[str] = Field(default_factory=list)
-    mitigation_plan: List[MitigationAction] = Field(default_factory=list)
     explanation: Optional[str] = None
