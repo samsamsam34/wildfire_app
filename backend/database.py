@@ -60,15 +60,18 @@ class AssessmentStore:
                     "title": title,
                     "reason": reason,
                     "impacted_submodels": item.get("impacted_submodels", []),
+                    "impacted_readiness_factors": item.get("impacted_readiness_factors", []),
                     "estimated_risk_reduction_band": item.get("estimated_risk_reduction_band", "low"),
-                    "estimated_readiness_improvement_band": item.get("estimated_readiness_improvement_band", "low"),
+                    "estimated_readiness_improvement_band": item.get(
+                        "estimated_readiness_improvement_band", "low"
+                    ),
                     "priority": item.get("priority", 5),
+                    "insurer_relevance": item.get("insurer_relevance", "recommended"),
                     "action": item.get("action", title),
                     "related_factor": item.get("related_factor"),
                     "impact_statement": item.get("impact_statement", reason),
                     "estimated_risk_reduction": item.get("estimated_risk_reduction"),
                     "effort": item.get("effort"),
-                    "insurer_relevance": item.get("insurer_relevance"),
                 }
             )
         return upgraded
@@ -102,6 +105,7 @@ class AssessmentStore:
 
         payload.setdefault("submodel_scores", {})
         payload.setdefault("weighted_contributions", {})
+        payload.setdefault("submodel_explanations", {})
 
         payload.setdefault("top_risk_drivers", [])
         payload.setdefault("top_protective_factors", [])
@@ -123,6 +127,7 @@ class AssessmentStore:
 
         payload.setdefault("readiness_factors", [])
         payload.setdefault("readiness_blockers", [])
+        payload.setdefault("readiness_penalties", {})
         payload.setdefault("readiness_summary", "Legacy row: readiness detail unavailable in this version.")
 
         payload.setdefault("scoring_notes", ["Access risk is provisional and not included in total scoring."])

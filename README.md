@@ -3,7 +3,7 @@
 Now includes:
 - Real geocoding integration via OpenStreetMap Nominatim (with fallback)
 - Layer-backed wildfire context extraction
-- Step 2 submodel-based wildfire scoring architecture
+- Step 2.5 factorized wildfire scoring architecture
 - Separate insurance readiness rules and readiness blockers
 - Structured explainability and confidence outputs
 - API key authentication
@@ -16,7 +16,7 @@ pip install -r requirements.txt
 export WILDFIRE_API_KEYS="dev-key-1,dev-key-2"
 
 # Optional scoring calibration overrides (JSON maps)
-export WILDFIRE_SUBMODEL_WEIGHTS_JSON='{"ember_exposure":0.15,"flame_contact_exposure":0.14}'
+export WILDFIRE_SUBMODEL_WEIGHTS_JSON='{"ember_exposure_risk":0.15,"flame_contact_risk":0.14}'
 export WILDFIRE_READINESS_PENALTIES_JSON='{"roof_fail":26}'
 export WILDFIRE_READINESS_BONUSES_JSON='{"roof_pass":4}'
 
@@ -41,19 +41,19 @@ uvicorn backend.main:app --reload
 - `POST /risk/debug` (requires `X-API-Key`; returns intermediate context/submodel/readiness/config payload)
 - `GET /report/{assessment_id}` (requires `X-API-Key` when keys configured)
 
-## Step 2 Scoring Architecture
+## Step 2.5 Scoring Architecture
 
 Wildfire risk is composed from explicit submodels:
-- `ember_exposure`
-- `flame_contact_exposure`
-- `topography_risk`
-- `fuel_proximity_risk`
 - `vegetation_intensity_risk`
+- `fuel_proximity_risk`
+- `slope_topography_risk`
+- `ember_exposure_risk`
+- `flame_contact_risk`
 - `historic_fire_risk`
-- `home_hardening_risk`
+- `structure_vulnerability_risk`
 - `defensible_space_risk`
 
-Each submodel returns a score, deterministic explanation, key contributing inputs, and assumptions.
+Each submodel returns a score, weighted contribution, deterministic explanation, key inputs, and assumptions.
 
 The API also returns:
 - `submodel_scores`
@@ -72,7 +72,7 @@ The API also returns:
 Readiness outputs include:
 - `readiness_factors`
 - `readiness_blockers`
-- `readiness_summary`
+- `readiness_penalties`
 
 ## Calibration Fixtures
 
@@ -89,8 +89,10 @@ Mitigations are tied to submodels and blockers and include:
 - `title`
 - `reason`
 - `impacted_submodels`
+- `impacted_readiness_factors`
 - `estimated_risk_reduction_band`
 - `estimated_readiness_improvement_band`
+- `insurer_relevance`
 - `priority`
 
 ## Layer-Backed vs Fallback Mode

@@ -2,14 +2,15 @@
   "wildfire_risk_score": 18.9,
   "insurance_readiness_score": 100.0,
   "submodel_scores": {
-    "ember_exposure": {"score": 21.0},
-    "flame_contact_exposure": {"score": 18.0},
-    "topography_risk": {"score": 29.0},
-    "fuel_proximity_risk": {"score": 20.0},
     "vegetation_intensity_risk": {"score": 20.0},
+    "fuel_proximity_risk": {"score": 20.0},
+    "slope_topography_risk": {"score": 29.0},
+    "ember_exposure_risk": {"score": 21.0},
+    "flame_contact_risk": {"score": 18.0},
     "historic_fire_risk": {"score": 10.0},
-    "home_hardening_risk": {"score": 24.2},
+    "structure_vulnerability_risk": {"score": 24.2},
     "defensible_space_risk": {"score": 6.0}
   },
-  "readiness_blockers": []
+  "readiness_blockers": [],
+  "readiness_penalties": {}
 }

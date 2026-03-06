@@ -27,7 +27,7 @@ from backend.scoring_config import load_scoring_config
 from backend.version import MODEL_VERSION
 from backend.wildfire_data import WildfireDataClient
 
-app = FastAPI(title="WildfireRisk Advisor API", version="0.6.1")
+app = FastAPI(title="WildfireRisk Advisor API", version="0.6.2")
 
 app.add_middleware(
     CORSMiddleware,
@@ -44,6 +44,13 @@ wildfire_data = WildfireDataClient()
 store = AssessmentStore()
 
 ACCESS_PROVISIONAL_NOTE = "Access risk is provisional and not included in total scoring."
+
+SUBMODEL_ALIASES = {
+    "ember_exposure": "ember_exposure_risk",
+    "flame_contact_exposure": "flame_contact_risk",
+    "topography_risk": "slope_topography_risk",
+    "home_hardening_risk": "structure_vulnerability_risk",
+}
 
 
 def _build_assumption_tracking(payload: AddressRequest, assumptions_used: list[str], data_sources: list[str]) -> AssumptionsBlock:
@@ -151,16 +158,20 @@ def _build_confidence(assumptions: AssumptionsBlock) -> ConfidenceBlock:
 
 def _build_top_risk_drivers(submodels: dict[str, SubmodelScore]) -> list[str]:
     labels = {
-        "ember_exposure": "high ember exposure",
-        "flame_contact_exposure": "high flame-contact exposure",
-        "topography_risk": "challenging topography",
+        "ember_exposure_risk": "high ember exposure",
+        "flame_contact_risk": "high flame-contact exposure",
+        "slope_topography_risk": "slope/topography amplification",
         "fuel_proximity_risk": "close proximity to wildland fuels",
         "vegetation_intensity_risk": "dense and dry vegetation",
         "historic_fire_risk": "recurring nearby fire history",
-        "home_hardening_risk": "limited home hardening",
+        "structure_vulnerability_risk": "high structure vulnerability",
         "defensible_space_risk": "insufficient defensible space",
     }
-    ordered = sorted(submodels.items(), key=lambda kv: kv[1].score, reverse=True)
+    ordered = sorted(
+        [(k, v) for k, v in submodels.items() if k in labels],
+        key=lambda kv: kv[1].score,
+        reverse=True,
+    )
     return [labels.get(name, name) for name, _ in ordered[:3]]
 
 
@@ -198,15 +209,29 @@ def _run_assessment(payload: AddressRequest) -> tuple[AssessmentResult, dict]:
     risk: RiskComputation = risk_engine.score(payload.attributes, lat, lon, context)
     readiness = risk_engine.compute_insurance_readiness(payload.attributes, context, risk)
 
-    submodel_scores = {
-        k: SubmodelScore(score=v.score, explanation=v.explanation, key_contributing_inputs=v.key_inputs, assumptions=v.assumptions)
-        for k, v in risk.submodel_scores.items()
-    }
+    submodel_scores: dict[str, SubmodelScore] = {}
+    weighted_contributions: dict[str, WeightedContribution] = {}
 
-    weighted_contributions = {
-        k: WeightedContribution(weight=v["weight"], score=v["score"], contribution=v["contribution"])
-        for k, v in risk.weighted_contributions.items()
-    }
+    for name, result in risk.submodel_scores.items():
+        contribution = risk.weighted_contributions[name]["contribution"]
+        score_model = SubmodelScore(
+            score=result.score,
+            weighted_contribution=contribution,
+            explanation=result.explanation,
+            key_inputs=result.key_inputs,
+            assumptions=result.assumptions,
+            key_contributing_inputs=result.key_inputs,
+        )
+        submodel_scores[name] = score_model
+        weighted_contributions[name] = WeightedContribution(
+            weight=risk.weighted_contributions[name]["weight"],
+            score=risk.weighted_contributions[name]["score"],
+            contribution=contribution,
+        )
+
+    for legacy_key, canonical in SUBMODEL_ALIASES.items():
+        submodel_scores[legacy_key] = submodel_scores[canonical]
+        weighted_contributions[legacy_key] = weighted_contributions[canonical]
 
     mitigation_plan = build_mitigation_plan(
         payload.attributes,
@@ -243,7 +268,7 @@ def _run_assessment(payload: AddressRequest) -> tuple[AssessmentResult, dict]:
 
     scoring_notes = [
         ACCESS_PROVISIONAL_NOTE,
-        "Submodel and weight framework uses MVP insurer-oriented heuristics for transparency and calibration workflows.",
+        "Submodel/weight framework and readiness rules are deterministic MVP heuristics for calibration and explainability.",
     ]
     if any("fallback" in a.lower() or "unavailable" in a.lower() for a in all_assumptions):
         scoring_notes.append("One or more providers/layers required fallback assumptions.")
@@ -257,7 +282,12 @@ def _run_assessment(payload: AddressRequest) -> tuple[AssessmentResult, dict]:
     risk_scores = RiskScores(wildfire_risk_score=risk.total_score, insurance_readiness_score=readiness.insurance_readiness_score)
     coordinates = Coordinates(latitude=lat, longitude=lon)
 
-    readiness_factors = [ReadinessFactor(name=f["name"], status=f["status"], score_impact=f["score_impact"], detail=f["detail"]) for f in readiness.readiness_factors]
+    readiness_factors = [
+        ReadinessFactor(name=f["name"], status=f["status"], score_impact=f["score_impact"], detail=f["detail"])
+        for f in readiness.readiness_factors
+    ]
+
+    submodel_explanations = {k: v.explanation for k, v in submodel_scores.items()}
 
     result = AssessmentResult(
         assessment_id=str(uuid4()),
@@ -270,6 +300,7 @@ def _run_assessment(payload: AddressRequest) -> tuple[AssessmentResult, dict]:
         factor_breakdown=breakdown,
         submodel_scores=submodel_scores,
         weighted_contributions=weighted_contributions,
+        submodel_explanations=submodel_explanations,
         top_risk_drivers=top_risk_drivers,
         top_protective_factors=top_protective_factors,
         explanation_summary=explanation_summary,
@@ -283,6 +314,7 @@ def _run_assessment(payload: AddressRequest) -> tuple[AssessmentResult, dict]:
         mitigation_plan=mitigation_plan,
         readiness_factors=readiness_factors,
         readiness_blockers=readiness.readiness_blockers,
+        readiness_penalties=readiness.readiness_penalties,
         readiness_summary=readiness.readiness_summary,
         model_version=MODEL_VERSION,
         scoring_notes=scoring_notes,
@@ -312,23 +344,21 @@ def _run_assessment(payload: AddressRequest) -> tuple[AssessmentResult, dict]:
         "submodel_scores": {
             name: {
                 "score": sm.score,
+                "weighted_contribution": sm.weighted_contribution,
                 "explanation": sm.explanation,
-                "key_contributing_inputs": sm.key_contributing_inputs,
+                "key_inputs": sm.key_inputs,
                 "assumptions": sm.assumptions,
             }
             for name, sm in submodel_scores.items()
         },
         "weighted_contributions": {
-            name: {
-                "weight": wc.weight,
-                "score": wc.score,
-                "contribution": wc.contribution,
-            }
+            name: {"weight": wc.weight, "score": wc.score, "contribution": wc.contribution}
             for name, wc in weighted_contributions.items()
         },
         "readiness": {
             "score": readiness.insurance_readiness_score,
             "blockers": readiness.readiness_blockers,
+            "penalties": readiness.readiness_penalties,
             "factors": readiness.readiness_factors,
             "summary": readiness.readiness_summary,
         },

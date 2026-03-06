@@ -11,13 +11,13 @@ class ScoringConfig:
     # MVP insurer-oriented heuristic weights (not underwriting-approved).
     submodel_weights: Dict[str, float] = field(
         default_factory=lambda: {
-            "ember_exposure": 0.15,
-            "flame_contact_exposure": 0.14,
-            "topography_risk": 0.12,
-            "fuel_proximity_risk": 0.14,
             "vegetation_intensity_risk": 0.12,
+            "fuel_proximity_risk": 0.14,
+            "slope_topography_risk": 0.12,
+            "ember_exposure_risk": 0.15,
+            "flame_contact_risk": 0.14,
             "historic_fire_risk": 0.11,
-            "home_hardening_risk": 0.12,
+            "structure_vulnerability_risk": 0.12,
             "defensible_space_risk": 0.10,
         }
     )
@@ -71,16 +71,7 @@ def _merge_float_map(defaults: Dict[str, float], raw: str | None) -> Dict[str, f
 
 def load_scoring_config() -> ScoringConfig:
     config = ScoringConfig()
-    config.submodel_weights = _merge_float_map(
-        config.submodel_weights,
-        os.getenv("WILDFIRE_SUBMODEL_WEIGHTS_JSON"),
-    )
-    config.readiness_penalties = _merge_float_map(
-        config.readiness_penalties,
-        os.getenv("WILDFIRE_READINESS_PENALTIES_JSON"),
-    )
-    config.readiness_bonuses = _merge_float_map(
-        config.readiness_bonuses,
-        os.getenv("WILDFIRE_READINESS_BONUSES_JSON"),
-    )
+    config.submodel_weights = _merge_float_map(config.submodel_weights, os.getenv("WILDFIRE_SUBMODEL_WEIGHTS_JSON"))
+    config.readiness_penalties = _merge_float_map(config.readiness_penalties, os.getenv("WILDFIRE_READINESS_PENALTIES_JSON"))
+    config.readiness_bonuses = _merge_float_map(config.readiness_bonuses, os.getenv("WILDFIRE_READINESS_BONUSES_JSON"))
     return config

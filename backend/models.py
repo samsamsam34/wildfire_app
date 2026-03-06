@@ -74,9 +74,13 @@ class ConfidenceBlock(BaseModel):
 
 class SubmodelScore(BaseModel):
     score: float
+    weighted_contribution: float
     explanation: str
-    key_contributing_inputs: Dict[str, object]
+    key_inputs: Dict[str, object]
     assumptions: List[str] = Field(default_factory=list)
+
+    # Legacy compatibility field
+    key_contributing_inputs: Dict[str, object] = Field(default_factory=dict)
 
 
 class WeightedContribution(BaseModel):
@@ -96,9 +100,11 @@ class MitigationAction(BaseModel):
     title: str = ""
     reason: str = ""
     impacted_submodels: List[str] = Field(default_factory=list)
+    impacted_readiness_factors: List[str] = Field(default_factory=list)
     estimated_risk_reduction_band: Literal["low", "medium", "high"] = "low"
     estimated_readiness_improvement_band: Literal["low", "medium", "high"] = "low"
     priority: int = 5
+    insurer_relevance: Literal["required", "recommended", "nice_to_have"] = "recommended"
 
     # Legacy compatibility fields
     action: Optional[str] = None
@@ -106,7 +112,6 @@ class MitigationAction(BaseModel):
     impact_statement: Optional[str] = None
     estimated_risk_reduction: Optional[float] = None
     effort: Optional[Literal["low", "medium", "high"]] = None
-    insurer_relevance: Optional[Literal["required", "recommended", "nice_to_have"]] = None
 
 
 class AssessmentResult(BaseModel):
@@ -120,6 +125,7 @@ class AssessmentResult(BaseModel):
     factor_breakdown: FactorBreakdown
     submodel_scores: Dict[str, SubmodelScore] = Field(default_factory=dict)
     weighted_contributions: Dict[str, WeightedContribution] = Field(default_factory=dict)
+    submodel_explanations: Dict[str, str] = Field(default_factory=dict)
     top_risk_drivers: List[str]
     top_protective_factors: List[str]
     explanation_summary: str
@@ -133,6 +139,7 @@ class AssessmentResult(BaseModel):
     mitigation_plan: List[MitigationAction]
     readiness_factors: List[ReadinessFactor] = Field(default_factory=list)
     readiness_blockers: List[str] = Field(default_factory=list)
+    readiness_penalties: Dict[str, float] = Field(default_factory=dict)
     readiness_summary: str = ""
     model_version: str
     scoring_notes: List[str] = Field(default_factory=list)
