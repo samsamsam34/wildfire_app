@@ -69,7 +69,12 @@ class RiskEngine:
             structural -= 8
 
         structural = max(0, min(100, structural))
-        access_exposure = min(100.0, 25 + ((abs(lat + lon) * 3.1) % 50))
+
+        # Access/exposure now depends on layer-derived proximity and recurrence, not coordinate hash proxies.
+        access_exposure = round(
+            0.65 * context.wildland_distance_index + 0.35 * context.historic_fire_index,
+            1,
+        )
 
         total = 0.55 * environmental + 0.30 * structural + 0.15 * access_exposure
 

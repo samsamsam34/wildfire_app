@@ -13,7 +13,7 @@ from backend.models import AddressRequest, AssessmentResult
 from backend.risk_engine import RiskEngine
 from backend.wildfire_data import WildfireDataClient
 
-app = FastAPI(title="WildfireRisk Advisor API", version="0.2.0")
+app = FastAPI(title="WildfireRisk Advisor API", version="0.3.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -54,7 +54,8 @@ def assess_risk(payload: AddressRequest) -> AssessmentResult:
 
     explanation = (
         f"Wildfire risk is {risk.total_score}. "
-        f"Environmental pressure comes from terrain/drought/fire-history signals. "
+        f"Environmental signal blends burn probability, hazard severity, slope/aspect, fuel/canopy, "
+        f"wildland proximity, and fire recurrence. "
         f"Top mitigations can improve insurance readiness to about {readiness}."
     )
 
