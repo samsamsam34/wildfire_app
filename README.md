@@ -2,7 +2,10 @@
 
 Now includes:
 - Real geocoding integration via OpenStreetMap Nominatim (with fallback)
-- Layer-based wildfire environmental model (burn probability, hazard severity, slope/aspect, fuel/canopy, wildland distance, fire recurrence)
+- Layer-based wildfire environmental model (burn probability, hazard severity, slope/aspect, fuel/canopy, moisture, wildland distance, fire recurrence)
+- Factor-level score visibility in API responses
+- Confidence/data-quality scoring fields
+- Driver-linked mitigation recommendations
 - API key authentication
 - Persistent SQLite storage for reports
 
@@ -20,6 +23,7 @@ export WF_LAYER_ASPECT_TIF="/path/to/aspect_degrees.tif"          # optional if 
 export WF_LAYER_DEM_TIF="/path/to/dem.tif"                        # used to derive slope/aspect
 export WF_LAYER_FUEL_TIF="/path/to/fuel_model.tif"
 export WF_LAYER_CANOPY_TIF="/path/to/canopy_density.tif"
+export WF_LAYER_MOISTURE_TIF="/path/to/moisture_or_dryness.tif"   # optional; recommended
 export WF_LAYER_FIRE_PERIMETERS_GEOJSON="/path/to/fire_perimeters.geojson"
 
 uvicorn backend.main:app --reload
@@ -40,14 +44,27 @@ curl -X POST "http://127.0.0.1:8000/risk/assess" \
   -d '{"address":"123 Main St, Boulder, CO","attributes":{"roof_type":"class a","defensible_space_ft":20}}'
 ```
 
+## Factor Breakdown Validation Workflow
+
+1. Run one assessment and inspect `environmental_factors` for each subfactor.
+2. Check `data_quality.data_completeness_score`; target `>= 80` for production confidence.
+3. Review `data_quality.low_confidence_flags` and `assumptions_used`; resolve missing layers/providers.
+4. Confirm `mitigation_plan[*].related_factor` matches top factors in `environmental_factors`.
+5. Re-run after mitigation attribute updates and compare before/after factor deltas.
+
+## Output fields added for trust/debuggability
+
+- `environmental_factors`
+- `data_quality.data_completeness_score`
+- `data_quality.assumption_count`
+- `data_quality.low_confidence_flags`
+- `data_quality.requires_user_verification`
+- `mitigation_plan[*].related_factor`
+- `mitigation_plan[*].impact_statement`
+
 ## Storage
 
 Assessments are persisted to `wildfire_app.db` in the project root.
-
-## Layer notes
-
-- If a layer is missing at runtime, the API still responds using explicit fallback assumptions.
-- For defensible property-grade scoring, provide all layer paths and ensure consistent CRS/coverage.
 
 ## Frontend
 

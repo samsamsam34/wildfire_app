@@ -23,8 +23,29 @@ class RiskDrivers(BaseModel):
     access_exposure: float
 
 
+class EnvironmentalFactors(BaseModel):
+    burn_probability: float
+    hazard_severity: float
+    slope_topography: float
+    aspect_exposure: float
+    vegetation_fuel: float
+    drought_moisture: float
+    canopy_density: float
+    fuel_proximity: float
+    historical_fire_recurrence: float
+
+
+class DataQuality(BaseModel):
+    data_completeness_score: float
+    assumption_count: int
+    low_confidence_flags: List[str]
+    requires_user_verification: bool
+
+
 class MitigationAction(BaseModel):
     action: str
+    related_factor: str
+    impact_statement: str
     estimated_risk_reduction: float
     effort: Literal["low", "medium", "high"]
     insurer_relevance: Literal["required", "recommended", "nice_to_have"]
@@ -39,6 +60,8 @@ class AssessmentResult(BaseModel):
     wildfire_risk_score: float
     insurance_readiness_score: float
     risk_drivers: RiskDrivers
+    environmental_factors: EnvironmentalFactors
+    data_quality: DataQuality
     assumptions_used: List[str]
     data_sources: List[str]
     mitigation_plan: List[MitigationAction]

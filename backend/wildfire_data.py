@@ -27,6 +27,7 @@ class WildfireContext:
     slope_index: float
     aspect_index: float
     fuel_index: float
+    moisture_index: float
     canopy_index: float
     wildland_distance_index: float
     historic_fire_index: float
@@ -47,6 +48,7 @@ class WildfireDataClient:
     - WF_LAYER_DEM_TIF
     - WF_LAYER_FUEL_TIF
     - WF_LAYER_CANOPY_TIF
+    - WF_LAYER_MOISTURE_TIF (optional; higher values should represent drier fuels)
     - WF_LAYER_FIRE_PERIMETERS_GEOJSON
     """
 
@@ -59,6 +61,7 @@ class WildfireDataClient:
             "dem": os.getenv("WF_LAYER_DEM_TIF", ""),
             "fuel": os.getenv("WF_LAYER_FUEL_TIF", ""),
             "canopy": os.getenv("WF_LAYER_CANOPY_TIF", ""),
+            "moisture": os.getenv("WF_LAYER_MOISTURE_TIF", ""),
             "perimeters": os.getenv("WF_LAYER_FIRE_PERIMETERS_GEOJSON", ""),
         }
 
@@ -77,19 +80,6 @@ class WildfireDataClient:
     def _meters_to_lon_deg(meters: float, lat: float) -> float:
         denom = 111_320.0 * max(0.1, math.cos(math.radians(lat)))
         return meters / denom
-
-    @staticmethod
-    def _haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-        r = 6_371_000.0
-        d_lat = math.radians(lat2 - lat1)
-        d_lon = math.radians(lon2 - lon1)
-        a = (
-            math.sin(d_lat / 2) ** 2
-            + math.cos(math.radians(lat1))
-            * math.cos(math.radians(lat2))
-            * math.sin(d_lon / 2) ** 2
-        )
-        return 2 * r * math.asin(math.sqrt(a))
 
     @staticmethod
     def _file_exists(path: str) -> bool:
@@ -181,8 +171,6 @@ class WildfireDataClient:
         if not vals:
             return 50.0
 
-        # Proxy mapping for Scott/Burgan-style coded rasters.
-        # Higher code ranges often indicate shrub/timber-heavy burn behavior.
         weighted = []
         for raw in vals:
             code = int(round(raw))
@@ -224,7 +212,6 @@ class WildfireDataClient:
                     is_wildland = True
 
                 if is_wildland:
-                    # Closer wildland vegetation = higher risk.
                     return round(max(0.0, min(100.0, 100.0 - (radius / 2000.0) * 100.0)), 1)
 
         return 0.0
@@ -256,7 +243,6 @@ class WildfireDataClient:
                 near_5km += 1
             if not (maxx < lon - lon_1 or minx > lon + lon_1 or maxy < lat - lat_1 or miny > lat + lat_1):
                 near_1km += 1
-
             if g.contains(pt):
                 near_1km = max(near_1km, 2)
                 near_5km = max(near_5km, 3)
@@ -275,6 +261,7 @@ class WildfireDataClient:
                 slope_index=50.0,
                 aspect_index=50.0,
                 fuel_index=50.0,
+                moisture_index=55.0,
                 canopy_index=50.0,
                 wildland_distance_index=50.0,
                 historic_fire_index=40.0,
@@ -317,21 +304,17 @@ class WildfireDataClient:
             else:
                 assumptions.append("Slope/aspect rasters missing and DEM not configured.")
 
-        if slope is None:
-            slope_index = 50.0
-        else:
-            slope_index = self._to_index(slope, 0.0, 45.0)
-            if "DEM-derived slope/aspect" not in sources:
-                sources.append("Slope raster")
+        slope_index = 50.0 if slope is None else self._to_index(slope, 0.0, 45.0)
+        if slope is not None and "DEM-derived slope/aspect" not in sources:
+            sources.append("Slope raster")
 
         if aspect is None:
             aspect_index = 50.0
         else:
-            # Southerly/westerly exposures are typically drier in many western US regimes.
-            aspect = float(aspect) % 360.0
-            if 180.0 <= aspect <= 315.0:
+            a = float(aspect) % 360.0
+            if 180.0 <= a <= 315.0:
                 aspect_index = 75.0
-            elif 135.0 <= aspect < 180.0 or 315.0 < aspect <= 360.0:
+            elif 135.0 <= a < 180.0 or 315.0 < a <= 360.0:
                 aspect_index = 60.0
             else:
                 aspect_index = 40.0
@@ -355,6 +338,14 @@ class WildfireDataClient:
             canopy_index = 45.0
             assumptions.append("Canopy density unavailable within 100m neighborhood.")
 
+        moisture = self._sample_raster_point(self.paths["moisture"], lat, lon)
+        if moisture is None:
+            moisture_index = round(max(0.0, min(100.0, 0.5 * burn_probability_index + 0.5 * hazard_severity_index)), 1)
+            assumptions.append("Moisture/fuel dryness raster missing; dryness inferred from hazard and burn probability.")
+        else:
+            moisture_index = self._to_index(moisture, 0.0, 100.0)
+            sources.append("Moisture/fuel dryness raster")
+
         wildland_distance_index = self._wildland_distance_index(lat, lon, self.paths["fuel"], self.paths["canopy"])
         if self._file_exists(self.paths["fuel"]) or self._file_exists(self.paths["canopy"]):
             sources.append("Distance to wildland vegetation (derived)")
@@ -368,14 +359,15 @@ class WildfireDataClient:
             assumptions.append("Historical perimeter layer missing; recurrence defaulted.")
 
         environmental = round(
-            0.22 * burn_probability_index
-            + 0.18 * hazard_severity_index
-            + 0.14 * slope_index
+            0.20 * burn_probability_index
+            + 0.16 * hazard_severity_index
+            + 0.12 * slope_index
             + 0.06 * aspect_index
             + 0.12 * fuel_index
+            + 0.10 * moisture_index
             + 0.10 * canopy_index
-            + 0.10 * wildland_distance_index
-            + 0.08 * historic_fire_index,
+            + 0.08 * wildland_distance_index
+            + 0.06 * historic_fire_index,
             1,
         )
 
@@ -384,6 +376,7 @@ class WildfireDataClient:
             slope_index=round(slope_index, 1),
             aspect_index=round(aspect_index, 1),
             fuel_index=round(fuel_index, 1),
+            moisture_index=round(moisture_index, 1),
             canopy_index=round(canopy_index, 1),
             wildland_distance_index=round(wildland_distance_index, 1),
             historic_fire_index=round(historic_fire_index, 1),
