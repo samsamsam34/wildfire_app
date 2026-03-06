@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>WildfireRisk Advisor</title>
+    <style>
+      :root {
+        --bg: #f5f0e6;
+        --card: #fff9ef;
+        --text: #1e1b16;
+        --accent: #c2452d;
+      }
+      body {
+        margin: 0;
+        font-family: "Avenir Next", "Segoe UI", sans-serif;
+        background: radial-gradient(circle at top, #ffe0ba 0%, var(--bg) 55%);
+        color: var(--text);
+      }
+      .wrap {
+        max-width: 860px;
+        margin: 2rem auto;
+        padding: 1rem;
+      }
+      .card {
+        background: var(--card);
+        border: 1px solid #e2d5c1;
+        border-radius: 16px;
+        padding: 1rem;
+        margin-bottom: 1rem;
+      }
+      input, button {
+        padding: 0.65rem 0.8rem;
+        border-radius: 10px;
+        border: 1px solid #cbb9a2;
+        margin-right: 0.35rem;
+      }
+      button {
+        background: var(--accent);
+        color: white;
+        border: none;
+        cursor: pointer;
+      }
+      pre {
+        white-space: pre-wrap;
+        font-size: 0.9rem;
+      }
+      .row {
+        margin-bottom: 0.75rem;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <div class="card">
+        <h1>WildfireRisk Advisor</h1>
+        <p>Property-level wildfire risk and insurance readiness snapshot.</p>
+        <form id="assess-form">
+          <div class="row">
+            <input id="api-key" placeholder="API key (X-API-Key)" size="30" />
+          </div>
+          <div class="row">
+            <input id="address" placeholder="Enter property address" size="45" required />
+            <button type="submit">Assess</button>
+          </div>
+        </form>
+      </div>
+      <div class="card">
+        <h2>Result</h2>
+        <pre id="result">No assessment yet.</pre>
+      </div>
+    </div>
+
+    <script>
+      const form = document.getElementById("assess-form");
+      const out = document.getElementById("result");
+      const apiKeyInput = document.getElementById("api-key");
+      const apiBase = (window.WILDFIRE_API_BASE || "http://127.0.0.1:8000").replace(/\/$/, "");
+      apiKeyInput.value = localStorage.getItem("wildfire_api_key") || "dev-key-1";
+
+      form.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const address = document.getElementById("address").value;
+        const apiKey = apiKeyInput.value.trim();
+        localStorage.setItem("wildfire_api_key", apiKey);
+        out.textContent = "Assessing...";
+
+        if (!apiKey) {
+          out.textContent = "Missing API key. Enter a valid key like: dev-key-1";
+          return;
+        }
+
+        try {
+          const res = await fetch(`${apiBase}/risk/assess`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "X-API-Key": apiKey,
+            },
+            body: JSON.stringify({ address, attributes: {} }),
+          });
+          if (!res.ok) {
+            const message = await res.text();
+            throw new Error(`API ${res.status}: ${message}`);
+          }
+          const data = await res.json();
+          out.textContent = JSON.stringify(data, null, 2);
+        } catch (err) {
+          out.textContent = `Request failed. Ensure API is running at ${apiBase}.\n${err}`;
+        }
+      });
+    </script>
+  </body>
+</html>

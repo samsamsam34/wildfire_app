@@ -1,0 +1,1 @@
+"""WildfireRisk Advisor backend package."""
