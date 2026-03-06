@@ -15,6 +15,11 @@ Now includes:
 pip install -r requirements.txt
 export WILDFIRE_API_KEYS="dev-key-1,dev-key-2"
 
+# Optional scoring calibration overrides (JSON maps)
+export WILDFIRE_SUBMODEL_WEIGHTS_JSON='{"ember_exposure":0.15,"flame_contact_exposure":0.14}'
+export WILDFIRE_READINESS_PENALTIES_JSON='{"roof_fail":26}'
+export WILDFIRE_READINESS_BONUSES_JSON='{"roof_pass":4}'
+
 # Layer paths (point these to your real datasets)
 export WF_LAYER_BURN_PROB_TIF="/path/to/burn_probability.tif"
 export WF_LAYER_HAZARD_SEVERITY_TIF="/path/to/hazard_severity.tif"
@@ -33,11 +38,12 @@ uvicorn backend.main:app --reload
 
 - `GET /health` (public)
 - `POST /risk/assess` (requires `X-API-Key` when keys configured)
+- `POST /risk/debug` (requires `X-API-Key`; returns intermediate context/submodel/readiness/config payload)
 - `GET /report/{assessment_id}` (requires `X-API-Key` when keys configured)
 
 ## Step 2 Scoring Architecture
 
-Wildfire risk is now composed from explicit submodels:
+Wildfire risk is composed from explicit submodels:
 - `ember_exposure`
 - `flame_contact_exposure`
 - `topography_risk`
@@ -58,7 +64,7 @@ The API also returns:
 
 ## Wildfire Risk vs Insurance Readiness
 
-`wildfire_risk_score` and `insurance_readiness_score` are now separate systems.
+`wildfire_risk_score` and `insurance_readiness_score` are separate systems.
 
 - Wildfire risk: weighted submodel composition.
 - Insurance readiness: rule checks on roof, vents, defensible space, fuel pressure, and severe environmental hazard signals.
@@ -68,9 +74,18 @@ Readiness outputs include:
 - `readiness_blockers`
 - `readiness_summary`
 
+## Calibration Fixtures
+
+Step 2 calibration fixtures are stored in `tests/fixtures/`:
+- `step2_calibration_low.json`
+- `step2_calibration_medium.json`
+- `step2_calibration_high.json`
+
+Regression tests verify deterministic alignment between mocked profile outputs and these expected submodel/readiness values.
+
 ## Mitigation Linkage
 
-Mitigations are now tied to submodels and blockers and include:
+Mitigations are tied to submodels and blockers and include:
 - `title`
 - `reason`
 - `impacted_submodels`
@@ -101,4 +116,5 @@ They cover:
 - strong structure + high environment
 - readiness blockers
 - deterministic outputs for fixed mocked inputs
+- debug endpoint payload structure
 - legacy row compatibility

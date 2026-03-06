@@ -17,17 +17,17 @@ from backend.models import (
     Coordinates,
     EnvironmentalFactors,
     FactorBreakdown,
-    MitigationAction,
     ReadinessFactor,
     RiskScores,
     SubmodelScore,
     WeightedContribution,
 )
-from backend.risk_engine import RiskEngine
+from backend.risk_engine import RiskComputation, RiskEngine
+from backend.scoring_config import load_scoring_config
 from backend.version import MODEL_VERSION
 from backend.wildfire_data import WildfireDataClient
 
-app = FastAPI(title="WildfireRisk Advisor API", version="0.6.0")
+app = FastAPI(title="WildfireRisk Advisor API", version="0.6.1")
 
 app.add_middleware(
     CORSMiddleware,
@@ -37,7 +37,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-risk_engine = RiskEngine()
+scoring_config = load_scoring_config()
+risk_engine = RiskEngine(scoring_config)
 geocoder = Geocoder()
 wildfire_data = WildfireDataClient()
 store = AssessmentStore()
@@ -137,10 +138,7 @@ def _build_confidence(assumptions: AssumptionsBlock) -> ConfidenceBlock:
     if confidence < 70:
         low_confidence_flags.append("Overall confidence below recommended underwriting threshold")
 
-    data_completeness_score = round(
-        max(0.0, min(100.0, 100.0 - (len(assumptions.missing_inputs) * 6.0))),
-        1,
-    )
+    data_completeness_score = round(max(0.0, min(100.0, 100.0 - (len(assumptions.missing_inputs) * 6.0))), 1)
 
     return ConfidenceBlock(
         confidence_score=confidence,
@@ -186,13 +184,7 @@ def _build_top_protective_factors(payload: AddressRequest, submodels: dict[str, 
     return factors[:3]
 
 
-@app.get("/health")
-def health() -> dict:
-    return {"status": "ok"}
-
-
-@app.post("/risk/assess", response_model=AssessmentResult, dependencies=[Depends(require_api_key)])
-def assess_risk(payload: AddressRequest) -> AssessmentResult:
+def _run_assessment(payload: AddressRequest) -> tuple[AssessmentResult, dict]:
     pre_assumptions: list[str] = []
 
     try:
@@ -203,25 +195,16 @@ def assess_risk(payload: AddressRequest) -> AssessmentResult:
         pre_assumptions.append("Geocoding provider unavailable; fallback coordinates used.")
 
     context = wildfire_data.collect_context(lat, lon)
-    risk = risk_engine.score(payload.attributes, lat, lon, context)
+    risk: RiskComputation = risk_engine.score(payload.attributes, lat, lon, context)
     readiness = risk_engine.compute_insurance_readiness(payload.attributes, context, risk)
 
     submodel_scores = {
-        k: SubmodelScore(
-            score=v.score,
-            explanation=v.explanation,
-            key_contributing_inputs=v.key_inputs,
-            assumptions=v.assumptions,
-        )
+        k: SubmodelScore(score=v.score, explanation=v.explanation, key_contributing_inputs=v.key_inputs, assumptions=v.assumptions)
         for k, v in risk.submodel_scores.items()
     }
 
     weighted_contributions = {
-        k: WeightedContribution(
-            weight=v["weight"],
-            score=v["score"],
-            contribution=v["contribution"],
-        )
+        k: WeightedContribution(weight=v["weight"], score=v["score"], contribution=v["contribution"])
         for k, v in risk.weighted_contributions.items()
     }
 
@@ -271,21 +254,10 @@ def assess_risk(payload: AddressRequest) -> AssessmentResult:
         f"{ACCESS_PROVISIONAL_NOTE}"
     )
 
-    risk_scores = RiskScores(
-        wildfire_risk_score=risk.total_score,
-        insurance_readiness_score=readiness.insurance_readiness_score,
-    )
+    risk_scores = RiskScores(wildfire_risk_score=risk.total_score, insurance_readiness_score=readiness.insurance_readiness_score)
     coordinates = Coordinates(latitude=lat, longitude=lon)
 
-    readiness_factors = [
-        ReadinessFactor(
-            name=f["name"],
-            status=f["status"],
-            score_impact=f["score_impact"],
-            detail=f["detail"],
-        )
-        for f in readiness.readiness_factors
-    ]
+    readiness_factors = [ReadinessFactor(name=f["name"], status=f["status"], score_impact=f["score_impact"], detail=f["detail"]) for f in readiness.readiness_factors]
 
     result = AssessmentResult(
         assessment_id=str(uuid4()),
@@ -314,7 +286,6 @@ def assess_risk(payload: AddressRequest) -> AssessmentResult:
         readiness_summary=readiness.readiness_summary,
         model_version=MODEL_VERSION,
         scoring_notes=scoring_notes,
-        # Structured mirrors for compatibility
         coordinates=coordinates,
         risk_scores=risk_scores,
         assumptions=assumptions_block,
@@ -324,8 +295,71 @@ def assess_risk(payload: AddressRequest) -> AssessmentResult:
         explanation=explanation_summary,
     )
 
+    debug_payload = {
+        "address": payload.address,
+        "coordinates": {"latitude": lat, "longitude": lon},
+        "context_indices": {
+            "burn_probability_index": context.burn_probability_index,
+            "hazard_severity_index": context.hazard_severity_index,
+            "slope_index": context.slope_index,
+            "aspect_index": context.aspect_index,
+            "fuel_index": context.fuel_index,
+            "moisture_index": context.moisture_index,
+            "canopy_index": context.canopy_index,
+            "wildland_distance_index": context.wildland_distance_index,
+            "historic_fire_index": context.historic_fire_index,
+        },
+        "submodel_scores": {
+            name: {
+                "score": sm.score,
+                "explanation": sm.explanation,
+                "key_contributing_inputs": sm.key_contributing_inputs,
+                "assumptions": sm.assumptions,
+            }
+            for name, sm in submodel_scores.items()
+        },
+        "weighted_contributions": {
+            name: {
+                "weight": wc.weight,
+                "score": wc.score,
+                "contribution": wc.contribution,
+            }
+            for name, wc in weighted_contributions.items()
+        },
+        "readiness": {
+            "score": readiness.insurance_readiness_score,
+            "blockers": readiness.readiness_blockers,
+            "factors": readiness.readiness_factors,
+            "summary": readiness.readiness_summary,
+        },
+        "assumptions_used": all_assumptions,
+        "data_sources": all_sources,
+        "config": {
+            "submodel_weights": scoring_config.submodel_weights,
+            "readiness_penalties": scoring_config.readiness_penalties,
+            "readiness_bonuses": scoring_config.readiness_bonuses,
+        },
+    }
+
+    return result, debug_payload
+
+
+@app.get("/health")
+def health() -> dict:
+    return {"status": "ok"}
+
+
+@app.post("/risk/assess", response_model=AssessmentResult, dependencies=[Depends(require_api_key)])
+def assess_risk(payload: AddressRequest) -> AssessmentResult:
+    result, _ = _run_assessment(payload)
     store.save(result)
     return result
+
+
+@app.post("/risk/debug", dependencies=[Depends(require_api_key)])
+def debug_risk(payload: AddressRequest) -> dict:
+    _, debug_payload = _run_assessment(payload)
+    return debug_payload
 
 
 @app.get("/report/{assessment_id}", response_model=AssessmentResult, dependencies=[Depends(require_api_key)])

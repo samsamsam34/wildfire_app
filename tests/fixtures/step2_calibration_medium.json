@@ -1,0 +1,15 @@
+{
+  "wildfire_risk_score": 53.8,
+  "insurance_readiness_score": 66.0,
+  "submodel_scores": {
+    "ember_exposure": {"score": 56.0},
+    "flame_contact_exposure": {"score": 55.2},
+    "topography_risk": {"score": 53.5},
+    "fuel_proximity_risk": {"score": 55.0},
+    "vegetation_intensity_risk": {"score": 55.0},
+    "historic_fire_risk": {"score": 50.0},
+    "home_hardening_risk": {"score": 56.2},
+    "defensible_space_risk": {"score": 46.6}
+  },
+  "readiness_blockers": ["Defensible space below 30 ft"]
+}

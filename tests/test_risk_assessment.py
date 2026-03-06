@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 
@@ -13,6 +14,7 @@ from backend.wildfire_data import WildfireContext
 
 
 client = TestClient(app_main.app)
+FIXTURE_DIR = Path(__file__).parent / "fixtures"
 
 
 def _ctx(env: float, wildland: float, historic: float) -> WildfireContext:
@@ -96,6 +98,23 @@ def _run(payload: dict) -> dict:
     return res.json()
 
 
+def _subset_assert(actual, expected):
+    if isinstance(expected, dict):
+        assert isinstance(actual, dict)
+        for key, value in expected.items():
+            assert key in actual
+            _subset_assert(actual[key], value)
+    elif isinstance(expected, list):
+        assert actual == expected
+    else:
+        assert actual == expected
+
+
+def _assert_calibration_fixture(body: dict, fixture_name: str) -> None:
+    expected = json.loads((FIXTURE_DIR / fixture_name).read_text())
+    _subset_assert(body, expected)
+
+
 def test_low_risk_profile(monkeypatch, tmp_path):
     _setup(monkeypatch, tmp_path, _ctx(env=20.0, wildland=20.0, historic=10.0))
 
@@ -113,6 +132,7 @@ def test_low_risk_profile(monkeypatch, tmp_path):
     assert body["model_version"] == MODEL_VERSION
     assert body["wildfire_risk_score"] < 35
     assert body["insurance_readiness_score"] > 75
+    _assert_calibration_fixture(body, "step2_calibration_low.json")
 
 
 def test_medium_risk_profile(monkeypatch, tmp_path):
@@ -128,6 +148,7 @@ def test_medium_risk_profile(monkeypatch, tmp_path):
     _assert_core_contract(body)
     assert 35 <= body["wildfire_risk_score"] <= 75
     assert body["confidence_score"] < 90
+    _assert_calibration_fixture(body, "step2_calibration_medium.json")
 
 
 def test_high_risk_profile(monkeypatch, tmp_path):
@@ -147,6 +168,7 @@ def test_high_risk_profile(monkeypatch, tmp_path):
     assert body["wildfire_risk_score"] > 75
     assert body["readiness_blockers"]
     assert "Combustible roof material" in body["readiness_blockers"]
+    _assert_calibration_fixture(body, "step2_calibration_high.json")
 
 
 def test_weak_structure_moderate_environment(monkeypatch, tmp_path):
@@ -187,6 +209,29 @@ def test_strong_structure_high_environment(monkeypatch, tmp_path):
     assert body["submodel_scores"]["home_hardening_risk"]["score"] < 40
     assert body["submodel_scores"]["fuel_proximity_risk"]["score"] > 70
     assert body["wildfire_risk_score"] > 60
+
+
+def test_debug_endpoint_returns_intermediate_payload(monkeypatch, tmp_path):
+    _setup(monkeypatch, tmp_path, _ctx(env=60.0, wildland=65.0, historic=55.0))
+
+    payload = {
+        "address": "Debug Case Way",
+        "attributes": {
+            "roof_type": "class a",
+            "vent_type": "ember-resistant",
+            "defensible_space_ft": 20,
+        },
+    }
+    res = client.post("/risk/debug", json=payload)
+    assert res.status_code == 200
+    body = res.json()
+
+    assert "context_indices" in body
+    assert "submodel_scores" in body
+    assert "weighted_contributions" in body
+    assert "readiness" in body
+    assert "config" in body
+    assert "submodel_weights" in body["config"]
 
 
 def test_deterministic_outputs_for_fixed_inputs(monkeypatch, tmp_path):
