@@ -55,37 +55,60 @@ Wildfire risk is composed from explicit submodels:
 
 Each submodel returns a score, weighted contribution, deterministic explanation, key inputs, and assumptions.
 
-The API also returns:
-- `submodel_scores`
-- `weighted_contributions`
-- `factor_breakdown`
-- `top_risk_drivers`
-- `top_protective_factors`
+`factor_breakdown` is grouped and consistent across `/risk/assess` and `/report/{assessment_id}`:
+- `submodels`: per-submodel scores
+- `environmental`: environmental subset of submodels
+- `structural`: structure/mitigation subset of submodels
+
+Legacy coarse fields (`environmental_risk`, `structural_risk`, `access_risk`) are still included for compatibility and are deprecated.
 
 ## Wildfire Risk vs Insurance Readiness
 
 `wildfire_risk_score` and `insurance_readiness_score` are separate systems.
 
 - Wildfire risk: weighted submodel composition.
-- Insurance readiness: rule checks on roof, vents, defensible space, fuel pressure, and severe environmental hazard signals.
+- Insurance readiness: deterministic rules on roof, vents, defensible space, fuel pressure, ember pressure, and severe environmental hazard signals.
 
 Readiness outputs include:
 - `readiness_factors`
 - `readiness_blockers`
 - `readiness_penalties`
+- `readiness_summary`
 
-## Calibration Fixtures
+## Confidence and Assumptions
 
-Step 2 calibration fixtures are stored in `tests/fixtures/`:
-- `step2_calibration_low.json`
-- `step2_calibration_medium.json`
-- `step2_calibration_high.json`
+Every assessment includes structured trust fields:
+- `observed_inputs`
+- `inferred_inputs`
+- `missing_inputs`
+- `assumptions_used`
+- `confidence_score`
+- `low_confidence_flags`
 
-Regression tests verify deterministic alignment between mocked profile outputs and these expected submodel/readiness values.
+## Response/Report Shape Overview
+
+`/risk/assess` and `/report/{assessment_id}` return the same Step 2 core fields:
+- `model_version`
+- `wildfire_risk_score`
+- `insurance_readiness_score`
+- `submodel_scores`
+- `weighted_contributions`
+- `factor_breakdown`
+- `top_risk_drivers`
+- `top_protective_factors`
+- `explanation_summary`
+- `readiness_factors`
+- `readiness_blockers`
+- `readiness_penalties`
+- `readiness_summary`
+- `observed_inputs`, `inferred_inputs`, `missing_inputs`, `assumptions_used`
+- `confidence_score`, `low_confidence_flags`
+- `mitigation_plan`
+- `data_sources`
 
 ## Mitigation Linkage
 
-Mitigations are tied to submodels and blockers and include:
+Mitigations are tied to submodels and readiness blockers and include:
 - `title`
 - `reason`
 - `impacted_submodels`
@@ -103,11 +126,24 @@ True layer-backed mode requires:
 
 If missing, the API still runs in fallback/proxy mode with explicit assumptions and lower confidence.
 
+## Model Versioning
+
+- Current scoring architecture model version: `1.2.0`
+- Legacy rows without explicit metadata default safely to `1.0.0` when read.
+
 ## Current MVP Limitations
 
 - Scoring weights and readiness checks are transparent MVP insurer-oriented heuristics, not underwriting-approved models.
 - Access/egress scoring remains provisional and is not weighted into final wildfire score.
-- Model version is `1.2.0`; legacy rows without version metadata default to `1.0.0` when read.
+
+## Calibration Fixtures
+
+Step 2 calibration fixtures are stored in `tests/fixtures/`:
+- `step2_calibration_low.json`
+- `step2_calibration_medium.json`
+- `step2_calibration_high.json`
+
+Regression tests verify deterministic alignment between mocked profile outputs and expected submodel/readiness values.
 
 ## Tests
 
@@ -117,6 +153,7 @@ They cover:
 - weak structure + moderate environment
 - strong structure + high environment
 - readiness blockers
+- assess/report schema consistency
 - deterministic outputs for fixed mocked inputs
 - debug endpoint payload structure
 - legacy row compatibility

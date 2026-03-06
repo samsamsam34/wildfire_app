@@ -93,6 +93,12 @@ def _assert_core_contract(body: dict) -> None:
         assert "key_inputs" in body["submodel_scores"][sm]
         assert "assumptions" in body["submodel_scores"][sm]
 
+    assert "submodels" in body["factor_breakdown"]
+    assert "environmental" in body["factor_breakdown"]
+    assert "structural" in body["factor_breakdown"]
+    for sm in REQUIRED_SUBMODELS:
+        assert sm in body["factor_breakdown"]["submodels"]
+
     for rec in body["mitigation_plan"]:
         assert "title" in rec
         assert "impacted_submodels" in rec
@@ -119,9 +125,57 @@ def _subset_assert(actual, expected):
         assert actual == expected
 
 
+def _core_shape_subset(body: dict) -> dict:
+    keys = [
+        "model_version",
+        "wildfire_risk_score",
+        "insurance_readiness_score",
+        "submodel_scores",
+        "weighted_contributions",
+        "factor_breakdown",
+        "top_risk_drivers",
+        "top_protective_factors",
+        "explanation_summary",
+        "readiness_factors",
+        "readiness_blockers",
+        "readiness_penalties",
+        "readiness_summary",
+        "observed_inputs",
+        "inferred_inputs",
+        "missing_inputs",
+        "assumptions_used",
+        "confidence_score",
+        "low_confidence_flags",
+        "mitigation_plan",
+        "data_sources",
+    ]
+    return {k: body[k] for k in keys}
+
+
 def _assert_calibration_fixture(body: dict, fixture_name: str) -> None:
     expected = json.loads((FIXTURE_DIR / fixture_name).read_text())
     _subset_assert(body, expected)
+
+
+def test_assess_and_report_core_shape_match(monkeypatch, tmp_path):
+    _setup(monkeypatch, tmp_path, _ctx(env=35.0, wildland=40.0, historic=20.0))
+    payload = {
+        "address": "101 Contract Way, Boulder, CO",
+        "attributes": {
+            "roof_type": "class a",
+            "vent_type": "ember-resistant",
+            "defensible_space_ft": 32,
+            "construction_year": 2018,
+        },
+    }
+
+    assessed = _run(payload)
+    report_res = client.get(f"/report/{assessed['assessment_id']}")
+    assert report_res.status_code == 200
+    report = report_res.json()
+
+    _assert_core_contract(report)
+    assert _core_shape_subset(assessed) == _core_shape_subset(report)
 
 
 def test_low_environment_strong_structure(monkeypatch, tmp_path):

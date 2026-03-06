@@ -53,6 +53,31 @@ SUBMODEL_ALIASES = {
 }
 
 
+CANONICAL_SUBMODELS = [
+    "vegetation_intensity_risk",
+    "fuel_proximity_risk",
+    "slope_topography_risk",
+    "ember_exposure_risk",
+    "flame_contact_risk",
+    "historic_fire_risk",
+    "structure_vulnerability_risk",
+    "defensible_space_risk",
+]
+
+ENVIRONMENTAL_SUBMODELS = [
+    "vegetation_intensity_risk",
+    "fuel_proximity_risk",
+    "slope_topography_risk",
+    "ember_exposure_risk",
+    "flame_contact_risk",
+    "historic_fire_risk",
+]
+
+STRUCTURAL_SUBMODELS = [
+    "structure_vulnerability_risk",
+    "defensible_space_risk",
+]
+
 def _build_assumption_tracking(payload: AddressRequest, assumptions_used: list[str], data_sources: list[str]) -> AssumptionsBlock:
     observed_inputs: dict[str, object] = {"address": payload.address}
     inferred_inputs: dict[str, object] = {}
@@ -175,6 +200,22 @@ def _build_top_risk_drivers(submodels: dict[str, SubmodelScore]) -> list[str]:
     return [labels.get(name, name) for name, _ in ordered[:3]]
 
 
+def _build_factor_breakdown(submodels: dict[str, SubmodelScore], risk: RiskComputation) -> FactorBreakdown:
+    canonical = {name: round(submodels[name].score, 1) for name in CANONICAL_SUBMODELS if name in submodels}
+    environmental = {name: canonical[name] for name in ENVIRONMENTAL_SUBMODELS if name in canonical}
+    structural = {name: canonical[name] for name in STRUCTURAL_SUBMODELS if name in canonical}
+
+    # Legacy compatibility fields are kept during Step 2 cleanup for existing clients.
+    return FactorBreakdown(
+        submodels=canonical,
+        environmental=environmental,
+        structural=structural,
+        environmental_risk=risk.drivers.environmental,
+        structural_risk=risk.drivers.structural,
+        access_risk=risk.drivers.access_exposure,
+    )
+
+
 def _build_top_protective_factors(payload: AddressRequest, submodels: dict[str, SubmodelScore]) -> list[str]:
     factors: list[str] = []
     attrs = payload.attributes
@@ -211,7 +252,6 @@ def _run_assessment(payload: AddressRequest) -> tuple[AssessmentResult, dict]:
 
     submodel_scores: dict[str, SubmodelScore] = {}
     weighted_contributions: dict[str, WeightedContribution] = {}
-
     for name, result in risk.submodel_scores.items():
         contribution = risk.weighted_contributions[name]["contribution"]
         score_model = SubmodelScore(
@@ -228,6 +268,8 @@ def _run_assessment(payload: AddressRequest) -> tuple[AssessmentResult, dict]:
             score=risk.weighted_contributions[name]["score"],
             contribution=contribution,
         )
+
+    breakdown = _build_factor_breakdown(submodel_scores, risk)
 
     for legacy_key, canonical in SUBMODEL_ALIASES.items():
         submodel_scores[legacy_key] = submodel_scores[canonical]
@@ -252,11 +294,6 @@ def _run_assessment(payload: AddressRequest) -> tuple[AssessmentResult, dict]:
         historical_fire_recurrence=context.historic_fire_index,
     )
 
-    breakdown = FactorBreakdown(
-        environmental_risk=risk.drivers.environmental,
-        structural_risk=risk.drivers.structural,
-        access_risk=risk.drivers.access_exposure,
-    )
 
     all_assumptions = sorted(set(pre_assumptions + risk.assumptions))
     all_sources = [geocode_source] + context.data_sources

@@ -95,6 +95,9 @@ class AssessmentStore:
         if "factor_breakdown" not in payload:
             drivers = payload.get("risk_drivers", {}) or {}
             payload["factor_breakdown"] = {
+                "submodels": {},
+                "environmental": {},
+                "structural": {},
                 "environmental_risk": drivers.get("environmental", 0.0),
                 "structural_risk": drivers.get("structural", 0.0),
                 "access_risk": drivers.get("access_exposure", 0.0),
@@ -102,8 +105,28 @@ class AssessmentStore:
                 "access_included_in_total": False,
                 "access_risk_note": "Access exposure is provisional and not included in total score until real parcel/egress inputs are integrated.",
             }
-
         payload.setdefault("submodel_scores", {})
+        fb = payload.get("factor_breakdown", {}) or {}
+        fb.setdefault("submodels", {k: (v.get("score") if isinstance(v, dict) else v) for k, v in payload["submodel_scores"].items() if isinstance(v, (dict, float, int))})
+        fb.setdefault("environmental", {k: fb["submodels"].get(k, 0.0) for k in [
+            "vegetation_intensity_risk",
+            "fuel_proximity_risk",
+            "slope_topography_risk",
+            "ember_exposure_risk",
+            "flame_contact_risk",
+            "historic_fire_risk",
+        ] if k in fb["submodels"]})
+        fb.setdefault("structural", {k: fb["submodels"].get(k, 0.0) for k in ["structure_vulnerability_risk", "defensible_space_risk"] if k in fb["submodels"]})
+        fb.setdefault("environmental_risk", payload.get("risk_drivers", {}).get("environmental", 0.0))
+        fb.setdefault("structural_risk", payload.get("risk_drivers", {}).get("structural", 0.0))
+        fb.setdefault("access_risk", payload.get("risk_drivers", {}).get("access_exposure", 0.0))
+        fb.setdefault("access_risk_provisional", True)
+        fb.setdefault("access_included_in_total", False)
+        fb.setdefault(
+            "access_risk_note",
+            "Access exposure is provisional and not included in total score until real parcel/egress inputs are integrated.",
+        )
+        payload["factor_breakdown"] = fb
         payload.setdefault("weighted_contributions", {})
         payload.setdefault("submodel_explanations", {})
 

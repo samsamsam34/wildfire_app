@@ -34,9 +34,15 @@ class RiskDrivers(BaseModel):
 
 
 class FactorBreakdown(BaseModel):
-    environmental_risk: float
-    structural_risk: float
-    access_risk: float
+    # Step 2 grouped breakdown aligned to factorized submodels.
+    submodels: Dict[str, float] = Field(default_factory=dict)
+    environmental: Dict[str, float] = Field(default_factory=dict)
+    structural: Dict[str, float] = Field(default_factory=dict)
+
+    # Legacy compatibility fields (deprecated): retained for older clients.
+    environmental_risk: float = 0.0
+    structural_risk: float = 0.0
+    access_risk: float = 0.0
     access_risk_provisional: bool = True
     access_included_in_total: bool = False
     access_risk_note: str = (
