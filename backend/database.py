@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
-from backend.models import AssessmentResult
+from backend.models import AssessmentListItem, AssessmentResult
 from backend.version import LEGACY_MODEL_VERSION
 
 
@@ -76,8 +76,12 @@ class AssessmentStore:
             )
         return upgraded
 
-    def _upgrade_payload(self, payload: dict[str, Any], db_model_version: str) -> dict[str, Any]:
+    def _upgrade_payload(self, payload: dict[str, Any], db_model_version: str, created_at: str | None = None) -> dict[str, Any]:
         payload.setdefault("model_version", db_model_version or LEGACY_MODEL_VERSION)
+
+        payload.setdefault("audience", "homeowner")
+        payload.setdefault("property_facts", {})
+        payload.setdefault("confirmed_fields", [])
 
         payload.setdefault("latitude", payload.get("coordinates", {}).get("latitude", 0.0))
         payload.setdefault("longitude", payload.get("coordinates", {}).get("longitude", 0.0))
@@ -105,18 +109,40 @@ class AssessmentStore:
                 "access_included_in_total": False,
                 "access_risk_note": "Access exposure is provisional and not included in total score until real parcel/egress inputs are integrated.",
             }
+
         payload.setdefault("submodel_scores", {})
         fb = payload.get("factor_breakdown", {}) or {}
-        fb.setdefault("submodels", {k: (v.get("score") if isinstance(v, dict) else v) for k, v in payload["submodel_scores"].items() if isinstance(v, (dict, float, int))})
-        fb.setdefault("environmental", {k: fb["submodels"].get(k, 0.0) for k in [
-            "vegetation_intensity_risk",
-            "fuel_proximity_risk",
-            "slope_topography_risk",
-            "ember_exposure_risk",
-            "flame_contact_risk",
-            "historic_fire_risk",
-        ] if k in fb["submodels"]})
-        fb.setdefault("structural", {k: fb["submodels"].get(k, 0.0) for k in ["structure_vulnerability_risk", "defensible_space_risk"] if k in fb["submodels"]})
+        fb.setdefault(
+            "submodels",
+            {
+                k: (v.get("score") if isinstance(v, dict) else v)
+                for k, v in payload["submodel_scores"].items()
+                if isinstance(v, (dict, float, int))
+            },
+        )
+        fb.setdefault(
+            "environmental",
+            {
+                k: fb["submodels"].get(k, 0.0)
+                for k in [
+                    "vegetation_intensity_risk",
+                    "fuel_proximity_risk",
+                    "slope_topography_risk",
+                    "ember_exposure_risk",
+                    "flame_contact_risk",
+                    "historic_fire_risk",
+                ]
+                if k in fb["submodels"]
+            },
+        )
+        fb.setdefault(
+            "structural",
+            {
+                k: fb["submodels"].get(k, 0.0)
+                for k in ["structure_vulnerability_risk", "defensible_space_risk"]
+                if k in fb["submodels"]
+            },
+        )
         fb.setdefault("environmental_risk", payload.get("risk_drivers", {}).get("environmental", 0.0))
         fb.setdefault("structural_risk", payload.get("risk_drivers", {}).get("structural", 0.0))
         fb.setdefault("access_risk", payload.get("risk_drivers", {}).get("access_exposure", 0.0))
@@ -127,6 +153,7 @@ class AssessmentStore:
             "Access exposure is provisional and not included in total score until real parcel/egress inputs are integrated.",
         )
         payload["factor_breakdown"] = fb
+
         payload.setdefault("weighted_contributions", {})
         payload.setdefault("submodel_explanations", {})
 
@@ -134,6 +161,7 @@ class AssessmentStore:
         payload.setdefault("top_protective_factors", [])
         payload.setdefault("explanation_summary", payload.get("explanation", ""))
 
+        payload.setdefault("confirmed_inputs", payload.get("assumptions", {}).get("confirmed_inputs", {}))
         payload.setdefault("observed_inputs", payload.get("assumptions", {}).get("observed_inputs", {}))
         payload.setdefault("inferred_inputs", payload.get("assumptions", {}).get("inferred_inputs", {}))
         payload.setdefault("missing_inputs", payload.get("assumptions", {}).get("missing_inputs", []))
@@ -153,6 +181,7 @@ class AssessmentStore:
         payload.setdefault("readiness_penalties", {})
         payload.setdefault("readiness_summary", "Legacy row: readiness detail unavailable in this version.")
 
+        payload.setdefault("generated_at", created_at or datetime.now(tz=timezone.utc).isoformat())
         payload.setdefault("scoring_notes", ["Access risk is provisional and not included in total scoring."])
 
         payload.setdefault("coordinates", {"latitude": payload["latitude"], "longitude": payload["longitude"]})
@@ -166,6 +195,7 @@ class AssessmentStore:
         payload.setdefault(
             "assumptions",
             {
+                "confirmed_inputs": payload["confirmed_inputs"],
                 "observed_inputs": payload["observed_inputs"],
                 "inferred_inputs": payload["inferred_inputs"],
                 "missing_inputs": payload["missing_inputs"],
@@ -189,7 +219,7 @@ class AssessmentStore:
     def get(self, assessment_id: str) -> Optional[AssessmentResult]:
         with self._connect() as conn:
             row = conn.execute(
-                "SELECT payload_json, model_version FROM assessments WHERE assessment_id = ?",
+                "SELECT payload_json, model_version, created_at FROM assessments WHERE assessment_id = ?",
                 (assessment_id,),
             ).fetchone()
 
@@ -197,5 +227,30 @@ class AssessmentStore:
             return None
 
         payload = json.loads(row["payload_json"])
-        upgraded = self._upgrade_payload(payload, row["model_version"] or LEGACY_MODEL_VERSION)
+        upgraded = self._upgrade_payload(payload, row["model_version"] or LEGACY_MODEL_VERSION, row["created_at"])
         return AssessmentResult.model_validate(upgraded)
+
+    def list_assessments(self, limit: int = 20) -> list[AssessmentListItem]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT assessment_id, created_at, payload_json, model_version FROM assessments ORDER BY created_at DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+
+        items: list[AssessmentListItem] = []
+        for row in rows:
+            payload = json.loads(row["payload_json"])
+            upgraded = self._upgrade_payload(payload, row["model_version"] or LEGACY_MODEL_VERSION, row["created_at"])
+            items.append(
+                AssessmentListItem(
+                    assessment_id=upgraded["assessment_id"],
+                    created_at=row["created_at"],
+                    address=upgraded.get("address", ""),
+                    audience=upgraded.get("audience", "homeowner"),
+                    wildfire_risk_score=float(upgraded.get("wildfire_risk_score", 0.0)),
+                    insurance_readiness_score=float(upgraded.get("insurance_readiness_score", 0.0)),
+                    model_version=upgraded.get("model_version", LEGACY_MODEL_VERSION),
+                )
+            )
+
+        return items

@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+from typing import Dict
 from uuid import uuid4
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
 
 from backend.auth import require_api_key
 from backend.database import AssessmentStore
@@ -11,14 +14,22 @@ from backend.geocoding import Geocoder
 from backend.mitigation import build_mitigation_plan
 from backend.models import (
     AddressRequest,
+    AssessmentListItem,
     AssessmentResult,
     AssumptionsBlock,
     ConfidenceBlock,
     Coordinates,
     EnvironmentalFactors,
     FactorBreakdown,
+    MitigationAction,
+    PropertyAttributes,
     ReadinessFactor,
+    ReassessmentRequest,
+    ReportExport,
     RiskScores,
+    SimulationDelta,
+    SimulationRequest,
+    SimulationResult,
     SubmodelScore,
     WeightedContribution,
 )
@@ -27,7 +38,7 @@ from backend.scoring_config import load_scoring_config
 from backend.version import MODEL_VERSION
 from backend.wildfire_data import WildfireDataClient
 
-app = FastAPI(title="WildfireRisk Advisor API", version="0.6.2")
+app = FastAPI(title="WildfireRisk Advisor API", version="0.7.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -51,7 +62,6 @@ SUBMODEL_ALIASES = {
     "topography_risk": "slope_topography_risk",
     "home_hardening_risk": "structure_vulnerability_risk",
 }
-
 
 CANONICAL_SUBMODELS = [
     "vegetation_intensity_risk",
@@ -78,8 +88,29 @@ STRUCTURAL_SUBMODELS = [
     "defensible_space_risk",
 ]
 
+CORE_FACT_FIELDS = {"roof_type", "vent_type", "defensible_space_ft", "construction_year"}
+
+
+def _attributes_to_dict(attrs: PropertyAttributes) -> Dict[str, object]:
+    return {k: v for k, v in attrs.model_dump().items() if v is not None}
+
+
+def _merge_attributes(base: PropertyAttributes, overrides: PropertyAttributes) -> PropertyAttributes:
+    merged = base.model_dump(exclude_none=True)
+    merged.update(overrides.model_dump(exclude_none=True))
+    return PropertyAttributes.model_validate(merged)
+
+
 def _build_assumption_tracking(payload: AddressRequest, assumptions_used: list[str], data_sources: list[str]) -> AssumptionsBlock:
     observed_inputs: dict[str, object] = {"address": payload.address}
+    observed_inputs.update(_attributes_to_dict(payload.attributes))
+
+    confirmed_inputs: dict[str, object] = {
+        field: observed_inputs[field]
+        for field in payload.confirmed_fields
+        if field in observed_inputs
+    }
+
     inferred_inputs: dict[str, object] = {}
     missing_inputs: list[str] = []
 
@@ -88,26 +119,22 @@ def _build_assumption_tracking(payload: AddressRequest, assumptions_used: list[s
     if attrs.roof_type is None:
         inferred_inputs["roof_type"] = "composition_shingle_baseline"
         missing_inputs.append("roof_type")
-    else:
-        observed_inputs["roof_type"] = attrs.roof_type
-
     if attrs.vent_type is None:
         inferred_inputs["vent_type"] = "standard"
         missing_inputs.append("vent_type")
-    else:
-        observed_inputs["vent_type"] = attrs.vent_type
-
     if attrs.defensible_space_ft is None:
         inferred_inputs["defensible_space_ft"] = 15
         missing_inputs.append("defensible_space_ft")
-    else:
-        observed_inputs["defensible_space_ft"] = attrs.defensible_space_ft
-
     if attrs.construction_year is None:
         inferred_inputs["construction_year"] = "pre_2008_proxy"
         missing_inputs.append("construction_year")
-    else:
-        observed_inputs["construction_year"] = attrs.construction_year
+
+    if attrs.siding_type is None:
+        missing_inputs.append("siding_type")
+    if attrs.window_type is None:
+        missing_inputs.append("window_type")
+    if attrs.vegetation_condition is None:
+        missing_inputs.append("vegetation_condition")
 
     source_blob = " ".join(data_sources).lower()
     if "burn probability raster" not in source_blob:
@@ -120,6 +147,7 @@ def _build_assumption_tracking(payload: AddressRequest, assumptions_used: list[s
         missing_inputs.append("historical_fire_perimeter_layer")
 
     return AssumptionsBlock(
+        confirmed_inputs=confirmed_inputs,
         observed_inputs=observed_inputs,
         inferred_inputs=inferred_inputs,
         missing_inputs=sorted(set(missing_inputs)),
@@ -128,23 +156,9 @@ def _build_assumption_tracking(payload: AddressRequest, assumptions_used: list[s
 
 
 def _build_confidence(assumptions: AssumptionsBlock) -> ConfidenceBlock:
-    important_missing = len(
-        [
-            m
-            for m in assumptions.missing_inputs
-            if m
-            in {
-                "roof_type",
-                "vent_type",
-                "defensible_space_ft",
-                "burn_probability_layer",
-                "hazard_severity_layer",
-                "fuel_model_layer",
-                "historical_fire_perimeter_layer",
-            }
-        ]
-    )
+    important_missing = len([m for m in assumptions.missing_inputs if m in CORE_FACT_FIELDS or m.endswith("_layer")])
     inferred_count = len(assumptions.inferred_inputs)
+    confirmed_core_count = len([k for k in assumptions.confirmed_inputs if k in CORE_FACT_FIELDS])
     external_fail_count = sum(
         1
         for note in assumptions.assumptions_used
@@ -156,6 +170,7 @@ def _build_confidence(assumptions: AssumptionsBlock) -> ConfidenceBlock:
     confidence -= inferred_count * 4.0
     confidence -= external_fail_count * 8.0
     confidence -= max(0, len(assumptions.assumptions_used) - external_fail_count) * 1.0
+    confidence += min(10.0, confirmed_core_count * 2.5)
     confidence = max(0.0, min(100.0, round(confidence, 1)))
 
     low_confidence_flags: list[str] = []
@@ -170,7 +185,7 @@ def _build_confidence(assumptions: AssumptionsBlock) -> ConfidenceBlock:
     if confidence < 70:
         low_confidence_flags.append("Overall confidence below recommended underwriting threshold")
 
-    data_completeness_score = round(max(0.0, min(100.0, 100.0 - (len(assumptions.missing_inputs) * 6.0))), 1)
+    data_completeness_score = round(max(0.0, min(100.0, 100.0 - (len(assumptions.missing_inputs) * 3.0))), 1)
 
     return ConfidenceBlock(
         confidence_score=confidence,
@@ -205,7 +220,7 @@ def _build_factor_breakdown(submodels: dict[str, SubmodelScore], risk: RiskCompu
     environmental = {name: canonical[name] for name in ENVIRONMENTAL_SUBMODELS if name in canonical}
     structural = {name: canonical[name] for name in STRUCTURAL_SUBMODELS if name in canonical}
 
-    # Legacy compatibility fields are kept during Step 2 cleanup for existing clients.
+    # Legacy compatibility fields are kept for older clients.
     return FactorBreakdown(
         submodels=canonical,
         environmental=environmental,
@@ -236,7 +251,7 @@ def _build_top_protective_factors(payload: AddressRequest, submodels: dict[str, 
     return factors[:3]
 
 
-def _run_assessment(payload: AddressRequest) -> tuple[AssessmentResult, dict]:
+def _run_assessment(payload: AddressRequest, *, assessment_id: str | None = None) -> tuple[AssessmentResult, dict]:
     pre_assumptions: list[str] = []
 
     try:
@@ -294,7 +309,6 @@ def _run_assessment(payload: AddressRequest) -> tuple[AssessmentResult, dict]:
         historical_fire_recurrence=context.historic_fire_index,
     )
 
-
     all_assumptions = sorted(set(pre_assumptions + risk.assumptions))
     all_sources = [geocode_source] + context.data_sources
     assumptions_block = _build_assumption_tracking(payload, all_assumptions, all_sources)
@@ -325,10 +339,14 @@ def _run_assessment(payload: AddressRequest) -> tuple[AssessmentResult, dict]:
     ]
 
     submodel_explanations = {k: v.explanation for k, v in submodel_scores.items()}
+    fact_map = _attributes_to_dict(payload.attributes)
 
     result = AssessmentResult(
-        assessment_id=str(uuid4()),
+        assessment_id=assessment_id or str(uuid4()),
         address=payload.address,
+        audience=payload.audience,
+        property_facts=fact_map,
+        confirmed_fields=sorted(set(payload.confirmed_fields)),
         latitude=lat,
         longitude=lon,
         wildfire_risk_score=risk.total_score,
@@ -341,6 +359,7 @@ def _run_assessment(payload: AddressRequest) -> tuple[AssessmentResult, dict]:
         top_risk_drivers=top_risk_drivers,
         top_protective_factors=top_protective_factors,
         explanation_summary=explanation_summary,
+        confirmed_inputs=assumptions_block.confirmed_inputs,
         observed_inputs=assumptions_block.observed_inputs,
         inferred_inputs=assumptions_block.inferred_inputs,
         missing_inputs=assumptions_block.missing_inputs,
@@ -354,6 +373,7 @@ def _run_assessment(payload: AddressRequest) -> tuple[AssessmentResult, dict]:
         readiness_penalties=readiness.readiness_penalties,
         readiness_summary=readiness.readiness_summary,
         model_version=MODEL_VERSION,
+        generated_at=datetime.now(tz=timezone.utc),
         scoring_notes=scoring_notes,
         coordinates=coordinates,
         risk_scores=risk_scores,
@@ -411,6 +431,93 @@ def _run_assessment(payload: AddressRequest) -> tuple[AssessmentResult, dict]:
     return result, debug_payload
 
 
+def _payload_from_assessment(existing: AssessmentResult) -> AddressRequest:
+    return AddressRequest(
+        address=existing.address,
+        attributes=PropertyAttributes.model_validate(existing.property_facts or {}),
+        confirmed_fields=list(existing.confirmed_fields),
+        audience=existing.audience,
+    )
+
+
+def _build_report_export(result: AssessmentResult) -> ReportExport:
+    return ReportExport(
+        assessment_id=result.assessment_id,
+        generated_at=result.generated_at.isoformat(),
+        model_version=result.model_version,
+        property_summary={
+            "address": result.address,
+            "audience": result.audience,
+            "property_facts": result.property_facts,
+            "confirmed_fields": result.confirmed_fields,
+        },
+        location_summary={"latitude": result.latitude, "longitude": result.longitude, "data_sources": result.data_sources},
+        wildfire_risk_summary={
+            "wildfire_risk_score": result.wildfire_risk_score,
+            "factor_breakdown": result.factor_breakdown.model_dump(),
+            "top_risk_drivers": result.top_risk_drivers,
+            "top_protective_factors": result.top_protective_factors,
+        },
+        insurance_readiness_summary={
+            "insurance_readiness_score": result.insurance_readiness_score,
+            "readiness_factors": [r.model_dump() for r in result.readiness_factors],
+            "readiness_blockers": result.readiness_blockers,
+            "readiness_penalties": result.readiness_penalties,
+            "readiness_summary": result.readiness_summary,
+        },
+        top_risk_drivers=result.top_risk_drivers,
+        top_protective_factors=result.top_protective_factors,
+        assumptions_confidence={
+            "confirmed_inputs": result.confirmed_inputs,
+            "inferred_inputs": result.inferred_inputs,
+            "missing_inputs": result.missing_inputs,
+            "assumptions_used": result.assumptions_used,
+            "confidence_score": result.confidence_score,
+            "low_confidence_flags": result.low_confidence_flags,
+        },
+        mitigation_recommendations=result.mitigation_plan,
+    )
+
+
+def _build_report_html(result: AssessmentResult) -> str:
+    blockers = "<li>None</li>" if not result.readiness_blockers else "".join(f"<li>{b}</li>" for b in result.readiness_blockers)
+    mitigations = "".join(
+        f"<li><strong>{m.title}</strong>: {m.reason}"
+        f" <em>(risk: {m.estimated_risk_reduction_band}, readiness: {m.estimated_readiness_improvement_band})</em></li>"
+        for m in result.mitigation_plan
+    )
+    drivers = "".join(f"<li>{d}</li>" for d in result.top_risk_drivers)
+    protective = "".join(f"<li>{p}</li>" for p in result.top_protective_factors)
+
+    return f"""
+<!doctype html>
+<html><head><meta charset=\"utf-8\"><title>Wildfire Report {result.assessment_id}</title>
+<style>
+body {{ font-family: Arial, sans-serif; margin: 2rem; color: #1f2937; }}
+.card {{ border:1px solid #ddd; border-radius:10px; padding:1rem; margin-bottom:1rem; }}
+.row {{ display:flex; gap:1rem; flex-wrap:wrap; }}
+.badge {{ display:inline-block; padding:0.2rem 0.5rem; border-radius:999px; background:#f3f4f6; font-size:0.8rem; }}
+</style></head>
+<body>
+<h1>WildfireRisk Advisor Report</h1>
+<p><span class=\"badge\">Assessment {result.assessment_id}</span> <span class=\"badge\">Model {result.model_version}</span> <span class=\"badge\">Generated {result.generated_at.isoformat()}</span></p>
+<div class=\"card\"><h2>Property</h2><p>{result.address}</p><p>Audience: {result.audience}</p></div>
+<div class=\"row\">
+<div class=\"card\"><h3>Wildfire Risk Score</h3><p>{result.wildfire_risk_score}</p></div>
+<div class=\"card\"><h3>Insurance Readiness Score</h3><p>{result.insurance_readiness_score}</p></div>
+</div>
+<div class=\"card\"><h3>Top Risk Drivers</h3><ul>{drivers}</ul></div>
+<div class=\"card\"><h3>Top Protective Factors</h3><ul>{protective}</ul></div>
+<div class=\"card\"><h3>Readiness Blockers</h3><ul>{blockers}</ul></div>
+<div class=\"card\"><h3>Mitigation Recommendations</h3><ul>{mitigations}</ul></div>
+<div class=\"card\"><h3>Assumptions & Confidence</h3>
+<p>Confidence: {result.confidence_score}</p>
+<p>Assumptions: {', '.join(result.assumptions_used) if result.assumptions_used else 'None'}</p>
+</div>
+</body></html>
+"""
+
+
 @app.get("/health")
 def health() -> dict:
     return {"status": "ok"}
@@ -421,6 +528,87 @@ def assess_risk(payload: AddressRequest) -> AssessmentResult:
     result, _ = _run_assessment(payload)
     store.save(result)
     return result
+
+
+@app.post("/risk/reassess/{assessment_id}", response_model=AssessmentResult, dependencies=[Depends(require_api_key)])
+def reassess_risk(assessment_id: str, payload: ReassessmentRequest) -> AssessmentResult:
+    existing = store.get(assessment_id)
+    if not existing:
+        raise HTTPException(status_code=404, detail="Assessment not found")
+
+    base_req = _payload_from_assessment(existing)
+    merged_attrs = _merge_attributes(base_req.attributes, payload.attributes)
+    merged_confirmed = sorted(set(base_req.confirmed_fields + payload.confirmed_fields))
+
+    req = AddressRequest(
+        address=base_req.address,
+        attributes=merged_attrs,
+        confirmed_fields=merged_confirmed,
+        audience=payload.audience or base_req.audience,
+    )
+    result, _ = _run_assessment(req)
+    store.save(result)
+    return result
+
+
+@app.post("/risk/simulate", response_model=SimulationResult, dependencies=[Depends(require_api_key)])
+def simulate_risk(payload: SimulationRequest) -> SimulationResult:
+    if payload.assessment_id:
+        existing = store.get(payload.assessment_id)
+        if not existing:
+            raise HTTPException(status_code=404, detail="Assessment not found")
+        base_req = _payload_from_assessment(existing)
+    else:
+        if not payload.address:
+            raise HTTPException(status_code=400, detail="Provide assessment_id or address for simulation")
+        base_req = AddressRequest(
+            address=payload.address,
+            attributes=payload.attributes,
+            confirmed_fields=payload.confirmed_fields,
+            audience=payload.audience,
+        )
+
+    baseline_attrs = _merge_attributes(base_req.attributes, payload.attributes)
+    baseline_confirmed = sorted(set(base_req.confirmed_fields + payload.confirmed_fields))
+    baseline_req = AddressRequest(
+        address=base_req.address,
+        attributes=baseline_attrs,
+        confirmed_fields=baseline_confirmed,
+        audience=base_req.audience,
+    )
+
+    baseline, _ = _run_assessment(baseline_req)
+
+    simulated_attrs = _merge_attributes(baseline_attrs, payload.scenario_overrides)
+    simulated_confirmed = sorted(set(baseline_confirmed + payload.scenario_confirmed_fields))
+    simulated_req = AddressRequest(
+        address=base_req.address,
+        attributes=simulated_attrs,
+        confirmed_fields=simulated_confirmed,
+        audience=base_req.audience,
+    )
+    simulated, _ = _run_assessment(simulated_req)
+
+    changed_inputs: Dict[str, Dict[str, object]] = {}
+    before = baseline.property_facts
+    after = simulated.property_facts
+    for key in sorted(set(before.keys()) | set(after.keys())):
+        if before.get(key) != after.get(key):
+            changed_inputs[key] = {"before": before.get(key), "after": after.get(key)}
+
+    return SimulationResult(
+        scenario_name=payload.scenario_name,
+        baseline=baseline,
+        simulated=simulated,
+        delta=SimulationDelta(
+            wildfire_risk_score_delta=round(simulated.wildfire_risk_score - baseline.wildfire_risk_score, 1),
+            insurance_readiness_score_delta=round(
+                simulated.insurance_readiness_score - baseline.insurance_readiness_score, 1
+            ),
+        ),
+        changed_inputs=changed_inputs,
+        next_best_actions=simulated.mitigation_plan,
+    )
 
 
 @app.post("/risk/debug", dependencies=[Depends(require_api_key)])
@@ -435,3 +623,24 @@ def get_report(assessment_id: str) -> AssessmentResult:
     if not result:
         raise HTTPException(status_code=404, detail="Assessment not found")
     return result
+
+
+@app.get("/report/{assessment_id}/export", response_model=ReportExport, dependencies=[Depends(require_api_key)])
+def export_report(assessment_id: str) -> ReportExport:
+    result = store.get(assessment_id)
+    if not result:
+        raise HTTPException(status_code=404, detail="Assessment not found")
+    return _build_report_export(result)
+
+
+@app.get("/report/{assessment_id}/view", response_class=HTMLResponse, dependencies=[Depends(require_api_key)])
+def view_report(assessment_id: str) -> HTMLResponse:
+    result = store.get(assessment_id)
+    if not result:
+        raise HTTPException(status_code=404, detail="Assessment not found")
+    return HTMLResponse(_build_report_html(result))
+
+
+@app.get("/assessments", response_model=list[AssessmentListItem], dependencies=[Depends(require_api_key)])
+def list_assessments(limit: int = Query(default=20, ge=1, le=200)) -> list[AssessmentListItem]:
+    return store.list_assessments(limit=limit)

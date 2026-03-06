@@ -6,109 +6,314 @@
     <title>WildfireRisk Advisor</title>
     <style>
       :root {
-        --bg: #f5f0e6;
-        --card: #fff9ef;
-        --text: #1e1b16;
-        --accent: #c2452d;
+        --bg: #f7f3ea;
+        --card: #fffcf5;
+        --line: #e0d6c6;
+        --text: #1f2933;
+        --muted: #64748b;
+        --accent: #b2412a;
+        --good: #0f766e;
+        --warn: #b45309;
+        --bad: #b91c1c;
       }
+      * { box-sizing: border-box; }
       body {
         margin: 0;
         font-family: "Avenir Next", "Segoe UI", sans-serif;
-        background: radial-gradient(circle at top, #ffe0ba 0%, var(--bg) 55%);
         color: var(--text);
+        background:
+          radial-gradient(circle at 20% 0%, #ffd9b3 0%, transparent 45%),
+          radial-gradient(circle at 80% 100%, #ffeecf 0%, transparent 45%),
+          var(--bg);
       }
-      .wrap {
-        max-width: 860px;
-        margin: 2rem auto;
-        padding: 1rem;
-      }
+      .wrap { max-width: 1120px; margin: 0 auto; padding: 1rem; }
+      h1, h2, h3 { margin: 0 0 0.5rem; }
+      .grid { display: grid; gap: 1rem; }
+      .g2 { grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); }
+      .g3 { grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
       .card {
         background: var(--card);
-        border: 1px solid #e2d5c1;
-        border-radius: 16px;
+        border: 1px solid var(--line);
+        border-radius: 14px;
         padding: 1rem;
-        margin-bottom: 1rem;
       }
-      input, button {
-        padding: 0.65rem 0.8rem;
+      label { display: block; font-size: 0.82rem; color: var(--muted); margin-bottom: 0.2rem; }
+      input, select, textarea, button {
+        width: 100%;
+        border: 1px solid #d0c3ad;
         border-radius: 10px;
-        border: 1px solid #cbb9a2;
-        margin-right: 0.35rem;
+        padding: 0.58rem 0.72rem;
+        font: inherit;
       }
-      button {
-        background: var(--accent);
-        color: white;
-        border: none;
-        cursor: pointer;
-      }
-      pre {
-        white-space: pre-wrap;
-        font-size: 0.9rem;
-      }
-      .row {
-        margin-bottom: 0.75rem;
-      }
+      textarea { min-height: 74px; resize: vertical; }
+      .row { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 0.7rem; }
+      button { background: var(--accent); border: none; color: #fff; cursor: pointer; font-weight: 600; }
+      button.secondary { background: #374151; }
+      .actions { display: flex; gap: 0.6rem; flex-wrap: wrap; margin-top: 0.7rem; }
+      .actions button { width: auto; padding-inline: 1rem; }
+      .metric { font-size: 1.55rem; font-weight: 700; }
+      .muted { color: var(--muted); font-size: 0.88rem; }
+      .pill { display: inline-block; padding: 0.25rem 0.5rem; border-radius: 999px; border: 1px solid var(--line); margin: 0.15rem 0.2rem 0 0; font-size: 0.78rem; }
+      .good { color: var(--good); }
+      .warn { color: var(--warn); }
+      .bad { color: var(--bad); }
+      ul { margin: 0.35rem 0 0; padding-left: 1.15rem; }
+      table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+      th, td { border-bottom: 1px solid var(--line); padding: 0.35rem 0.2rem; text-align: left; }
+      .hidden { display: none; }
+      @media (max-width: 640px) { .actions button { width: 100%; } }
     </style>
   </head>
   <body>
-    <div class="wrap">
+    <div class="wrap grid">
       <div class="card">
         <h1>WildfireRisk Advisor</h1>
-        <p>Property-level wildfire risk and insurance readiness snapshot.</p>
-        <form id="assess-form">
-          <div class="row">
-            <input id="api-key" placeholder="API key (X-API-Key)" size="30" />
-          </div>
-          <div class="row">
-            <input id="address" placeholder="Enter property address" size="45" required />
-            <button type="submit">Assess</button>
-          </div>
-        </form>
+        <p class="muted">Assessment, assumption override, mitigation simulation, and report workflow for homeowners and B2B users.</p>
       </div>
+
       <div class="card">
-        <h2>Result</h2>
-        <pre id="result">No assessment yet.</pre>
+        <h2>Assessment Input</h2>
+        <div class="row">
+          <div><label>API Key</label><input id="apiKey" /></div>
+          <div><label>Audience</label><select id="audience"><option>homeowner</option><option>agent</option><option>inspector</option><option>insurer</option></select></div>
+        </div>
+        <div style="margin-top:0.6rem;"><label>Address</label><input id="address" placeholder="123 Main St, Denver, CO" /></div>
+
+        <h3 style="margin-top:1rem;">Property Facts</h3>
+        <div class="row">
+          <div><label>Roof Type</label><input id="roof_type" placeholder="class a / wood" /></div>
+          <div><label>Vent Type</label><input id="vent_type" placeholder="ember-resistant / standard" /></div>
+          <div><label>Siding Type</label><input id="siding_type" /></div>
+          <div><label>Window Type</label><input id="window_type" /></div>
+          <div><label>Defensible Space (ft)</label><input id="defensible_space_ft" type="number" min="0" step="1" /></div>
+          <div><label>Vegetation Condition</label><input id="vegetation_condition" placeholder="light / moderate / dense" /></div>
+          <div><label>Construction Year</label><input id="construction_year" type="number" min="1800" max="2100" /></div>
+        </div>
+        <div class="row" style="margin-top:0.6rem;">
+          <div><label>Driveway Access Notes</label><textarea id="driveway_access_notes"></textarea></div>
+          <div><label>Inspection Notes</label><textarea id="inspection_notes"></textarea></div>
+        </div>
+
+        <div style="margin-top:0.6rem;">
+          <label>Confirmed Fields (comma separated)</label>
+          <input id="confirmed_fields" placeholder="roof_type, vent_type, defensible_space_ft" />
+        </div>
+
+        <div class="actions">
+          <button id="assessBtn">Run Assessment</button>
+          <button class="secondary" id="reassessBtn">Reassess Last</button>
+        </div>
+      </div>
+
+      <div class="grid g3">
+        <div class="card"><h3>Wildfire Risk</h3><div class="metric" id="riskScore">-</div></div>
+        <div class="card"><h3>Readiness</h3><div class="metric" id="readinessScore">-</div></div>
+        <div class="card"><h3>Confidence</h3><div class="metric" id="confidenceScore">-</div></div>
+      </div>
+
+      <div class="grid g2">
+        <div class="card">
+          <h3>Top Drivers</h3>
+          <ul id="drivers"></ul>
+          <h3 style="margin-top:0.8rem;">Protective Factors</h3>
+          <ul id="protective"></ul>
+        </div>
+        <div class="card">
+          <h3>Assumptions & Confidence Flags</h3>
+          <ul id="assumptions"></ul>
+          <div id="flags"></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Submodel Breakdown</h2>
+        <table>
+          <thead><tr><th>Submodel</th><th>Score</th><th>Contribution</th></tr></thead>
+          <tbody id="submodels"></tbody>
+        </table>
+      </div>
+
+      <div class="card">
+        <h2>Mitigation Recommendations</h2>
+        <ul id="mitigations"></ul>
+      </div>
+
+      <div class="card">
+        <h2>What-If Simulator</h2>
+        <p class="muted">Apply hypothetical upgrades to the latest assessment.</p>
+        <div class="row">
+          <div><label>Scenario Name</label><input id="scenario_name" value="upgrade_plan" /></div>
+          <div><label>Scenario Roof</label><input id="sim_roof_type" placeholder="class a" /></div>
+          <div><label>Scenario Vent</label><input id="sim_vent_type" placeholder="ember-resistant" /></div>
+          <div><label>Scenario Defensible Space (ft)</label><input id="sim_defensible_space_ft" type="number" min="0" /></div>
+          <div><label>Scenario Vegetation Condition</label><input id="sim_vegetation_condition" /></div>
+        </div>
+        <div style="margin-top:0.6rem;"><label>Scenario Confirmed Fields</label><input id="scenario_confirmed_fields" placeholder="roof_type, vent_type, defensible_space_ft" /></div>
+        <div class="actions"><button id="simulateBtn">Run Simulation</button></div>
+        <div id="simResult" class="muted" style="margin-top:0.6rem;">No simulation run yet.</div>
+      </div>
+
+      <div class="card">
+        <h2>Reports & History</h2>
+        <div class="actions">
+          <button id="openReportBtn">Open Printable Report</button>
+          <button class="secondary" id="refreshHistoryBtn">Refresh Assessments</button>
+        </div>
+        <ul id="history"></ul>
       </div>
     </div>
 
     <script>
-      const form = document.getElementById("assess-form");
-      const out = document.getElementById("result");
-      const apiKeyInput = document.getElementById("api-key");
       const apiBase = (window.WILDFIRE_API_BASE || "http://127.0.0.1:8000").replace(/\/$/, "");
-      apiKeyInput.value = localStorage.getItem("wildfire_api_key") || "dev-key-1";
+      const keyInput = document.getElementById("apiKey");
+      keyInput.value = localStorage.getItem("wildfire_api_key") || "dev-key-1";
 
-      form.addEventListener("submit", async (e) => {
-        e.preventDefault();
-        const address = document.getElementById("address").value;
-        const apiKey = apiKeyInput.value.trim();
+      let latestAssessment = null;
+
+      function parseCSV(input) {
+        return input.split(",").map(v => v.trim()).filter(Boolean);
+      }
+
+      function getAttributes(prefix = "") {
+        const fields = [
+          "roof_type", "vent_type", "siding_type", "window_type", "defensible_space_ft",
+          "vegetation_condition", "driveway_access_notes", "construction_year", "inspection_notes"
+        ];
+        const attrs = {};
+        fields.forEach((f) => {
+          const el = document.getElementById(prefix + f);
+          if (!el || el.value === "") return;
+          if (["defensible_space_ft", "construction_year"].includes(f)) {
+            attrs[f] = Number(el.value);
+          } else {
+            attrs[f] = el.value;
+          }
+        });
+        return attrs;
+      }
+
+      async function api(path, body = null, method = "GET") {
+        const apiKey = keyInput.value.trim();
         localStorage.setItem("wildfire_api_key", apiKey);
-        out.textContent = "Assessing...";
+        const opts = { method, headers: { "X-API-Key": apiKey } };
+        if (body) {
+          opts.headers["Content-Type"] = "application/json";
+          opts.body = JSON.stringify(body);
+        }
+        const res = await fetch(`${apiBase}${path}`, opts);
+        if (!res.ok) throw new Error(`API ${res.status}: ${await res.text()}`);
+        if (res.headers.get("content-type")?.includes("application/json")) return await res.json();
+        return await res.text();
+      }
 
-        if (!apiKey) {
-          out.textContent = "Missing API key. Enter a valid key like: dev-key-1";
+      function renderAssessment(data) {
+        latestAssessment = data;
+        document.getElementById("riskScore").textContent = data.wildfire_risk_score.toFixed(1);
+        document.getElementById("readinessScore").textContent = data.insurance_readiness_score.toFixed(1);
+        document.getElementById("confidenceScore").textContent = data.confidence_score.toFixed(1);
+
+        const drivers = document.getElementById("drivers");
+        drivers.innerHTML = data.top_risk_drivers.map(d => `<li>${d}</li>`).join("") || "<li>None</li>";
+        const protective = document.getElementById("protective");
+        protective.innerHTML = data.top_protective_factors.map(d => `<li>${d}</li>`).join("") || "<li>None</li>";
+
+        document.getElementById("assumptions").innerHTML =
+          (data.assumptions_used || []).map(a => `<li>${a}</li>`).join("") || "<li>None</li>";
+        document.getElementById("flags").innerHTML =
+          (data.low_confidence_flags || []).map(f => `<span class="pill warn">${f}</span>`).join("");
+
+        const body = document.getElementById("submodels");
+        const rows = Object.entries(data.submodel_scores || {})
+          .filter(([k]) => k.endsWith("_risk"))
+          .map(([k, v]) => `<tr><td>${k}</td><td>${v.score}</td><td>${v.weighted_contribution}</td></tr>`)
+          .join("");
+        body.innerHTML = rows;
+
+        document.getElementById("mitigations").innerHTML =
+          (data.mitigation_plan || []).map(m => `<li><strong>${m.title}</strong>: ${m.reason}</li>`).join("") || "<li>None</li>";
+      }
+
+      async function runAssessment(reassess = false) {
+        try {
+          const payload = {
+            address: document.getElementById("address").value,
+            audience: document.getElementById("audience").value,
+            attributes: getAttributes(),
+            confirmed_fields: parseCSV(document.getElementById("confirmed_fields").value),
+          };
+
+          let data;
+          if (reassess && latestAssessment) {
+            data = await api(`/risk/reassess/${latestAssessment.assessment_id}`, {
+              audience: payload.audience,
+              attributes: payload.attributes,
+              confirmed_fields: payload.confirmed_fields,
+            }, "POST");
+          } else {
+            data = await api("/risk/assess", payload, "POST");
+          }
+          renderAssessment(data);
+          await refreshHistory();
+        } catch (e) {
+          alert(e.message);
+        }
+      }
+
+      async function runSimulation() {
+        if (!latestAssessment) {
+          alert("Run an assessment first.");
           return;
         }
-
         try {
-          const res = await fetch(`${apiBase}/risk/assess`, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              "X-API-Key": apiKey,
-            },
-            body: JSON.stringify({ address, attributes: {} }),
-          });
-          if (!res.ok) {
-            const message = await res.text();
-            throw new Error(`API ${res.status}: ${message}`);
+          const sim = await api("/risk/simulate", {
+            assessment_id: latestAssessment.assessment_id,
+            scenario_name: document.getElementById("scenario_name").value || "what_if",
+            scenario_overrides: getAttributes("sim_"),
+            scenario_confirmed_fields: parseCSV(document.getElementById("scenario_confirmed_fields").value),
+          }, "POST");
+
+          const d = sim.delta;
+          document.getElementById("simResult").innerHTML =
+            `Baseline risk ${sim.baseline.wildfire_risk_score.toFixed(1)} -> ${sim.simulated.wildfire_risk_score.toFixed(1)} ` +
+            `(<span class="${d.wildfire_risk_score_delta <= 0 ? "good" : "bad"}">${d.wildfire_risk_score_delta.toFixed(1)}</span>)<br>` +
+            `Baseline readiness ${sim.baseline.insurance_readiness_score.toFixed(1)} -> ${sim.simulated.insurance_readiness_score.toFixed(1)} ` +
+            `(<span class="${d.insurance_readiness_score_delta >= 0 ? "good" : "bad"}">${d.insurance_readiness_score_delta.toFixed(1)}</span>)`;
+        } catch (e) {
+          alert(e.message);
+        }
+      }
+
+      async function refreshHistory() {
+        try {
+          const rows = await api("/assessments?limit=10");
+          document.getElementById("history").innerHTML = rows.map((r) =>
+            `<li><strong>${r.address}</strong> (${r.created_at}) - risk ${r.wildfire_risk_score}, readiness ${r.insurance_readiness_score}</li>`
+          ).join("");
+        } catch {
+          document.getElementById("history").innerHTML = "<li>Unable to load history.</li>";
+        }
+      }
+
+      document.getElementById("assessBtn").addEventListener("click", () => runAssessment(false));
+      document.getElementById("reassessBtn").addEventListener("click", () => runAssessment(true));
+      document.getElementById("simulateBtn").addEventListener("click", runSimulation);
+      document.getElementById("refreshHistoryBtn").addEventListener("click", refreshHistory);
+      document.getElementById("openReportBtn").addEventListener("click", async () => {
+        if (!latestAssessment) return alert("Run an assessment first.");
+        try {
+          const html = await api(`/report//view`);
+          const w = window.open("", "_blank");
+          if (w) {
+            w.document.open();
+            w.document.write(html);
+            w.document.close();
           }
-          const data = await res.json();
-          out.textContent = JSON.stringify(data, null, 2);
-        } catch (err) {
-          out.textContent = `Request failed. Ensure API is running at ${apiBase}.\n${err}`;
+        } catch (e) {
+          alert(e.message);
         }
       });
+
+      refreshHistory();
     </script>
   </body>
 </html>

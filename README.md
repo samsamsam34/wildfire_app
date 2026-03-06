@@ -1,49 +1,65 @@
-# WildfireRisk Advisor (MVP Scaffold)
+# WildfireRisk Advisor
 
-Now includes:
-- Real geocoding integration via OpenStreetMap Nominatim (with fallback)
-- Layer-backed wildfire context extraction
-- Step 2.5 factorized wildfire scoring architecture
-- Separate insurance readiness rules and readiness blockers
-- Structured explainability and confidence outputs
-- API key authentication
-- Persistent SQLite storage for reports
+WildfireRisk Advisor is a FastAPI application for property-level wildfire risk and insurance-readiness workflows.
+
+Current release: **Step 3 productization layer** on top of the factorized Step 2 scoring engine.
+
+## What It Does
+
+- Runs address-level wildfire assessments with editable property facts.
+- Distinguishes confirmed facts from inferred defaults and missing inputs.
+- Returns factorized submodel scores and weighted contributions.
+- Returns separate insurance-readiness logic (factors, blockers, penalties, summary).
+- Supports what-if simulation scenarios for mitigation planning.
+- Persists assessments in SQLite and supports report export/view and assessment history listing.
+
+## Core Endpoints
+
+- `GET /health`
+- `POST /risk/assess`
+- `POST /risk/reassess/{assessment_id}`
+- `POST /risk/simulate`
+- `POST /risk/debug`
+- `GET /report/{assessment_id}`
+- `GET /report/{assessment_id}/export`
+- `GET /report/{assessment_id}/view` (print-friendly HTML)
+- `GET /assessments`
+
+All non-health endpoints use API key auth (`X-API-Key`) when `WILDFIRE_API_KEYS` is configured.
 
 ## Setup
 
 ```bash
 pip install -r requirements.txt
+
 export WILDFIRE_API_KEYS="dev-key-1,dev-key-2"
 
-# Optional scoring calibration overrides (JSON maps)
+# Optional scoring calibration overrides
 export WILDFIRE_SUBMODEL_WEIGHTS_JSON='{"ember_exposure_risk":0.15,"flame_contact_risk":0.14}'
 export WILDFIRE_READINESS_PENALTIES_JSON='{"roof_fail":26}'
 export WILDFIRE_READINESS_BONUSES_JSON='{"roof_pass":4}'
 
-# Layer paths (point these to your real datasets)
+# Optional geospatial layer paths
 export WF_LAYER_BURN_PROB_TIF="/path/to/burn_probability.tif"
 export WF_LAYER_HAZARD_SEVERITY_TIF="/path/to/hazard_severity.tif"
-export WF_LAYER_SLOPE_TIF="/path/to/slope_degrees.tif"            # optional if DEM set
-export WF_LAYER_ASPECT_TIF="/path/to/aspect_degrees.tif"          # optional if DEM set
-export WF_LAYER_DEM_TIF="/path/to/dem.tif"                        # used to derive slope/aspect
+export WF_LAYER_SLOPE_TIF="/path/to/slope_degrees.tif"
+export WF_LAYER_ASPECT_TIF="/path/to/aspect_degrees.tif"
+export WF_LAYER_DEM_TIF="/path/to/dem.tif"
 export WF_LAYER_FUEL_TIF="/path/to/fuel_model.tif"
 export WF_LAYER_CANOPY_TIF="/path/to/canopy_density.tif"
-export WF_LAYER_MOISTURE_TIF="/path/to/moisture_or_dryness.tif"   # optional; recommended
+export WF_LAYER_MOISTURE_TIF="/path/to/moisture_or_dryness.tif"
 export WF_LAYER_FIRE_PERIMETERS_GEOJSON="/path/to/fire_perimeters.geojson"
 
 uvicorn backend.main:app --reload
 ```
 
-## Endpoints
+Frontend file: `frontend/public/index.html`
 
-- `GET /health` (public)
-- `POST /risk/assess` (requires `X-API-Key` when keys configured)
-- `POST /risk/debug` (requires `X-API-Key`; returns intermediate context/submodel/readiness/config payload)
-- `GET /report/{assessment_id}` (requires `X-API-Key` when keys configured)
+## Step 2/3 Scoring + Readiness Architecture
 
-## Step 2.5 Scoring Architecture
+### Wildfire Risk (factorized)
 
-Wildfire risk is composed from explicit submodels:
+The scoring engine uses explicit submodels:
 - `vegetation_intensity_risk`
 - `fuel_proximity_risk`
 - `slope_topography_risk`
@@ -53,31 +69,39 @@ Wildfire risk is composed from explicit submodels:
 - `structure_vulnerability_risk`
 - `defensible_space_risk`
 
-Each submodel returns a score, weighted contribution, deterministic explanation, key inputs, and assumptions.
+Each returns score, weighted contribution, explanation, key inputs, assumptions.
 
-`factor_breakdown` is grouped and consistent across `/risk/assess` and `/report/{assessment_id}`:
-- `submodels`: per-submodel scores
-- `environmental`: environmental subset of submodels
-- `structural`: structure/mitigation subset of submodels
+### Insurance Readiness (separate rules engine)
 
-Legacy coarse fields (`environmental_risk`, `structural_risk`, `access_risk`) are still included for compatibility and are deprecated.
-
-## Wildfire Risk vs Insurance Readiness
-
-`wildfire_risk_score` and `insurance_readiness_score` are separate systems.
-
-- Wildfire risk: weighted submodel composition.
-- Insurance readiness: deterministic rules on roof, vents, defensible space, fuel pressure, ember pressure, and severe environmental hazard signals.
-
-Readiness outputs include:
+Readiness is computed independently from wildfire risk and returns:
 - `readiness_factors`
 - `readiness_blockers`
 - `readiness_penalties`
 - `readiness_summary`
 
-## Confidence and Assumptions
+### Factor Breakdown
 
-Every assessment includes structured trust fields:
+`factor_breakdown` includes grouped Step 2 data:
+- `submodels`
+- `environmental`
+- `structural`
+
+Legacy coarse fields remain for compatibility:
+- `environmental_risk`
+- `structural_risk`
+- `access_risk`
+
+## Editable Property Facts and Assumptions
+
+Assessment requests support richer facts:
+- `roof_type`, `vent_type`, `siding_type`, `window_type`
+- `defensible_space_ft`, `vegetation_condition`
+- `driveway_access_notes`, `construction_year`, `inspection_notes`
+
+You can also pass `confirmed_fields`.
+
+Responses include:
+- `confirmed_inputs`
 - `observed_inputs`
 - `inferred_inputs`
 - `missing_inputs`
@@ -85,75 +109,80 @@ Every assessment includes structured trust fields:
 - `confidence_score`
 - `low_confidence_flags`
 
-## Response/Report Shape Overview
+## What-If Simulation Workflow
 
-`/risk/assess` and `/report/{assessment_id}` return the same Step 2 core fields:
-- `model_version`
-- `wildfire_risk_score`
-- `insurance_readiness_score`
-- `submodel_scores`
-- `weighted_contributions`
-- `factor_breakdown`
-- `top_risk_drivers`
-- `top_protective_factors`
-- `explanation_summary`
-- `readiness_factors`
-- `readiness_blockers`
-- `readiness_penalties`
-- `readiness_summary`
-- `observed_inputs`, `inferred_inputs`, `missing_inputs`, `assumptions_used`
-- `confidence_score`, `low_confidence_flags`
-- `mitigation_plan`
-- `data_sources`
+Use `POST /risk/simulate` with either:
+- an `assessment_id` (recommended), or
+- an address + baseline attributes.
 
-## Mitigation Linkage
+Then provide:
+- `scenario_name`
+- `scenario_overrides`
+- `scenario_confirmed_fields`
 
-Mitigations are tied to submodels and readiness blockers and include:
-- `title`
-- `reason`
-- `impacted_submodels`
-- `impacted_readiness_factors`
-- `estimated_risk_reduction_band`
-- `estimated_readiness_improvement_band`
-- `insurer_relevance`
-- `priority`
+Simulation returns:
+- `baseline`
+- `simulated`
+- `delta` (risk/readiness)
+- `changed_inputs`
+- `next_best_actions`
 
-## Layer-Backed vs Fallback Mode
+## Reports and Export
 
-True layer-backed mode requires:
-- geospatial packages from `requirements.txt` (`numpy`, `rasterio`, `pyproj`, `shapely`)
-- valid configured `WF_LAYER_*` file paths
+- `GET /report/{assessment_id}` returns the full structured assessment payload.
+- `GET /report/{assessment_id}/export` returns an export-oriented report contract with:
+  - property summary
+  - location summary
+  - wildfire risk summary
+  - insurance readiness summary
+  - assumptions/confidence
+  - mitigation recommendations
+- `GET /report/{assessment_id}/view` returns print-friendly HTML.
 
-If missing, the API still runs in fallback/proxy mode with explicit assumptions and lower confidence.
+## B2B-Friendly Workflow Support
+
+- Reassessment endpoint for updated facts on an existing property.
+- Scenario simulation for before/after comparison.
+- Assessment history listing (`GET /assessments`) for agents/inspectors/insurers.
+- `audience` tagging (`homeowner|agent|inspector|insurer`) on assessments.
+
+## Persistence and Compatibility
+
+SQLite table: `assessments`
+
+- Stores full payload JSON + `model_version`.
+- Legacy rows are upgraded in read path with safe defaults.
+- Missing Step 3 fields are backfilled (for example: `generated_at`, grouped `factor_breakdown`, readiness defaults).
 
 ## Model Versioning
 
-- Current scoring architecture model version: `1.2.0`
-- Legacy rows without explicit metadata default safely to `1.0.0` when read.
+- Current model version: `1.3.0`
+- Legacy fallback for old rows: `1.0.0`
 
-## Current MVP Limitations
+## Dependencies
 
-- Scoring weights and readiness checks are transparent MVP insurer-oriented heuristics, not underwriting-approved models.
-- Access/egress scoring remains provisional and is not weighted into final wildfire score.
-
-## Calibration Fixtures
-
-Step 2 calibration fixtures are stored in `tests/fixtures/`:
-- `step2_calibration_low.json`
-- `step2_calibration_medium.json`
-- `step2_calibration_high.json`
-
-Regression tests verify deterministic alignment between mocked profile outputs and expected submodel/readiness values.
+`requirements.txt` includes:
+- Runtime: `fastapi`, `uvicorn`, `pydantic`
+- Geospatial stack: `numpy`, `rasterio`, `pyproj`, `shapely`
+- Testing: `pytest`, `httpx`
 
 ## Tests
 
-Deterministic regression tests are in `tests/test_risk_assessment.py`.
+Deterministic tests are in `tests/test_risk_assessment.py`.
 They cover:
-- low / medium / high risk profiles
-- weak structure + moderate environment
-- strong structure + high environment
-- readiness blockers
-- assess/report schema consistency
-- deterministic outputs for fixed mocked inputs
-- debug endpoint payload structure
+- assessment/report shape parity
+- confirmed facts flow
+- reassessment flow
+- what-if simulation deltas
+- report export/view endpoints
+- assessment listing endpoint
+- deterministic outputs
 - legacy row compatibility
+- provisional access remains non-authoritative
+
+## Current Limitations
+
+- Scoring and readiness logic are transparent MVP heuristics, not carrier-approved underwriting models.
+- Access/egress scoring remains provisional and is not weighted into total wildfire risk.
+- No user-account/multi-tenant system yet; API key auth is shared-environment only.
+- No built-in PDF generator yet (HTML report view is provided for print/export pipeline integration).

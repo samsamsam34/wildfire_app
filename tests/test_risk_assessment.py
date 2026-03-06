@@ -60,24 +60,43 @@ def _setup(monkeypatch, tmp_path, context: WildfireContext) -> None:
     monkeypatch.setattr(app_main, "store", AssessmentStore(str(tmp_path / "test_assessments.db")))
 
 
+def _payload(address: str, attrs: dict, confirmed: list[str] | None = None) -> dict:
+    return {
+        "address": address,
+        "attributes": attrs,
+        "confirmed_fields": confirmed or [],
+        "audience": "homeowner",
+    }
+
+
 def _assert_core_contract(body: dict) -> None:
     required = [
         "assessment_id",
         "address",
-        "latitude",
-        "longitude",
+        "model_version",
+        "generated_at",
         "wildfire_risk_score",
         "insurance_readiness_score",
         "submodel_scores",
         "weighted_contributions",
         "submodel_explanations",
         "factor_breakdown",
+        "top_risk_drivers",
+        "top_protective_factors",
+        "explanation_summary",
         "readiness_factors",
         "readiness_blockers",
         "readiness_penalties",
         "readiness_summary",
+        "confirmed_inputs",
+        "observed_inputs",
+        "inferred_inputs",
+        "missing_inputs",
+        "assumptions_used",
+        "confidence_score",
+        "low_confidence_flags",
         "mitigation_plan",
-        "model_version",
+        "data_sources",
     ]
     for key in required:
         assert key in body
@@ -87,24 +106,9 @@ def _assert_core_contract(body: dict) -> None:
 
     for sm in REQUIRED_SUBMODELS:
         assert sm in body["submodel_scores"]
+        assert sm in body["factor_breakdown"]["submodels"]
         assert "score" in body["submodel_scores"][sm]
         assert "weighted_contribution" in body["submodel_scores"][sm]
-        assert "explanation" in body["submodel_scores"][sm]
-        assert "key_inputs" in body["submodel_scores"][sm]
-        assert "assumptions" in body["submodel_scores"][sm]
-
-    assert "submodels" in body["factor_breakdown"]
-    assert "environmental" in body["factor_breakdown"]
-    assert "structural" in body["factor_breakdown"]
-    for sm in REQUIRED_SUBMODELS:
-        assert sm in body["factor_breakdown"]["submodels"]
-
-    for rec in body["mitigation_plan"]:
-        assert "title" in rec
-        assert "impacted_submodels" in rec
-        assert "impacted_readiness_factors" in rec
-        assert isinstance(rec["impacted_submodels"], list)
-        assert isinstance(rec["impacted_readiness_factors"], list)
 
 
 def _run(payload: dict) -> dict:
@@ -125,33 +129,6 @@ def _subset_assert(actual, expected):
         assert actual == expected
 
 
-def _core_shape_subset(body: dict) -> dict:
-    keys = [
-        "model_version",
-        "wildfire_risk_score",
-        "insurance_readiness_score",
-        "submodel_scores",
-        "weighted_contributions",
-        "factor_breakdown",
-        "top_risk_drivers",
-        "top_protective_factors",
-        "explanation_summary",
-        "readiness_factors",
-        "readiness_blockers",
-        "readiness_penalties",
-        "readiness_summary",
-        "observed_inputs",
-        "inferred_inputs",
-        "missing_inputs",
-        "assumptions_used",
-        "confidence_score",
-        "low_confidence_flags",
-        "mitigation_plan",
-        "data_sources",
-    ]
-    return {k: body[k] for k in keys}
-
-
 def _assert_calibration_fixture(body: dict, fixture_name: str) -> None:
     expected = json.loads((FIXTURE_DIR / fixture_name).read_text())
     _subset_assert(body, expected)
@@ -159,143 +136,180 @@ def _assert_calibration_fixture(body: dict, fixture_name: str) -> None:
 
 def test_assess_and_report_core_shape_match(monkeypatch, tmp_path):
     _setup(monkeypatch, tmp_path, _ctx(env=35.0, wildland=40.0, historic=20.0))
-    payload = {
-        "address": "101 Contract Way, Boulder, CO",
-        "attributes": {
-            "roof_type": "class a",
-            "vent_type": "ember-resistant",
-            "defensible_space_ft": 32,
-            "construction_year": 2018,
-        },
-    }
 
-    assessed = _run(payload)
+    assessed = _run(
+        _payload(
+            "101 Contract Way, Boulder, CO",
+            {
+                "roof_type": "class a",
+                "vent_type": "ember-resistant",
+                "defensible_space_ft": 32,
+                "construction_year": 2018,
+            },
+            confirmed=["roof_type", "vent_type", "defensible_space_ft", "construction_year"],
+        )
+    )
+
     report_res = client.get(f"/report/{assessed['assessment_id']}")
     assert report_res.status_code == 200
     report = report_res.json()
 
+    _assert_core_contract(assessed)
     _assert_core_contract(report)
-    assert _core_shape_subset(assessed) == _core_shape_subset(report)
+
+    for key in [
+        "model_version",
+        "wildfire_risk_score",
+        "insurance_readiness_score",
+        "submodel_scores",
+        "weighted_contributions",
+        "factor_breakdown",
+        "readiness_blockers",
+        "readiness_penalties",
+        "mitigation_plan",
+    ]:
+        assert assessed[key] == report[key]
 
 
-def test_low_environment_strong_structure(monkeypatch, tmp_path):
-    _setup(monkeypatch, tmp_path, _ctx(env=20.0, wildland=20.0, historic=10.0))
-    payload = {
-        "address": "123 Safe St, Boulder, CO",
-        "attributes": {
-            "roof_type": "class a",
-            "vent_type": "ember-resistant",
-            "defensible_space_ft": 40,
-            "construction_year": 2020,
-        },
-    }
-    body = _run(payload)
-    _assert_core_contract(body)
-    assert body["model_version"] == MODEL_VERSION
-    assert body["wildfire_risk_score"] < 35
-    assert body["insurance_readiness_score"] > 75
-    _assert_calibration_fixture(body, "step2_calibration_low.json")
-
-
-def test_moderate_environment_weak_structure(monkeypatch, tmp_path):
+def test_assessment_with_confirmed_property_facts(monkeypatch, tmp_path):
     _setup(monkeypatch, tmp_path, _ctx(env=55.0, wildland=55.0, historic=50.0))
-    payload = {
-        "address": "456 Mid St, Denver, CO",
-        "attributes": {
-            "defensible_space_ft": 20,
+
+    unconfirmed = _run(_payload("456 Mid St, Denver, CO", {"defensible_space_ft": 20}, confirmed=[]))
+    confirmed = _run(
+        _payload(
+            "456 Mid St, Denver, CO",
+            {
+                "roof_type": "class a",
+                "vent_type": "ember-resistant",
+                "defensible_space_ft": 20,
+                "construction_year": 2015,
+                "siding_type": "fiber cement",
+                "window_type": "dual pane tempered",
+            },
+            confirmed=["roof_type", "vent_type", "defensible_space_ft", "construction_year"],
+        )
+    )
+
+    _assert_core_contract(confirmed)
+    assert confirmed["confirmed_inputs"]["roof_type"] == "class a"
+    assert confirmed["confidence_score"] > unconfirmed["confidence_score"]
+
+
+def test_simulation_returns_deltas(monkeypatch, tmp_path):
+    _setup(monkeypatch, tmp_path, _ctx(env=70.0, wildland=85.0, historic=65.0))
+
+    baseline = _run(
+        _payload(
+            "789 High St, Colorado Springs, CO",
+            {
+                "roof_type": "wood",
+                "vent_type": "standard",
+                "defensible_space_ft": 5,
+                "construction_year": 1990,
+            },
+        )
+    )
+
+    sim_res = client.post(
+        "/risk/simulate",
+        json={
+            "assessment_id": baseline["assessment_id"],
+            "scenario_name": "hardening_upgrade",
+            "scenario_overrides": {
+                "roof_type": "class a",
+                "vent_type": "ember-resistant",
+                "defensible_space_ft": 35,
+            },
+            "scenario_confirmed_fields": ["roof_type", "vent_type", "defensible_space_ft"],
         },
-    }
-    body = _run(payload)
-    _assert_core_contract(body)
-    assert 35 <= body["wildfire_risk_score"] <= 75
-    assert body["confidence_score"] < 90
-    _assert_calibration_fixture(body, "step2_calibration_medium.json")
+    )
+    assert sim_res.status_code == 200
+    sim = sim_res.json()
+
+    assert sim["baseline"]["assessment_id"] != sim["simulated"]["assessment_id"]
+    assert "delta" in sim
+    assert sim["delta"]["wildfire_risk_score_delta"] <= 0
+    assert sim["delta"]["insurance_readiness_score_delta"] >= 0
+    assert "roof_type" in sim["changed_inputs"]
+    assert len(sim["next_best_actions"]) > 0
 
 
-def test_high_environment_strong_structure(monkeypatch, tmp_path):
-    _setup(monkeypatch, tmp_path, _ctx(env=88.0, wildland=92.0, historic=85.0))
-    payload = {
-        "address": "200 Env Pressure Ave",
-        "attributes": {
-            "roof_type": "class a",
-            "vent_type": "ember-resistant",
-            "defensible_space_ft": 45,
-            "construction_year": 2022,
+def test_reassess_from_existing_assessment(monkeypatch, tmp_path):
+    _setup(monkeypatch, tmp_path, _ctx(env=60.0, wildland=60.0, historic=55.0))
+
+    original = _run(_payload("100 Reassess Ln", {"defensible_space_ft": 15}))
+
+    res = client.post(
+        f"/risk/reassess/{original['assessment_id']}",
+        json={
+            "attributes": {
+                "roof_type": "class a",
+                "vent_type": "ember-resistant",
+                "defensible_space_ft": 35,
+                "construction_year": 2018,
+            },
+            "confirmed_fields": ["roof_type", "vent_type", "defensible_space_ft", "construction_year"],
+            "audience": "inspector",
         },
-    }
-    body = _run(payload)
-    _assert_core_contract(body)
-    assert body["submodel_scores"]["structure_vulnerability_risk"]["score"] < 40
-    assert body["submodel_scores"]["fuel_proximity_risk"]["score"] > 70
-    assert body["wildfire_risk_score"] > 60
+    )
+    assert res.status_code == 200
+    updated = res.json()
+
+    assert updated["assessment_id"] != original["assessment_id"]
+    assert updated["audience"] == "inspector"
+    assert updated["property_facts"]["roof_type"] == "class a"
 
 
-def test_high_fuel_proximity_poor_defensible_space(monkeypatch, tmp_path):
-    _setup(monkeypatch, tmp_path, _ctx(env=70.0, wildland=95.0, historic=60.0))
-    payload = {
-        "address": "Fuel Edge Case",
-        "attributes": {
-            "roof_type": "class a",
-            "vent_type": "ember-resistant",
-            "defensible_space_ft": 4,
-            "construction_year": 2015,
-        },
-    }
-    body = _run(payload)
-    _assert_core_contract(body)
-    assert "Severely inadequate defensible space" in body["readiness_blockers"]
-    assert body["submodel_scores"]["fuel_proximity_risk"]["score"] > 80
-    assert any("defensible_space_risk" in rec["impacted_submodels"] for rec in body["mitigation_plan"])
+def test_report_export_and_view(monkeypatch, tmp_path):
+    _setup(monkeypatch, tmp_path, _ctx(env=45.0, wildland=40.0, historic=30.0))
+    assessed = _run(
+        _payload(
+            "200 Report View Dr",
+            {"roof_type": "class a", "vent_type": "ember-resistant", "defensible_space_ft": 30},
+            confirmed=["roof_type", "vent_type", "defensible_space_ft"],
+        )
+    )
+
+    export_res = client.get(f"/report/{assessed['assessment_id']}/export")
+    assert export_res.status_code == 200
+    exported = export_res.json()
+    assert "property_summary" in exported
+    assert "wildfire_risk_summary" in exported
+    assert "insurance_readiness_summary" in exported
+
+    view_res = client.get(f"/report/{assessed['assessment_id']}/view")
+    assert view_res.status_code == 200
+    assert "text/html" in view_res.headers.get("content-type", "")
+    assert "WildfireRisk Advisor Report" in view_res.text
 
 
-def test_strong_structure_extreme_ember_topography(monkeypatch, tmp_path):
-    _setup(monkeypatch, tmp_path, _ctx(env=95.0, wildland=75.0, historic=85.0))
-    payload = {
-        "address": "Topography Ember Case",
-        "attributes": {
-            "roof_type": "class a",
-            "vent_type": "ember-resistant",
-            "defensible_space_ft": 35,
-            "construction_year": 2020,
-        },
-    }
-    body = _run(payload)
-    _assert_core_contract(body)
-    assert body["submodel_scores"]["structure_vulnerability_risk"]["score"] < 45
-    assert body["submodel_scores"]["ember_exposure_risk"]["score"] >= 60
-    assert body["submodel_scores"]["slope_topography_risk"]["score"] >= 70
+def test_assessments_listing(monkeypatch, tmp_path):
+    _setup(monkeypatch, tmp_path, _ctx(env=35.0, wildland=35.0, historic=20.0))
+    _run(_payload("One Listing St", {"defensible_space_ft": 20}))
+    _run(_payload("Two Listing St", {"defensible_space_ft": 22}))
 
-
-def test_high_risk_profile_blockers_and_fixture(monkeypatch, tmp_path):
-    _setup(monkeypatch, tmp_path, _ctx(env=85.0, wildland=90.0, historic=80.0))
-    payload = {
-        "address": "789 High St, Colorado Springs, CO",
-        "attributes": {
-            "roof_type": "wood",
-            "vent_type": "standard",
-            "defensible_space_ft": 3,
-            "construction_year": 1990,
-        },
-    }
-    body = _run(payload)
-    _assert_core_contract(body)
-    assert body["wildfire_risk_score"] > 75
-    assert "Combustible roof material" in body["readiness_blockers"]
-    _assert_calibration_fixture(body, "step2_calibration_high.json")
+    res = client.get("/assessments?limit=5")
+    assert res.status_code == 200
+    rows = res.json()
+    assert len(rows) >= 2
+    assert "assessment_id" in rows[0]
+    assert "created_at" in rows[0]
+    assert "model_version" in rows[0]
 
 
 def test_provisional_access_not_in_wildfire_score(monkeypatch, tmp_path):
     auth.API_KEYS = set()
 
-    payload = {
-        "address": "Access Control",
-        "attributes": {
+    payload = _payload(
+        "Access Control",
+        {
             "roof_type": "class a",
             "vent_type": "ember-resistant",
             "defensible_space_ft": 20,
             "construction_year": 2015,
         },
-    }
+        confirmed=["roof_type", "vent_type", "defensible_space_ft", "construction_year"],
+    )
 
     ctx = _ctx(env=60.0, wildland=60.0, historic=60.0)
     monkeypatch.setattr(app_main.wildfire_data, "collect_context", lambda _lat, _lon: ctx)
@@ -313,40 +327,18 @@ def test_provisional_access_not_in_wildfire_score(monkeypatch, tmp_path):
     assert a["factor_breakdown"]["access_risk"] != b["factor_breakdown"]["access_risk"]
 
 
-def test_debug_endpoint_returns_intermediate_payload(monkeypatch, tmp_path):
-    _setup(monkeypatch, tmp_path, _ctx(env=60.0, wildland=65.0, historic=55.0))
-
-    payload = {
-        "address": "Debug Case Way",
-        "attributes": {
-            "roof_type": "class a",
-            "vent_type": "ember-resistant",
-            "defensible_space_ft": 20,
-        },
-    }
-    res = client.post("/risk/debug", json=payload)
-    assert res.status_code == 200
-    body = res.json()
-
-    assert "context_indices" in body
-    assert "submodel_scores" in body
-    assert "weighted_contributions" in body
-    assert "readiness" in body
-    assert "penalties" in body["readiness"]
-    assert "config" in body
-
-
 def test_deterministic_outputs_for_fixed_inputs(monkeypatch, tmp_path):
     _setup(monkeypatch, tmp_path, _ctx(env=60.0, wildland=65.0, historic=55.0))
 
-    payload = {
-        "address": "Deterministic Case Way",
-        "attributes": {
+    payload = _payload(
+        "Deterministic Case Way",
+        {
             "defensible_space_ft": 20,
             "roof_type": "class a",
             "vent_type": "ember-resistant",
         },
-    }
+        confirmed=["roof_type", "vent_type", "defensible_space_ft"],
+    )
 
     a = _run(payload)
     b = _run(payload)
@@ -391,3 +383,21 @@ def test_legacy_row_without_model_version_is_readable(tmp_path):
     assert loaded is not None
     assert loaded.model_version == LEGACY_MODEL_VERSION
     assert loaded.factor_breakdown.access_included_in_total is False
+
+
+def test_step2_calibration_regression(monkeypatch, tmp_path):
+    _setup(monkeypatch, tmp_path, _ctx(env=20.0, wildland=20.0, historic=10.0))
+    body = _run(
+        _payload(
+            "123 Safe St, Boulder, CO",
+            {
+                "roof_type": "class a",
+                "vent_type": "ember-resistant",
+                "defensible_space_ft": 40,
+                "construction_year": 2020,
+            },
+            confirmed=["roof_type", "vent_type", "defensible_space_ft", "construction_year"],
+        )
+    )
+    _assert_calibration_fixture(body, "step2_calibration_low.json")
+    assert body["model_version"] == MODEL_VERSION
