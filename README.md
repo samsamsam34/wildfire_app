@@ -2,7 +2,9 @@
 
 Now includes:
 - Real geocoding integration via OpenStreetMap Nominatim (with fallback)
-- Layer-based wildfire environmental model
+- Layer-backed wildfire context extraction
+- Step 2 submodel-based wildfire scoring architecture
+- Separate insurance readiness rules and readiness blockers
 - Structured explainability and confidence outputs
 - API key authentication
 - Persistent SQLite storage for reports
@@ -27,51 +29,76 @@ export WF_LAYER_FIRE_PERIMETERS_GEOJSON="/path/to/fire_perimeters.geojson"
 uvicorn backend.main:app --reload
 ```
 
-## Layer-Backed vs Fallback Mode
-
-The app only runs in true layer-backed mode when both are available:
-- geospatial packages from `requirements.txt` (`numpy`, `rasterio`, `pyproj`, `shapely`)
-- configured and reachable layer files via `WF_LAYER_*` environment variables
-
-If packages are missing or layer paths are not configured/available, the API still runs but uses fallback/proxy assumptions. In that case, scores are suitable for scaffold/demo workflows, not full production-grade layer-backed underwriting.
-
 ## Endpoints
 
 - `GET /health` (public)
 - `POST /risk/assess` (requires `X-API-Key` when keys configured)
 - `GET /report/{assessment_id}` (requires `X-API-Key` when keys configured)
 
-## Assessment Transparency
+## Step 2 Scoring Architecture
 
-Each assessment includes:
-- `model_version`: scoring model identifier (`1.1.0` current, legacy rows default `1.0.0`).
-- `observed_inputs`, `inferred_inputs`, `missing_inputs`, `assumptions_used`.
-- `confidence_score` and `low_confidence_flags` for trust/debug workflow.
-- `factor_breakdown` with explicit provisional metadata for access scoring.
+Wildfire risk is now composed from explicit submodels:
+- `ember_exposure`
+- `flame_contact_exposure`
+- `topography_risk`
+- `fuel_proximity_risk`
+- `vegetation_intensity_risk`
+- `historic_fire_risk`
+- `home_hardening_risk`
+- `defensible_space_risk`
 
-Current limitation:
-- `access_risk` is **provisional** and currently **excluded from final weighted scoring**.
-- Real parcel/road/egress access modeling is planned for the next major refactor.
+Each submodel returns a score, deterministic explanation, key contributing inputs, and assumptions.
 
-## Storage
+The API also returns:
+- `submodel_scores`
+- `weighted_contributions`
+- `factor_breakdown`
+- `top_risk_drivers`
+- `top_protective_factors`
 
-Assessments are persisted to `wildfire_app.db`.
-Rows lacking `model_version` are read as `1.0.0` automatically.
+## Wildfire Risk vs Insurance Readiness
+
+`wildfire_risk_score` and `insurance_readiness_score` are now separate systems.
+
+- Wildfire risk: weighted submodel composition.
+- Insurance readiness: rule checks on roof, vents, defensible space, fuel pressure, and severe environmental hazard signals.
+
+Readiness outputs include:
+- `readiness_factors`
+- `readiness_blockers`
+- `readiness_summary`
+
+## Mitigation Linkage
+
+Mitigations are now tied to submodels and blockers and include:
+- `title`
+- `reason`
+- `impacted_submodels`
+- `estimated_risk_reduction_band`
+- `estimated_readiness_improvement_band`
+- `priority`
+
+## Layer-Backed vs Fallback Mode
+
+True layer-backed mode requires:
+- geospatial packages from `requirements.txt` (`numpy`, `rasterio`, `pyproj`, `shapely`)
+- valid configured `WF_LAYER_*` file paths
+
+If missing, the API still runs in fallback/proxy mode with explicit assumptions and lower confidence.
+
+## Current MVP Limitations
+
+- Scoring weights and readiness checks are transparent MVP insurer-oriented heuristics, not underwriting-approved models.
+- Access/egress scoring remains provisional and is not weighted into final wildfire score.
+- Model version is `1.2.0`; legacy rows without version metadata default to `1.0.0` when read.
 
 ## Tests
 
 Deterministic regression tests are in `tests/test_risk_assessment.py`.
-They cover low/medium/high scenarios, model version presence, transparency fields, and provisional access behavior.
-
-## Baseline Fixtures
-
-Deterministic benchmark fixtures live in `tests/fixtures/`:
-- `low_risk_baseline.json`
-- `medium_risk_baseline.json`
-- `high_risk_baseline.json`
-
-Regression tests compare assessment outputs against these fixtures to detect unintended model/output drift before larger refactors.
-
-## Scoring Notes
-
-Each response includes `scoring_notes`, a centralized list of model caveats/conditions for downstream consumers (for example, provisional access scoring status and fallback usage).
+They cover:
+- low / medium / high risk profiles
+- weak structure + moderate environment
+- strong structure + high environment
+- readiness blockers
+- deterministic outputs for fixed mocked inputs
+- legacy row compatibility

@@ -50,6 +50,29 @@ class AssessmentStore:
                 ),
             )
 
+    def _upgrade_mitigation_items(self, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        upgraded = []
+        for item in items:
+            title = item.get("title") or item.get("action") or "Mitigation action"
+            reason = item.get("reason") or item.get("impact_statement") or "Risk reduction action"
+            upgraded.append(
+                {
+                    "title": title,
+                    "reason": reason,
+                    "impacted_submodels": item.get("impacted_submodels", []),
+                    "estimated_risk_reduction_band": item.get("estimated_risk_reduction_band", "low"),
+                    "estimated_readiness_improvement_band": item.get("estimated_readiness_improvement_band", "low"),
+                    "priority": item.get("priority", 5),
+                    "action": item.get("action", title),
+                    "related_factor": item.get("related_factor"),
+                    "impact_statement": item.get("impact_statement", reason),
+                    "estimated_risk_reduction": item.get("estimated_risk_reduction"),
+                    "effort": item.get("effort"),
+                    "insurer_relevance": item.get("insurer_relevance"),
+                }
+            )
+        return upgraded
+
     def _upgrade_payload(self, payload: dict[str, Any], db_model_version: str) -> dict[str, Any]:
         payload.setdefault("model_version", db_model_version or LEGACY_MODEL_VERSION)
 
@@ -77,6 +100,9 @@ class AssessmentStore:
                 "access_risk_note": "Access exposure is provisional and not included in total score until real parcel/egress inputs are integrated.",
             }
 
+        payload.setdefault("submodel_scores", {})
+        payload.setdefault("weighted_contributions", {})
+
         payload.setdefault("top_risk_drivers", [])
         payload.setdefault("top_protective_factors", [])
         payload.setdefault("explanation_summary", payload.get("explanation", ""))
@@ -93,12 +119,15 @@ class AssessmentStore:
 
         payload.setdefault("data_sources", [])
         payload.setdefault("mitigation_plan", payload.get("mitigation_recommendations", []))
+        payload["mitigation_plan"] = self._upgrade_mitigation_items(payload.get("mitigation_plan", []))
+
+        payload.setdefault("readiness_factors", [])
+        payload.setdefault("readiness_blockers", [])
+        payload.setdefault("readiness_summary", "Legacy row: readiness detail unavailable in this version.")
+
         payload.setdefault("scoring_notes", ["Access risk is provisional and not included in total scoring."])
 
-        payload.setdefault(
-            "coordinates",
-            {"latitude": payload["latitude"], "longitude": payload["longitude"]},
-        )
+        payload.setdefault("coordinates", {"latitude": payload["latitude"], "longitude": payload["longitude"]})
         payload.setdefault(
             "risk_scores",
             {

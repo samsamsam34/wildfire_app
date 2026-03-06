@@ -1,93 +1,133 @@
 from __future__ import annotations
 
-from typing import List
+from typing import Dict, List
 
 from backend.models import MitigationAction, PropertyAttributes
 from backend.wildfire_data import WildfireContext
 
 
-def build_mitigation_plan(attrs: PropertyAttributes, risk_score: float, context: WildfireContext) -> List[MitigationAction]:
-    actions: List[MitigationAction] = []
+def _band_from_score(score: float, low: float = 45.0, high: float = 70.0) -> str:
+    if score >= high:
+        return "high"
+    if score >= low:
+        return "medium"
+    return "low"
 
-    if attrs.defensible_space_ft is None or attrs.defensible_space_ft < 30 or context.wildland_distance_index >= 65:
-        impact = 8.0 + max(0.0, (context.wildland_distance_index - 60.0) * 0.12)
-        actions.append(
+
+def build_mitigation_plan(
+    attrs: PropertyAttributes,
+    context: WildfireContext,
+    submodel_scores: Dict[str, float],
+    readiness_blockers: List[str],
+) -> List[MitigationAction]:
+    recommendations: List[MitigationAction] = []
+
+    def add_rec(
+        title: str,
+        reason: str,
+        impacted: List[str],
+        risk_band: str,
+        readiness_band: str,
+        priority: int,
+        related_factor: str,
+    ) -> None:
+        recommendations.append(
             MitigationAction(
-                action="Increase defensible space to at least 30 feet",
-                related_factor="fuel_proximity",
-                impact_statement="Reduces parcel-adjacent fuel proximity and short-range ember/flame exposure.",
-                estimated_risk_reduction=round(min(16.0, impact), 1),
-                effort="medium",
-                insurer_relevance="required",
-                reason="Near-structure fuels materially increase ignition probability.",
+                title=title,
+                reason=reason,
+                impacted_submodels=impacted,
+                estimated_risk_reduction_band=risk_band,
+                estimated_readiness_improvement_band=readiness_band,
+                priority=priority,
+                action=title,
+                related_factor=related_factor,
+                impact_statement=reason,
+                effort=risk_band,
+                insurer_relevance="required" if readiness_band == "high" else "recommended",
             )
         )
 
-    if context.canopy_index >= 65:
-        impact = 5.0 + (context.canopy_index - 60.0) * 0.08
-        actions.append(
-            MitigationAction(
-                action="Thin/limb canopy in the immediate home ignition zone",
-                related_factor="canopy_density",
-                impact_statement="Lowers canopy continuity and ember retention potential around structures.",
-                estimated_risk_reduction=round(min(11.0, impact), 1),
-                effort="medium",
-                insurer_relevance="recommended",
-                reason="Dense canopy increases flame spread potential and radiant heat intensity.",
-            )
+    if "Combustible roof material" in readiness_blockers or submodel_scores.get("home_hardening_risk", 0) >= 70:
+        add_rec(
+            title="Upgrade roof to Class A fire-rated assembly",
+            reason="Combustible roof vulnerability materially increases ember-driven loss severity.",
+            impacted=["home_hardening_risk", "ember_exposure"],
+            risk_band="high",
+            readiness_band="high",
+            priority=1,
+            related_factor="home_hardening_risk",
         )
 
-    if attrs.vent_type is None or "ember" not in (attrs.vent_type or "").lower():
-        actions.append(
-            MitigationAction(
-                action="Install ember-resistant attic/crawlspace vents",
-                related_factor="historical_fire_recurrence",
-                impact_statement="Reduces ember intrusion risk during recurring fire-weather events.",
-                estimated_risk_reduction=8.0,
-                effort="medium",
-                insurer_relevance="recommended",
-                reason="Legacy vents are a frequent ember entry pathway in wildfire losses.",
-            )
+    if (
+        "Non-ember-resistant venting" in readiness_blockers
+        or submodel_scores.get("ember_exposure", 0) >= 65
+        or attrs.vent_type is None
+    ):
+        add_rec(
+            title="Install ember-resistant vents and seal vulnerable openings",
+            reason="Reduces ember entry pathways that frequently drive structure ignition.",
+            impacted=["ember_exposure", "home_hardening_risk"],
+            risk_band=_band_from_score(submodel_scores.get("ember_exposure", 0)),
+            readiness_band="high" if "Non-ember-resistant venting" in readiness_blockers else "medium",
+            priority=2,
+            related_factor="ember_exposure",
         )
 
-    if attrs.roof_type is None or attrs.roof_type.lower() in {"wood", "untreated wood shake"}:
-        actions.append(
-            MitigationAction(
-                action="Upgrade to a Class A fire-rated roof",
-                related_factor="burn_probability",
-                impact_statement="Improves roof survivability under high burn-probability ember exposure.",
-                estimated_risk_reduction=15.0,
-                effort="high",
-                insurer_relevance="required",
-                reason="Combustible roof coverings are high-severity loss multipliers during ember storms.",
-            )
+    if (
+        "Defensible space below 30 ft" in readiness_blockers
+        or "Severely inadequate defensible space" in readiness_blockers
+        or submodel_scores.get("defensible_space_risk", 0) >= 60
+    ):
+        add_rec(
+            title="Increase defensible space to at least 30 feet",
+            reason="Improves fire separation between structure and contiguous fuels.",
+            impacted=["defensible_space_risk", "flame_contact_exposure", "fuel_proximity_risk"],
+            risk_band="high" if submodel_scores.get("defensible_space_risk", 0) >= 75 else "medium",
+            readiness_band="high",
+            priority=1,
+            related_factor="defensible_space_risk",
         )
 
-    if context.moisture_index >= 65:
-        actions.append(
-            MitigationAction(
-                action="Increase seasonal vegetation moisture management (irrigation/mulch zoning)",
-                related_factor="drought_moisture",
-                impact_statement="Reduces fine-fuel dryness and ignition susceptibility around the parcel.",
-                estimated_risk_reduction=6.0,
-                effort="low",
-                insurer_relevance="nice_to_have",
-                reason="Dry fuel conditions elevate ember ignition likelihood.",
-            )
+    if (
+        "High vegetation intensity near structure" in readiness_blockers
+        or submodel_scores.get("vegetation_intensity_risk", 0) >= 65
+        or context.canopy_index >= 65
+    ):
+        add_rec(
+            title="Thin dense vegetation and break canopy continuity near the home",
+            reason="Lowers flame intensity and spotting potential in the home ignition zone.",
+            impacted=["vegetation_intensity_risk", "flame_contact_exposure", "fuel_proximity_risk"],
+            risk_band=_band_from_score(submodel_scores.get("vegetation_intensity_risk", 0), low=50, high=75),
+            readiness_band="medium",
+            priority=3,
+            related_factor="vegetation_intensity_risk",
         )
 
-    if context.historic_fire_index >= 70 or risk_score >= 70:
-        actions.append(
-            MitigationAction(
-                action="Prepare annual perimeter hardening and pre-season risk inspection",
-                related_factor="historical_fire_recurrence",
-                impact_statement="Targets repeated local fire pressure with recurring property hardening actions.",
-                estimated_risk_reduction=7.0,
-                effort="low",
-                insurer_relevance="recommended",
-                reason="Repeated nearby fire activity increases expected annual exposure.",
-            )
+    if (
+        "Severe environmental hazard conditions" in readiness_blockers
+        or submodel_scores.get("historic_fire_risk", 0) >= 70
+        or submodel_scores.get("topography_risk", 0) >= 70
+    ):
+        add_rec(
+            title="Adopt annual pre-season hardening inspection and mitigation verification",
+            reason="Recurring hazard pressure requires routine hardening validation for insurer confidence.",
+            impacted=["historic_fire_risk", "topography_risk", "ember_exposure"],
+            risk_band="medium",
+            readiness_band="medium",
+            priority=4,
+            related_factor="historic_fire_risk",
         )
 
-    actions.sort(key=lambda a: (a.estimated_risk_reduction, a.insurer_relevance == "required"), reverse=True)
-    return actions[:6]
+    if not recommendations:
+        add_rec(
+            title="Maintain current wildfire hardening and annual vegetation management",
+            reason="No severe blockers detected; maintain controls and documentation for insurers.",
+            impacted=["home_hardening_risk", "defensible_space_risk"],
+            risk_band="low",
+            readiness_band="low",
+            priority=5,
+            related_factor="maintenance",
+        )
+
+    recommendations.sort(key=lambda r: r.priority)
+    return recommendations[:6]

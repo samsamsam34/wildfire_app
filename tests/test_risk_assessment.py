@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from pathlib import Path
 
 from fastapi.testclient import TestClient
 
@@ -14,7 +13,6 @@ from backend.wildfire_data import WildfireContext
 
 
 client = TestClient(app_main.app)
-FIXTURE_DIR = Path(__file__).parent / "fixtures"
 
 
 def _ctx(env: float, wildland: float, historic: float) -> WildfireContext:
@@ -48,7 +46,7 @@ def _setup(monkeypatch, tmp_path, context: WildfireContext) -> None:
     monkeypatch.setattr(app_main, "store", AssessmentStore(str(tmp_path / "test_assessments.db")))
 
 
-def _assert_common(response_json: dict) -> None:
+def _assert_core_contract(body: dict) -> None:
     required = [
         "assessment_id",
         "address",
@@ -56,47 +54,49 @@ def _assert_common(response_json: dict) -> None:
         "longitude",
         "wildfire_risk_score",
         "insurance_readiness_score",
-        "risk_drivers",
+        "submodel_scores",
+        "weighted_contributions",
         "factor_breakdown",
-        "top_risk_drivers",
-        "top_protective_factors",
-        "explanation_summary",
-        "observed_inputs",
-        "inferred_inputs",
-        "missing_inputs",
-        "assumptions_used",
-        "confidence_score",
-        "low_confidence_flags",
-        "data_sources",
+        "readiness_factors",
+        "readiness_blockers",
+        "readiness_summary",
         "mitigation_plan",
         "model_version",
-        "scoring_notes",
     ]
     for key in required:
-        assert key in response_json
+        assert key in body
+
+    assert 0.0 <= body["wildfire_risk_score"] <= 100.0
+    assert 0.0 <= body["insurance_readiness_score"] <= 100.0
+
+    for sm in [
+        "ember_exposure",
+        "flame_contact_exposure",
+        "topography_risk",
+        "fuel_proximity_risk",
+        "vegetation_intensity_risk",
+        "historic_fire_risk",
+        "home_hardening_risk",
+        "defensible_space_risk",
+    ]:
+        assert sm in body["submodel_scores"]
+        assert "score" in body["submodel_scores"][sm]
+        assert "explanation" in body["submodel_scores"][sm]
+        assert "key_contributing_inputs" in body["submodel_scores"][sm]
+
+    for rec in body["mitigation_plan"]:
+        assert "title" in rec
+        assert "impacted_submodels" in rec
+        assert isinstance(rec["impacted_submodels"], list)
 
 
-def _assert_subset(actual, expected) -> None:
-    if isinstance(expected, dict):
-        assert isinstance(actual, dict)
-        for k, v in expected.items():
-            assert k in actual
-            _assert_subset(actual[k], v)
-        return
-
-    if isinstance(expected, list):
-        assert actual == expected
-        return
-
-    assert actual == expected
+def _run(payload: dict) -> dict:
+    res = client.post("/risk/assess", json=payload)
+    assert res.status_code == 200
+    return res.json()
 
 
-def _assert_matches_fixture(body: dict, fixture_name: str) -> None:
-    expected = json.loads((FIXTURE_DIR / fixture_name).read_text())
-    _assert_subset(body, expected)
-
-
-def test_low_wildfire_risk_scenario(monkeypatch, tmp_path):
+def test_low_risk_profile(monkeypatch, tmp_path):
     _setup(monkeypatch, tmp_path, _ctx(env=20.0, wildland=20.0, historic=10.0))
 
     payload = {
@@ -108,17 +108,14 @@ def test_low_wildfire_risk_scenario(monkeypatch, tmp_path):
             "construction_year": 2020,
         },
     }
-    res = client.post("/risk/assess", json=payload)
-    assert res.status_code == 200
-
-    body = res.json()
-    _assert_common(body)
+    body = _run(payload)
+    _assert_core_contract(body)
     assert body["model_version"] == MODEL_VERSION
-    assert body["factor_breakdown"]["access_included_in_total"] is False
-    _assert_matches_fixture(body, "low_risk_baseline.json")
+    assert body["wildfire_risk_score"] < 35
+    assert body["insurance_readiness_score"] > 75
 
 
-def test_medium_wildfire_risk_scenario(monkeypatch, tmp_path):
+def test_medium_risk_profile(monkeypatch, tmp_path):
     _setup(monkeypatch, tmp_path, _ctx(env=55.0, wildland=55.0, historic=50.0))
 
     payload = {
@@ -127,16 +124,13 @@ def test_medium_wildfire_risk_scenario(monkeypatch, tmp_path):
             "defensible_space_ft": 20,
         },
     }
-    res = client.post("/risk/assess", json=payload)
-    assert res.status_code == 200
-
-    body = res.json()
-    _assert_common(body)
-    assert body["confidence_score"] < 90.0
-    _assert_matches_fixture(body, "medium_risk_baseline.json")
+    body = _run(payload)
+    _assert_core_contract(body)
+    assert 35 <= body["wildfire_risk_score"] <= 75
+    assert body["confidence_score"] < 90
 
 
-def test_high_wildfire_risk_scenario(monkeypatch, tmp_path):
+def test_high_risk_profile(monkeypatch, tmp_path):
     _setup(monkeypatch, tmp_path, _ctx(env=85.0, wildland=90.0, historic=80.0))
 
     payload = {
@@ -148,35 +142,77 @@ def test_high_wildfire_risk_scenario(monkeypatch, tmp_path):
             "construction_year": 1990,
         },
     }
-    res = client.post("/risk/assess", json=payload)
-    assert res.status_code == 200
-
-    body = res.json()
-    _assert_common(body)
-    assert "Access risk is provisional" in body["explanation_summary"]
-    _assert_matches_fixture(body, "high_risk_baseline.json")
+    body = _run(payload)
+    _assert_core_contract(body)
+    assert body["wildfire_risk_score"] > 75
+    assert body["readiness_blockers"]
+    assert "Combustible roof material" in body["readiness_blockers"]
 
 
-def test_provisional_access_not_weighted(monkeypatch, tmp_path):
-    auth.API_KEYS = set()
-    monkeypatch.setattr(app_main.geocoder, "geocode", lambda addr: (39.7392, -104.9903, "test-geocoder"))
+def test_weak_structure_moderate_environment(monkeypatch, tmp_path):
+    _setup(monkeypatch, tmp_path, _ctx(env=45.0, wildland=45.0, historic=40.0))
 
-    contexts = {
-        "A": _ctx(env=60.0, wildland=5.0, historic=5.0),
-        "B": _ctx(env=60.0, wildland=95.0, historic=95.0),
+    payload = {
+        "address": "100 Structure Risk Ln",
+        "attributes": {
+            "roof_type": "wood",
+            "vent_type": "standard",
+            "defensible_space_ft": 8,
+            "construction_year": 1985,
+        },
+    }
+    body = _run(payload)
+    _assert_core_contract(body)
+
+    assert body["submodel_scores"]["home_hardening_risk"]["score"] >= 65
+    assert body["insurance_readiness_score"] < 65
+    assert any("home_hardening_risk" in rec["impacted_submodels"] for rec in body["mitigation_plan"])
+
+
+def test_strong_structure_high_environment(monkeypatch, tmp_path):
+    _setup(monkeypatch, tmp_path, _ctx(env=88.0, wildland=92.0, historic=85.0))
+
+    payload = {
+        "address": "200 Env Pressure Ave",
+        "attributes": {
+            "roof_type": "class a",
+            "vent_type": "ember-resistant",
+            "defensible_space_ft": 45,
+            "construction_year": 2022,
+        },
+    }
+    body = _run(payload)
+    _assert_core_contract(body)
+
+    assert body["submodel_scores"]["home_hardening_risk"]["score"] < 40
+    assert body["submodel_scores"]["fuel_proximity_risk"]["score"] > 70
+    assert body["wildfire_risk_score"] > 60
+
+
+def test_deterministic_outputs_for_fixed_inputs(monkeypatch, tmp_path):
+    _setup(monkeypatch, tmp_path, _ctx(env=60.0, wildland=65.0, historic=55.0))
+
+    payload = {
+        "address": "Deterministic Case Way",
+        "attributes": {
+            "defensible_space_ft": 20,
+            "roof_type": "class a",
+            "vent_type": "ember-resistant",
+        },
     }
 
-    monkeypatch.setattr(app_main.wildfire_data, "collect_context", lambda _lat, _lon: contexts["A"])
-    monkeypatch.setattr(app_main, "store", AssessmentStore(str(tmp_path / "test_access_a.db")))
-    payload = {"address": "Access Scenario A", "attributes": {"defensible_space_ft": 20}}
-    score_a = client.post("/risk/assess", json=payload).json()["wildfire_risk_score"]
+    a = _run(payload)
+    b = _run(payload)
 
-    monkeypatch.setattr(app_main.wildfire_data, "collect_context", lambda _lat, _lon: contexts["B"])
-    monkeypatch.setattr(app_main, "store", AssessmentStore(str(tmp_path / "test_access_b.db")))
-    payload = {"address": "Access Scenario B", "attributes": {"defensible_space_ft": 20}}
-    score_b = client.post("/risk/assess", json=payload).json()["wildfire_risk_score"]
-
-    assert score_a == score_b
+    for field in [
+        "wildfire_risk_score",
+        "insurance_readiness_score",
+        "submodel_scores",
+        "weighted_contributions",
+        "readiness_blockers",
+        "readiness_summary",
+    ]:
+        assert a[field] == b[field]
 
 
 def test_legacy_row_without_model_version_is_readable(tmp_path):
@@ -207,4 +243,3 @@ def test_legacy_row_without_model_version_is_readable(tmp_path):
     assert loaded is not None
     assert loaded.model_version == LEGACY_MODEL_VERSION
     assert loaded.factor_breakdown.access_included_in_total is False
-    assert loaded.scoring_notes

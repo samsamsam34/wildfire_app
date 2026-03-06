@@ -27,19 +27,22 @@ class RiskScores(BaseModel):
     insurance_readiness_score: float
 
 
+class RiskDrivers(BaseModel):
+    environmental: float
+    structural: float
+    access_exposure: float
+
+
 class FactorBreakdown(BaseModel):
     environmental_risk: float
     structural_risk: float
     access_risk: float
     access_risk_provisional: bool = True
     access_included_in_total: bool = False
-    access_risk_note: str = "Access exposure is provisional and not included in total score until real parcel/egress inputs are integrated."
-
-
-class RiskDrivers(BaseModel):
-    environmental: float
-    structural: float
-    access_exposure: float
+    access_risk_note: str = (
+        "Access exposure is provisional and not included in total score "
+        "until real parcel/egress inputs are integrated."
+    )
 
 
 class EnvironmentalFactors(BaseModel):
@@ -69,14 +72,41 @@ class ConfidenceBlock(BaseModel):
     requires_user_verification: bool
 
 
+class SubmodelScore(BaseModel):
+    score: float
+    explanation: str
+    key_contributing_inputs: Dict[str, object]
+    assumptions: List[str] = Field(default_factory=list)
+
+
+class WeightedContribution(BaseModel):
+    weight: float
+    score: float
+    contribution: float
+
+
+class ReadinessFactor(BaseModel):
+    name: str
+    status: Literal["pass", "watch", "fail"]
+    score_impact: float
+    detail: str
+
+
 class MitigationAction(BaseModel):
-    action: str
-    related_factor: str
-    impact_statement: str
-    estimated_risk_reduction: float
-    effort: Literal["low", "medium", "high"]
-    insurer_relevance: Literal["required", "recommended", "nice_to_have"]
-    reason: str
+    title: str = ""
+    reason: str = ""
+    impacted_submodels: List[str] = Field(default_factory=list)
+    estimated_risk_reduction_band: Literal["low", "medium", "high"] = "low"
+    estimated_readiness_improvement_band: Literal["low", "medium", "high"] = "low"
+    priority: int = 5
+
+    # Legacy compatibility fields
+    action: Optional[str] = None
+    related_factor: Optional[str] = None
+    impact_statement: Optional[str] = None
+    estimated_risk_reduction: Optional[float] = None
+    effort: Optional[Literal["low", "medium", "high"]] = None
+    insurer_relevance: Optional[Literal["required", "recommended", "nice_to_have"]] = None
 
 
 class AssessmentResult(BaseModel):
@@ -88,6 +118,8 @@ class AssessmentResult(BaseModel):
     insurance_readiness_score: float
     risk_drivers: RiskDrivers
     factor_breakdown: FactorBreakdown
+    submodel_scores: Dict[str, SubmodelScore] = Field(default_factory=dict)
+    weighted_contributions: Dict[str, WeightedContribution] = Field(default_factory=dict)
     top_risk_drivers: List[str]
     top_protective_factors: List[str]
     explanation_summary: str
@@ -99,10 +131,13 @@ class AssessmentResult(BaseModel):
     low_confidence_flags: List[str]
     data_sources: List[str]
     mitigation_plan: List[MitigationAction]
+    readiness_factors: List[ReadinessFactor] = Field(default_factory=list)
+    readiness_blockers: List[str] = Field(default_factory=list)
+    readiness_summary: str = ""
     model_version: str
     scoring_notes: List[str] = Field(default_factory=list)
 
-    # Compatibility and richer structured mirrors
+    # Structured mirrors
     coordinates: Optional[Coordinates] = None
     risk_scores: Optional[RiskScores] = None
     assumptions: Optional[AssumptionsBlock] = None

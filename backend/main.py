@@ -17,14 +17,17 @@ from backend.models import (
     Coordinates,
     EnvironmentalFactors,
     FactorBreakdown,
-    RiskDrivers,
+    MitigationAction,
+    ReadinessFactor,
     RiskScores,
+    SubmodelScore,
+    WeightedContribution,
 )
 from backend.risk_engine import RiskEngine
 from backend.version import MODEL_VERSION
 from backend.wildfire_data import WildfireDataClient
 
-app = FastAPI(title="WildfireRisk Advisor API", version="0.5.2")
+app = FastAPI(title="WildfireRisk Advisor API", version="0.6.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -116,10 +119,10 @@ def _build_confidence(assumptions: AssumptionsBlock) -> ConfidenceBlock:
     )
 
     confidence = 100.0
-    confidence -= important_missing * 8.0
+    confidence -= important_missing * 7.5
     confidence -= inferred_count * 4.0
-    confidence -= external_fail_count * 7.0
-    confidence -= max(0, len(assumptions.assumptions_used) - external_fail_count) * 1.5
+    confidence -= external_fail_count * 8.0
+    confidence -= max(0, len(assumptions.assumptions_used) - external_fail_count) * 1.0
     confidence = max(0.0, min(100.0, round(confidence, 1)))
 
     low_confidence_flags: list[str] = []
@@ -135,7 +138,7 @@ def _build_confidence(assumptions: AssumptionsBlock) -> ConfidenceBlock:
         low_confidence_flags.append("Overall confidence below recommended underwriting threshold")
 
     data_completeness_score = round(
-        max(0.0, min(100.0, 100.0 - (len(assumptions.missing_inputs) * 6.5))),
+        max(0.0, min(100.0, 100.0 - (len(assumptions.missing_inputs) * 6.0))),
         1,
     )
 
@@ -148,37 +151,39 @@ def _build_confidence(assumptions: AssumptionsBlock) -> ConfidenceBlock:
     )
 
 
-def _build_top_risk_drivers(factors: EnvironmentalFactors) -> list[str]:
-    candidates = [
-        ("steep terrain slope", factors.slope_topography),
-        ("dense vegetation/fuel near the property", factors.vegetation_fuel),
-        ("high burn probability", factors.burn_probability),
-        ("elevated wildfire hazard severity", factors.hazard_severity),
-        ("historical wildfire activity nearby", factors.historical_fire_recurrence),
-        ("close proximity to wildland vegetation", factors.fuel_proximity),
-        ("dry fuel/moisture conditions", factors.drought_moisture),
-    ]
-    return [name for name, _ in sorted(candidates, key=lambda x: x[1], reverse=True)[:3]]
+def _build_top_risk_drivers(submodels: dict[str, SubmodelScore]) -> list[str]:
+    labels = {
+        "ember_exposure": "high ember exposure",
+        "flame_contact_exposure": "high flame-contact exposure",
+        "topography_risk": "challenging topography",
+        "fuel_proximity_risk": "close proximity to wildland fuels",
+        "vegetation_intensity_risk": "dense and dry vegetation",
+        "historic_fire_risk": "recurring nearby fire history",
+        "home_hardening_risk": "limited home hardening",
+        "defensible_space_risk": "insufficient defensible space",
+    }
+    ordered = sorted(submodels.items(), key=lambda kv: kv[1].score, reverse=True)
+    return [labels.get(name, name) for name, _ in ordered[:3]]
 
 
-def _build_top_protective_factors(payload: AddressRequest, factors: EnvironmentalFactors) -> list[str]:
-    protective: list[str] = []
+def _build_top_protective_factors(payload: AddressRequest, submodels: dict[str, SubmodelScore]) -> list[str]:
+    factors: list[str] = []
     attrs = payload.attributes
 
     if attrs.roof_type and attrs.roof_type.lower() in {"class a", "metal", "tile", "composite"}:
-        protective.append("class A or equivalent fire-rated roof material")
+        factors.append("class A or equivalent fire-rated roof")
     if attrs.vent_type and "ember" in attrs.vent_type.lower():
-        protective.append("ember-resistant venting")
+        factors.append("ember-resistant venting")
     if attrs.defensible_space_ft is not None and attrs.defensible_space_ft >= 30:
-        protective.append("defensible space > 30 ft")
-    if factors.fuel_proximity <= 35:
-        protective.append("limited adjacent wildland fuel proximity")
-    if factors.canopy_density <= 35:
-        protective.append("lower canopy density in home ignition zone")
+        factors.append("defensible space >= 30 ft")
+    if submodels["vegetation_intensity_risk"].score <= 35:
+        factors.append("lower vegetation intensity near structure")
+    if submodels["fuel_proximity_risk"].score <= 35:
+        factors.append("limited adjacent wildland fuel proximity")
 
-    if not protective:
-        protective.append("no strong structural or site-level protective factors detected")
-    return protective[:3]
+    if not factors:
+        factors.append("no strong protective factors detected")
+    return factors[:3]
 
 
 @app.get("/health")
@@ -199,10 +204,33 @@ def assess_risk(payload: AddressRequest) -> AssessmentResult:
 
     context = wildfire_data.collect_context(lat, lon)
     risk = risk_engine.score(payload.attributes, lat, lon, context)
-    plan = build_mitigation_plan(payload.attributes, risk.total_score, context)
+    readiness = risk_engine.compute_insurance_readiness(payload.attributes, context, risk)
 
-    mitigation_credit = sum(a.estimated_risk_reduction for a in plan[:3]) * 0.45
-    readiness = max(0.0, min(100.0, round(100 - risk.total_score + mitigation_credit, 1)))
+    submodel_scores = {
+        k: SubmodelScore(
+            score=v.score,
+            explanation=v.explanation,
+            key_contributing_inputs=v.key_inputs,
+            assumptions=v.assumptions,
+        )
+        for k, v in risk.submodel_scores.items()
+    }
+
+    weighted_contributions = {
+        k: WeightedContribution(
+            weight=v["weight"],
+            score=v["score"],
+            contribution=v["contribution"],
+        )
+        for k, v in risk.weighted_contributions.items()
+    }
+
+    mitigation_plan = build_mitigation_plan(
+        payload.attributes,
+        context,
+        {k: v.score for k, v in submodel_scores.items()},
+        readiness.readiness_blockers,
+    )
 
     factors = EnvironmentalFactors(
         burn_probability=context.burn_probability_index,
@@ -222,29 +250,42 @@ def assess_risk(payload: AddressRequest) -> AssessmentResult:
         access_risk=risk.drivers.access_exposure,
     )
 
-    all_assumptions = pre_assumptions + risk.assumptions
+    all_assumptions = sorted(set(pre_assumptions + risk.assumptions))
     all_sources = [geocode_source] + context.data_sources
     assumptions_block = _build_assumption_tracking(payload, all_assumptions, all_sources)
     confidence_block = _build_confidence(assumptions_block)
 
-    top_risk_drivers = _build_top_risk_drivers(factors)
-    top_protective_factors = _build_top_protective_factors(payload, factors)
+    top_risk_drivers = _build_top_risk_drivers(submodel_scores)
+    top_protective_factors = _build_top_protective_factors(payload, submodel_scores)
 
-    scoring_notes = [ACCESS_PROVISIONAL_NOTE]
+    scoring_notes = [
+        ACCESS_PROVISIONAL_NOTE,
+        "Submodel and weight framework uses MVP insurer-oriented heuristics for transparency and calibration workflows.",
+    ]
     if any("fallback" in a.lower() or "unavailable" in a.lower() for a in all_assumptions):
         scoring_notes.append("One or more providers/layers required fallback assumptions.")
 
     explanation_summary = (
-        f"Risk is driven primarily by {', '.join(top_risk_drivers[:2])}. "
-        f"Key protective factors: {', '.join(top_protective_factors[:2])}. "
+        f"Risk is driven by {', '.join(top_risk_drivers[:2])}. "
+        f"Insurance readiness summary: {readiness.readiness_summary} "
         f"{ACCESS_PROVISIONAL_NOTE}"
     )
 
     risk_scores = RiskScores(
         wildfire_risk_score=risk.total_score,
-        insurance_readiness_score=readiness,
+        insurance_readiness_score=readiness.insurance_readiness_score,
     )
     coordinates = Coordinates(latitude=lat, longitude=lon)
+
+    readiness_factors = [
+        ReadinessFactor(
+            name=f["name"],
+            status=f["status"],
+            score_impact=f["score_impact"],
+            detail=f["detail"],
+        )
+        for f in readiness.readiness_factors
+    ]
 
     result = AssessmentResult(
         assessment_id=str(uuid4()),
@@ -252,13 +293,11 @@ def assess_risk(payload: AddressRequest) -> AssessmentResult:
         latitude=lat,
         longitude=lon,
         wildfire_risk_score=risk.total_score,
-        insurance_readiness_score=readiness,
-        risk_drivers=RiskDrivers(
-            environmental=risk.drivers.environmental,
-            structural=risk.drivers.structural,
-            access_exposure=risk.drivers.access_exposure,
-        ),
+        insurance_readiness_score=readiness.insurance_readiness_score,
+        risk_drivers=risk.drivers,
         factor_breakdown=breakdown,
+        submodel_scores=submodel_scores,
+        weighted_contributions=weighted_contributions,
         top_risk_drivers=top_risk_drivers,
         top_protective_factors=top_protective_factors,
         explanation_summary=explanation_summary,
@@ -269,7 +308,10 @@ def assess_risk(payload: AddressRequest) -> AssessmentResult:
         confidence_score=confidence_block.confidence_score,
         low_confidence_flags=confidence_block.low_confidence_flags,
         data_sources=all_sources,
-        mitigation_plan=plan,
+        mitigation_plan=mitigation_plan,
+        readiness_factors=readiness_factors,
+        readiness_blockers=readiness.readiness_blockers,
+        readiness_summary=readiness.readiness_summary,
         model_version=MODEL_VERSION,
         scoring_notes=scoring_notes,
         # Structured mirrors for compatibility
@@ -277,7 +319,7 @@ def assess_risk(payload: AddressRequest) -> AssessmentResult:
         risk_scores=risk_scores,
         assumptions=assumptions_block,
         confidence=confidence_block,
-        mitigation_recommendations=plan,
+        mitigation_recommendations=mitigation_plan,
         environmental_factors=factors,
         explanation=explanation_summary,
     )
