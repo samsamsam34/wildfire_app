@@ -2,10 +2,8 @@
 
 Now includes:
 - Real geocoding integration via OpenStreetMap Nominatim (with fallback)
-- Layer-based wildfire environmental model (burn probability, hazard severity, slope/aspect, fuel/canopy, moisture, wildland distance, fire recurrence)
-- Factor-level score visibility in API responses
-- Confidence/data-quality scoring fields
-- Driver-linked mitigation recommendations
+- Layer-based wildfire environmental model
+- Structured explainability and confidence outputs
 - API key authentication
 - Persistent SQLite storage for reports
 
@@ -35,6 +33,16 @@ uvicorn backend.main:app --reload
 - `POST /risk/assess` (requires `X-API-Key` when keys configured)
 - `GET /report/{assessment_id}` (requires `X-API-Key` when keys configured)
 
+## Assessment Transparency
+
+Each assessment now includes:
+- `model_version`: Scoring model identifier (`1.1.0` for current outputs).
+- `factor_breakdown`: Deterministic component scores (`environmental_risk`, `structural_risk`, `access_risk`).
+- `confidence`: Includes `confidence_score`, `data_completeness_score`, `assumption_count`, and confidence flags.
+- `assumptions`: Structured `observed_inputs`, `inferred_inputs`, `missing_inputs`, and `assumptions_used`.
+
+This makes outputs more auditable and easier to debug for underwriting and QA workflows.
+
 ## Example request
 
 ```bash
@@ -44,28 +52,11 @@ curl -X POST "http://127.0.0.1:8000/risk/assess" \
   -d '{"address":"123 Main St, Boulder, CO","attributes":{"roof_type":"class a","defensible_space_ft":20}}'
 ```
 
-## Factor Breakdown Validation Workflow
-
-1. Run one assessment and inspect `environmental_factors` for each subfactor.
-2. Check `data_quality.data_completeness_score`; target `>= 80` for production confidence.
-3. Review `data_quality.low_confidence_flags` and `assumptions_used`; resolve missing layers/providers.
-4. Confirm `mitigation_plan[*].related_factor` matches top factors in `environmental_factors`.
-5. Re-run after mitigation attribute updates and compare before/after factor deltas.
-
-## Output fields added for trust/debuggability
-
-- `environmental_factors`
-- `data_quality.data_completeness_score`
-- `data_quality.assumption_count`
-- `data_quality.low_confidence_flags`
-- `data_quality.requires_user_verification`
-- `mitigation_plan[*].related_factor`
-- `mitigation_plan[*].impact_statement`
-
 ## Storage
 
 Assessments are persisted to `wildfire_app.db` in the project root.
+Legacy rows without `model_version` are treated as `1.0.0`.
 
-## Frontend
+## Tests
 
-A basic static page is in `frontend/public/index.html`.
+Regression tests are in `tests/test_risk_assessment.py`.
