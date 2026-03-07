@@ -33,7 +33,7 @@
       .row { display: grid; gap: 0.65rem; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
       .results { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
       label { display: block; font-size: 0.82rem; color: var(--muted); margin-bottom: 0.2rem; }
-      input, button {
+      input, select, button {
         width: 100%;
         border-radius: 10px;
         border: 1px solid #d7ccb9;
@@ -41,6 +41,7 @@
         font: inherit;
         background: white;
       }
+      .other-input { margin-top: 0.4rem; display: none; }
       button { border: none; background: var(--accent); color: white; cursor: pointer; font-weight: 600; }
       button.secondary { background: #374151; }
       .actions { display: flex; flex-wrap: wrap; gap: 0.6rem; margin-top: 0.8rem; }
@@ -85,18 +86,90 @@
 
       <section class="card">
         <h2>2. Optional Home Facts</h2>
-        <p>Confirm what you know. We estimate the rest.</p>
-        <div class="row" style="margin-top:0.6rem;">
-          <div><label>Roof Type</label><input id="roof_type" placeholder="class a, metal, wood" /></div>
-          <div><label>Vent Type</label><input id="vent_type" placeholder="ember-resistant or standard" /></div>
-          <div><label>Defensible Space (ft)</label><input id="defensible_space_ft" type="number" min="0" /></div>
-          <div><label>Vegetation Condition</label><input id="vegetation_condition" placeholder="light, moderate, dense" /></div>
-          <div><label>Construction Year</label><input id="construction_year" type="number" min="1800" max="2100" /></div>
+        <p>Optional: If you know a few details about your home, they can improve the accuracy of the estimate.</p>
+
+        <div class="row" style="margin-top:0.7rem;">
+          <div>
+            <label>Roof type</label>
+            <select id="roof_type">
+              <option value="">Unsure</option>
+              <option value="class_a_asphalt_composition">Class A asphalt / composition</option>
+              <option value="metal">Metal</option>
+              <option value="tile_slate">Tile / slate</option>
+              <option value="wood_shake">Wood shake</option>
+              <option value="other">Other (enter)</option>
+            </select>
+            <input id="roof_type_other" class="other-input" placeholder="Enter roof type" />
+          </div>
+
+          <div>
+            <label>Vent protection</label>
+            <select id="vent_type">
+              <option value="">Unsure</option>
+              <option value="standard_vents">Standard vents</option>
+              <option value="ember_resistant_vents">Ember-resistant vents</option>
+              <option value="covered_vents_screens">Covered vents / screens</option>
+              <option value="other">Other (enter)</option>
+            </select>
+            <input id="vent_type_other" class="other-input" placeholder="Enter vent type" />
+          </div>
+
+          <div>
+            <label>Siding material</label>
+            <select id="siding_type">
+              <option value="">Unsure</option>
+              <option value="stucco_masonry">Stucco / masonry</option>
+              <option value="fiber_cement">Fiber cement</option>
+              <option value="wood_siding">Wood siding</option>
+              <option value="vinyl_composite">Vinyl / composite</option>
+              <option value="other">Other (enter)</option>
+            </select>
+            <input id="siding_type_other" class="other-input" placeholder="Enter siding material" />
+          </div>
+
+          <div>
+            <label>Deck or fence attached to house</label>
+            <select id="deck_attachment">
+              <option value="">Unsure</option>
+              <option value="no_deck_attached">No deck attached</option>
+              <option value="non_combustible_deck">Non-combustible deck</option>
+              <option value="wood_deck_attached">Wood deck attached</option>
+              <option value="fence_attached_to_house">Fence attached to house</option>
+              <option value="other">Other (enter)</option>
+            </select>
+            <input id="deck_attachment_other" class="other-input" placeholder="Enter deck/fence detail" />
+          </div>
+
+          <div>
+            <label>Defensible space around the home</label>
+            <select id="defensible_space">
+              <option value="">Unsure</option>
+              <option value="lt5">Little or none (&lt;5 ft)</option>
+              <option value="10_30">Some clearance (~10–30 ft)</option>
+              <option value="30_100">Well maintained (~30–100 ft)</option>
+              <option value="gt100">Large cleared area (&gt;100 ft)</option>
+            </select>
+          </div>
+
+          <div>
+            <label>Approximate construction year</label>
+            <select id="year_built">
+              <option value="">Unsure</option>
+              <option value="before_1980">Before 1980</option>
+              <option value="1980_2000">1980–2000</option>
+              <option value="2000_2015">2000–2015</option>
+              <option value="after_2015">After 2015</option>
+              <option value="other">Other (enter)</option>
+            </select>
+            <input id="year_built_other" class="other-input" placeholder="Enter year or range" />
+          </div>
         </div>
+
         <div style="margin-top:0.6rem;">
-          <label>Confirmed Fields (comma separated)</label>
+          <label>Confirmed fields (optional, comma separated)</label>
           <input id="confirmed_fields" placeholder="roof_type, vent_type, defensible_space_ft" />
         </div>
+
         <div class="actions">
           <button id="assessBtn">Run Assessment</button>
           <button id="reassessBtn" class="secondary">Update Last Assessment</button>
@@ -129,17 +202,94 @@
       <section class="card">
         <h2>6. See How Upgrades Could Help</h2>
         <p>Try a few changes to see how they could lower risk.</p>
+
         <div class="row" style="margin-top:0.6rem;">
-          <div><label>Scenario Name</label><input id="scenario_name" value="home_upgrade_plan" /></div>
-          <div><label>New Roof Type</label><input id="sim_roof_type" placeholder="class a" /></div>
-          <div><label>New Vent Type</label><input id="sim_vent_type" placeholder="ember-resistant" /></div>
-          <div><label>New Defensible Space (ft)</label><input id="sim_defensible_space_ft" type="number" min="0" /></div>
-          <div><label>New Vegetation Condition</label><input id="sim_vegetation_condition" placeholder="reduced" /></div>
+          <div>
+            <label>Scenario name</label>
+            <input id="scenario_name" value="home_upgrade_plan" />
+          </div>
+
+          <div>
+            <label>Roof type (scenario)</label>
+            <select id="sim_roof_type">
+              <option value="">Unsure</option>
+              <option value="class_a_asphalt_composition">Class A asphalt / composition</option>
+              <option value="metal">Metal</option>
+              <option value="tile_slate">Tile / slate</option>
+              <option value="wood_shake">Wood shake</option>
+              <option value="other">Other (enter)</option>
+            </select>
+            <input id="sim_roof_type_other" class="other-input" placeholder="Enter roof type" />
+          </div>
+
+          <div>
+            <label>Vent protection (scenario)</label>
+            <select id="sim_vent_type">
+              <option value="">Unsure</option>
+              <option value="standard_vents">Standard vents</option>
+              <option value="ember_resistant_vents">Ember-resistant vents</option>
+              <option value="covered_vents_screens">Covered vents / screens</option>
+              <option value="other">Other (enter)</option>
+            </select>
+            <input id="sim_vent_type_other" class="other-input" placeholder="Enter vent type" />
+          </div>
+
+          <div>
+            <label>Siding material (scenario)</label>
+            <select id="sim_siding_type">
+              <option value="">Unsure</option>
+              <option value="stucco_masonry">Stucco / masonry</option>
+              <option value="fiber_cement">Fiber cement</option>
+              <option value="wood_siding">Wood siding</option>
+              <option value="vinyl_composite">Vinyl / composite</option>
+              <option value="other">Other (enter)</option>
+            </select>
+            <input id="sim_siding_type_other" class="other-input" placeholder="Enter siding material" />
+          </div>
+
+          <div>
+            <label>Deck or fence (scenario)</label>
+            <select id="sim_deck_attachment">
+              <option value="">Unsure</option>
+              <option value="no_deck_attached">No deck attached</option>
+              <option value="non_combustible_deck">Non-combustible deck</option>
+              <option value="wood_deck_attached">Wood deck attached</option>
+              <option value="fence_attached_to_house">Fence attached to house</option>
+              <option value="other">Other (enter)</option>
+            </select>
+            <input id="sim_deck_attachment_other" class="other-input" placeholder="Enter deck/fence detail" />
+          </div>
+
+          <div>
+            <label>Defensible space (scenario)</label>
+            <select id="sim_defensible_space">
+              <option value="">Unsure</option>
+              <option value="lt5">Little or none (&lt;5 ft)</option>
+              <option value="10_30">Some clearance (~10–30 ft)</option>
+              <option value="30_100">Well maintained (~30–100 ft)</option>
+              <option value="gt100">Large cleared area (&gt;100 ft)</option>
+            </select>
+          </div>
+
+          <div>
+            <label>Approximate year built (scenario)</label>
+            <select id="sim_year_built">
+              <option value="">Unsure</option>
+              <option value="before_1980">Before 1980</option>
+              <option value="1980_2000">1980–2000</option>
+              <option value="2000_2015">2000–2015</option>
+              <option value="after_2015">After 2015</option>
+              <option value="other">Other (enter)</option>
+            </select>
+            <input id="sim_year_built_other" class="other-input" placeholder="Enter year or range" />
+          </div>
         </div>
+
         <div style="margin-top:0.6rem;">
-          <label>Scenario Confirmed Fields (comma separated)</label>
+          <label>Scenario confirmed fields (optional, comma separated)</label>
           <input id="scenario_confirmed_fields" placeholder="roof_type, vent_type, defensible_space_ft" />
         </div>
+
         <div class="actions">
           <button id="simulateBtn">Run Simulation</button>
         </div>
@@ -193,26 +343,81 @@
         return (text || "").split(",").map(v => v.trim()).filter(Boolean);
       }
 
-      function getNum(id) {
-        const raw = document.getElementById(id)?.value;
-        if (raw === "" || raw === undefined || raw === null) return null;
-        const n = Number(raw);
-        return Number.isFinite(n) ? n : null;
+      function bindOtherInput(selectId, inputId) {
+        const select = document.getElementById(selectId);
+        const input = document.getElementById(inputId);
+        if (!select || !input) return;
+
+        const toggle = () => {
+          const show = select.value === "other";
+          input.style.display = show ? "block" : "none";
+          if (!show) input.value = "";
+        };
+
+        select.addEventListener("change", toggle);
+        toggle();
       }
 
-      function getAttributes(prefix = "") {
-        const attrs = {};
-        const roof = document.getElementById(prefix + "roof_type")?.value;
-        const vent = document.getElementById(prefix + "vent_type")?.value;
-        const space = getNum(prefix + "defensible_space_ft");
-        const veg = document.getElementById(prefix + "vegetation_condition")?.value;
-        const year = getNum(prefix + "construction_year");
+      function getChoiceValue(selectId, otherInputId) {
+        const select = document.getElementById(selectId);
+        if (!select) return null;
+        if (!select.value) return null;
+        if (select.value !== "other") return select.value;
 
+        const other = document.getElementById(otherInputId);
+        const custom = other ? other.value.trim() : "";
+        return custom || null;
+      }
+
+      function defensibleFeetFromBucket(value) {
+        if (!value) return null;
+        if (value === "lt5") return 2;
+        if (value === "10_30") return 20;
+        if (value === "30_100") return 65;
+        if (value === "gt100") return 120;
+        return null;
+      }
+
+      function constructionYearFromBucket(value, otherInputId) {
+        if (!value) return null;
+        if (value === "before_1980") return 1975;
+        if (value === "1980_2000") return 1990;
+        if (value === "2000_2015") return 2008;
+        if (value === "after_2015") return 2018;
+        if (value !== "other") return null;
+
+        const raw = (document.getElementById(otherInputId)?.value || "").trim();
+        if (!raw) return null;
+        const match = raw.match(/\d{4}/);
+        const parsed = match ? Number(match[0]) : Number(raw);
+        if (!Number.isFinite(parsed)) return null;
+        return Math.max(1800, Math.min(2100, Math.round(parsed)));
+      }
+
+      function collectAttributes(prefix = "") {
+        const attrs = {};
+
+        const roof = getChoiceValue(prefix + "roof_type", prefix + "roof_type_other");
         if (roof) attrs.roof_type = roof;
+
+        const vent = getChoiceValue(prefix + "vent_type", prefix + "vent_type_other");
         if (vent) attrs.vent_type = vent;
-        if (space !== null) attrs.defensible_space_ft = space;
-        if (veg) attrs.vegetation_condition = veg;
+
+        const siding = getChoiceValue(prefix + "siding_type", prefix + "siding_type_other");
+        if (siding) attrs.siding_type = siding;
+
+        const deck = getChoiceValue(prefix + "deck_attachment", prefix + "deck_attachment_other");
+        if (deck) attrs.driveway_access_notes = `deck_or_fence_attachment: ${deck}`;
+
+        const defensible = defensibleFeetFromBucket(document.getElementById(prefix + "defensible_space")?.value || "");
+        if (defensible !== null) attrs.defensible_space_ft = defensible;
+
+        const year = constructionYearFromBucket(
+          document.getElementById(prefix + "year_built")?.value || "",
+          prefix + "year_built_other",
+        );
         if (year !== null) attrs.construction_year = year;
+
         return attrs;
       }
 
@@ -280,7 +485,7 @@
       function buildAssessmentPayload() {
         return {
           address: document.getElementById("address").value,
-          attributes: getAttributes(),
+          attributes: collectAttributes(""),
           confirmed_fields: parseCSV(document.getElementById("confirmed_fields").value),
           audience: "homeowner"
         };
@@ -318,7 +523,7 @@
           const sim = await api("/risk/simulate", {
             assessment_id: latestAssessment.assessment_id,
             scenario_name: document.getElementById("scenario_name").value || "what_if",
-            scenario_overrides: getAttributes("sim_"),
+            scenario_overrides: collectAttributes("sim_"),
             scenario_confirmed_fields: parseCSV(document.getElementById("scenario_confirmed_fields").value)
           }, "POST");
 
@@ -370,6 +575,18 @@
           alert(err.message);
         }
       }
+
+      bindOtherInput("roof_type", "roof_type_other");
+      bindOtherInput("vent_type", "vent_type_other");
+      bindOtherInput("siding_type", "siding_type_other");
+      bindOtherInput("deck_attachment", "deck_attachment_other");
+      bindOtherInput("year_built", "year_built_other");
+
+      bindOtherInput("sim_roof_type", "sim_roof_type_other");
+      bindOtherInput("sim_vent_type", "sim_vent_type_other");
+      bindOtherInput("sim_siding_type", "sim_siding_type_other");
+      bindOtherInput("sim_deck_attachment", "sim_deck_attachment_other");
+      bindOtherInput("sim_year_built", "sim_year_built_other");
 
       document.getElementById("assessBtn").addEventListener("click", () => runAssessment(false));
       document.getElementById("reassessBtn").addEventListener("click", () => runAssessment(true));
