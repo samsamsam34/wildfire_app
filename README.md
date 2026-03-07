@@ -289,9 +289,15 @@ Frontend file: `frontend/public/index.html`.
 
 ## Regional Layer Prep Pipeline (separate from runtime)
 
-Layer ingestion/prep runs **outside** the API app. Runtime scoring reads prepared local region assets and does not download large GIS layers during `/risk/assess`.
+Layer ingestion/prep runs **outside** the API app. Runtime scoring reads prepared local region assets and does **not** download large GIS layers during `/risk/assess`.
 
-Prepare one region locally:
+### CLI Modes
+
+`scripts/prepare_region_layers.py` now supports:
+- `local-source prepare mode` (existing local files)
+- `download-and-prepare mode` (URL provided per layer, then clipped/validated locally)
+
+### Local-source prepare mode (fully working)
 
 ```bash
 python scripts/prepare_region_layers.py \
@@ -299,12 +305,28 @@ python scripts/prepare_region_layers.py \
   --display-name "Marin County, CA" \
   --bbox -123.05,37.70,-122.20,38.35 \
   --dem /path/to/dem.tif \
-  --slope /path/to/slope.tif \
   --fuel /path/to/fuel.tif \
   --canopy /path/to/canopy.tif \
   --fire-perimeters /path/to/fire_perimeters.geojson \
   --building-footprints /path/to/building_footprints.geojson
 ```
+
+`--slope` is optional. If omitted, `slope.tif` is derived from `dem.tif`.
+
+### Download-and-prepare mode (pilot)
+
+```bash
+python scripts/prepare_region_layers.py \
+  --region-id pilot_demo \
+  --bbox -122.6,37.8,-122.2,38.1 \
+  --dem-url https://example.org/dem.tif \
+  --fuel-url https://example.org/fuel.tif \
+  --canopy-url https://example.org/canopy.tif \
+  --fire-perimeters-url https://example.org/perimeters.geojson \
+  --building-footprints-url https://example.org/footprints.geojson
+```
+
+For local testing, `--skip-download` can be used with local file inputs.
 
 Prepared region layout:
 
@@ -320,6 +342,18 @@ data/regions/<region_id>/
 ```
 
 `manifest.json` stores region metadata (bounds/CRS/status), per-layer source metadata, freshness timestamps, and file mappings.
+
+Manifest layer metadata includes fields such as:
+- `source_name`, `source_type`, `source_url`
+- `dataset_version`, `freshness_timestamp`, `downloaded_at`
+- `clipped_to_bbox`, `validation_status`
+- layer notes/warnings
+
+### Automation honesty (current state)
+
+- DEM, fire perimeters, building footprints, fuel, canopy: local-file and URL-based prep paths are implemented.
+- Full catalog/index automation (for example direct NIFC catalog sync, Microsoft building-footprint tile index orchestration, and LANDFIRE discovery/catalog downloads) is **not** fully automated in this pass.
+- This is intentional for a pilot-region ingestion workflow.
 
 Runtime behavior:
 - geocode address

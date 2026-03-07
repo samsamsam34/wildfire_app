@@ -14,6 +14,7 @@ except Exception:  # pragma: no cover - optional in constrained test runners
 
 import backend.auth as auth
 import backend.main as app_main
+import backend.data_prep.prepare_region as prep_region_module
 from backend.building_footprints import BuildingFootprintClient, BuildingFootprintResult, compute_structure_rings
 from backend.data_prep.prepare_region import prepare_region_layers
 from backend.database import AssessmentStore
@@ -43,6 +44,13 @@ REQUIRED_SUBMODELS = [
 def _require_shapely() -> None:
     if Polygon is None:
         pytest.skip("shapely is not installed in this environment")
+
+
+def _require_region_prep_deps() -> None:
+    if getattr(prep_region_module, "rasterio", None) is None:
+        pytest.skip("rasterio is not installed in this environment")
+    if getattr(prep_region_module, "shape", None) is None:
+        pytest.skip("shapely is not available for region prep tests")
 
 
 def _ctx(
@@ -1247,6 +1255,12 @@ def test_context_collect_fallback_when_footprint_unavailable(monkeypatch):
 
 
 def _make_region_sources(tmp_path: Path) -> dict[str, str]:
+    _require_region_prep_deps()
+    rasterio_mod = prep_region_module.rasterio
+    np_mod = prep_region_module.np
+    assert rasterio_mod is not None
+    assert np_mod is not None
+
     files = {
         "dem": tmp_path / "src_dem.tif",
         "slope": tmp_path / "src_slope.tif",
@@ -1258,19 +1272,62 @@ def _make_region_sources(tmp_path: Path) -> dict[str, str]:
         "wildfire_hazard": tmp_path / "src_hazard.tif",
     }
     files["fire_perimeters"].write_text(
-        json.dumps({"type": "FeatureCollection", "features": []}),
+        json.dumps(
+            {
+                "type": "FeatureCollection",
+                "features": [
+                    {
+                        "type": "Feature",
+                        "properties": {"id": 1},
+                        "geometry": {
+                            "type": "Polygon",
+                            "coordinates": [[[-105.8, 39.7], [-105.0, 39.7], [-105.0, 40.2], [-105.8, 40.2], [-105.8, 39.7]]],
+                        },
+                    }
+                ],
+            }
+        ),
         encoding="utf-8",
     )
     files["building_footprints"].write_text(
-        json.dumps({"type": "FeatureCollection", "features": []}),
+        json.dumps(
+            {
+                "type": "FeatureCollection",
+                "features": [
+                    {
+                        "type": "Feature",
+                        "properties": {"id": 1},
+                        "geometry": {
+                            "type": "Polygon",
+                            "coordinates": [[[-105.25, 39.95], [-105.20, 39.95], [-105.20, 40.00], [-105.25, 40.00], [-105.25, 39.95]]],
+                        },
+                    }
+                ],
+            }
+        ),
         encoding="utf-8",
     )
+    transform = rasterio_mod.transform.from_origin(-106.5, 40.7, 0.01, 0.01)
     for key in ["dem", "slope", "fuel", "canopy", "burn_probability", "wildfire_hazard"]:
-        files[key].write_bytes(b"placeholder")
+        data = np_mod.full((220, 220), 50.0, dtype="float32")
+        with rasterio_mod.open(
+            files[key],
+            "w",
+            driver="GTiff",
+            width=220,
+            height=220,
+            count=1,
+            dtype="float32",
+            crs="EPSG:4326",
+            transform=transform,
+            nodata=-9999.0,
+        ) as ds:
+            ds.write(data, 1)
     return {k: str(v) for k, v in files.items()}
 
 
 def test_prepare_region_manifest_creation_and_discovery(tmp_path):
+    _require_region_prep_deps()
     region_root = tmp_path / "regions"
     sources = _make_region_sources(tmp_path)
     manifest = prepare_region_layers(
@@ -1299,6 +1356,7 @@ def test_prepare_region_manifest_creation_and_discovery(tmp_path):
 
 
 def test_runtime_resolves_prepared_region_files(tmp_path):
+    _require_region_prep_deps()
     region_root = tmp_path / "regions"
     sources = _make_region_sources(tmp_path)
     prepare_region_layers(
