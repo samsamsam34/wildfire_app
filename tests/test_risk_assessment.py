@@ -267,6 +267,104 @@ def test_simulation_history_listing(monkeypatch, tmp_path):
     assert rows[0]["assessment_id"] == baseline["assessment_id"]
 
 
+def test_simulation_from_address_and_attributes(monkeypatch, tmp_path):
+    _setup(monkeypatch, tmp_path, _ctx(env=68.0, wildland=74.0, historic=61.0))
+
+    res = client.post(
+        "/risk/simulate",
+        json={
+            "address": "123 Main St, Boulder, CO",
+            "attributes": {
+                "roof_type": "wood shake",
+                "vent_type": "standard",
+                "defensible_space_ft": 5,
+            },
+            "confirmed_fields": ["roof_type", "vent_type", "defensible_space_ft"],
+            "scenario_name": "homeowner_upgrade",
+            "scenario_overrides": {
+                "roof_type": "class a",
+                "vent_type": "ember-resistant",
+                "defensible_space_ft": 30,
+            },
+            "scenario_confirmed_fields": ["roof_type", "vent_type", "defensible_space_ft"],
+        },
+    )
+    assert res.status_code == 200
+    sim = res.json()
+
+    assert sim["base_assessment_id"]
+    assert sim["simulated_assessment_id"]
+    assert sim["score_delta"]["wildfire_risk_score_delta"] <= 0
+    assert sim["score_delta"]["insurance_readiness_score_delta"] >= 0
+    assert "roof_type" in sim["changed_inputs"]
+    assert sim["summary"]
+
+
+def test_simulation_missing_assessment_id_returns_404(monkeypatch, tmp_path):
+    _setup(monkeypatch, tmp_path, _ctx(env=50.0, wildland=50.0, historic=50.0))
+
+    res = client.post(
+        "/risk/simulate",
+        json={
+            "assessment_id": "does-not-exist",
+            "scenario_name": "bad_reference",
+            "scenario_overrides": {"roof_type": "class a"},
+            "scenario_confirmed_fields": ["roof_type"],
+        },
+    )
+    assert res.status_code == 404
+
+
+def test_simulation_missing_address_and_assessment_returns_400(monkeypatch, tmp_path):
+    _setup(monkeypatch, tmp_path, _ctx(env=50.0, wildland=50.0, historic=50.0))
+
+    res = client.post(
+        "/risk/simulate",
+        json={
+            "scenario_name": "missing_base",
+            "scenario_overrides": {"roof_type": "class a"},
+            "scenario_confirmed_fields": ["roof_type"],
+        },
+    )
+    assert res.status_code == 400
+    assert "assessment_id or address" in res.text
+
+
+def test_simulation_confirmed_field_merge(monkeypatch, tmp_path):
+    _setup(monkeypatch, tmp_path, _ctx(env=64.0, wildland=70.0, historic=58.0))
+
+    base = _run(
+        _payload(
+            "812 Merge St, Boulder, CO",
+            {
+                "roof_type": "wood",
+                "vent_type": "standard",
+                "defensible_space_ft": 8,
+            },
+            confirmed=["roof_type"],
+        )
+    )
+
+    res = client.post(
+        "/risk/simulate",
+        json={
+            "assessment_id": base["assessment_id"],
+            "attributes": {"vent_type": "standard"},
+            "confirmed_fields": ["vent_type"],
+            "scenario_name": "merge_confirmed",
+            "scenario_overrides": {"defensible_space_ft": 30},
+            "scenario_confirmed_fields": ["defensible_space_ft"],
+        },
+    )
+    assert res.status_code == 200
+    sim = res.json()
+    assert sorted(sim["simulated"]["confirmed_fields"]) == [
+        "defensible_space_ft",
+        "roof_type",
+        "vent_type",
+    ]
+
+
 def test_reassess_from_existing_assessment(monkeypatch, tmp_path):
     _setup(monkeypatch, tmp_path, _ctx(env=60.0, wildland=60.0, historic=55.0))
 

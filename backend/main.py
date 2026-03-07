@@ -1344,6 +1344,10 @@ def simulate_risk(
         org_id = ctx.organization_id
         ruleset = _get_ruleset_or_default("default")
 
+    scenario_override_values = _attributes_to_dict(payload.scenario_overrides)
+    if not scenario_override_values:
+        raise HTTPException(status_code=400, detail="Simulation requires at least one scenario override")
+
     baseline_attrs = _merge_attributes(base_req.attributes, payload.attributes)
     baseline_confirmed = sorted(set(base_req.confirmed_fields + payload.confirmed_fields))
     baseline_req = AddressRequest(
@@ -1379,6 +1383,11 @@ def simulate_risk(
         ruleset=ruleset,
     )
 
+    # Persist simulation outputs for homeowner follow-up/reporting flows.
+    if not payload.assessment_id:
+        store.save(baseline)
+    store.save(simulated)
+
     changed_inputs: Dict[str, Dict[str, object]] = {}
     before = baseline.property_facts
     after = simulated.property_facts
@@ -1398,6 +1407,25 @@ def simulate_risk(
         ),
         changed_inputs=changed_inputs,
         next_best_actions=simulated.mitigation_plan,
+        base_assessment_id=payload.assessment_id or baseline.assessment_id,
+        simulated_assessment_id=simulated.assessment_id,
+        base_scores=baseline.risk_scores,
+        simulated_scores=simulated.risk_scores,
+        score_delta=SimulationDelta(
+            wildfire_risk_score_delta=round(simulated.wildfire_risk_score - baseline.wildfire_risk_score, 1),
+            insurance_readiness_score_delta=round(
+                simulated.insurance_readiness_score - baseline.insurance_readiness_score, 1
+            ),
+        ),
+        base_confidence=baseline.confidence,
+        simulated_confidence=simulated.confidence,
+        base_assumptions=baseline.assumptions,
+        simulated_assumptions=simulated.assumptions,
+        summary=(
+            f"Wildfire risk changed by {round(simulated.wildfire_risk_score - baseline.wildfire_risk_score, 1)} "
+            f"and insurance readiness changed by "
+            f"{round(simulated.insurance_readiness_score - baseline.insurance_readiness_score, 1)}."
+        ),
     )
 
     if payload.assessment_id:

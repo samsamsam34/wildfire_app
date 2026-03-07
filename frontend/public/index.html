@@ -431,11 +431,17 @@
           }, "POST");
 
           const d = sim.delta;
+          const changed = Object.entries(sim.changed_inputs || {})
+            .map(([k, v]) => `${k}: ${v.before ?? "(none)"} -> ${v.after ?? "(none)"}`)
+            .join("<br>");
+          const summary = sim.summary || "Simulation completed.";
           document.getElementById("simResult").innerHTML =
             `Risk ${sim.baseline.wildfire_risk_score.toFixed(1)} -> ${sim.simulated.wildfire_risk_score.toFixed(1)} ` +
             `(<span class="${d.wildfire_risk_score_delta <= 0 ? "good" : "bad"}">${d.wildfire_risk_score_delta.toFixed(1)}</span>)<br>` +
             `Readiness ${sim.baseline.insurance_readiness_score.toFixed(1)} -> ${sim.simulated.insurance_readiness_score.toFixed(1)} ` +
-            `(<span class="${d.insurance_readiness_score_delta >= 0 ? "good" : "bad"}">${d.insurance_readiness_score_delta.toFixed(1)}</span>)`;
+            `(<span class="${d.insurance_readiness_score_delta >= 0 ? "good" : "bad"}">${d.insurance_readiness_score_delta.toFixed(1)}</span>)<br><br>` +
+            `<strong>Changed inputs</strong><br>${changed || "None"}<br><br>` +
+            `<strong>Summary</strong><br>${summary}`;
         } catch (err) {
           alert(err.message);
         }

@@ -244,6 +244,18 @@ class SimulationResult(BaseModel):
     changed_inputs: Dict[str, Dict[str, object]] = Field(default_factory=dict)
     next_best_actions: List[MitigationAction] = Field(default_factory=list)
 
+    # Homeowner-friendly summary mirrors for easier UI rendering.
+    base_assessment_id: Optional[str] = None
+    simulated_assessment_id: Optional[str] = None
+    base_scores: Optional[RiskScores] = None
+    simulated_scores: Optional[RiskScores] = None
+    score_delta: Optional[SimulationDelta] = None
+    base_confidence: Optional[ConfidenceBlock] = None
+    simulated_confidence: Optional[ConfidenceBlock] = None
+    base_assumptions: Optional[AssumptionsBlock] = None
+    simulated_assumptions: Optional[AssumptionsBlock] = None
+    summary: str = ""
+
 
 class AssessmentListItem(BaseModel):
     assessment_id: str
