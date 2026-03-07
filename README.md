@@ -339,6 +339,7 @@ Common hardening flags:
 - `--allow-partial`: write partial manifest with explicit failed/missing layers
 - `--no-auto-discovery`: disable dataset discovery adapters and require explicit sources
 - optional per-layer checksum flags (for example `--dem-checksum sha256:<hex>`, `--fuel-checksum sha256:<hex>`)
+- `--landfire-only`: run fuel/canopy prep path without full-region layers (debug mode)
 
 Dry-run and partial semantics:
 - `dry-run` does not execute clipping/download outputs and does not write a manifest.
@@ -392,6 +393,27 @@ Archive handling:
 - The preparer uses deterministic selection rules and fails clearly on ambiguous archives.
 - If no valid candidate exists (or multiple candidates cannot be resolved safely), prep fails clearly.
 
+LANDFIRE-specific handling (pilot usability):
+- LANDFIRE archives are processed via a dedicated handler with selective extraction for `fuel`/`canopy`.
+- Archive scan metadata is cached (`data/cache/landfire/index/...`) to avoid repeated full archive rescans.
+- Extracted source rasters are reused from cache (`data/cache/landfire/extracted/...`).
+- Clipped bbox subsets are cached and reused (`data/cache/landfire/subsets/...`) for repeat AOI runs.
+- Manifest metadata now records LANDFIRE cache/extraction/subset fields when the handler is used.
+- If full-CONUS processing is too heavy, the pipeline surfaces guidance to provide a smaller local/regional source.
+
+LANDFIRE-only debug workflow:
+
+```bash
+python scripts/prepare_region_layers.py \
+  --region-id bozeman_landfire_debug \
+  --bbox -111.2 45.5 -110.9 45.8 \
+  --fuel-url <landfire_archive_or_raster_url> \
+  --landfire-only \
+  --allow-partial
+```
+
+This mode is useful for validating LANDFIRE extraction/caching behavior without rerunning all other regional layers.
+
 Prepared region layout:
 
 ```text
@@ -438,6 +460,7 @@ URL behavior guidance:
 Caching:
 - Download cache is stored in `data/cache/` by default.
 - Reused cached assets are tracked per layer (`cache_hit` in manifest metadata).
+- LANDFIRE also caches archive index scans, extracted rasters, and clipped subsets to accelerate repeat runs.
 
 Partial-mode caveat:
 - `--allow-partial` does **not** indicate full readiness.

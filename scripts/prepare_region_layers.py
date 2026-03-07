@@ -67,6 +67,11 @@ def main() -> None:
         help="Write a partial manifest with warnings/errors instead of failing hard.",
     )
     parser.add_argument(
+        "--landfire-only",
+        action="store_true",
+        help="Prepare only LANDFIRE fuel/canopy layers for debugging pilot AOIs.",
+    )
+    parser.add_argument(
         "--no-auto-discovery",
         action="store_true",
         help="Disable automatic dataset discovery and require manual source paths/URLs.",
@@ -198,6 +203,7 @@ def main() -> None:
         dry_run=args.dry_run,
         keep_temp_on_failure=args.keep_temp_on_failure,
         clean_download_cache=args.clean_download_cache,
+        landfire_only=args.landfire_only,
     )
 
     prepared = manifest.get("prepared_layers", [])
@@ -225,9 +231,11 @@ def main() -> None:
                 "slope_derived": manifest.get("slope_derived", False),
                 "archives_extracted": manifest.get("archives_extracted", False),
                 "auto_discovery_used": manifest.get("download_config", {}).get("auto_discover", False),
+                "landfire_only": manifest.get("download_config", {}).get("landfire_only", False),
                 "cache_dir": manifest.get("download_config", {}).get("cache_dir"),
                 "warnings": manifest.get("warnings", []),
                 "errors": manifest.get("errors", []),
+                "progress_log": manifest.get("progress_log", []),
                 "output_dir": str(out_root),
                 "manifest_path": manifest_path,
             },

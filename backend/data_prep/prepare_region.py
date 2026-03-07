@@ -32,7 +32,12 @@ except Exception:  # pragma: no cover - optional dependency in constrained envs
     shape = None
 
 from backend.region_registry import DEFAULT_REGION_DATA_DIR, REQUIRED_REGION_FILES
-from backend.data_prep.sources import SourceAsset, discover_wildfire_sources
+from backend.data_prep.sources import (
+    LANDFIRE_HANDLER_VERSION,
+    SourceAsset,
+    discover_wildfire_sources,
+    resolve_landfire_raster,
+)
 
 
 STANDARD_LAYER_FILENAMES = {
@@ -273,6 +278,7 @@ def _extract_archive_layer(
 
 class LayerSourceAdapter:
     layer_key = "base"
+    preserve_zip_for_handler = False
 
     def resolve(
         self,
@@ -309,7 +315,7 @@ class LayerSourceAdapter:
             final_path = path
             extraction_performed = False
             extracted_path = None
-            if path.suffix.lower() == ".zip":
+            if path.suffix.lower() == ".zip" and not self.preserve_zip_for_handler:
                 final_path = _extract_archive_layer(path, self.layer_key, layer_type, extraction_dir)
                 extraction_performed = True
                 extracted_path = str(final_path)
@@ -366,7 +372,7 @@ class LayerSourceAdapter:
             final_path = cached_path
             extraction_performed = False
             extracted_path = None
-            if cached_path.suffix.lower() == ".zip":
+            if cached_path.suffix.lower() == ".zip" and not self.preserve_zip_for_handler:
                 final_path = _extract_archive_layer(cached_path, self.layer_key, layer_type, extraction_dir)
                 extraction_performed = True
                 extracted_path = str(final_path)
@@ -422,10 +428,12 @@ class BuildingFootprintSourceAdapter(LayerSourceAdapter):
 
 class FuelSourceAdapter(LayerSourceAdapter):
     layer_key = "fuel"
+    preserve_zip_for_handler = True
 
 
 class CanopySourceAdapter(LayerSourceAdapter):
     layer_key = "canopy"
+    preserve_zip_for_handler = True
 
 
 class GenericSourceAdapter(LayerSourceAdapter):
@@ -511,6 +519,17 @@ def _clip_raster_to_bbox(src: Path, dest: Path, bounds: dict[str, float]) -> dic
             "crs": str(out_ds.crs),
             "resolution": [abs(out_ds.transform.a), abs(out_ds.transform.e)],
             "bounds": list(out_ds.bounds),
+        }
+
+
+def _raster_file_metadata(path: Path) -> dict[str, Any]:
+    _ensure_raster_deps()
+    assert rasterio is not None
+    with rasterio.open(path) as ds:
+        return {
+            "crs": str(ds.crs),
+            "resolution": [abs(ds.transform.a), abs(ds.transform.e)],
+            "bounds": list(ds.bounds),
         }
 
 
@@ -834,6 +853,7 @@ def _prepare_one_layer(
     download_config: DownloadConfig,
     source_metadata: dict[str, dict[str, Any]],
     notes: list[str],
+    progress_log: list[str],
 ) -> tuple[str | None, dict[str, Any]]:
     layer_type = LAYER_TYPES[layer_key]
     adapter = ADAPTERS.get(layer_key, GenericSourceAdapter(layer_key))
@@ -892,6 +912,30 @@ def _prepare_one_layer(
         return None, layer_meta
 
     input_paths: list[Path] = [Path(r.path) for r in valid_inputs if r.path is not None]
+    landfire_resolutions = []
+    landfire_subset_path: Path | None = None
+    landfire_subset_reused = False
+
+    if layer_key in {"fuel", "canopy"}:
+        processed_inputs: list[Path] = []
+        for src_path in input_paths:
+            lf = resolve_landfire_raster(
+                layer_key=layer_key,
+                source_path=src_path,
+                cache_dir=cache_dir,
+                bounds=bounds,
+                progress_log=progress_log,
+                warnings=notes,
+            )
+            processed_inputs.append(lf.raster_path)
+            landfire_resolutions.append(lf)
+            if lf.subset_cache_path:
+                subset_candidate = Path(lf.subset_cache_path)
+                if subset_candidate.exists():
+                    landfire_subset_path = subset_candidate
+                    landfire_subset_reused = True
+        input_paths = processed_inputs
+
     if copy_files:
         staged_inputs: list[Path] = []
         for idx, src_path in enumerate(input_paths):
@@ -911,8 +955,22 @@ def _prepare_one_layer(
         layer_meta["mosaic_performed"] = True
 
     output_path = region_dir / filename
-    if layer_type == "raster":
+    if layer_key in {"fuel", "canopy"} and landfire_subset_path and landfire_subset_path.exists():
+        progress_log.append(f"LANDFIRE: reusing cached clipped subset for {layer_key}")
+        shutil.copy2(landfire_subset_path, output_path)
+        clip_meta = _raster_file_metadata(output_path)
+    elif layer_type == "raster":
+        progress_log.append(f"LANDFIRE: clipping raster to bbox for {layer_key}" if layer_key in {"fuel", "canopy"} else f"Clipping raster to bbox for {layer_key}")
         clip_meta = _clip_raster_to_bbox(input_path, output_path, bounds)
+        if layer_key in {"fuel", "canopy"} and landfire_resolutions:
+            subset_target_raw = landfire_resolutions[0].subset_cache_path
+            if subset_target_raw:
+                subset_target = Path(subset_target_raw)
+                subset_target.parent.mkdir(parents=True, exist_ok=True)
+                if not subset_target.exists():
+                    shutil.copy2(output_path, subset_target)
+                    progress_log.append(f"LANDFIRE: cached clipped subset for {layer_key} at {subset_target}")
+                landfire_subset_path = subset_target
     else:
         clip_meta = _clip_geojson_to_bbox(input_path, output_path, bounds)
 
@@ -939,6 +997,30 @@ def _prepare_one_layer(
         layer_meta["tile_ids"] = [a.tile_id for a in discovered_for_layer if a.tile_id]
         layer_meta["download_url"] = [a.url for a in discovered_for_layer]
         layer_meta["discovered_source"] = True
+
+    if layer_key in {"fuel", "canopy"} and landfire_resolutions:
+        first = landfire_resolutions[0]
+        source_url_hint = next((r.source_url for r in valid_inputs if getattr(r, "source_url", None)), None)
+        layer_meta.update(
+            {
+                "landfire_handler_version": LANDFIRE_HANDLER_VERSION,
+                "archive_source_url": source_url_hint,
+                "archive_cache_path": first.archive_cache_path,
+                "archive_size_bytes": first.archive_size_bytes,
+                "archive_index_path": first.index_path,
+                "extracted_raster_path": first.extracted_raster_path,
+                "subset_cache_path": str(landfire_subset_path) if landfire_subset_path else first.subset_cache_path,
+                "subset_reused": bool(landfire_subset_reused),
+                "clipping_bbox": {
+                    "min_lon": float(bounds["min_lon"]),
+                    "min_lat": float(bounds["min_lat"]),
+                    "max_lon": float(bounds["max_lon"]),
+                    "max_lat": float(bounds["max_lat"]),
+                },
+                "landfire_layer_type": layer_key,
+                "landfire_processing_notes": first.processing_notes or [],
+            }
+        )
     return filename, layer_meta
 
 
@@ -982,7 +1064,8 @@ def prepare_region_layers(
     retry_backoff_seconds: float = 1.5,
     dry_run: bool = False,
     keep_temp_on_failure: bool = False,
-    clean_download_cache: bool = True,
+    clean_download_cache: bool = False,
+    landfire_only: bool = False,
 ) -> dict[str, Any]:
     if not region_id.strip():
         raise ValueError("region_id is required")
@@ -1017,13 +1100,17 @@ def prepare_region_layers(
     metadata = source_metadata or {}
     warnings: list[str] = []
     errors: list[str] = []
+    progress_log: list[str] = []
     slope_derived = False
     archives_extracted = False
     discovered_assets: dict[str, list[SourceAsset]] = {}
     if auto_discover:
         unresolved_keys = [
             key
-            for key in (list(BASE_REQUIRED_KEYS) + list(OPTIONAL_LAYER_KEYS))
+            for key in (
+                (["fuel", "canopy"] if landfire_only else list(BASE_REQUIRED_KEYS))
+                + list(OPTIONAL_LAYER_KEYS)
+            )
             if not (layer_sources or {}).get(key) and not (layer_urls or {}).get(key)
         ]
         if unresolved_keys:
@@ -1032,11 +1119,14 @@ def prepare_region_layers(
             for key, assets in discovered_assets.items():
                 if assets:
                     warnings.append(f"Auto-discovered {len(assets)} source asset(s) for {key}.")
+                    progress_log.append(f"Auto-discovery resolved {len(assets)} source asset(s) for {key}.")
     download_config = DownloadConfig(
         timeout_seconds=float(download_timeout),
         retries=max(0, int(download_retries)),
         retry_backoff_seconds=max(0.0, float(retry_backoff_seconds)),
     )
+
+    base_required_keys = ("fuel", "canopy") if landfire_only else BASE_REQUIRED_KEYS
 
     def _prepare_layer(layer_key: str) -> None:
         nonlocal archives_extracted
@@ -1057,6 +1147,7 @@ def prepare_region_layers(
             download_config=download_config,
             source_metadata=metadata,
             notes=warnings,
+            progress_log=progress_log,
         )
         if filename:
             files[layer_key] = filename
@@ -1066,7 +1157,7 @@ def prepare_region_layers(
         if layer_meta.get("validation_status") == "error":
             errors.append(f"{layer_key} preparation error")
 
-    for layer_key in BASE_REQUIRED_KEYS:
+    for layer_key in base_required_keys:
         try:
             _prepare_layer(layer_key)
         except Exception as exc:
@@ -1091,15 +1182,64 @@ def prepare_region_layers(
                 "notes": str(exc),
             }
 
-    # Optional slope source; derive from prepared dem when absent.
-    try:
-        slope_source_path, slope_source_url = _layer_source("slope", layer_sources, layer_urls)
-        if slope_source_path or slope_source_url:
-            _prepare_layer("slope")
-        else:
-            if dry_run:
-                dem_ready = layers_meta.get("dem", {}).get("validation_status") in {"dry_run", "ok"}
-                if dem_ready:
+    if not landfire_only:
+        # Optional slope source; derive from prepared dem when absent.
+        try:
+            slope_source_path, slope_source_url = _layer_source("slope", layer_sources, layer_urls)
+            if slope_source_path or slope_source_url:
+                _prepare_layer("slope")
+            else:
+                if dry_run:
+                    dem_ready = layers_meta.get("dem", {}).get("validation_status") in {"dry_run", "ok"}
+                    if dem_ready:
+                        files["slope"] = STANDARD_LAYER_FILENAMES["slope"]
+                        layers_meta["slope"] = {
+                            "source_name": "dem.tif",
+                            "source_type": "derived_from_dem",
+                            "source_mode": "derived",
+                            "source_url": None,
+                            "dataset_version": (metadata.get("slope", {}) or {}).get("dataset_version"),
+                            "freshness_timestamp": (metadata.get("slope", {}) or {}).get("freshness_timestamp"),
+                            "downloaded_at": None,
+                            "download_status": "dry_run",
+                            "bytes_downloaded": 0,
+                            "extraction_performed": False,
+                            "extracted_path": None,
+                            "checksum_status": "not_provided",
+                            "retry_count_used": 0,
+                            "timeout_seconds": float(download_timeout),
+                            "clipped_to_bbox": True,
+                            "validation_status": "dry_run",
+                            "notes": "Slope will be derived from dem.tif because no slope source was provided.",
+                        }
+                    else:
+                        layers_meta["slope"] = {
+                            "source_name": "slope",
+                            "source_type": "missing",
+                            "source_mode": "missing",
+                            "source_url": None,
+                            "dataset_version": (metadata.get("slope", {}) or {}).get("dataset_version"),
+                            "freshness_timestamp": (metadata.get("slope", {}) or {}).get("freshness_timestamp"),
+                            "downloaded_at": None,
+                            "download_status": "missing",
+                            "bytes_downloaded": 0,
+                            "extraction_performed": False,
+                            "extracted_path": None,
+                            "checksum_status": "not_provided",
+                            "retry_count_used": 0,
+                            "timeout_seconds": float(download_timeout),
+                            "clipped_to_bbox": False,
+                            "validation_status": "missing",
+                            "notes": "Slope cannot be derived in dry-run because dem is unavailable.",
+                        }
+                        warnings.append("Slope dry-run skipped because dem was not available for derivation.")
+                else:
+                    dem_prepared = region_dir / STANDARD_LAYER_FILENAMES["dem"]
+                    slope_out = region_dir / STANDARD_LAYER_FILENAMES["slope"]
+                    if not dem_prepared.exists():
+                        raise ValueError("Cannot derive slope without prepared dem.tif")
+                    slope_meta = _derive_slope_from_dem(dem_prepared, slope_out)
+                    _validate_prepared_layer(slope_out, "raster", bounds)
                     files["slope"] = STANDARD_LAYER_FILENAMES["slope"]
                     layers_meta["slope"] = {
                         "source_name": "dem.tif",
@@ -1109,7 +1249,7 @@ def prepare_region_layers(
                         "dataset_version": (metadata.get("slope", {}) or {}).get("dataset_version"),
                         "freshness_timestamp": (metadata.get("slope", {}) or {}).get("freshness_timestamp"),
                         "downloaded_at": None,
-                        "download_status": "dry_run",
+                        "download_status": "derived",
                         "bytes_downloaded": 0,
                         "extraction_performed": False,
                         "extracted_path": None,
@@ -1117,80 +1257,32 @@ def prepare_region_layers(
                         "retry_count_used": 0,
                         "timeout_seconds": float(download_timeout),
                         "clipped_to_bbox": True,
-                        "validation_status": "dry_run",
-                        "notes": "Slope will be derived from dem.tif because no slope source was provided.",
+                        "validation_status": "ok",
+                        "notes": "Slope derived from prepared DEM because no slope source was provided.",
+                        **slope_meta,
                     }
-                else:
-                    layers_meta["slope"] = {
-                        "source_name": "slope",
-                        "source_type": "missing",
-                        "source_mode": "missing",
-                        "source_url": None,
-                        "dataset_version": (metadata.get("slope", {}) or {}).get("dataset_version"),
-                        "freshness_timestamp": (metadata.get("slope", {}) or {}).get("freshness_timestamp"),
-                        "downloaded_at": None,
-                        "download_status": "missing",
-                        "bytes_downloaded": 0,
-                        "extraction_performed": False,
-                        "extracted_path": None,
-                        "checksum_status": "not_provided",
-                        "retry_count_used": 0,
-                        "timeout_seconds": float(download_timeout),
-                        "clipped_to_bbox": False,
-                        "validation_status": "missing",
-                        "notes": "Slope cannot be derived in dry-run because dem is unavailable.",
-                    }
-                    warnings.append("Slope dry-run skipped because dem was not available for derivation.")
-            else:
-                dem_prepared = region_dir / STANDARD_LAYER_FILENAMES["dem"]
-                slope_out = region_dir / STANDARD_LAYER_FILENAMES["slope"]
-                if not dem_prepared.exists():
-                    raise ValueError("Cannot derive slope without prepared dem.tif")
-                slope_meta = _derive_slope_from_dem(dem_prepared, slope_out)
-                _validate_prepared_layer(slope_out, "raster", bounds)
-                files["slope"] = STANDARD_LAYER_FILENAMES["slope"]
-                layers_meta["slope"] = {
-                    "source_name": "dem.tif",
-                    "source_type": "derived_from_dem",
-                    "source_mode": "derived",
-                    "source_url": None,
-                    "dataset_version": (metadata.get("slope", {}) or {}).get("dataset_version"),
-                    "freshness_timestamp": (metadata.get("slope", {}) or {}).get("freshness_timestamp"),
-                    "downloaded_at": None,
-                    "download_status": "derived",
-                    "bytes_downloaded": 0,
-                    "extraction_performed": False,
-                    "extracted_path": None,
-                    "checksum_status": "not_provided",
-                    "retry_count_used": 0,
-                    "timeout_seconds": float(download_timeout),
-                    "clipped_to_bbox": True,
-                    "validation_status": "ok",
-                    "notes": "Slope derived from prepared DEM because no slope source was provided.",
-                    **slope_meta,
-                }
-                slope_derived = True
-    except Exception as exc:
-        errors.append(f"slope preparation failed: {exc}")
-        layers_meta["slope"] = {
-            "source_name": "slope",
-            "source_type": "missing",
-            "source_mode": "missing",
-            "source_url": (layer_urls or {}).get("slope"),
-            "dataset_version": (metadata.get("slope", {}) or {}).get("dataset_version"),
-            "freshness_timestamp": (metadata.get("slope", {}) or {}).get("freshness_timestamp"),
-            "downloaded_at": None,
-            "download_status": "error",
-            "bytes_downloaded": 0,
-            "extraction_performed": False,
-            "extracted_path": None,
-            "checksum_status": "not_provided",
-            "retry_count_used": 0,
-            "timeout_seconds": float(download_timeout),
-            "clipped_to_bbox": False,
-            "validation_status": "error",
-            "notes": str(exc),
-        }
+                    slope_derived = True
+        except Exception as exc:
+            errors.append(f"slope preparation failed: {exc}")
+            layers_meta["slope"] = {
+                "source_name": "slope",
+                "source_type": "missing",
+                "source_mode": "missing",
+                "source_url": (layer_urls or {}).get("slope"),
+                "dataset_version": (metadata.get("slope", {}) or {}).get("dataset_version"),
+                "freshness_timestamp": (metadata.get("slope", {}) or {}).get("freshness_timestamp"),
+                "downloaded_at": None,
+                "download_status": "error",
+                "bytes_downloaded": 0,
+                "extraction_performed": False,
+                "extracted_path": None,
+                "checksum_status": "not_provided",
+                "retry_count_used": 0,
+                "timeout_seconds": float(download_timeout),
+                "clipped_to_bbox": False,
+                "validation_status": "error",
+                "notes": str(exc),
+            }
 
     for optional_layer in OPTIONAL_LAYER_KEYS:
         source_path, source_url = _layer_source(optional_layer, layer_sources, layer_urls)
@@ -1244,8 +1336,16 @@ def prepare_region_layers(
         ]
     )
 
-    full_required_missing = [k for k in REQUIRED_REGION_FILES if k not in files]
-    minimum_required_missing = [k for k in MINIMUM_REQUIRED_KEYS if k not in files]
+    if landfire_only:
+        explicit_landfire = [k for k in ("fuel", "canopy") if k in requested_layers]
+        run_required_layers = explicit_landfire if explicit_landfire else ["fuel", "canopy"]
+        minimum_required_layers = explicit_landfire if explicit_landfire else ["fuel"]
+    else:
+        run_required_layers = list(REQUIRED_REGION_FILES)
+        minimum_required_layers = list(MINIMUM_REQUIRED_KEYS)
+
+    full_required_missing = [k for k in run_required_layers if k not in files]
+    minimum_required_missing = [k for k in minimum_required_layers if k not in files]
     required_blockers = minimum_required_missing if (allow_partial or dry_run) else full_required_missing
 
     for layer_key in skipped_layers:
@@ -1317,6 +1417,7 @@ def prepare_region_layers(
             "skip_download": bool(skip_download),
             "auto_discover": bool(auto_discover),
             "cache_dir": str(cache_root),
+            "landfire_only": bool(landfire_only),
         },
         "slope_derived": slope_derived,
         "archives_extracted": archives_extracted,
@@ -1324,6 +1425,7 @@ def prepare_region_layers(
         "notes": [
             "Regional preparation runs offline/admin-only; runtime assessment does not download large GIS data.",
         ],
+        "progress_log": progress_log,
     }
 
     if not dry_run:
