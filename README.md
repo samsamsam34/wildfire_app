@@ -259,6 +259,10 @@ export WF_LAYER_CANOPY_TIF="/path/to/canopy_density.tif"
 export WF_LAYER_MOISTURE_TIF="/path/to/moisture_or_dryness.tif"
 export WF_LAYER_FIRE_PERIMETERS_GEOJSON="/path/to/fire_perimeters.geojson"
 export WF_LAYER_BUILDING_FOOTPRINTS_GEOJSON="/path/to/building_footprints.geojson"
+export WF_REGION_DATA_DIR="./data/regions"
+export WF_USE_PREPARED_REGIONS="true"
+# Optional compatibility fallback for legacy direct paths when no prepared region matches:
+export WF_ALLOW_LEGACY_LAYER_FALLBACK="true"
 
 # Optional provenance/freshness metadata (recommended for trust gating)
 export WF_LAYER_BURN_PROB_VERSION="v2025.10"
@@ -282,6 +286,48 @@ uvicorn backend.main:app --reload
 ```
 
 Frontend file: `frontend/public/index.html`.
+
+## Regional Layer Prep Pipeline (separate from runtime)
+
+Layer ingestion/prep runs **outside** the API app. Runtime scoring reads prepared local region assets and does not download large GIS layers during `/risk/assess`.
+
+Prepare one region locally:
+
+```bash
+python scripts/prepare_region_layers.py \
+  --region-id marin_county_ca \
+  --display-name "Marin County, CA" \
+  --bbox -123.05,37.70,-122.20,38.35 \
+  --dem /path/to/dem.tif \
+  --slope /path/to/slope.tif \
+  --fuel /path/to/fuel.tif \
+  --canopy /path/to/canopy.tif \
+  --fire-perimeters /path/to/fire_perimeters.geojson \
+  --building-footprints /path/to/building_footprints.geojson
+```
+
+Prepared region layout:
+
+```text
+data/regions/<region_id>/
+  dem.tif
+  slope.tif
+  fuel.tif
+  canopy.tif
+  fire_perimeters.geojson
+  building_footprints.geojson
+  manifest.json
+```
+
+`manifest.json` stores region metadata (bounds/CRS/status), per-layer source metadata, freshness timestamps, and file mappings.
+
+Runtime behavior:
+- geocode address
+- resolve region by lat/lon from `manifest.json` bounds
+- load prepared local files for that region
+- score deterministically using local assets
+
+If no prepared region matches and no legacy direct layer paths are configured, assessment returns explicit insufficient-data blockers (`region_not_prepared`) instead of attempting live large-data ingestion.
 
 ## Dependencies
 

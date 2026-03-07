@@ -1002,6 +1002,10 @@ def _build_score_eligibility(
     assumptions: AssumptionsBlock,
     geocode_verified: bool,
 ) -> tuple[ScoreEligibility, ScoreEligibility, ScoreEligibility, AssessmentStatus, list[str]]:
+    region_status = ""
+    if isinstance(property_level_context, dict):
+        region_status = str(property_level_context.get("region_status") or "")
+
     burn_or_hazard = getattr(context, "burn_probability_index", None) is not None or getattr(
         context, "hazard_severity_index", None
     ) is not None
@@ -1012,6 +1016,14 @@ def _build_score_eligibility(
     site_caveats: list[str] = []
     if not geocode_verified:
         site_blockers.append("Verified geocode unavailable")
+    if region_status == "region_not_prepared":
+        site_blockers.append("Region not prepared for this location; initialize regional layers.")
+        site_caveats.append("Site Hazard is unavailable until regional layers are prepared.")
+    elif region_status == "invalid_manifest":
+        site_blockers.append("Prepared region manifest is invalid or incomplete.")
+        site_caveats.append("Site Hazard is limited by incomplete prepared-region files.")
+    elif region_status == "legacy_fallback":
+        site_caveats.append("Site Hazard used legacy direct layer paths instead of prepared region data.")
     if not burn_or_hazard:
         site_blockers.append("Burn probability and hazard layers unavailable")
     if not slope_ok:
@@ -1058,6 +1070,8 @@ def _build_score_eligibility(
     home_caveats: list[str] = []
     if not geocode_verified:
         home_blockers.append("Verified geocode unavailable")
+    if region_status == "region_not_prepared":
+        home_blockers.append("Region not prepared for this location; property-level context unavailable")
     if not structure_context and not ring_signal:
         home_blockers.append("Structure context unavailable and footprint/ring context unavailable")
     if not near_structure_signal:
@@ -1092,6 +1106,8 @@ def _build_score_eligibility(
         readiness_blockers.append("Site Hazard evidence is insufficient")
     if home_status == "insufficient":
         readiness_blockers.append("Home Ignition Vulnerability evidence is insufficient")
+    if region_status == "region_not_prepared":
+        readiness_blockers.append("Region not prepared for this location")
     if known_structure_count < 2:
         readiness_blockers.append("Too many unknown structure facts for readiness rules")
     elif known_structure_count < 3:
@@ -1667,6 +1683,15 @@ def _run_assessment(
         scoring_notes.append("Building footprint not found — vulnerability estimated using point context.")
     else:
         scoring_notes.append("Structure ring metrics were derived from building-footprint context.")
+    region_status = str(property_level_context.get("region_status") or "")
+    if region_status == "region_not_prepared":
+        scoring_notes.append(
+            "Region not prepared for this location — initialize regional layers before high-confidence scoring."
+        )
+    elif region_status == "legacy_fallback":
+        scoring_notes.append("Assessment used legacy direct layer paths because no prepared region matched this location.")
+    elif region_status == "invalid_manifest":
+        scoring_notes.append("Prepared region manifest is incomplete; assessment used partial regional coverage.")
     if data_provenance.heuristic_inputs_used:
         scoring_notes.append(
             "Heuristic inputs used: " + ", ".join(data_provenance.heuristic_inputs_used[:6]) + "."

@@ -9,6 +9,11 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from backend.building_footprints import BuildingFootprintClient, compute_structure_rings
+from backend.region_registry import (
+    find_region_for_point,
+    resolve_region_file,
+    validate_region_files,
+)
 
 try:
     import numpy as np
@@ -50,6 +55,7 @@ class WildfireContext:
     assumptions: List[str] = field(default_factory=list)
     structure_ring_metrics: Dict[str, Dict[str, float | None]] = field(default_factory=dict)
     property_level_context: Dict[str, Any] = field(default_factory=dict)
+    region_context: Dict[str, Any] = field(default_factory=dict)
 
 
 def compute_environmental_data_completeness(context: WildfireContext) -> float:
@@ -85,7 +91,7 @@ class WildfireDataClient:
     """
 
     def __init__(self) -> None:
-        self.paths = {
+        self.base_paths = {
             "burn_prob": os.getenv("WF_LAYER_BURN_PROB_TIF", ""),
             "hazard": os.getenv("WF_LAYER_HAZARD_SEVERITY_TIF", ""),
             "slope": os.getenv("WF_LAYER_SLOPE_TIF", ""),
@@ -95,6 +101,20 @@ class WildfireDataClient:
             "canopy": os.getenv("WF_LAYER_CANOPY_TIF", ""),
             "moisture": os.getenv("WF_LAYER_MOISTURE_TIF", ""),
             "perimeters": os.getenv("WF_LAYER_FIRE_PERIMETERS_GEOJSON", ""),
+            "footprints": os.getenv("WF_LAYER_BUILDING_FOOTPRINTS_GEOJSON", ""),
+        }
+        # Active runtime paths for the most recent collect_context() call.
+        self.paths = dict(self.base_paths)
+        self.region_data_dir = os.getenv("WF_REGION_DATA_DIR", str(Path("data") / "regions"))
+        self.use_prepared_regions = os.getenv("WF_USE_PREPARED_REGIONS", "true").strip().lower() not in {
+            "0",
+            "false",
+            "no",
+        }
+        self.allow_legacy_layer_fallback = os.getenv("WF_ALLOW_LEGACY_LAYER_FALLBACK", "true").strip().lower() not in {
+            "0",
+            "false",
+            "no",
         }
         self.footprints = BuildingFootprintClient()
 
@@ -117,6 +137,105 @@ class WildfireDataClient:
     @staticmethod
     def _file_exists(path: str) -> bool:
         return bool(path) and Path(path).exists()
+
+    def _legacy_layer_configured(self, configured_paths: dict[str, str]) -> bool:
+        configured = [
+            configured_paths.get("dem"),
+            configured_paths.get("slope"),
+            configured_paths.get("fuel"),
+            configured_paths.get("canopy"),
+            configured_paths.get("perimeters"),
+            configured_paths.get("footprints"),
+        ]
+        return any(self._file_exists(path or "") for path in configured)
+
+    def _resolve_runtime_layer_paths(
+        self, lat: float, lon: float
+    ) -> tuple[dict[str, str], dict[str, Any], list[str], list[str]]:
+        assumptions: list[str] = []
+        sources: list[str] = []
+        configured_paths = dict(self.base_paths)
+        if self.paths and self.paths != self.base_paths:
+            configured_paths.update(self.paths)
+        runtime_paths = dict(configured_paths)
+        region_context: dict[str, Any] = {
+            "region_status": "legacy_fallback",
+            "region_id": None,
+            "region_display_name": None,
+            "manifest_path": None,
+        }
+
+        region_manifest: dict[str, Any] | None = None
+        if self.use_prepared_regions:
+            region_manifest = find_region_for_point(lat, lon, base_dir=self.region_data_dir)
+
+        if region_manifest:
+            valid, missing = validate_region_files(region_manifest, base_dir=self.region_data_dir)
+            if valid:
+                region_context = {
+                    "region_status": "prepared",
+                    "region_id": region_manifest.get("region_id"),
+                    "region_display_name": region_manifest.get("display_name"),
+                    "manifest_path": region_manifest.get("_manifest_path"),
+                }
+                sources.append(f"Prepared region: {region_manifest.get('region_id')}")
+                layer_key_map = {
+                    "burn_prob": ("burn_probability", "burn_prob"),
+                    "hazard": ("wildfire_hazard", "hazard"),
+                    "slope": ("slope",),
+                    "aspect": ("aspect",),
+                    "dem": ("dem",),
+                    "fuel": ("fuel",),
+                    "canopy": ("canopy",),
+                    "moisture": ("moisture",),
+                    "perimeters": ("fire_perimeters", "perimeters"),
+                    "footprints": ("building_footprints", "footprints"),
+                }
+                for runtime_key, manifest_keys in layer_key_map.items():
+                    resolved: str | None = None
+                    for manifest_key in manifest_keys:
+                        resolved = resolve_region_file(region_manifest, manifest_key, base_dir=self.region_data_dir)
+                        if resolved:
+                            break
+                    if resolved:
+                        runtime_paths[runtime_key] = resolved
+                return runtime_paths, region_context, assumptions, sources
+
+            region_context = {
+                "region_status": "invalid_manifest",
+                "region_id": region_manifest.get("region_id"),
+                "region_display_name": region_manifest.get("display_name"),
+                "manifest_path": region_manifest.get("_manifest_path"),
+            }
+            assumptions.append("Prepared region manifest is missing required files for this area.")
+            assumptions.extend([f"Region file validation: {reason}" for reason in missing[:5]])
+
+        if self.allow_legacy_layer_fallback and self._legacy_layer_configured(configured_paths):
+            if not region_manifest:
+                assumptions.append("Prepared region not found for location; using legacy direct layer paths.")
+                region_context = {
+                    "region_status": "legacy_fallback",
+                    "region_id": None,
+                    "region_display_name": None,
+                    "manifest_path": None,
+                }
+            sources.append("Legacy direct layer paths")
+            return runtime_paths, region_context, assumptions, sources
+
+        assumptions.append(
+            "Region not prepared for this location; initialize prepared regional layers before high-confidence scoring."
+        )
+        return (
+            {k: "" for k in runtime_paths.keys()},
+            {
+                "region_status": "region_not_prepared",
+                "region_id": None,
+                "region_display_name": None,
+                "manifest_path": None,
+            },
+            assumptions,
+            sources,
+        )
 
     @lru_cache(maxsize=16)
     def _open_raster(self, path: str):
@@ -172,8 +291,8 @@ class WildfireDataClient:
         except Exception:
             return []
 
-    def _summarize_ring_canopy(self, ring_geometry: Any) -> dict[str, float] | None:
-        canopy_vals = self._polygon_raster_values(self.paths["canopy"], ring_geometry)
+    def _summarize_ring_canopy(self, ring_geometry: Any, canopy_path: str) -> dict[str, float] | None:
+        canopy_vals = self._polygon_raster_values(canopy_path, ring_geometry)
         if not canopy_vals:
             return None
 
@@ -189,8 +308,8 @@ class WildfireDataClient:
             "vegetation_density": round(vegetation_density, 1),
         }
 
-    def _summarize_ring_fuel_presence(self, ring_geometry: Any) -> float | None:
-        fuel_vals = self._polygon_raster_values(self.paths["fuel"], ring_geometry)
+    def _summarize_ring_fuel_presence(self, ring_geometry: Any, fuel_path: str) -> float | None:
+        fuel_vals = self._polygon_raster_values(fuel_path, ring_geometry)
         if not fuel_vals:
             return None
 
@@ -206,12 +325,19 @@ class WildfireDataClient:
         self,
         lat: float,
         lon: float,
+        *,
+        canopy_path: str,
+        fuel_path: str,
+        footprint_path: str | None = None,
     ) -> tuple[dict[str, Any], list[str], list[str]]:
         assumptions: list[str] = []
         sources: list[str] = []
+        footprint_client = self.footprints
+        if footprint_path and footprint_path != getattr(self.footprints, "path", None):
+            footprint_client = BuildingFootprintClient(path=footprint_path)
 
         try:
-            result = self.footprints.get_building_footprint(lat, lon)
+            result = footprint_client.get_building_footprint(lat, lon)
         except Exception as exc:  # pragma: no cover - defensive guard for malformed sources
             assumptions.append(f"Building footprint lookup failed: {exc}")
             assumptions.append("Building footprint analysis unavailable; using point-based vegetation context.")
@@ -267,8 +393,8 @@ class WildfireDataClient:
                 ring_metrics[zone_aliases[ring_key]] = dict(metrics)
                 continue
 
-            canopy_stats = self._summarize_ring_canopy(ring_geom)
-            fuel_presence = self._summarize_ring_fuel_presence(ring_geom)
+            canopy_stats = self._summarize_ring_canopy(ring_geom, canopy_path=canopy_path)
+            fuel_presence = self._summarize_ring_fuel_presence(ring_geom, fuel_path=fuel_path)
 
             if canopy_stats is None:
                 metrics = {
@@ -484,6 +610,10 @@ class WildfireDataClient:
     def collect_context(self, lat: float, lon: float) -> WildfireContext:
         assumptions: List[str] = []
         sources: List[str] = []
+        runtime_paths, region_context, runtime_assumptions, runtime_sources = self._resolve_runtime_layer_paths(lat, lon)
+        assumptions.extend(runtime_assumptions)
+        sources.extend(runtime_sources)
+        self.paths = dict(runtime_paths)
         environmental_layer_status: dict[str, str] = {
             "burn_probability": "missing",
             "hazard": "missing",
@@ -498,6 +628,10 @@ class WildfireDataClient:
             "footprint_status": "not_found",
             "fallback_mode": "point_based",
             "ring_metrics": None,
+            "region_status": region_context.get("region_status"),
+            "region_id": region_context.get("region_id"),
+            "region_display_name": region_context.get("region_display_name"),
+            "region_manifest_path": region_context.get("manifest_path"),
         }
         structure_ring_metrics: dict[str, dict[str, float | None]] = {}
 
@@ -526,15 +660,30 @@ class WildfireDataClient:
                 assumptions=assumptions,
                 structure_ring_metrics=structure_ring_metrics,
                 property_level_context=property_level_context,
+                region_context=region_context,
             )
 
-        ring_context, ring_assumptions, ring_sources = self._compute_structure_ring_metrics(lat, lon)
+        ring_context, ring_assumptions, ring_sources = self._compute_structure_ring_metrics(
+            lat,
+            lon,
+            canopy_path=runtime_paths.get("canopy", ""),
+            fuel_path=runtime_paths.get("fuel", ""),
+            footprint_path=runtime_paths.get("footprints"),
+        )
         property_level_context = ring_context
+        property_level_context.update(
+            {
+                "region_status": region_context.get("region_status"),
+                "region_id": region_context.get("region_id"),
+                "region_display_name": region_context.get("region_display_name"),
+                "region_manifest_path": region_context.get("manifest_path"),
+            }
+        )
         structure_ring_metrics = ring_context.get("ring_metrics", {}) or {}
         assumptions.extend(ring_assumptions)
         sources.extend(ring_sources)
 
-        burn_prob, burn_status = self._sample_layer_value(self.paths["burn_prob"], lat, lon)
+        burn_prob, burn_status = self._sample_layer_value(runtime_paths["burn_prob"], lat, lon)
         environmental_layer_status["burn_probability"] = burn_status
         if burn_prob is None:
             assumptions.append("Burn probability layer unavailable at property location.")
@@ -543,7 +692,7 @@ class WildfireDataClient:
             burn_probability_index = self._to_index(burn_prob, 0.0, 1.0 if burn_prob <= 1.0 else 100.0)
             sources.append("Burn probability raster")
 
-        hazard, hazard_status = self._sample_layer_value(self.paths["hazard"], lat, lon)
+        hazard, hazard_status = self._sample_layer_value(runtime_paths["hazard"], lat, lon)
         environmental_layer_status["hazard"] = hazard_status
         if hazard is None:
             assumptions.append("Wildfire hazard severity layer unavailable at property location.")
@@ -552,10 +701,10 @@ class WildfireDataClient:
             hazard_severity_index = self._to_index(hazard, 0.0, 5.0 if hazard <= 5.0 else 100.0)
             sources.append("Wildfire hazard severity raster")
 
-        slope, slope_status = self._sample_layer_value(self.paths["slope"], lat, lon)
-        aspect, aspect_status = self._sample_layer_value(self.paths["aspect"], lat, lon)
+        slope, slope_status = self._sample_layer_value(runtime_paths["slope"], lat, lon)
+        aspect, aspect_status = self._sample_layer_value(runtime_paths["aspect"], lat, lon)
         if slope is None or aspect is None:
-            dem_path = self.paths["dem"]
+            dem_path = runtime_paths["dem"]
             if self._file_exists(dem_path):
                 derived_slope, derived_aspect = self._derive_slope_aspect_from_dem(dem_path, lat, lon)
                 if slope is None and derived_slope is not None:
@@ -589,7 +738,7 @@ class WildfireDataClient:
             if "DEM-derived slope/aspect" not in sources:
                 sources.append("Aspect raster")
 
-        fuel_path = self.paths["fuel"]
+        fuel_path = runtime_paths["fuel"]
         fuel_samples = self._sample_circle(fuel_path, lat, lon, radius_m=100.0) if self._file_exists(fuel_path) else []
         if fuel_samples:
             fuel_index = self._fuel_combustibility_index(fuel_samples)
@@ -602,7 +751,7 @@ class WildfireDataClient:
             environmental_layer_status["fuel"] = "missing" if not self._file_exists(fuel_path) else "error"
             assumptions.append("Fuel model unavailable within 100m neighborhood.")
 
-        canopy_path = self.paths["canopy"]
+        canopy_path = runtime_paths["canopy"]
         canopy_samples = self._sample_circle(canopy_path, lat, lon, radius_m=100.0) if self._file_exists(canopy_path) else []
         if canopy_samples:
             canopy_mean = sum(canopy_samples) / len(canopy_samples)
@@ -616,7 +765,7 @@ class WildfireDataClient:
             environmental_layer_status["canopy"] = "missing" if not self._file_exists(canopy_path) else "error"
             assumptions.append("Canopy density unavailable within 100m neighborhood.")
 
-        moisture, _moisture_status = self._sample_layer_value(self.paths["moisture"], lat, lon)
+        moisture, _moisture_status = self._sample_layer_value(runtime_paths["moisture"], lat, lon)
         if moisture is None:
             moisture_index = None
             assumptions.append("Moisture/fuel dryness raster missing; dryness could not be directly measured.")
@@ -631,7 +780,7 @@ class WildfireDataClient:
             assumptions.append("Fuel/canopy rasters missing; wildland distance unavailable.")
 
         historic_fire_distance, historic_fire_index, fire_history_status = self._historical_fire_metrics(
-            lat, lon, self.paths["perimeters"]
+            lat, lon, runtime_paths["perimeters"]
         )
         environmental_layer_status["fire_history"] = fire_history_status
         if fire_history_status == "ok":
@@ -680,4 +829,5 @@ class WildfireDataClient:
             assumptions=assumptions,
             structure_ring_metrics=structure_ring_metrics,
             property_level_context=property_level_context,
+            region_context=region_context,
         )

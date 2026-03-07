@@ -15,9 +15,11 @@ except Exception:  # pragma: no cover - optional in constrained test runners
 import backend.auth as auth
 import backend.main as app_main
 from backend.building_footprints import BuildingFootprintClient, BuildingFootprintResult, compute_structure_rings
+from backend.data_prep.prepare_region import prepare_region_layers
 from backend.database import AssessmentStore
 from backend.mitigation import build_mitigation_plan
 from backend.models import AssumptionsBlock, PropertyAttributes
+from backend.region_registry import find_region_for_point, list_prepared_regions, load_region_manifest
 from backend.version import LEGACY_MODEL_VERSION, MODEL_VERSION
 from backend.wildfire_data import WildfireContext, WildfireDataClient, compute_environmental_data_completeness
 
@@ -1187,16 +1189,21 @@ def test_structure_ring_summary_pipeline(monkeypatch):
     monkeypatch.setattr(
         client,
         "_summarize_ring_canopy",
-        lambda _geom: {
+        lambda _geom, canopy_path: {
             "canopy_mean": 62.0,
             "canopy_max": 81.0,
             "coverage_pct": 58.0,
             "vegetation_density": 70.0,
         },
     )
-    monkeypatch.setattr(client, "_summarize_ring_fuel_presence", lambda _geom: 50.0)
+    monkeypatch.setattr(client, "_summarize_ring_fuel_presence", lambda _geom, fuel_path: 50.0)
 
-    context_blob, assumptions, sources = client._compute_structure_ring_metrics(40.0, -105.0)
+    context_blob, assumptions, sources = client._compute_structure_ring_metrics(
+        40.0,
+        -105.0,
+        canopy_path="canopy.tif",
+        fuel_path="fuel.tif",
+    )
     metrics = context_blob["ring_metrics"]
 
     assert context_blob["footprint_used"] is True
@@ -1237,6 +1244,139 @@ def test_context_collect_fallback_when_footprint_unavailable(monkeypatch):
     assert ctx.property_level_context.get("footprint_used") is False
     assert ctx.property_level_context.get("footprint_status") in {"not_found", "provider_unavailable"}
     assert "ring_metrics" in ctx.property_level_context
+
+
+def _make_region_sources(tmp_path: Path) -> dict[str, str]:
+    files = {
+        "dem": tmp_path / "src_dem.tif",
+        "slope": tmp_path / "src_slope.tif",
+        "fuel": tmp_path / "src_fuel.tif",
+        "canopy": tmp_path / "src_canopy.tif",
+        "fire_perimeters": tmp_path / "src_fire_perimeters.geojson",
+        "building_footprints": tmp_path / "src_building_footprints.geojson",
+        "burn_probability": tmp_path / "src_burn_probability.tif",
+        "wildfire_hazard": tmp_path / "src_hazard.tif",
+    }
+    files["fire_perimeters"].write_text(
+        json.dumps({"type": "FeatureCollection", "features": []}),
+        encoding="utf-8",
+    )
+    files["building_footprints"].write_text(
+        json.dumps({"type": "FeatureCollection", "features": []}),
+        encoding="utf-8",
+    )
+    for key in ["dem", "slope", "fuel", "canopy", "burn_probability", "wildfire_hazard"]:
+        files[key].write_bytes(b"placeholder")
+    return {k: str(v) for k, v in files.items()}
+
+
+def test_prepare_region_manifest_creation_and_discovery(tmp_path):
+    region_root = tmp_path / "regions"
+    sources = _make_region_sources(tmp_path)
+    manifest = prepare_region_layers(
+        region_id="boulder_county_co",
+        display_name="Boulder County, CO",
+        bounds={"min_lon": -106.0, "min_lat": 39.5, "max_lon": -104.5, "max_lat": 40.5},
+        layer_sources=sources,
+        region_data_dir=region_root,
+    )
+    manifest_path = region_root / "boulder_county_co" / "manifest.json"
+    assert manifest_path.exists()
+    assert manifest["files"]["dem"] == "dem.tif"
+    assert manifest["files"]["building_footprints"] == "building_footprints.geojson"
+
+    loaded = load_region_manifest("boulder_county_co", base_dir=str(region_root))
+    assert loaded is not None
+    assert loaded["region_id"] == "boulder_county_co"
+
+    listed = list_prepared_regions(base_dir=str(region_root))
+    assert len(listed) == 1
+    assert listed[0]["display_name"] == "Boulder County, CO"
+
+    found = find_region_for_point(40.0, -105.2, base_dir=str(region_root))
+    assert found is not None
+    assert found["region_id"] == "boulder_county_co"
+
+
+def test_runtime_resolves_prepared_region_files(tmp_path):
+    region_root = tmp_path / "regions"
+    sources = _make_region_sources(tmp_path)
+    prepare_region_layers(
+        region_id="marin_county_ca",
+        display_name="Marin County, CA",
+        bounds={"min_lon": -123.0, "min_lat": 37.7, "max_lon": -122.2, "max_lat": 38.3},
+        layer_sources=sources,
+        region_data_dir=region_root,
+    )
+
+    client = WildfireDataClient()
+    client.region_data_dir = str(region_root)
+    client.use_prepared_regions = True
+    client.allow_legacy_layer_fallback = False
+    client.base_paths = {k: "" for k in client.base_paths.keys()}
+    client.paths = dict(client.base_paths)
+
+    paths, region_context, assumptions, sources_used = client._resolve_runtime_layer_paths(38.0, -122.7)
+    assert region_context["region_status"] == "prepared"
+    assert region_context["region_id"] == "marin_county_ca"
+    assert paths["dem"].endswith("dem.tif")
+    assert paths["fuel"].endswith("fuel.tif")
+    assert paths["perimeters"].endswith("fire_perimeters.geojson")
+    assert not any("region not prepared" in a.lower() for a in assumptions)
+    assert any("Prepared region" in src for src in sources_used)
+
+
+def test_runtime_region_not_prepared_returns_insufficient_data(monkeypatch, tmp_path):
+    auth.API_KEYS = set()
+    monkeypatch.setattr(app_main.geocoder, "geocode", lambda _: (39.7392, -104.9903, "test-geocoder"))
+    monkeypatch.setattr(app_main, "store", AssessmentStore(str(tmp_path / "region_not_prepared.db")))
+
+    runtime_client = WildfireDataClient()
+    runtime_client.region_data_dir = str(tmp_path / "empty_regions")
+    runtime_client.use_prepared_regions = True
+    runtime_client.allow_legacy_layer_fallback = False
+    runtime_client.base_paths = {k: "" for k in runtime_client.base_paths.keys()}
+    runtime_client.paths = dict(runtime_client.base_paths)
+    monkeypatch.setattr(app_main, "wildfire_data", runtime_client)
+
+    response = client.post(
+        "/risk/assess",
+        json=_payload("No Prepared Region Address", {"roof_type": "class a"}),
+        headers=_headers(),
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["assessment_status"] == "insufficient_data"
+    assert body["property_level_context"]["region_status"] == "region_not_prepared"
+    assert any("region not prepared" in blocker.lower() for blocker in body["assessment_blockers"])
+    assert any("region not prepared" in note.lower() for note in body["scoring_notes"])
+
+
+def test_legacy_layer_env_fallback_when_region_missing(tmp_path):
+    legacy = _make_region_sources(tmp_path)
+    client = WildfireDataClient()
+    client.region_data_dir = str(tmp_path / "missing_regions")
+    client.use_prepared_regions = True
+    client.allow_legacy_layer_fallback = True
+    client.base_paths = {
+        "burn_prob": legacy["burn_probability"],
+        "hazard": legacy["wildfire_hazard"],
+        "slope": legacy["slope"],
+        "aspect": "",
+        "dem": legacy["dem"],
+        "fuel": legacy["fuel"],
+        "canopy": legacy["canopy"],
+        "moisture": "",
+        "perimeters": legacy["fire_perimeters"],
+        "footprints": legacy["building_footprints"],
+    }
+    client.paths = dict(client.base_paths)
+
+    paths, region_context, assumptions, _sources = client._resolve_runtime_layer_paths(40.1, -105.2)
+    assert region_context["region_status"] == "legacy_fallback"
+    assert paths["dem"] == legacy["dem"]
+    assert paths["canopy"] == legacy["canopy"]
+    assert any("legacy direct layer paths" in a.lower() for a in assumptions)
 
 
 def test_ring_metrics_influence_risk_and_mitigation():
