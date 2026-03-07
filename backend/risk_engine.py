@@ -301,6 +301,36 @@ class RiskEngine:
             weighted_contributions=weighted_contributions,
         )
 
+    def _group_weight(self, group: set[str]) -> float:
+        return sum(self.config.submodel_weights.get(name, 0.0) for name in group)
+
+    def _group_score(self, risk: RiskComputation, group: set[str]) -> float:
+        weight = self._group_weight(group)
+        if weight <= 0:
+            return 0.0
+
+        contribution_sum = sum(
+            risk.weighted_contributions.get(name, {}).get("contribution", 0.0)
+            for name in group
+        )
+        return round(max(0.0, min(100.0, contribution_sum / weight)), 1)
+
+    def compute_site_hazard_score(self, risk: RiskComputation) -> float:
+        return self._group_score(risk, ENVIRONMENT_SUBMODELS)
+
+    def compute_home_ignition_vulnerability_score(self, risk: RiskComputation) -> float:
+        return self._group_score(risk, STRUCTURE_SUBMODELS)
+
+    def compute_blended_wildfire_score(self, site_hazard_score: float, home_ignition_vulnerability_score: float) -> float:
+        env_weight = self._group_weight(ENVIRONMENT_SUBMODELS)
+        struct_weight = self._group_weight(STRUCTURE_SUBMODELS)
+        denom = env_weight + struct_weight
+        if denom <= 0:
+            return 0.0
+
+        blended = (site_hazard_score * env_weight + home_ignition_vulnerability_score * struct_weight) / denom
+        return round(max(0.0, min(100.0, blended)), 1)
+
     def compute_insurance_readiness(self, attrs: PropertyAttributes, context: WildfireContext, risk: RiskComputation) -> ReadinessRuleResult:
         p = self.config.readiness_penalties
         b = self.config.readiness_bonuses

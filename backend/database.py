@@ -1028,28 +1028,48 @@ class AssessmentStore:
         payload.setdefault(
             "site_hazard_section",
             {
+                "label": "Site Hazard",
+                "score": payload.get("site_hazard_score", 0.0),
                 "summary": "",
+                "explanation": "What the landscape is doing around your property.",
                 "key_drivers": payload.get("top_risk_drivers", [])[:3],
                 "protective_factors": payload.get("top_protective_factors", [])[:3],
+                "top_next_actions": [m.get("title", "") for m in payload.get("mitigation_plan", [])[:3]],
                 "next_actions": [m.get("title", "") for m in payload.get("mitigation_plan", [])[:3]],
             },
         )
         payload.setdefault(
             "home_ignition_vulnerability_section",
             {
+                "label": "Home Ignition Vulnerability",
+                "score": payload.get("home_ignition_vulnerability_score", 0.0),
                 "summary": "",
+                "explanation": "What the home and immediate surroundings are contributing.",
                 "key_drivers": payload.get("property_findings", [])[:3] or payload.get("top_risk_drivers", [])[:3],
                 "protective_factors": payload.get("top_protective_factors", [])[:3],
+                "top_next_actions": [m.get("title", "") for m in payload.get("mitigation_plan", [])[:3]],
                 "next_actions": [m.get("title", "") for m in payload.get("mitigation_plan", [])[:3]],
             },
         )
         payload.setdefault(
             "insurance_readiness_section",
             {
+                "label": "Insurance Readiness",
+                "score": payload.get("insurance_readiness_score", 0.0),
                 "summary": payload.get("readiness_summary", ""),
+                "explanation": "What an insurer is likely to care about next.",
                 "key_drivers": payload.get("readiness_blockers", [])[:3],
                 "protective_factors": payload.get("top_protective_factors", [])[:3],
+                "top_next_actions": [m.get("title", "") for m in payload.get("mitigation_plan", [])[:3]],
                 "next_actions": [m.get("title", "") for m in payload.get("mitigation_plan", [])[:3]],
+            },
+        )
+        payload.setdefault(
+            "score_summaries",
+            {
+                "site_hazard": payload.get("site_hazard_section", {}),
+                "home_ignition_vulnerability": payload.get("home_ignition_vulnerability_section", {}),
+                "insurance_readiness": payload.get("insurance_readiness_section", {}),
             },
         )
 
@@ -1060,9 +1080,27 @@ class AssessmentStore:
         payload.setdefault(
             "risk_scores",
             {
+                "site_hazard_score": payload["site_hazard_score"],
+                "home_ignition_vulnerability_score": payload["home_ignition_vulnerability_score"],
                 "wildfire_risk_score": payload["wildfire_risk_score"],
                 "insurance_readiness_score": payload["insurance_readiness_score"],
             },
+        )
+        payload["risk_scores"].setdefault("site_hazard_score", payload["site_hazard_score"])
+        payload["risk_scores"].setdefault(
+            "home_ignition_vulnerability_score",
+            payload["home_ignition_vulnerability_score"],
+        )
+        payload["risk_scores"].setdefault("wildfire_risk_score", payload["wildfire_risk_score"])
+        payload["risk_scores"].setdefault("insurance_readiness_score", payload["insurance_readiness_score"])
+        payload["score_summaries"].setdefault("site_hazard", payload.get("site_hazard_section", {}))
+        payload["score_summaries"].setdefault(
+            "home_ignition_vulnerability",
+            payload.get("home_ignition_vulnerability_section", {}),
+        )
+        payload["score_summaries"].setdefault(
+            "insurance_readiness",
+            payload.get("insurance_readiness_section", {}),
         )
         payload.setdefault(
             "assumptions",

@@ -77,6 +77,8 @@ class Coordinates(BaseModel):
 
 
 class RiskScores(BaseModel):
+    site_hazard_score: float
+    home_ignition_vulnerability_score: float
     wildfire_risk_score: float
     insurance_readiness_score: float
 
@@ -136,10 +138,20 @@ class ConfidenceBlock(BaseModel):
 
 
 class ScoreSectionSummary(BaseModel):
+    label: str = ""
+    score: float = 0.0
     summary: str = ""
+    explanation: str = ""
     key_drivers: List[str] = Field(default_factory=list)
     protective_factors: List[str] = Field(default_factory=list)
+    top_next_actions: List[str] = Field(default_factory=list)
     next_actions: List[str] = Field(default_factory=list)
+
+
+class ScoreSummaries(BaseModel):
+    site_hazard: ScoreSectionSummary = Field(default_factory=ScoreSectionSummary)
+    home_ignition_vulnerability: ScoreSectionSummary = Field(default_factory=ScoreSectionSummary)
+    insurance_readiness: ScoreSectionSummary = Field(default_factory=ScoreSectionSummary)
 
 
 class SubmodelScore(BaseModel):
@@ -241,6 +253,7 @@ class AssessmentResult(BaseModel):
     readiness_blockers: List[str] = Field(default_factory=list)
     readiness_penalties: Dict[str, float] = Field(default_factory=dict)
     readiness_summary: str = ""
+    score_summaries: ScoreSummaries = Field(default_factory=ScoreSummaries)
     site_hazard_section: ScoreSectionSummary = Field(default_factory=ScoreSectionSummary)
     home_ignition_vulnerability_section: ScoreSectionSummary = Field(default_factory=ScoreSectionSummary)
     insurance_readiness_section: ScoreSectionSummary = Field(default_factory=ScoreSectionSummary)

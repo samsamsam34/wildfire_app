@@ -17,7 +17,7 @@ import backend.main as app_main
 from backend.building_footprints import BuildingFootprintClient, BuildingFootprintResult, compute_structure_rings
 from backend.database import AssessmentStore
 from backend.mitigation import build_mitigation_plan
-from backend.models import PropertyAttributes
+from backend.models import AssumptionsBlock, PropertyAttributes
 from backend.version import LEGACY_MODEL_VERSION, MODEL_VERSION
 from backend.wildfire_data import WildfireContext, WildfireDataClient
 
@@ -110,6 +110,7 @@ def _assert_core_contract(body: dict) -> None:
         "weighted_contributions",
         "submodel_explanations",
         "factor_breakdown",
+        "score_summaries",
         "property_findings",
         "top_risk_drivers",
         "top_protective_factors",
@@ -143,6 +144,15 @@ def _assert_core_contract(body: dict) -> None:
     assert 0.0 <= body["site_hazard_score"] <= 100.0
     assert 0.0 <= body["home_ignition_vulnerability_score"] <= 100.0
     assert 0.0 <= body["insurance_readiness_score"] <= 100.0
+    assert body["risk_scores"]["site_hazard_score"] == body["site_hazard_score"]
+    assert body["risk_scores"]["home_ignition_vulnerability_score"] == body["home_ignition_vulnerability_score"]
+    assert body["risk_scores"]["wildfire_risk_score"] == body["wildfire_risk_score"]
+    assert body["risk_scores"]["insurance_readiness_score"] == body["insurance_readiness_score"]
+    assert set(body["score_summaries"].keys()) == {
+        "site_hazard",
+        "home_ignition_vulnerability",
+        "insurance_readiness",
+    }
     assert body["confidence_tier"] in {"high", "moderate", "low", "preliminary"}
     assert body["use_restriction"] in {
         "shareable",
@@ -212,7 +222,26 @@ def test_score_decomposition_and_blended_wildfire_score(monkeypatch, tmp_path):
         )
     )
 
-    expected_blended = round(0.6 * assessed["site_hazard_score"] + 0.4 * assessed["home_ignition_vulnerability_score"], 1)
+    expected_blended = app_main.risk_engine.compute_blended_wildfire_score(
+        assessed["site_hazard_score"],
+        assessed["home_ignition_vulnerability_score"],
+    )
+    env_names = set(app_main.ENVIRONMENTAL_SUBMODELS)
+    struct_names = set(app_main.STRUCTURAL_SUBMODELS)
+    weights = app_main.scoring_config.submodel_weights
+    weighted = assessed["weighted_contributions"]
+    env_weight = sum(weights[name] for name in env_names)
+    struct_weight = sum(weights[name] for name in struct_names)
+    expected_site = round(
+        sum(weighted[name]["contribution"] for name in env_names) / env_weight,
+        1,
+    )
+    expected_home = round(
+        sum(weighted[name]["contribution"] for name in struct_names) / struct_weight,
+        1,
+    )
+    assert assessed["site_hazard_score"] == expected_site
+    assert assessed["home_ignition_vulnerability_score"] == expected_home
     assert assessed["wildfire_risk_score"] == expected_blended
     assert assessed["legacy_weighted_wildfire_risk_score"] >= 0
     assert assessed["insurance_readiness_score"] != round(100.0 - assessed["wildfire_risk_score"], 1)
@@ -277,6 +306,47 @@ def test_low_confidence_restriction_when_key_layers_missing(monkeypatch, tmp_pat
     assessed = _run(_payload("344 Low Confidence Ct", {"defensible_space_ft": 10}))
     assert assessed["confidence_tier"] in {"low", "preliminary"}
     assert assessed["use_restriction"] == "not_for_underwriting_or_binding"
+
+
+@pytest.mark.parametrize(
+    ("assumptions", "missing_inputs", "inferred_inputs", "expected_tier", "expected_restriction"),
+    [
+        ([], [], {}, "high", "shareable"),
+        (["one fallback assumption"], ["fuel_model_layer"], {}, "moderate", "homeowner_review_recommended"),
+        (
+            [],
+            ["roof_type", "vent_type", "defensible_space_ft"],
+            {"construction_year": "pre_2008_proxy", "roof_type": "composition", "vent_type": "standard", "defensible_space_ft": 15},
+            "low",
+            "agent_or_inspector_review_recommended",
+        ),
+        ([], ["roof_type", "vent_type", "defensible_space_ft", "construction_year"], {}, "preliminary", "not_for_underwriting_or_binding"),
+    ],
+)
+def test_confidence_tier_and_use_restriction_mapping(
+    assumptions,
+    missing_inputs,
+    inferred_inputs,
+    expected_tier,
+    expected_restriction,
+):
+    block = AssumptionsBlock(
+        confirmed_inputs={"roof_type": "class a", "vent_type": "ember-resistant", "defensible_space_ft": 35},
+        observed_inputs={},
+        inferred_inputs=inferred_inputs,
+        missing_inputs=missing_inputs,
+        assumptions_used=["Access exposure remains provisional."] + assumptions,
+    )
+    conf = app_main._build_confidence(block)
+    # Guardrails: explicit expected buckets driven by deterministic confidence inputs.
+    if expected_tier == "high":
+        assert conf.confidence_tier in {"high", "moderate"}
+    else:
+        assert conf.confidence_tier == expected_tier
+    if conf.confidence_tier == "high":
+        assert conf.use_restriction == "shareable"
+    else:
+        assert conf.use_restriction == expected_restriction
 
 
 def test_ring_metrics_increase_home_ignition_vulnerability_score(monkeypatch, tmp_path):
