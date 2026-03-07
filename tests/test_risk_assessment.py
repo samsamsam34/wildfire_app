@@ -547,3 +547,206 @@ def test_model_version_current(monkeypatch, tmp_path):
     _setup(monkeypatch, tmp_path, _ctx(env=45.0, wildland=45.0, historic=40.0))
     row = _run(_payload("Version Check Rd", {"defensible_space_ft": 20}))
     assert row["model_version"] == MODEL_VERSION
+
+
+def _headers(role: str = "admin", org: str = "default_org", user: str = "test_user") -> dict:
+    return {
+        "X-User-Role": role,
+        "X-Organization-Id": org,
+        "X-User-Id": user,
+    }
+
+
+def test_organization_scope_enforced(monkeypatch, tmp_path):
+    _setup(monkeypatch, tmp_path, _ctx(env=52.0, wildland=57.0, historic=50.0))
+
+    created = client.post(
+        "/risk/assess",
+        json=_payload("Org Scope Test", {"defensible_space_ft": 22}),
+        headers=_headers(role="admin", org="org_alpha"),
+    )
+    assert created.status_code == 200
+    assessment_id = created.json()["assessment_id"]
+
+    denied = client.get(
+        f"/report/{assessment_id}",
+        headers=_headers(role="underwriter", org="org_beta"),
+    )
+    assert denied.status_code == 403
+
+
+def test_role_permissions_for_review_status(monkeypatch, tmp_path):
+    _setup(monkeypatch, tmp_path, _ctx(env=58.0, wildland=62.0, historic=54.0))
+    assessed = _run(_payload("Role Test Ave", {"defensible_space_ft": 16}))
+
+    viewer_attempt = client.put(
+        f"/assessments/{assessed['assessment_id']}/review-status",
+        json={"review_status": "reviewed"},
+        headers=_headers(role="viewer"),
+    )
+    assert viewer_attempt.status_code == 403
+
+    underwriter_attempt = client.put(
+        f"/assessments/{assessed['assessment_id']}/review-status",
+        json={"review_status": "reviewed"},
+        headers=_headers(role="underwriter"),
+    )
+    assert underwriter_attempt.status_code == 200
+    assert underwriter_attempt.json()["review_status"] == "reviewed"
+
+
+def test_ruleset_selection_and_output(monkeypatch, tmp_path):
+    _setup(monkeypatch, tmp_path, _ctx(env=88.0, wildland=90.0, historic=86.0))
+
+    res = client.post(
+        "/risk/assess",
+        json={
+            **_payload(
+                "Strict Ruleset Ct",
+                {
+                    "roof_type": "wood",
+                    "vent_type": "standard",
+                    "defensible_space_ft": 4,
+                },
+            ),
+            "ruleset_id": "strict_carrier_demo",
+        },
+        headers=_headers(role="underwriter"),
+    )
+    assert res.status_code == 200
+    body = res.json()
+
+    assert body["ruleset_id"] == "strict_carrier_demo"
+    assert body["ruleset_name"] == "Strict Carrier Demo"
+    assert any("strict_carrier_demo" in b for b in body["readiness_blockers"])
+
+
+def test_portfolio_job_lifecycle_and_results(monkeypatch, tmp_path):
+    _setup(monkeypatch, tmp_path, _ctx(env=50.0, wildland=52.0, historic=44.0))
+    headers = _headers(role="broker")
+
+    create = client.post(
+        "/portfolio/jobs",
+        json={
+            "portfolio_name": "Lifecycle",
+            "process_immediately": True,
+            "items": [
+                {
+                    "row_id": "1",
+                    "address": "1 Job St",
+                    "attributes": {"defensible_space_ft": 18},
+                    "confirmed_fields": [],
+                    "audience": "insurer",
+                    "tags": [],
+                },
+                {
+                    "row_id": "2",
+                    "address": "",
+                    "attributes": {"defensible_space_ft": 10},
+                    "confirmed_fields": [],
+                    "audience": "insurer",
+                    "tags": [],
+                },
+            ],
+        },
+        headers=headers,
+    )
+    assert create.status_code == 200
+    job = create.json()
+    assert job["status"] in {"completed", "partial", "failed", "running", "queued"}
+    job_id = job["job_id"]
+
+    status = client.get(f"/portfolio/jobs/{job_id}", headers=headers)
+    assert status.status_code == 200
+    assert status.json()["job_id"] == job_id
+
+    results = client.get(f"/portfolio/jobs/{job_id}/results", headers=headers)
+    assert results.status_code == 200
+    rows = results.json()["results"]
+    assert len(rows) == 2
+    assert any(r["status"] == "failed" for r in rows)
+
+
+def test_csv_import_validation_and_export(monkeypatch, tmp_path):
+    _setup(monkeypatch, tmp_path, _ctx(env=48.0, wildland=49.0, historic=42.0))
+    headers = _headers(role="broker")
+
+    csv_blob = (
+        "address,roof_type,vent_type,defensible_space_ft,confirmed_fields,tags,audience\n"
+        "123 Csv Way,class a,ember-resistant,30,\"roof_type,vent_type,defensible_space_ft\",\"renewal,co\",insurer\n"
+        ",wood,standard,8,\"roof_type,vent_type\",bad,insurer\n"
+    )
+    imported = client.post(
+        "/portfolio/import/csv",
+        json={
+            "csv_text": csv_blob,
+            "portfolio_name": "CSV Demo",
+            "process_immediately": True,
+        },
+        headers=headers,
+    )
+    assert imported.status_code == 200
+    body = imported.json()
+    assert body["accepted_count"] == 1
+    assert body["rejected_count"] == 1
+    assert len(body["validation_errors"]) == 1
+
+    job_id = body["job"]["job_id"]
+    exported = client.get(f"/portfolio/jobs/{job_id}/export/csv", headers=headers)
+    assert exported.status_code == 200
+    text = exported.text
+    assert "address,assessment_id,status,error,wildfire_risk_score" in text
+    assert "123 Csv Way" in text
+
+
+def test_assignment_and_workflow_transitions(monkeypatch, tmp_path):
+    _setup(monkeypatch, tmp_path, _ctx(env=57.0, wildland=66.0, historic=55.0))
+    assessed = _run(_payload("Workflow Test Rd", {"defensible_space_ft": 14}))
+    headers = _headers(role="underwriter")
+
+    assigned = client.post(
+        f"/assessment/{assessed['assessment_id']}/assign",
+        json={"assigned_reviewer": "uw_17", "assigned_role": "underwriter"},
+        headers=headers,
+    )
+    assert assigned.status_code == 200
+    assert assigned.json()["assigned_reviewer"] == "uw_17"
+
+    to_triaged = client.post(
+        f"/assessment/{assessed['assessment_id']}/workflow",
+        json={"workflow_state": "triaged"},
+        headers=headers,
+    )
+    assert to_triaged.status_code == 200
+    assert to_triaged.json()["workflow_state"] == "triaged"
+
+    to_approved = client.post(
+        f"/assessment/{assessed['assessment_id']}/workflow",
+        json={"workflow_state": "approved"},
+        headers=headers,
+    )
+    assert to_approved.status_code == 400
+
+
+def test_audit_events_and_admin_summary(monkeypatch, tmp_path):
+    _setup(monkeypatch, tmp_path, _ctx(env=62.0, wildland=68.0, historic=61.0))
+    headers = _headers(role="admin", org="default_org", user="ops_admin")
+
+    assessed = client.post(
+        "/risk/assess",
+        json=_payload("Audit Row", {"defensible_space_ft": 12}),
+        headers=headers,
+    )
+    assert assessed.status_code == 200
+
+    summary = client.get("/admin/summary?recent_days=365", headers=headers)
+    assert summary.status_code == 200
+    sb = summary.json()
+    assert "assessments_created_recently" in sb
+    assert "jobs_summary" in sb
+
+    events = client.get("/audit/events?limit=50", headers=headers)
+    assert events.status_code == 200
+    rows = events.json()
+    assert len(rows) >= 1
+    assert any(e["action"] == "assessment_created" for e in rows)

@@ -209,7 +209,7 @@ class RiskEngine:
         # Provisional placeholder only: no parcel driveway/egress model yet in MVP.
         access_exposure = round(max(0.0, min(100.0, abs(lat * 2.1 + lon * 1.3) % 100.0)), 1)
         assumptions.append(
-            "Access exposure remains provisional (synthetic placeholder) and is not a weighted submodel in v1.4.0."
+            "Access exposure remains provisional (synthetic placeholder) and is not a weighted submodel in v1.5.0."
         )
 
         return RiskComputation(

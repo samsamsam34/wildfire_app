@@ -2,59 +2,145 @@
 
 WildfireRisk Advisor is a FastAPI application for property-level wildfire risk and insurance-readiness workflows.
 
-Current release: **Step 4 commercial workflow layer** on top of the Step 2/3 scoring/readiness/simulation foundation.
+Current release: **Step 5 enterprise operations layer** on top of the Step 2/3/4 scoring, simulation, and portfolio foundations.
 
 ## What It Does
 
-- Runs address-level wildfire assessments with editable property facts.
-- Distinguishes confirmed facts from inferred defaults and missing inputs.
-- Returns factorized submodel scores and weighted contributions.
-- Returns separate insurance-readiness outputs (factors, blockers, penalties, summary).
-- Supports reassessment and deterministic what-if simulation workflows.
-- Persists assessments in SQLite with backward-compatible payload upgrades.
-- Adds Step 4 B2B workflows: batch/portfolio, filtering, prioritization, audience-specific reports, annotations/review status, and assessment comparisons.
+- Runs deterministic, factorized wildfire risk assessments at the property level.
+- Computes insurance readiness with a separate rules engine and explicit blockers/penalties.
+- Supports confirmed property facts, reassessment, and what-if simulation.
+- Persists reports in SQLite with backward-compatible payload upgrades.
+- Supports batch/portfolio workflows, filtering, and prioritization.
+- Adds enterprise foundations: organizations, role-aware behavior, portfolio jobs, CSV import/export, underwriting rulesets, audit events, assignment/workflow states, and admin summaries.
 
-## Core Endpoints
+## Core API Endpoints
 
-### Health and Core Risk
+### Health and Assessment
 - `GET /health`
 - `POST /risk/assess`
 - `POST /risk/reassess/{assessment_id}`
 - `POST /risk/simulate`
 - `POST /risk/debug`
 
-### Portfolio / Batch
-- `POST /portfolio/assess`
-- `GET /portfolio`
-- `GET /assessments`
-- `GET /assessments/summary`
-
 ### Reports
 - `GET /report/{assessment_id}`
 - `GET /report/{assessment_id}/export`
 - `GET /report/{assessment_id}/view`
 
-All report endpoints accept:
-- `?audience=homeowner|agent|inspector|insurer`
-- (compat) `?audience_mode=...`
+Report endpoints accept `?audience=homeowner|agent|inspector|insurer` (and compatibility alias `audience_mode`).
 
-### Review and Annotation Workflows
+### Portfolio and Batch
+- `POST /portfolio/assess`
+- `GET /portfolio`
+- `GET /assessments`
+- `GET /assessments/summary`
+- `POST /portfolio/jobs`
+- `GET /portfolio/jobs/{job_id}`
+- `GET /portfolio/jobs/{job_id}/results`
+- `GET /portfolio/jobs/{job_id}/export/csv`
+- `GET /portfolio/jobs/{job_id}/report-pack`
+- `GET /portfolio/jobs/summary`
+- `POST /portfolio/import/csv`
+- `GET /portfolio/{portfolio_name}/export/csv`
+
+### Organizations and Underwriting Rulesets
+- `GET /organizations`
+- `POST /organizations`
+- `GET /organizations/{organization_id}`
+- `GET /underwriting/rulesets`
+- `GET /underwriting/rulesets/{ruleset_id}`
+- `POST /underwriting/rulesets`
+
+### Review, Workflow, and Comparison
 - `POST /assessments/{assessment_id}/annotations`
 - `GET /assessments/{assessment_id}/annotations`
 - `PUT /assessments/{assessment_id}/review-status`
 - `GET /assessments/{assessment_id}/review-status`
-
-Compatibility aliases are also available:
-- `POST /assessment/{assessment_id}/annotations`
-- `GET /assessment/{assessment_id}/annotations`
-
-### Comparison Workflows
+- `POST /assessment/{assessment_id}/assign`
+- `POST /assessment/{assessment_id}/workflow`
+- `GET /assessment/{assessment_id}/workflow`
 - `GET /assessments/{assessment_id}/compare/{other_assessment_id}`
-- `GET /assessment/{assessment_id}/compare/{other_assessment_id}` (alias)
 - `GET /assessments/compare?ids=id1,id2,...`
 - `GET /assessments/{assessment_id}/scenarios`
 
-All non-health endpoints use API key auth (`X-API-Key`) when `WILDFIRE_API_KEYS` is configured.
+### Audit and Ops
+- `GET /audit/events`
+- `GET /admin/summary`
+- `GET /organizations/{organization_id}/summary`
+
+## Organization and Role Model (Step 5)
+
+All non-health endpoints continue using API key auth. Step 5 adds lightweight role/org context through headers:
+
+- `X-API-Key`
+- `X-User-Role`: `admin|underwriter|broker|inspector|agent|viewer`
+- `X-Organization-Id`
+- `X-User-Id`
+
+Role-aware behavior includes:
+- only `admin|underwriter` can update review status
+- workflow/assignment edits restricted to `admin|underwriter|broker|inspector`
+- viewer role is read-only for assessments/batch/simulation mutations
+- organization scope is enforced for non-admin users
+
+## Scoring and Readiness (unchanged core)
+
+### Factorized Wildfire Risk Submodels
+- `vegetation_intensity_risk`
+- `fuel_proximity_risk`
+- `slope_topography_risk`
+- `ember_exposure_risk`
+- `flame_contact_risk`
+- `historic_fire_risk`
+- `structure_vulnerability_risk`
+- `defensible_space_risk`
+
+Each submodel includes score, weighted contribution, deterministic explanation, key inputs, and assumptions.
+
+### Separate Insurance Readiness
+Readiness is computed separately and returns:
+- `readiness_factors`
+- `readiness_blockers`
+- `readiness_penalties`
+- `readiness_summary`
+
+### Underwriting Rulesets / Carrier Profiles
+Assessments can specify `ruleset_id` (for example: `default`, `strict_carrier_demo`, `inspection_first_demo`).
+Rulesets can adjust readiness penalty scaling, blocker thresholds, and mitigation prioritization emphasis.
+Response/report payloads include `ruleset_id`, `ruleset_name`, `ruleset_version`, and `ruleset_description`.
+
+## Step 5 Enterprise Workflows
+
+### Portfolio Jobs
+`POST /portfolio/jobs` creates a persisted job with status lifecycle:
+- `queued`
+- `running`
+- `completed`
+- `failed`
+- `partial`
+
+Jobs include totals, completion/failure counts, summary metrics, and error summary.
+
+### CSV Import / Export
+- CSV import (`POST /portfolio/import/csv`) parses address + optional property facts, validates rows, and returns row-level errors.
+- CSV export endpoints provide portfolio/job summaries for operational workflows.
+
+### Audit Trail
+Important actions are logged as append-only audit events, including assessment creation, simulation, report export/view, status/workflow changes, annotation writes, job lifecycle events, and ruleset usage.
+
+### Reviewer Assignment and Workflow States
+Assessments support:
+- assignment (`assigned_reviewer`, `assigned_role`)
+- workflow states: `new`, `triaged`, `needs_inspection`, `mitigation_pending`, `ready_for_review`, `approved`, `declined`, `escalated`
+- deterministic transition validation in API logic
+
+## Response Trust/Transparency Fields
+
+Assessment/report payloads include:
+- assumptions: `confirmed_inputs`, `observed_inputs`, `inferred_inputs`, `missing_inputs`, `assumptions_used`
+- confidence: `confidence_score`, `low_confidence_flags`
+- explainability: `submodel_scores`, `weighted_contributions`, `factor_breakdown`, `top_risk_drivers`, `top_protective_factors`, `explanation_summary`
+- readiness and mitigation linkage fields
 
 ## Setup
 
@@ -62,11 +148,6 @@ All non-health endpoints use API key auth (`X-API-Key`) when `WILDFIRE_API_KEYS`
 pip install -r requirements.txt
 
 export WILDFIRE_API_KEYS="dev-key-1,dev-key-2"
-
-# Optional scoring calibration overrides
-export WILDFIRE_SUBMODEL_WEIGHTS_JSON='{"ember_exposure_risk":0.15,"flame_contact_risk":0.14}'
-export WILDFIRE_READINESS_PENALTIES_JSON='{"roof_fail":26}'
-export WILDFIRE_READINESS_BONUSES_JSON='{"roof_pass":4}'
 
 # Optional geospatial layer paths
 export WF_LAYER_BURN_PROB_TIF="/path/to/burn_probability.tif"
@@ -82,167 +163,66 @@ export WF_LAYER_FIRE_PERIMETERS_GEOJSON="/path/to/fire_perimeters.geojson"
 uvicorn backend.main:app --reload
 ```
 
-Frontend file: `frontend/public/index.html`
+Frontend file: `frontend/public/index.html`.
 
-## Step 2+ Scoring Architecture
+## Dependencies
 
-### Wildfire Risk (factorized submodels)
-- `vegetation_intensity_risk`
-- `fuel_proximity_risk`
-- `slope_topography_risk`
-- `ember_exposure_risk`
-- `flame_contact_risk`
-- `historic_fire_risk`
-- `structure_vulnerability_risk`
-- `defensible_space_risk`
+`requirements.txt` includes:
+- Runtime: `fastapi`, `uvicorn`, `pydantic`
+- Geospatial stack: `numpy`, `rasterio`, `pyproj`, `shapely`
+- Test: `pytest`, `httpx`
 
-Each submodel returns score, weighted contribution, explanation, key inputs, and assumptions.
-
-### Insurance Readiness (separate rules engine)
-Readiness is computed independently from wildfire risk and returns:
-- `readiness_factors`
-- `readiness_blockers`
-- `readiness_penalties`
-- `readiness_summary`
-
-### Factor Breakdown
-`factor_breakdown` includes:
-- `submodels`
-- `environmental`
-- `structural`
-
-Legacy coarse compatibility fields remain:
-- `environmental_risk`
-- `structural_risk`
-- `access_risk`
-
-## Step 4 B2B Workflows
-
-### 1) Batch / Portfolio Assessment
-Use `POST /portfolio/assess` with multiple properties.
-
-Per-row output includes:
-- `address`
-- `assessment_id` (if success)
-- `wildfire_risk_score`
-- `insurance_readiness_score`
-- `top_risk_drivers`
-- `readiness_blockers`
-- `confidence_score`
-- `status`
-- `error` (if failed)
-
-Portfolio-level summary fields include:
-- `total_properties`
-- `completed_count`
-- `failed_count`
-- `high_risk_count`
-- `blocker_count`
-- `average_wildfire_risk`
-- `average_insurance_readiness`
-
-### 2) Listing / Filtering / Prioritization
-`GET /portfolio` and `GET /assessments` support:
-- `sort_by`, `sort_dir`
-- risk/readiness range filters
-- `readiness_blocker` contains filter
-- `confidence_min`
-- `audience`
-- `tag`
-- `created_after`, `created_before`, `recent_days`
-- `limit`, `offset`
-
-`GET /portfolio` and `GET /assessments/summary` return metrics:
-- total count
-- high-risk count
-- blocker count
-- average wildfire risk
-- average insurance readiness
-
-### 3) Audience-Specific Report Outputs
-Same assessment, different presentation emphasis via query parameter:
-- `audience=homeowner|agent|inspector|insurer`
-
-Emphasis model:
-- `homeowner`: clear explanation and next steps
-- `agent`: disclosure-ready summary and mitigation talking points
-- `inspector`: observed vs inferred facts and assumptions/verification focus
-- `insurer`: blockers/penalties, confidence, and factorized contributions
-
-### 4) Annotation and Review Workflow
-Annotations support:
-- `author_role`
-- `note`
-- `tags`
-- `visibility`
-- optional `review_status`
-
-Review status values:
-- `pending`
-- `reviewed`
-- `flagged`
-- `approved`
-
-### 5) Comparison Workflows
-Comparison outputs include:
-- wildfire/readiness score deltas
-- driver differences
-- blocker differences
-- mitigation title differences
-
-Supported by:
-- pair compare endpoints
-- multi-compare endpoint with `ids=...`
-- scenario listing endpoint for baseline/simulation audit trails
+Without geospatial packages and configured layer files, the app runs in deterministic fallback mode instead of true layer-backed mode.
 
 ## Persistence and Compatibility
 
-SQLite tables:
+SQLite tables include:
 - `assessments`
+- `organizations`
+- `underwriting_rulesets`
 - `assessment_scenarios`
 - `assessment_annotations`
 - `assessment_review_status`
+- `assessment_workflow`
+- `portfolio_jobs`
+- `audit_events`
 
 Compatibility behavior:
 - old rows remain readable
-- model version defaults safely for legacy rows
-- missing Step 2/3/4 fields are backfilled on read
+- missing fields are backfilled safely at read time
+- legacy model rows default to `1.0.0`
 
 ## Model Versioning
-- Current model version: `1.4.0`
-- Legacy fallback for old rows: `1.0.0`
-
-## Dependencies
-`requirements.txt` includes:
-- Runtime: `fastapi`, `uvicorn`, `pydantic`
-- Geospatial: `numpy`, `rasterio`, `pyproj`, `shapely`
-- Test: `pytest`, `httpx`
-
-Without geospatial packages and configured layer files, the app runs in fallback mode rather than true layer-backed mode.
+- Current model version: `1.5.0`
+- Legacy fallback for older rows: `1.0.0`
 
 ## Tests
+
 Deterministic tests in `tests/test_risk_assessment.py` cover:
-- core assess/report shape parity
-- simulation/reassessment
-- batch portfolio + partial failure handling
-- filtering/sorting/summary workflows
-- audience report outputs
-- annotation/review workflows
-- comparison endpoints
+- assess/report contract and Step 2+ explainability fields
+- reassessment and simulation flows
+- batch/portfolio and partial failure behavior
+- organization scoping and role-aware permissions
+- portfolio job lifecycle and CSV import/export
+- ruleset selection behavior
+- assignment/workflow transitions
+- audit and admin summary endpoints
 - legacy compatibility
 
 ## Current Limitations
 
-- Scoring/readiness logic are transparent MVP heuristics, not carrier-approved underwriting models.
-- Access/egress scoring remains provisional and not weighted into total wildfire risk.
-- Batch execution is synchronous.
-- API-key auth is shared-environment only (no tenant/user identity model yet).
-- No native PDF generation; HTML report view and JSON export are provided.
+- Scoring/readiness remain transparent MVP heuristics, not carrier-approved underwriting models.
+- Access/egress scoring is still provisional and excluded from weighted wildfire total.
+- Portfolio jobs are SQLite/background-task based; no distributed queue yet.
+- API-key + role headers are lightweight controls, not full identity/access management.
+- Report export is JSON/HTML oriented; native PDF generation is not included.
 
-## Ready for Step 5
-The Step 4 foundation now includes:
-- batch and portfolio operations with prioritization filters/metrics
-- audience-specific reporting layers
-- inspector/broker/insurer annotation + review status workflows
-- structured comparison endpoints for underwriting and broker review
-- deterministic, test-covered, backward-compatible persistence and API contracts
+## Ready for Step 6
+
+Step 5 now provides a practical enterprise foundation:
+- org-aware operational data model
+- role-aware review and workflow controls
+- portfolio job abstraction with CSV import/export
+- configurable underwriting ruleset profiles
+- audit event logging and admin/organization summaries
+- deterministic, test-covered APIs that retain backward compatibility

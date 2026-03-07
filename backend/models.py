@@ -9,6 +9,19 @@ Audience = Literal["homeowner", "agent", "inspector", "insurer"]
 AnnotationRole = Literal["homeowner", "agent", "broker", "inspector", "insurer"]
 AnnotationVisibility = Literal["internal", "shared"]
 ReviewStatus = Literal["pending", "reviewed", "flagged", "approved"]
+OrganizationType = Literal["insurer", "broker", "agent", "inspector", "admin", "demo"]
+UserRole = Literal["admin", "underwriter", "broker", "inspector", "agent", "viewer"]
+JobStatus = Literal["queued", "running", "completed", "failed", "partial"]
+WorkflowState = Literal[
+    "new",
+    "triaged",
+    "needs_inspection",
+    "mitigation_pending",
+    "ready_for_review",
+    "approved",
+    "declined",
+    "escalated",
+]
 
 
 class PropertyAttributes(BaseModel):
@@ -29,12 +42,15 @@ class AddressRequest(BaseModel):
     confirmed_fields: List[str] = Field(default_factory=list)
     audience: Audience = "homeowner"
     tags: List[str] = Field(default_factory=list)
+    organization_id: Optional[str] = None
+    ruleset_id: str = "default"
 
 
 class ReassessmentRequest(BaseModel):
     attributes: PropertyAttributes = Field(default_factory=PropertyAttributes)
     confirmed_fields: List[str] = Field(default_factory=list)
     audience: Audience = "homeowner"
+    ruleset_id: Optional[str] = None
 
 
 class SimulationRequest(BaseModel):
@@ -158,9 +174,21 @@ class AssessmentResult(BaseModel):
     audience: Audience = "homeowner"
     report_audience: Optional[Audience] = None
     audience_highlights: List[str] = Field(default_factory=list)
+
+    organization_id: str = "default_org"
     portfolio_name: Optional[str] = None
     tags: List[str] = Field(default_factory=list)
+
+    ruleset_id: str = "default"
+    ruleset_name: str = "Default Carrier Profile"
+    ruleset_version: str = "1.0"
+    ruleset_description: str = "Default underwriting-oriented readiness adjustments"
+
     review_status: ReviewStatus = "pending"
+    workflow_state: WorkflowState = "new"
+    assigned_reviewer: Optional[str] = None
+    assigned_role: Optional[UserRole] = None
+
     property_facts: Dict[str, object] = Field(default_factory=dict)
     confirmed_fields: List[str] = Field(default_factory=list)
 
@@ -221,6 +249,7 @@ class AssessmentListItem(BaseModel):
     assessment_id: str
     created_at: str
     address: str
+    organization_id: str = "default_org"
     audience: Audience = "homeowner"
     wildfire_risk_score: float
     insurance_readiness_score: float
@@ -229,6 +258,10 @@ class AssessmentListItem(BaseModel):
     readiness_blockers: List[str] = Field(default_factory=list)
     tags: List[str] = Field(default_factory=list)
     review_status: ReviewStatus = "pending"
+    workflow_state: WorkflowState = "new"
+    assigned_reviewer: Optional[str] = None
+    assigned_role: Optional[UserRole] = None
+    ruleset_id: str = "default"
 
 
 class SimulationScenarioItem(BaseModel):
@@ -244,9 +277,11 @@ class ReportExport(BaseModel):
     assessment_id: str
     generated_at: str
     model_version: str
+    organization_id: str = "default_org"
     audience_mode: Audience = "homeowner"
     audience_highlights: List[str] = Field(default_factory=list)
     audience_focus: Dict[str, object] = Field(default_factory=dict)
+    ruleset: Dict[str, object] = Field(default_factory=dict)
     property_summary: Dict[str, object]
     location_summary: Dict[str, object]
     wildfire_risk_summary: Dict[str, object]
@@ -269,6 +304,8 @@ class BatchAssessmentItem(BaseModel):
 
 class BatchAssessmentRequest(BaseModel):
     portfolio_name: Optional[str] = None
+    organization_id: Optional[str] = None
+    ruleset_id: str = "default"
     items: List[BatchAssessmentItem] = Field(default_factory=list)
 
 
@@ -287,6 +324,9 @@ class BatchAssessmentResultItem(BaseModel):
 
 class BatchAssessmentResponse(BaseModel):
     portfolio_name: Optional[str] = None
+    organization_id: Optional[str] = None
+    ruleset_id: str = "default"
+    job_id: Optional[str] = None
 
     # Step 4 contract fields.
     total_properties: int
@@ -336,6 +376,7 @@ class AssessmentAnnotationCreate(BaseModel):
 class AssessmentAnnotation(BaseModel):
     annotation_id: str
     assessment_id: str
+    organization_id: str = "default_org"
     created_at: str
     author_role: AnnotationRole
     note: str
@@ -350,7 +391,26 @@ class AssessmentReviewStatusUpdate(BaseModel):
 
 class AssessmentReviewStatus(BaseModel):
     assessment_id: str
+    organization_id: str = "default_org"
     review_status: ReviewStatus
+    updated_at: str
+
+
+class AssessmentAssignmentRequest(BaseModel):
+    assigned_reviewer: Optional[str] = None
+    assigned_role: Optional[UserRole] = None
+
+
+class AssessmentWorkflowUpdateRequest(BaseModel):
+    workflow_state: WorkflowState
+
+
+class AssessmentWorkflowInfo(BaseModel):
+    assessment_id: str
+    organization_id: str = "default_org"
+    workflow_state: WorkflowState
+    assigned_reviewer: Optional[str] = None
+    assigned_role: Optional[UserRole] = None
     updated_at: str
 
 
@@ -377,3 +437,124 @@ class AssessmentComparisonResult(BaseModel):
 class AssessmentComparisonResponse(BaseModel):
     requested_ids: List[str] = Field(default_factory=list)
     comparisons: List[AssessmentComparisonResult] = Field(default_factory=list)
+
+
+class OrganizationCreate(BaseModel):
+    organization_id: str = Field(..., min_length=2)
+    organization_name: str = Field(..., min_length=2)
+    organization_type: OrganizationType
+
+
+class Organization(BaseModel):
+    organization_id: str
+    organization_name: str
+    organization_type: OrganizationType
+    created_at: str
+
+
+class UnderwritingRuleset(BaseModel):
+    ruleset_id: str
+    ruleset_name: str
+    ruleset_version: str
+    ruleset_description: str
+    config: Dict[str, object] = Field(default_factory=dict)
+
+
+class UnderwritingRulesetCreate(BaseModel):
+    ruleset_id: str = Field(..., min_length=2)
+    ruleset_name: str = Field(..., min_length=2)
+    ruleset_version: str = "1.0"
+    ruleset_description: str = ""
+    config: Dict[str, object] = Field(default_factory=dict)
+
+
+class PortfolioJobCreate(BaseModel):
+    portfolio_name: Optional[str] = None
+    organization_id: Optional[str] = None
+    ruleset_id: str = "default"
+    process_immediately: bool = True
+    items: List[BatchAssessmentItem] = Field(default_factory=list)
+
+
+class PortfolioJobStatus(BaseModel):
+    job_id: str
+    organization_id: str
+    portfolio_name: Optional[str] = None
+    ruleset_id: str = "default"
+    created_at: str
+    updated_at: str
+    status: JobStatus
+    total_properties: int = 0
+    completed_count: int = 0
+    failed_count: int = 0
+    high_risk_count: int = 0
+    blocker_count: int = 0
+    average_wildfire_risk: float = 0.0
+    average_insurance_readiness: float = 0.0
+    error_summary: Optional[str] = None
+
+
+class PortfolioJobResultsResponse(BaseModel):
+    job: PortfolioJobStatus
+    results: List[BatchAssessmentResultItem] = Field(default_factory=list)
+
+
+class PortfolioJobsSummary(BaseModel):
+    total_jobs: int
+    queued_count: int
+    running_count: int
+    completed_count: int
+    failed_count: int
+    partial_count: int
+    failure_rate: float
+
+
+class CSVImportRequest(BaseModel):
+    csv_text: str
+    portfolio_name: Optional[str] = None
+    organization_id: Optional[str] = None
+    ruleset_id: str = "default"
+    audience: Audience = "homeowner"
+    tags: List[str] = Field(default_factory=list)
+    process_immediately: bool = True
+
+
+class CSVImportError(BaseModel):
+    row_number: int
+    address: Optional[str] = None
+    error: str
+
+
+class CSVImportResponse(BaseModel):
+    row_count: int
+    accepted_count: int
+    rejected_count: int
+    validation_errors: List[CSVImportError] = Field(default_factory=list)
+    job: PortfolioJobStatus
+
+
+class AuditEvent(BaseModel):
+    audit_event_id: str
+    entity_type: str
+    entity_id: str
+    organization_id: str
+    user_role: UserRole
+    action: str
+    metadata: Dict[str, object] = Field(default_factory=dict)
+    created_at: str
+
+
+class AdminSummary(BaseModel):
+    organization_id: Optional[str] = None
+    assessments_created_recently: int
+    high_risk_count: int
+    blocker_count: int
+    pending_review_count: int
+    needs_inspection_count: int
+    ready_for_review_count: int
+    approved_count: int
+    declined_count: int
+    escalated_count: int
+    avg_wildfire_risk: float
+    avg_insurance_readiness: float
+    jobs_summary: PortfolioJobsSummary

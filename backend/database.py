@@ -8,15 +8,69 @@ from typing import Any, Optional
 from uuid import uuid4
 
 from backend.models import (
+    AdminSummary,
     AssessmentAnnotation,
     AssessmentListItem,
     AssessmentResult,
     AssessmentReviewStatus,
+    AssessmentWorkflowInfo,
+    AuditEvent,
+    Organization,
+    OrganizationCreate,
+    PortfolioJobsSummary,
     PortfolioSummary,
     ReviewStatus,
     SimulationScenarioItem,
+    UnderwritingRuleset,
+    UnderwritingRulesetCreate,
+    WorkflowState,
 )
 from backend.version import LEGACY_MODEL_VERSION
+
+DEFAULT_ORG_ID = "default_org"
+DEFAULT_ORG_NAME = "Default Demo Organization"
+
+DEFAULT_RULESETS: list[UnderwritingRuleset] = [
+    UnderwritingRuleset(
+        ruleset_id="default",
+        ruleset_name="Default Carrier Profile",
+        ruleset_version="1.0",
+        ruleset_description="Baseline underwriting-oriented adjustments with moderate thresholds.",
+        config={
+            "penalty_multiplier": 1.0,
+            "risk_blocker_threshold": 85.0,
+            "inspection_missing_threshold": 5,
+            "mitigation_required_priority_boost": 0,
+            "insurer_emphasis_level": "standard",
+        },
+    ),
+    UnderwritingRuleset(
+        ruleset_id="strict_carrier_demo",
+        ruleset_name="Strict Carrier Demo",
+        ruleset_version="1.0",
+        ruleset_description="Lower blocker thresholds and stronger readiness penalty scaling.",
+        config={
+            "penalty_multiplier": 1.2,
+            "risk_blocker_threshold": 75.0,
+            "inspection_missing_threshold": 3,
+            "mitigation_required_priority_boost": 1,
+            "insurer_emphasis_level": "high",
+        },
+    ),
+    UnderwritingRuleset(
+        ruleset_id="inspection_first_demo",
+        ruleset_name="Inspection First Demo",
+        ruleset_version="1.0",
+        ruleset_description="Conservative profile that pushes inspections before final underwriting readiness.",
+        config={
+            "penalty_multiplier": 1.1,
+            "risk_blocker_threshold": 80.0,
+            "inspection_missing_threshold": 2,
+            "mitigation_required_priority_boost": 0,
+            "insurer_emphasis_level": "inspection_first",
+        },
+    ),
+]
 
 
 class AssessmentStore:
@@ -28,6 +82,9 @@ class AssessmentStore:
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
         return conn
+
+    def _now(self) -> str:
+        return datetime.now(tz=timezone.utc).isoformat()
 
     def _init_db(self) -> None:
         with self._connect() as conn:
@@ -46,6 +103,30 @@ class AssessmentStore:
 
             conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS organizations (
+                    organization_id TEXT PRIMARY KEY,
+                    organization_name TEXT NOT NULL,
+                    organization_type TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                )
+                """
+            )
+
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS underwriting_rulesets (
+                    ruleset_id TEXT PRIMARY KEY,
+                    ruleset_name TEXT NOT NULL,
+                    ruleset_version TEXT NOT NULL,
+                    ruleset_description TEXT NOT NULL,
+                    config_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                )
+                """
+            )
+
+            conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS assessment_scenarios (
                     scenario_id TEXT PRIMARY KEY,
                     assessment_id TEXT NOT NULL,
@@ -61,6 +142,7 @@ class AssessmentStore:
                 CREATE TABLE IF NOT EXISTS assessment_annotations (
                     annotation_id TEXT PRIMARY KEY,
                     assessment_id TEXT NOT NULL,
+                    organization_id TEXT NOT NULL DEFAULT 'default_org',
                     created_at TEXT NOT NULL,
                     author_role TEXT NOT NULL,
                     note TEXT NOT NULL,
@@ -75,16 +157,256 @@ class AssessmentStore:
                 conn.execute(
                     "ALTER TABLE assessment_annotations ADD COLUMN review_status TEXT NOT NULL DEFAULT 'pending'"
                 )
+            if "organization_id" not in ann_cols:
+                conn.execute(
+                    "ALTER TABLE assessment_annotations ADD COLUMN organization_id TEXT NOT NULL DEFAULT 'default_org'"
+                )
 
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS assessment_review_status (
                     assessment_id TEXT PRIMARY KEY,
+                    organization_id TEXT NOT NULL DEFAULT 'default_org',
                     review_status TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 )
                 """
             )
+            review_cols = {row["name"] for row in conn.execute("PRAGMA table_info(assessment_review_status)").fetchall()}
+            if "organization_id" not in review_cols:
+                conn.execute(
+                    "ALTER TABLE assessment_review_status ADD COLUMN organization_id TEXT NOT NULL DEFAULT 'default_org'"
+                )
+
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS assessment_workflow (
+                    assessment_id TEXT PRIMARY KEY,
+                    organization_id TEXT NOT NULL DEFAULT 'default_org',
+                    workflow_state TEXT NOT NULL DEFAULT 'new',
+                    assigned_reviewer TEXT,
+                    assigned_role TEXT,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS portfolio_jobs (
+                    job_id TEXT PRIMARY KEY,
+                    organization_id TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    request_json TEXT NOT NULL,
+                    result_json TEXT,
+                    error_summary TEXT
+                )
+                """
+            )
+
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS audit_events (
+                    audit_event_id TEXT PRIMARY KEY,
+                    entity_type TEXT NOT NULL,
+                    entity_id TEXT NOT NULL,
+                    organization_id TEXT NOT NULL,
+                    user_role TEXT NOT NULL,
+                    action TEXT NOT NULL,
+                    metadata_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                )
+                """
+            )
+
+            self._seed_organizations(conn)
+            self._seed_rulesets(conn)
+
+    def _seed_organizations(self, conn: sqlite3.Connection) -> None:
+        row = conn.execute(
+            "SELECT organization_id FROM organizations WHERE organization_id = ?",
+            (DEFAULT_ORG_ID,),
+        ).fetchone()
+        if not row:
+            conn.execute(
+                """
+                INSERT INTO organizations (organization_id, organization_name, organization_type, created_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (DEFAULT_ORG_ID, DEFAULT_ORG_NAME, "demo", self._now()),
+            )
+
+    def _seed_rulesets(self, conn: sqlite3.Connection) -> None:
+        for ruleset in DEFAULT_RULESETS:
+            row = conn.execute(
+                "SELECT ruleset_id FROM underwriting_rulesets WHERE ruleset_id = ?",
+                (ruleset.ruleset_id,),
+            ).fetchone()
+            if not row:
+                conn.execute(
+                    """
+                    INSERT INTO underwriting_rulesets
+                    (ruleset_id, ruleset_name, ruleset_version, ruleset_description, config_json, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        ruleset.ruleset_id,
+                        ruleset.ruleset_name,
+                        ruleset.ruleset_version,
+                        ruleset.ruleset_description,
+                        json.dumps(ruleset.config),
+                        self._now(),
+                    ),
+                )
+
+    def create_organization(self, payload: OrganizationCreate) -> Organization:
+        created_at = self._now()
+        with self._connect() as conn:
+            existing = conn.execute(
+                "SELECT organization_id FROM organizations WHERE organization_id = ?",
+                (payload.organization_id,),
+            ).fetchone()
+            if existing:
+                raise ValueError("Organization already exists")
+            conn.execute(
+                """
+                INSERT INTO organizations (organization_id, organization_name, organization_type, created_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (payload.organization_id, payload.organization_name, payload.organization_type, created_at),
+            )
+        return Organization(
+            organization_id=payload.organization_id,
+            organization_name=payload.organization_name,
+            organization_type=payload.organization_type,
+            created_at=created_at,
+        )
+
+    def list_organizations(self) -> list[Organization]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT organization_id, organization_name, organization_type, created_at
+                FROM organizations
+                ORDER BY created_at ASC
+                """
+            ).fetchall()
+        return [
+            Organization(
+                organization_id=row["organization_id"],
+                organization_name=row["organization_name"],
+                organization_type=row["organization_type"],
+                created_at=row["created_at"],
+            )
+            for row in rows
+        ]
+
+    def get_organization(self, organization_id: str) -> Optional[Organization]:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT organization_id, organization_name, organization_type, created_at
+                FROM organizations
+                WHERE organization_id = ?
+                """,
+                (organization_id,),
+            ).fetchone()
+        if not row:
+            return None
+        return Organization(
+            organization_id=row["organization_id"],
+            organization_name=row["organization_name"],
+            organization_type=row["organization_type"],
+            created_at=row["created_at"],
+        )
+
+    def list_rulesets(self) -> list[UnderwritingRuleset]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT ruleset_id, ruleset_name, ruleset_version, ruleset_description, config_json
+                FROM underwriting_rulesets
+                ORDER BY ruleset_id ASC
+                """
+            ).fetchall()
+
+        rulesets: list[UnderwritingRuleset] = []
+        for row in rows:
+            try:
+                config = json.loads(row["config_json"]) if row["config_json"] else {}
+            except Exception:
+                config = {}
+            rulesets.append(
+                UnderwritingRuleset(
+                    ruleset_id=row["ruleset_id"],
+                    ruleset_name=row["ruleset_name"],
+                    ruleset_version=row["ruleset_version"],
+                    ruleset_description=row["ruleset_description"],
+                    config=config,
+                )
+            )
+        return rulesets
+
+    def get_ruleset(self, ruleset_id: str) -> Optional[UnderwritingRuleset]:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT ruleset_id, ruleset_name, ruleset_version, ruleset_description, config_json
+                FROM underwriting_rulesets
+                WHERE ruleset_id = ?
+                """,
+                (ruleset_id,),
+            ).fetchone()
+
+        if not row:
+            return None
+
+        try:
+            config = json.loads(row["config_json"]) if row["config_json"] else {}
+        except Exception:
+            config = {}
+
+        return UnderwritingRuleset(
+            ruleset_id=row["ruleset_id"],
+            ruleset_name=row["ruleset_name"],
+            ruleset_version=row["ruleset_version"],
+            ruleset_description=row["ruleset_description"],
+            config=config,
+        )
+
+    def create_ruleset(self, payload: UnderwritingRulesetCreate) -> UnderwritingRuleset:
+        with self._connect() as conn:
+            existing = conn.execute(
+                "SELECT ruleset_id FROM underwriting_rulesets WHERE ruleset_id = ?",
+                (payload.ruleset_id,),
+            ).fetchone()
+            if existing:
+                raise ValueError("Ruleset already exists")
+            conn.execute(
+                """
+                INSERT INTO underwriting_rulesets
+                (ruleset_id, ruleset_name, ruleset_version, ruleset_description, config_json, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    payload.ruleset_id,
+                    payload.ruleset_name,
+                    payload.ruleset_version,
+                    payload.ruleset_description,
+                    json.dumps(payload.config),
+                    self._now(),
+                ),
+            )
+
+        return UnderwritingRuleset(
+            ruleset_id=payload.ruleset_id,
+            ruleset_name=payload.ruleset_name,
+            ruleset_version=payload.ruleset_version,
+            ruleset_description=payload.ruleset_description,
+            config=payload.config,
+        )
 
     def save(self, result: AssessmentResult) -> None:
         with self._connect() as conn:
@@ -95,7 +417,7 @@ class AssessmentStore:
                 """,
                 (
                     result.assessment_id,
-                    datetime.now(tz=timezone.utc).isoformat(),
+                    self._now(),
                     result.model_dump_json(),
                     result.model_version,
                 ),
@@ -112,29 +434,36 @@ class AssessmentStore:
                 (
                     scenario_id,
                     assessment_id,
-                    datetime.now(tz=timezone.utc).isoformat(),
+                    self._now(),
                     scenario_name,
                     json.dumps(payload, default=str),
                 ),
             )
         return scenario_id
 
-    def set_review_status(self, assessment_id: str, review_status: ReviewStatus) -> AssessmentReviewStatus:
-        updated_at = datetime.now(tz=timezone.utc).isoformat()
+    def set_review_status(
+        self,
+        assessment_id: str,
+        organization_id: str,
+        review_status: ReviewStatus,
+    ) -> AssessmentReviewStatus:
+        updated_at = self._now()
         with self._connect() as conn:
             conn.execute(
                 """
-                INSERT INTO assessment_review_status (assessment_id, review_status, updated_at)
-                VALUES (?, ?, ?)
+                INSERT INTO assessment_review_status (assessment_id, organization_id, review_status, updated_at)
+                VALUES (?, ?, ?, ?)
                 ON CONFLICT(assessment_id) DO UPDATE SET
+                    organization_id=excluded.organization_id,
                     review_status=excluded.review_status,
                     updated_at=excluded.updated_at
                 """,
-                (assessment_id, review_status, updated_at),
+                (assessment_id, organization_id, review_status, updated_at),
             )
 
         return AssessmentReviewStatus(
             assessment_id=assessment_id,
+            organization_id=organization_id,
             review_status=review_status,
             updated_at=updated_at,
         )
@@ -142,7 +471,7 @@ class AssessmentStore:
     def get_review_status(self, assessment_id: str) -> AssessmentReviewStatus | None:
         with self._connect() as conn:
             row = conn.execute(
-                "SELECT assessment_id, review_status, updated_at FROM assessment_review_status WHERE assessment_id = ?",
+                "SELECT assessment_id, organization_id, review_status, updated_at FROM assessment_review_status WHERE assessment_id = ?",
                 (assessment_id,),
             ).fetchone()
 
@@ -151,13 +480,94 @@ class AssessmentStore:
 
         return AssessmentReviewStatus(
             assessment_id=row["assessment_id"],
+            organization_id=row["organization_id"],
             review_status=row["review_status"],
+            updated_at=row["updated_at"],
+        )
+
+    def set_workflow(
+        self,
+        assessment_id: str,
+        organization_id: str,
+        workflow_state: WorkflowState,
+        assigned_reviewer: str | None = None,
+        assigned_role: str | None = None,
+    ) -> AssessmentWorkflowInfo:
+        current = self.get_workflow(assessment_id)
+        updated_at = self._now()
+
+        reviewer = assigned_reviewer if assigned_reviewer is not None else (current.assigned_reviewer if current else None)
+        role = assigned_role if assigned_role is not None else (current.assigned_role if current else None)
+
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO assessment_workflow
+                (assessment_id, organization_id, workflow_state, assigned_reviewer, assigned_role, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(assessment_id) DO UPDATE SET
+                    organization_id=excluded.organization_id,
+                    workflow_state=excluded.workflow_state,
+                    assigned_reviewer=excluded.assigned_reviewer,
+                    assigned_role=excluded.assigned_role,
+                    updated_at=excluded.updated_at
+                """,
+                (assessment_id, organization_id, workflow_state, reviewer, role, updated_at),
+            )
+
+        return AssessmentWorkflowInfo(
+            assessment_id=assessment_id,
+            organization_id=organization_id,
+            workflow_state=workflow_state,
+            assigned_reviewer=reviewer,
+            assigned_role=role,
+            updated_at=updated_at,
+        )
+
+    def set_assignment(
+        self,
+        assessment_id: str,
+        organization_id: str,
+        assigned_reviewer: str | None,
+        assigned_role: str | None,
+    ) -> AssessmentWorkflowInfo:
+        current = self.get_workflow(assessment_id)
+        workflow_state = current.workflow_state if current else "new"
+        return self.set_workflow(
+            assessment_id=assessment_id,
+            organization_id=organization_id,
+            workflow_state=workflow_state,
+            assigned_reviewer=assigned_reviewer,
+            assigned_role=assigned_role,
+        )
+
+    def get_workflow(self, assessment_id: str) -> AssessmentWorkflowInfo | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT assessment_id, organization_id, workflow_state, assigned_reviewer, assigned_role, updated_at
+                FROM assessment_workflow
+                WHERE assessment_id = ?
+                """,
+                (assessment_id,),
+            ).fetchone()
+
+        if not row:
+            return None
+
+        return AssessmentWorkflowInfo(
+            assessment_id=row["assessment_id"],
+            organization_id=row["organization_id"],
+            workflow_state=row["workflow_state"],
+            assigned_reviewer=row["assigned_reviewer"],
+            assigned_role=row["assigned_role"],
             updated_at=row["updated_at"],
         )
 
     def save_annotation(
         self,
         assessment_id: str,
+        organization_id: str,
         author_role: str,
         note: str,
         tags: list[str],
@@ -165,21 +575,25 @@ class AssessmentStore:
         review_status: ReviewStatus | None = None,
     ) -> AssessmentAnnotation:
         annotation_id = str(uuid4())
-        created_at = datetime.now(tz=timezone.utc).isoformat()
+        created_at = self._now()
         payload_tags = sorted(set([t.strip() for t in tags if t and t.strip()]))
-        current_review = review_status or (self.get_review_status(assessment_id).review_status if self.get_review_status(assessment_id) else "pending")
+        current_review = review_status
+        if current_review is None:
+            existing = self.get_review_status(assessment_id)
+            current_review = existing.review_status if existing else "pending"
 
         with self._connect() as conn:
             conn.execute(
                 """
                 INSERT INTO assessment_annotations (
-                    annotation_id, assessment_id, created_at, author_role, note, visibility, tags_json, review_status
+                    annotation_id, assessment_id, organization_id, created_at, author_role, note, visibility, tags_json, review_status
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     annotation_id,
                     assessment_id,
+                    organization_id,
                     created_at,
                     author_role,
                     note,
@@ -190,11 +604,12 @@ class AssessmentStore:
             )
 
         if review_status is not None:
-            self.set_review_status(assessment_id, review_status)
+            self.set_review_status(assessment_id, organization_id, review_status)
 
         return AssessmentAnnotation(
             annotation_id=annotation_id,
             assessment_id=assessment_id,
+            organization_id=organization_id,
             created_at=created_at,
             author_role=author_role,
             note=note,
@@ -203,18 +618,25 @@ class AssessmentStore:
             review_status=current_review,
         )
 
-    def list_annotations(self, assessment_id: str, limit: int = 100) -> list[AssessmentAnnotation]:
+    def list_annotations(
+        self,
+        assessment_id: str,
+        organization_id: str | None = None,
+        limit: int = 100,
+    ) -> list[AssessmentAnnotation]:
+        sql = (
+            "SELECT annotation_id, assessment_id, organization_id, created_at, author_role, note, visibility, tags_json, review_status "
+            "FROM assessment_annotations WHERE assessment_id = ?"
+        )
+        params: list[Any] = [assessment_id]
+        if organization_id:
+            sql += " AND organization_id = ?"
+            params.append(organization_id)
+        sql += " ORDER BY created_at DESC LIMIT ?"
+        params.append(limit)
+
         with self._connect() as conn:
-            rows = conn.execute(
-                """
-                SELECT annotation_id, assessment_id, created_at, author_role, note, visibility, tags_json, review_status
-                FROM assessment_annotations
-                WHERE assessment_id = ?
-                ORDER BY created_at DESC
-                LIMIT ?
-                """,
-                (assessment_id, limit),
-            ).fetchall()
+            rows = conn.execute(sql, tuple(params)).fetchall()
 
         items: list[AssessmentAnnotation] = []
         for row in rows:
@@ -226,6 +648,7 @@ class AssessmentStore:
                 AssessmentAnnotation(
                     annotation_id=row["annotation_id"],
                     assessment_id=row["assessment_id"],
+                    organization_id=row["organization_id"],
                     created_at=row["created_at"],
                     author_role=row["author_role"],
                     note=row["note"],
@@ -235,6 +658,209 @@ class AssessmentStore:
                 )
             )
         return items
+
+    def create_portfolio_job(
+        self,
+        organization_id: str,
+        payload: dict[str, Any],
+        status: str = "queued",
+    ) -> str:
+        job_id = str(uuid4())
+        now = self._now()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO portfolio_jobs
+                (job_id, organization_id, created_at, updated_at, status, request_json, result_json, error_summary)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (job_id, organization_id, now, now, status, json.dumps(payload, default=str), None, None),
+            )
+        return job_id
+
+    def update_portfolio_job(
+        self,
+        job_id: str,
+        *,
+        status: str,
+        result: dict[str, Any] | None = None,
+        error_summary: str | None = None,
+    ) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE portfolio_jobs
+                SET updated_at = ?, status = ?, result_json = ?, error_summary = ?
+                WHERE job_id = ?
+                """,
+                (
+                    self._now(),
+                    status,
+                    json.dumps(result, default=str) if result is not None else None,
+                    error_summary,
+                    job_id,
+                ),
+            )
+
+    def get_portfolio_job(self, job_id: str) -> Optional[dict[str, Any]]:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT job_id, organization_id, created_at, updated_at, status, request_json, result_json, error_summary
+                FROM portfolio_jobs
+                WHERE job_id = ?
+                """,
+                (job_id,),
+            ).fetchone()
+
+        if not row:
+            return None
+
+        try:
+            request_payload = json.loads(row["request_json"]) if row["request_json"] else {}
+        except Exception:
+            request_payload = {}
+        try:
+            result_payload = json.loads(row["result_json"]) if row["result_json"] else None
+        except Exception:
+            result_payload = None
+
+        return {
+            "job_id": row["job_id"],
+            "organization_id": row["organization_id"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+            "status": row["status"],
+            "request": request_payload,
+            "result": result_payload,
+            "error_summary": row["error_summary"],
+        }
+
+    def list_portfolio_jobs(
+        self,
+        organization_id: str | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        sql = (
+            "SELECT job_id FROM portfolio_jobs "
+        )
+        params: list[Any] = []
+        if organization_id:
+            sql += "WHERE organization_id = ? "
+            params.append(organization_id)
+        sql += "ORDER BY created_at DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+
+        with self._connect() as conn:
+            rows = conn.execute(sql, tuple(params)).fetchall()
+
+        items: list[dict[str, Any]] = []
+        for row in rows:
+            loaded = self.get_portfolio_job(row["job_id"])
+            if loaded:
+                items.append(loaded)
+        return items
+
+    def summarize_portfolio_jobs(self, organization_id: str | None = None) -> PortfolioJobsSummary:
+        jobs = self.list_portfolio_jobs(organization_id=organization_id, limit=1_000_000, offset=0)
+        total = len(jobs)
+        queued = sum(1 for j in jobs if j["status"] == "queued")
+        running = sum(1 for j in jobs if j["status"] == "running")
+        completed = sum(1 for j in jobs if j["status"] == "completed")
+        failed = sum(1 for j in jobs if j["status"] == "failed")
+        partial = sum(1 for j in jobs if j["status"] == "partial")
+        failure_rate = round((failed / total) * 100.0, 1) if total else 0.0
+
+        return PortfolioJobsSummary(
+            total_jobs=total,
+            queued_count=queued,
+            running_count=running,
+            completed_count=completed,
+            failed_count=failed,
+            partial_count=partial,
+            failure_rate=failure_rate,
+        )
+
+    def log_event(
+        self,
+        *,
+        entity_type: str,
+        entity_id: str,
+        organization_id: str,
+        user_role: str,
+        action: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> str:
+        audit_event_id = str(uuid4())
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO audit_events
+                (audit_event_id, entity_type, entity_id, organization_id, user_role, action, metadata_json, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    audit_event_id,
+                    entity_type,
+                    entity_id,
+                    organization_id,
+                    user_role,
+                    action,
+                    json.dumps(metadata or {}, default=str),
+                    self._now(),
+                ),
+            )
+        return audit_event_id
+
+    def list_audit_events(
+        self,
+        *,
+        organization_id: str | None = None,
+        entity_type: str | None = None,
+        action: str | None = None,
+        limit: int = 200,
+        offset: int = 0,
+    ) -> list[AuditEvent]:
+        sql = (
+            "SELECT audit_event_id, entity_type, entity_id, organization_id, user_role, action, metadata_json, created_at "
+            "FROM audit_events WHERE 1=1"
+        )
+        params: list[Any] = []
+        if organization_id:
+            sql += " AND organization_id = ?"
+            params.append(organization_id)
+        if entity_type:
+            sql += " AND entity_type = ?"
+            params.append(entity_type)
+        if action:
+            sql += " AND action = ?"
+            params.append(action)
+        sql += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+
+        with self._connect() as conn:
+            rows = conn.execute(sql, tuple(params)).fetchall()
+
+        events: list[AuditEvent] = []
+        for row in rows:
+            try:
+                metadata = json.loads(row["metadata_json"]) if row["metadata_json"] else {}
+            except Exception:
+                metadata = {}
+            events.append(
+                AuditEvent(
+                    audit_event_id=row["audit_event_id"],
+                    entity_type=row["entity_type"],
+                    entity_id=row["entity_id"],
+                    organization_id=row["organization_id"],
+                    user_role=row["user_role"],
+                    action=row["action"],
+                    metadata=metadata,
+                    created_at=row["created_at"],
+                )
+            )
+        return events
 
     def _upgrade_mitigation_items(self, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
         upgraded = []
@@ -270,12 +896,23 @@ class AssessmentStore:
     ) -> dict[str, Any]:
         payload.setdefault("model_version", db_model_version or LEGACY_MODEL_VERSION)
 
+        payload.setdefault("organization_id", DEFAULT_ORG_ID)
         payload.setdefault("audience", "homeowner")
         payload.setdefault("report_audience", None)
         payload.setdefault("audience_highlights", [])
         payload.setdefault("portfolio_name", None)
         payload.setdefault("tags", [])
+
+        payload.setdefault("ruleset_id", "default")
+        payload.setdefault("ruleset_name", "Default Carrier Profile")
+        payload.setdefault("ruleset_version", "1.0")
+        payload.setdefault("ruleset_description", "Default underwriting-oriented readiness adjustments")
+
         payload.setdefault("review_status", "pending")
+        payload.setdefault("workflow_state", "new")
+        payload.setdefault("assigned_reviewer", None)
+        payload.setdefault("assigned_role", None)
+
         payload.setdefault("property_facts", {})
         payload.setdefault("confirmed_fields", [])
 
@@ -377,7 +1014,7 @@ class AssessmentStore:
         payload.setdefault("readiness_penalties", {})
         payload.setdefault("readiness_summary", "Legacy row: readiness detail unavailable in this version.")
 
-        payload.setdefault("generated_at", created_at or datetime.now(tz=timezone.utc).isoformat())
+        payload.setdefault("generated_at", created_at or self._now())
         payload.setdefault("scoring_notes", ["Access risk is provisional and not included in total scoring."])
 
         payload.setdefault("coordinates", {"latitude": payload["latitude"], "longitude": payload["longitude"]})
@@ -430,9 +1067,17 @@ class AssessmentStore:
 
         payload = json.loads(row["payload_json"])
         upgraded = self._upgrade_payload(payload, row["model_version"] or LEGACY_MODEL_VERSION, row["created_at"])
+
         review = self.get_review_status(assessment_id)
         if review:
             upgraded["review_status"] = review.review_status
+
+        workflow = self.get_workflow(assessment_id)
+        if workflow:
+            upgraded["workflow_state"] = workflow.workflow_state
+            upgraded["assigned_reviewer"] = workflow.assigned_reviewer
+            upgraded["assigned_role"] = workflow.assigned_role
+
         return AssessmentResult.model_validate(upgraded)
 
     def _load_assessment_records(self) -> list[dict[str, Any]]:
@@ -446,13 +1091,15 @@ class AssessmentStore:
             payload = json.loads(row["payload_json"])
             upgraded = self._upgrade_payload(payload, row["model_version"] or LEGACY_MODEL_VERSION, row["created_at"])
             review = self.get_review_status(upgraded["assessment_id"])
-            review_status = review.review_status if review else upgraded.get("review_status", "pending")
+            workflow = self.get_workflow(upgraded["assessment_id"])
+
             records.append(
                 {
                     "assessment_id": upgraded["assessment_id"],
                     "created_at": row["created_at"],
                     "created_dt": self._parse_ts(row["created_at"]),
                     "address": upgraded.get("address", ""),
+                    "organization_id": upgraded.get("organization_id", DEFAULT_ORG_ID),
                     "audience": upgraded.get("audience", "homeowner"),
                     "wildfire_risk_score": float(upgraded.get("wildfire_risk_score", 0.0)),
                     "insurance_readiness_score": float(upgraded.get("insurance_readiness_score", 0.0)),
@@ -460,7 +1107,12 @@ class AssessmentStore:
                     "confidence_score": float(upgraded.get("confidence_score", 0.0)),
                     "readiness_blockers": list(upgraded.get("readiness_blockers", [])),
                     "tags": list(upgraded.get("tags", [])),
-                    "review_status": review_status,
+                    "portfolio_name": upgraded.get("portfolio_name"),
+                    "review_status": review.review_status if review else upgraded.get("review_status", "pending"),
+                    "workflow_state": workflow.workflow_state if workflow else upgraded.get("workflow_state", "new"),
+                    "assigned_reviewer": workflow.assigned_reviewer if workflow else upgraded.get("assigned_reviewer"),
+                    "assigned_role": workflow.assigned_role if workflow else upgraded.get("assigned_role"),
+                    "ruleset_id": upgraded.get("ruleset_id", "default"),
                 }
             )
         return records
@@ -492,6 +1144,7 @@ class AssessmentStore:
     def query_assessments(
         self,
         *,
+        organization_id: str | None = None,
         sort_by: str = "created_at",
         sort_dir: str = "desc",
         min_risk: float | None = None,
@@ -502,6 +1155,9 @@ class AssessmentStore:
         confidence_min: float | None = None,
         audience: str | None = None,
         tag: str | None = None,
+        portfolio_name: str | None = None,
+        workflow_state: str | None = None,
+        assigned_reviewer: str | None = None,
         created_after: str | None = None,
         created_before: str | None = None,
         recent_days: int | None = None,
@@ -516,6 +1172,8 @@ class AssessmentStore:
         if recent_days is not None:
             recent_cutoff = datetime.now(tz=timezone.utc) - timedelta(days=max(0, recent_days))
 
+        if organization_id:
+            records = [r for r in records if r["organization_id"] == organization_id]
         if min_risk is not None:
             records = [r for r in records if r["wildfire_risk_score"] >= min_risk]
         if max_risk is not None:
@@ -534,6 +1192,12 @@ class AssessmentStore:
         if tag:
             needle = tag.lower()
             records = [r for r in records if any(needle == str(t).lower() for t in r["tags"])]
+        if portfolio_name:
+            records = [r for r in records if r["portfolio_name"] == portfolio_name]
+        if workflow_state:
+            records = [r for r in records if r["workflow_state"] == workflow_state]
+        if assigned_reviewer:
+            records = [r for r in records if r["assigned_reviewer"] == assigned_reviewer]
         if after_dt is not None:
             records = [r for r in records if r["created_dt"] >= after_dt]
         if before_dt is not None:
@@ -561,6 +1225,7 @@ class AssessmentStore:
                 assessment_id=r["assessment_id"],
                 created_at=r["created_at"],
                 address=r["address"],
+                organization_id=r["organization_id"],
                 audience=r["audience"],
                 wildfire_risk_score=r["wildfire_risk_score"],
                 insurance_readiness_score=r["insurance_readiness_score"],
@@ -569,6 +1234,10 @@ class AssessmentStore:
                 readiness_blockers=r["readiness_blockers"],
                 tags=r["tags"],
                 review_status=r["review_status"],
+                workflow_state=r["workflow_state"],
+                assigned_reviewer=r["assigned_reviewer"],
+                assigned_role=r["assigned_role"],
+                ruleset_id=r["ruleset_id"],
             )
             for r in paged
         ]
@@ -578,6 +1247,7 @@ class AssessmentStore:
     def summary_assessments(
         self,
         *,
+        organization_id: str | None = None,
         min_risk: float | None = None,
         max_risk: float | None = None,
         min_readiness: float | None = None,
@@ -586,11 +1256,15 @@ class AssessmentStore:
         confidence_min: float | None = None,
         audience: str | None = None,
         tag: str | None = None,
+        portfolio_name: str | None = None,
+        workflow_state: str | None = None,
+        assigned_reviewer: str | None = None,
         created_after: str | None = None,
         created_before: str | None = None,
         recent_days: int | None = None,
     ) -> PortfolioSummary:
         _, _, summary = self.query_assessments(
+            organization_id=organization_id,
             sort_by="created_at",
             sort_dir="desc",
             min_risk=min_risk,
@@ -601,6 +1275,9 @@ class AssessmentStore:
             confidence_min=confidence_min,
             audience=audience,
             tag=tag,
+            portfolio_name=portfolio_name,
+            workflow_state=workflow_state,
+            assigned_reviewer=assigned_reviewer,
             created_after=created_after,
             created_before=created_before,
             recent_days=recent_days,
@@ -613,6 +1290,7 @@ class AssessmentStore:
         self,
         limit: int = 20,
         offset: int = 0,
+        organization_id: str | None = None,
         sort_by: str = "created_at",
         sort_dir: str = "desc",
         min_risk: float | None = None,
@@ -623,6 +1301,9 @@ class AssessmentStore:
         confidence_min: float | None = None,
         audience: str | None = None,
         tag: str | None = None,
+        portfolio_name: str | None = None,
+        workflow_state: str | None = None,
+        assigned_reviewer: str | None = None,
         created_after: str | None = None,
         created_before: str | None = None,
         recent_days: int | None = None,
@@ -630,6 +1311,7 @@ class AssessmentStore:
         items, _, _ = self.query_assessments(
             limit=limit,
             offset=offset,
+            organization_id=organization_id,
             sort_by=sort_by,
             sort_dir=sort_dir,
             min_risk=min_risk,
@@ -640,11 +1322,30 @@ class AssessmentStore:
             confidence_min=confidence_min,
             audience=audience,
             tag=tag,
+            portfolio_name=portfolio_name,
+            workflow_state=workflow_state,
+            assigned_reviewer=assigned_reviewer,
             created_after=created_after,
             created_before=created_before,
             recent_days=recent_days,
         )
         return items
+
+    def list_assessments_by_portfolio(
+        self,
+        *,
+        portfolio_name: str,
+        organization_id: str | None = None,
+        limit: int = 5000,
+    ) -> list[AssessmentListItem]:
+        return self.list_assessments(
+            limit=limit,
+            offset=0,
+            organization_id=organization_id,
+            portfolio_name=portfolio_name,
+            sort_by="created_at",
+            sort_dir="desc",
+        )
 
     def list_scenarios(self, assessment_id: str, limit: int = 20) -> list[SimulationScenarioItem]:
         with self._connect() as conn:
@@ -675,3 +1376,42 @@ class AssessmentStore:
             )
 
         return items
+
+    def build_admin_summary(self, organization_id: str | None = None, recent_days: int = 30) -> AdminSummary:
+        recent_cutoff = (datetime.now(tz=timezone.utc) - timedelta(days=max(0, recent_days))).isoformat()
+        records = self.list_assessments(
+            limit=1_000_000,
+            offset=0,
+            organization_id=organization_id,
+            recent_days=recent_days,
+        )
+
+        high_risk = sum(1 for r in records if r.wildfire_risk_score >= 70.0)
+        blocker = sum(1 for r in records if r.readiness_blockers)
+        pending_review = sum(1 for r in records if r.review_status == "pending")
+        needs_insp = sum(1 for r in records if r.workflow_state == "needs_inspection")
+        ready_for_review = sum(1 for r in records if r.workflow_state == "ready_for_review")
+        approved = sum(1 for r in records if r.workflow_state == "approved")
+        declined = sum(1 for r in records if r.workflow_state == "declined")
+        escalated = sum(1 for r in records if r.workflow_state == "escalated")
+
+        avg_risk = round(sum(r.wildfire_risk_score for r in records) / len(records), 1) if records else 0.0
+        avg_readiness = round(sum(r.insurance_readiness_score for r in records) / len(records), 1) if records else 0.0
+
+        jobs_summary = self.summarize_portfolio_jobs(organization_id=organization_id)
+
+        return AdminSummary(
+            organization_id=organization_id,
+            assessments_created_recently=len(records),
+            high_risk_count=high_risk,
+            blocker_count=blocker,
+            pending_review_count=pending_review,
+            needs_inspection_count=needs_insp,
+            ready_for_review_count=ready_for_review,
+            approved_count=approved,
+            declined_count=declined,
+            escalated_count=escalated,
+            avg_wildfire_risk=avg_risk,
+            avg_insurance_readiness=avg_readiness,
+            jobs_summary=jobs_summary,
+        )
