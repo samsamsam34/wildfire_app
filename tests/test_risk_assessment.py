@@ -19,7 +19,7 @@ from backend.database import AssessmentStore
 from backend.mitigation import build_mitigation_plan
 from backend.models import AssumptionsBlock, PropertyAttributes
 from backend.version import LEGACY_MODEL_VERSION, MODEL_VERSION
-from backend.wildfire_data import WildfireContext, WildfireDataClient
+from backend.wildfire_data import WildfireContext, WildfireDataClient, compute_environmental_data_completeness
 
 
 client = TestClient(app_main.app)
@@ -48,8 +48,17 @@ def _ctx(
     wildland: float,
     historic: float,
     ring_metrics: dict[str, dict[str, float | None]] | None = None,
+    environmental_layer_status: dict[str, str] | None = None,
 ) -> WildfireContext:
     ring_metrics = ring_metrics or {}
+    environmental_layer_status = environmental_layer_status or {
+        "burn_probability": "ok",
+        "hazard": "ok",
+        "slope": "ok",
+        "fuel": "ok",
+        "canopy": "ok",
+        "fire_history": "ok",
+    }
     return WildfireContext(
         environmental_index=env,
         slope_index=env,
@@ -61,6 +70,14 @@ def _ctx(
         historic_fire_index=historic,
         burn_probability_index=env,
         hazard_severity_index=env,
+        burn_probability=env,
+        wildfire_hazard=env,
+        slope=env,
+        fuel_model=env,
+        canopy_cover=env,
+        historic_fire_distance=1.2,
+        wildland_distance=120.0,
+        environmental_layer_status=environmental_layer_status,
         data_sources=[
             "Burn probability raster",
             "Wildfire hazard severity raster",
@@ -128,11 +145,13 @@ def _assert_core_contract(body: dict) -> None:
         "assumptions_used",
         "confidence_score",
         "data_completeness_score",
+        "environmental_data_completeness_score",
         "confidence_tier",
         "use_restriction",
         "low_confidence_flags",
         "mitigation_plan",
         "data_sources",
+        "environmental_layer_status",
         "property_level_context",
         "site_hazard_section",
         "home_ignition_vulnerability_section",
@@ -146,6 +165,7 @@ def _assert_core_contract(body: dict) -> None:
     assert 0.0 <= body["site_hazard_score"] <= 100.0
     assert 0.0 <= body["home_ignition_vulnerability_score"] <= 100.0
     assert 0.0 <= body["insurance_readiness_score"] <= 100.0
+    assert 0.0 <= body["environmental_data_completeness_score"] <= 100.0
     assert body["risk_scores"]["site_hazard_score"] == body["site_hazard_score"]
     assert body["risk_scores"]["home_ignition_vulnerability_score"] == body["home_ignition_vulnerability_score"]
     assert body["risk_scores"]["wildfire_risk_score"] == body["wildfire_risk_score"]
@@ -180,6 +200,8 @@ def _assert_core_contract(body: dict) -> None:
 
     assert "fallback_mode" in body["property_level_context"]
     assert body["property_level_context"]["fallback_mode"] in {"footprint", "point_based"}
+    for layer in ["burn_probability", "hazard", "slope", "fuel", "canopy", "fire_history"]:
+        assert layer in body["environmental_layer_status"]
 
 
 def test_property_findings_from_ring_metrics_surface_in_assessment(monkeypatch, tmp_path):
@@ -319,7 +341,20 @@ def test_low_confidence_restriction_when_key_layers_missing(monkeypatch, tmp_pat
             "Historical perimeter layer missing; recurrence defaulted.",
         ],
         structure_ring_metrics={},
-        property_level_context={"footprint_used": False, "footprint_status": "source_unavailable", "ring_metrics": {}},
+        environmental_layer_status={
+            "burn_probability": "missing",
+            "hazard": "ok",
+            "slope": "ok",
+            "fuel": "missing",
+            "canopy": "ok",
+            "fire_history": "missing",
+        },
+        property_level_context={
+            "footprint_used": False,
+            "footprint_status": "provider_unavailable",
+            "fallback_mode": "point_based",
+            "ring_metrics": None,
+        },
     )
     _setup(monkeypatch, tmp_path, degraded)
 
@@ -357,7 +392,24 @@ def test_confidence_tier_and_use_restriction_mapping(
         missing_inputs=missing_inputs,
         assumptions_used=["Access exposure remains provisional."] + assumptions,
     )
-    conf = app_main._build_confidence(block)
+    layer_status = {
+        "burn_probability": "ok",
+        "hazard": "ok",
+        "slope": "ok",
+        "fuel": "missing" if "fuel_model_layer" in missing_inputs else "ok",
+        "canopy": "ok",
+        "fire_history": "ok",
+    }
+    env_completeness = compute_environmental_data_completeness(
+        _ctx(env=50.0, wildland=50.0, historic=50.0, environmental_layer_status=layer_status)
+    )
+    conf = app_main._build_confidence(
+        block,
+        environmental_data_completeness=env_completeness,
+        geocode_verified=True,
+        property_level_context={"footprint_used": True},
+        environmental_layer_status=layer_status,
+    )
     # Guardrails: explicit expected buckets driven by deterministic confidence inputs.
     if expected_tier == "high":
         assert conf.confidence_tier in {"high", "moderate"}
@@ -1062,8 +1114,16 @@ def test_structure_ring_summary_pipeline(monkeypatch):
 
     assert context_blob["footprint_used"] is True
     assert context_blob["footprint_status"] == "used"
-    assert set(metrics.keys()) == {"ring_0_5_ft", "ring_5_30_ft", "ring_30_100_ft"}
+    assert set(metrics.keys()) == {
+        "ring_0_5_ft",
+        "ring_5_30_ft",
+        "ring_30_100_ft",
+        "zone_0_5_ft",
+        "zone_5_30_ft",
+        "zone_30_100_ft",
+    }
     assert metrics["ring_0_5_ft"]["vegetation_density"] == 60.0
+    assert metrics["zone_0_5_ft"]["vegetation_density"] == 60.0
     assert metrics["ring_5_30_ft"]["canopy_mean"] == 62.0
     assert "Structure ring vegetation summaries" in sources
     assert assumptions == []
@@ -1088,7 +1148,7 @@ def test_context_collect_fallback_when_footprint_unavailable(monkeypatch):
     ctx = client.collect_context(39.7392, -104.9903)
     assert ctx is not None
     assert ctx.property_level_context.get("footprint_used") is False
-    assert ctx.property_level_context.get("footprint_status") in {"not_found", "source_unavailable"}
+    assert ctx.property_level_context.get("footprint_status") in {"not_found", "provider_unavailable"}
     assert "ring_metrics" in ctx.property_level_context
 
 
@@ -1331,3 +1391,71 @@ def test_audit_events_and_admin_summary(monkeypatch, tmp_path):
     rows = events.json()
     assert len(rows) >= 1
     assert any(e["action"] == "assessment_created" for e in rows)
+
+
+def test_environmental_data_completeness_scoring_helper():
+    full = _ctx(env=50.0, wildland=50.0, historic=50.0)
+    assert compute_environmental_data_completeness(full) == 100.0
+
+    partial = _ctx(
+        env=50.0,
+        wildland=50.0,
+        historic=50.0,
+        environmental_layer_status={
+            "burn_probability": "ok",
+            "hazard": "missing",
+            "slope": "ok",
+            "fuel": "missing",
+            "canopy": "ok",
+            "fire_history": "missing",
+        },
+    )
+    assert compute_environmental_data_completeness(partial) == 50.0
+
+
+def test_collect_context_missing_layers_does_not_silently_default_to_neutral():
+    client = WildfireDataClient()
+    client.paths = {k: "" for k in client.paths.keys()}
+    ctx = client.collect_context(40.0, -105.0)
+
+    assert ctx.burn_probability_index is None
+    assert ctx.hazard_severity_index is None
+    assert ctx.slope_index is None
+    assert ctx.fuel_index is None
+    assert ctx.canopy_index is None
+    assert ctx.historic_fire_index is None
+    assert ctx.wildland_distance_index is None
+    assert ctx.environmental_layer_status["burn_probability"] in {"missing", "error"}
+    assert ctx.environmental_layer_status["fuel"] in {"missing", "error"}
+
+
+def test_scoring_notes_include_missing_layers_and_provisional_access(monkeypatch, tmp_path):
+    degraded = _ctx(
+        env=58.0,
+        wildland=60.0,
+        historic=55.0,
+        environmental_layer_status={
+            "burn_probability": "missing",
+            "hazard": "ok",
+            "slope": "ok",
+            "fuel": "missing",
+            "canopy": "ok",
+            "fire_history": "error",
+        },
+        ring_metrics={},
+    )
+    degraded.property_level_context = {
+        "footprint_used": False,
+        "footprint_status": "provider_unavailable",
+        "fallback_mode": "point_based",
+        "ring_metrics": None,
+    }
+
+    _setup(monkeypatch, tmp_path, degraded)
+    assessed = _run(_payload("Notes Transparency Ave", {"defensible_space_ft": 12}))
+
+    notes = " ".join(assessed["scoring_notes"]).lower()
+    assert "burn probability layer" in notes
+    assert "fuel layer" in notes
+    assert "building footprint not found" in notes
+    assert "access risk is provisional" in notes

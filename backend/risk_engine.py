@@ -70,9 +70,17 @@ class RiskEngine:
         vent = (attrs.vent_type or "unknown").lower()
         defensible_ft = attrs.defensible_space_ft if attrs.defensible_space_ft is not None else 15.0
         ring_metrics = context.structure_ring_metrics or {}
+        context_assumptions: List[str] = []
+
+        def ctx_metric(value: float | None, default: float, note: str) -> float:
+            if value is None:
+                context_assumptions.append(note)
+                return default
+            return float(value)
 
         def ring_density(ring_key: str) -> float | None:
-            metrics = ring_metrics.get(ring_key, {})
+            alias = ring_key.replace("ring_", "zone_")
+            metrics = ring_metrics.get(ring_key) or ring_metrics.get(alias) or {}
             value = metrics.get("vegetation_density") if isinstance(metrics, dict) else None
             if value is None:
                 return None
@@ -95,6 +103,51 @@ class RiskEngine:
             if available_ring_densities
             else None
         )
+        burn_probability_index = ctx_metric(
+            context.burn_probability_index,
+            55.0,
+            "Burn probability context missing; scoring used conservative fallback.",
+        )
+        hazard_severity_index = ctx_metric(
+            context.hazard_severity_index,
+            55.0,
+            "Hazard severity context missing; scoring used conservative fallback.",
+        )
+        fuel_index = ctx_metric(
+            context.fuel_index,
+            50.0,
+            "Fuel model context missing; scoring used conservative fallback.",
+        )
+        wildland_distance_index = ctx_metric(
+            context.wildland_distance_index,
+            50.0,
+            "Wildland distance context missing; scoring used conservative fallback.",
+        )
+        canopy_index = ctx_metric(
+            context.canopy_index,
+            45.0,
+            "Canopy context missing; scoring used conservative fallback.",
+        )
+        moisture_index = ctx_metric(
+            context.moisture_index,
+            55.0,
+            "Moisture context missing; scoring used conservative fallback.",
+        )
+        slope_index = ctx_metric(
+            context.slope_index,
+            50.0,
+            "Slope context missing; scoring used conservative fallback.",
+        )
+        aspect_index = ctx_metric(
+            context.aspect_index,
+            50.0,
+            "Aspect context missing; scoring used conservative fallback.",
+        )
+        historic_fire_index = ctx_metric(
+            context.historic_fire_index,
+            40.0,
+            "Historic fire context missing; scoring used conservative fallback.",
+        )
 
         roof_ignition = (
             75.0 if roof in {"wood", "untreated wood shake"}
@@ -110,8 +163,8 @@ class RiskEngine:
             ember_assumptions.append("Vent type missing; ember entry vulnerability assumed moderate-high.")
 
         ember_score = round(
-            0.35 * context.burn_probability_index
-            + 0.25 * context.hazard_severity_index
+            0.35 * burn_probability_index
+            + 0.25 * hazard_severity_index
             + 0.20 * vent_ignition
             + 0.20 * roof_ignition,
             1,
@@ -120,12 +173,12 @@ class RiskEngine:
             score=max(0.0, min(100.0, ember_score)),
             explanation="Ember exposure reflects ember storm likelihood and structure ember vulnerability.",
             key_inputs={
-                "burn_probability": context.burn_probability_index,
-                "hazard_severity": context.hazard_severity_index,
+                "burn_probability": burn_probability_index,
+                "hazard_severity": hazard_severity_index,
                 "roof_ignition_proxy": roof_ignition,
                 "vent_ignition_proxy": vent_ignition,
             },
-            assumptions=ember_assumptions,
+            assumptions=ember_assumptions + context_assumptions,
         )
 
         flame_assumptions: List[str] = []
@@ -134,11 +187,11 @@ class RiskEngine:
         if ring_0_5_density is None or ring_5_30_density is None:
             flame_assumptions.append("Structure-ring vegetation metrics unavailable; flame-contact model used point-based vegetation context.")
 
-        close_in_veg_pressure = ring_0_5_density if ring_0_5_density is not None else context.canopy_index
-        zone1_veg_pressure = ring_5_30_density if ring_5_30_density is not None else context.fuel_index
+        close_in_veg_pressure = ring_0_5_density if ring_0_5_density is not None else canopy_index
+        zone1_veg_pressure = ring_5_30_density if ring_5_30_density is not None else fuel_index
         flame_score = round(
-            0.30 * context.fuel_index
-            + 0.25 * context.wildland_distance_index
+            0.30 * fuel_index
+            + 0.25 * wildland_distance_index
             + 0.20 * max(0.0, min(100.0, 100.0 - defensible_ft * 2.2))
             + 0.25 * (0.55 * close_in_veg_pressure + 0.45 * zone1_veg_pressure),
             1,
@@ -147,20 +200,21 @@ class RiskEngine:
             score=max(0.0, min(100.0, flame_score)),
             explanation="Flame-contact risk reflects near-structure fuels and vegetation continuity.",
             key_inputs={
-                "fuel_index": context.fuel_index,
-                "wildland_distance_index": context.wildland_distance_index,
+                "fuel_index": fuel_index,
+                "wildland_distance_index": wildland_distance_index,
                 "defensible_space_ft": defensible_ft,
                 "ring_0_5_ft_vegetation_density": ring_0_5_density,
                 "ring_5_30_ft_vegetation_density": ring_5_30_density,
             },
-            assumptions=flame_assumptions,
+            assumptions=flame_assumptions + context_assumptions,
         )
 
-        slope_score = round(0.70 * context.slope_index + 0.30 * context.aspect_index, 1)
+        slope_score = round(0.70 * slope_index + 0.30 * aspect_index, 1)
         submodels["slope_topography_risk"] = SubmodelResult(
             score=max(0.0, min(100.0, slope_score)),
             explanation="Slope/topography risk captures terrain-driven spread amplification.",
-            key_inputs={"slope_index": context.slope_index, "aspect_index": context.aspect_index},
+            key_inputs={"slope_index": slope_index, "aspect_index": aspect_index},
+            assumptions=list(context_assumptions),
         )
 
         fuel_proximity_assumptions: List[str] = []
@@ -169,16 +223,16 @@ class RiskEngine:
                 "Structure-ring 30-100 ft vegetation metrics unavailable; fuel proximity used point-based distance index."
             )
 
-        outer_ring_pressure = ring_30_100_density if ring_30_100_density is not None else context.canopy_index
-        fuel_proximity_score = round(0.75 * context.wildland_distance_index + 0.25 * outer_ring_pressure, 1)
+        outer_ring_pressure = ring_30_100_density if ring_30_100_density is not None else canopy_index
+        fuel_proximity_score = round(0.75 * wildland_distance_index + 0.25 * outer_ring_pressure, 1)
         submodels["fuel_proximity_risk"] = SubmodelResult(
             score=max(0.0, min(100.0, fuel_proximity_score)),
             explanation="Fuel proximity risk reflects distance to contiguous wildland vegetation.",
             key_inputs={
-                "wildland_distance_index": context.wildland_distance_index,
+                "wildland_distance_index": wildland_distance_index,
                 "ring_30_100_ft_vegetation_density": ring_30_100_density,
             },
-            assumptions=fuel_proximity_assumptions,
+            assumptions=fuel_proximity_assumptions + context_assumptions,
         )
 
         vegetation_assumptions: List[str] = []
@@ -186,11 +240,11 @@ class RiskEngine:
             vegetation_assumptions.append(
                 "Structure-ring vegetation metrics unavailable; vegetation intensity used 100m point-neighborhood context."
             )
-        structure_ring_veg = ring_density_average if ring_density_average is not None else context.canopy_index
+        structure_ring_veg = ring_density_average if ring_density_average is not None else canopy_index
         vegetation_score = round(
-            0.35 * context.fuel_index
-            + 0.20 * context.canopy_index
-            + 0.20 * context.moisture_index
+            0.35 * fuel_index
+            + 0.20 * canopy_index
+            + 0.20 * moisture_index
             + 0.25 * structure_ring_veg,
             1,
         )
@@ -198,18 +252,19 @@ class RiskEngine:
             score=max(0.0, min(100.0, vegetation_score)),
             explanation="Vegetation intensity risk captures fuel loading, canopy continuity, and dryness.",
             key_inputs={
-                "fuel_index": context.fuel_index,
-                "canopy_index": context.canopy_index,
-                "moisture_index": context.moisture_index,
+                "fuel_index": fuel_index,
+                "canopy_index": canopy_index,
+                "moisture_index": moisture_index,
                 "ring_vegetation_density_avg": ring_density_average,
             },
-            assumptions=vegetation_assumptions,
+            assumptions=vegetation_assumptions + context_assumptions,
         )
 
         submodels["historic_fire_risk"] = SubmodelResult(
-            score=max(0.0, min(100.0, round(context.historic_fire_index, 1))),
+            score=max(0.0, min(100.0, round(historic_fire_index, 1))),
             explanation="Historic fire risk reflects nearby fire recurrence and perimeter history.",
-            key_inputs={"historic_fire_index": context.historic_fire_index},
+            key_inputs={"historic_fire_index": historic_fire_index},
+            assumptions=list(context_assumptions),
         )
 
         structure_assumptions: List[str] = []
@@ -245,11 +300,11 @@ class RiskEngine:
         zone_pressure = (
             round(sum(zone_pressure_values) / len(zone_pressure_values), 1)
             if zone_pressure_values
-            else context.fuel_index
+            else fuel_index
         )
         defensible_score = round(
             max(0.0, min(100.0, 95.0 - defensible_ft * 2.6)) * 0.55
-            + 0.25 * context.fuel_index
+            + 0.25 * fuel_index
             + 0.20 * zone_pressure,
             1,
         )
@@ -258,11 +313,11 @@ class RiskEngine:
             explanation="Defensible space risk reflects clearance sufficiency under local fuel pressure.",
             key_inputs={
                 "defensible_space_ft": defensible_ft,
-                "fuel_index": context.fuel_index,
+                "fuel_index": fuel_index,
                 "ring_0_5_ft_vegetation_density": ring_0_5_density,
                 "ring_5_30_ft_vegetation_density": ring_5_30_density,
             },
-            assumptions=defensible_assumptions,
+            assumptions=defensible_assumptions + context_assumptions,
         )
 
         return submodels
@@ -319,7 +374,32 @@ class RiskEngine:
         return self._group_score(risk, ENVIRONMENT_SUBMODELS)
 
     def compute_home_ignition_vulnerability_score(self, risk: RiskComputation) -> float:
-        return self._group_score(risk, STRUCTURE_SUBMODELS)
+        base = self._group_score(risk, STRUCTURE_SUBMODELS)
+
+        def _to_float(value: object) -> float | None:
+            try:
+                if value is None:
+                    return None
+                return float(value)
+            except (TypeError, ValueError):
+                return None
+
+        defensible_inputs = risk.submodel_scores.get("defensible_space_risk", SubmodelResult(0.0, "", {})).key_inputs
+        fuel_inputs = risk.submodel_scores.get("fuel_proximity_risk", SubmodelResult(0.0, "", {})).key_inputs
+
+        zone_0_5 = _to_float(defensible_inputs.get("ring_0_5_ft_vegetation_density"))
+        zone_5_30 = _to_float(defensible_inputs.get("ring_5_30_ft_vegetation_density"))
+        zone_30_100 = _to_float(fuel_inputs.get("ring_30_100_ft_vegetation_density"))
+
+        ring_penalty = 0.0
+        if zone_0_5 is not None:
+            ring_penalty += max(0.0, (zone_0_5 - 55.0) * 0.18)
+        if zone_5_30 is not None:
+            ring_penalty += max(0.0, (zone_5_30 - 60.0) * 0.12)
+        if zone_30_100 is not None:
+            ring_penalty += max(0.0, (zone_30_100 - 65.0) * 0.08)
+
+        return round(max(0.0, min(100.0, base + ring_penalty)), 1)
 
     def compute_blended_wildfire_score(self, site_hazard_score: float, home_ignition_vulnerability_score: float) -> float:
         env_weight = self._group_weight(ENVIRONMENT_SUBMODELS)
@@ -427,7 +507,8 @@ class RiskEngine:
             factors.append({"name": "severe_ember_exposure", "status": "watch", "score_impact": -5.0, "detail": "Elevated ember exposure should be mitigated."})
             add_penalty("severe_ember_exposure", 5.0)
 
-        severe_env = max(ember_score, risk.submodel_scores["historic_fire_risk"].score, context.hazard_severity_index)
+        hazard_severity = 55.0 if context.hazard_severity_index is None else float(context.hazard_severity_index)
+        severe_env = max(ember_score, risk.submodel_scores["historic_fire_risk"].score, hazard_severity)
         if severe_env >= 85:
             factors.append({"name": "severe_environmental_hazard", "status": "fail", "score_impact": -p["severe_env_fail"], "detail": "Severe environmental hazard conditions reduce availability."})
             add_penalty("severe_environmental_hazard", p["severe_env_fail"])

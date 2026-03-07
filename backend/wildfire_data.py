@@ -6,7 +6,7 @@ import os
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Dict, Iterable, List
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from backend.building_footprints import BuildingFootprintClient, compute_structure_rings
 
@@ -28,20 +28,45 @@ except Exception:  # pragma: no cover - graceful runtime fallback when geo deps 
 
 @dataclass
 class WildfireContext:
-    environmental_index: float
-    slope_index: float
-    aspect_index: float
-    fuel_index: float
-    moisture_index: float
-    canopy_index: float
-    wildland_distance_index: float
-    historic_fire_index: float
-    burn_probability_index: float
-    hazard_severity_index: float
-    data_sources: List[str]
-    assumptions: List[str]
+    environmental_index: Optional[float]
+    slope_index: Optional[float]
+    aspect_index: Optional[float]
+    fuel_index: Optional[float]
+    moisture_index: Optional[float]
+    canopy_index: Optional[float]
+    wildland_distance_index: Optional[float]
+    historic_fire_index: Optional[float]
+    burn_probability_index: Optional[float]
+    hazard_severity_index: Optional[float]
+    burn_probability: Optional[float] = None
+    wildfire_hazard: Optional[float] = None
+    slope: Optional[float] = None
+    fuel_model: Optional[float] = None
+    canopy_cover: Optional[float] = None
+    historic_fire_distance: Optional[float] = None
+    wildland_distance: Optional[float] = None
+    environmental_layer_status: Dict[str, str] = field(default_factory=dict)
+    data_sources: List[str] = field(default_factory=list)
+    assumptions: List[str] = field(default_factory=list)
     structure_ring_metrics: Dict[str, Dict[str, float | None]] = field(default_factory=dict)
     property_level_context: Dict[str, Any] = field(default_factory=dict)
+
+
+def compute_environmental_data_completeness(context: WildfireContext) -> float:
+    status = context.environmental_layer_status or {}
+    if not status:
+        return 0.0
+
+    tracked_layers = [
+        "burn_probability",
+        "hazard",
+        "slope",
+        "fuel",
+        "canopy",
+        "fire_history",
+    ]
+    available = sum(1 for layer in tracked_layers if status.get(layer) == "ok")
+    return round((available / float(len(tracked_layers))) * 100.0, 1)
 
 
 class WildfireDataClient:
@@ -207,7 +232,7 @@ class WildfireDataClient:
             status = "not_found"
             assumptions_blob = " ".join(result.assumptions).lower()
             if "not configured" in assumptions_blob or "missing" in assumptions_blob:
-                status = "source_unavailable"
+                status = "provider_unavailable"
             return {
                 "footprint_used": False,
                 "footprint_found": False,
@@ -223,23 +248,30 @@ class WildfireDataClient:
         assumptions.extend(ring_assumptions)
 
         ring_metrics: dict[str, dict[str, float | None]] = {}
+        zone_aliases = {
+            "ring_0_5_ft": "zone_0_5_ft",
+            "ring_5_30_ft": "zone_5_30_ft",
+            "ring_30_100_ft": "zone_30_100_ft",
+        }
         for ring_key in ("ring_0_5_ft", "ring_5_30_ft", "ring_30_100_ft"):
             ring_geom = rings.get(ring_key)
             if ring_geom is None:
-                ring_metrics[ring_key] = {
+                metrics = {
                     "canopy_mean": None,
                     "canopy_max": None,
                     "vegetation_density": None,
                     "coverage_pct": None,
                     "fuel_presence_proxy": None,
                 }
+                ring_metrics[ring_key] = metrics
+                ring_metrics[zone_aliases[ring_key]] = dict(metrics)
                 continue
 
             canopy_stats = self._summarize_ring_canopy(ring_geom)
             fuel_presence = self._summarize_ring_fuel_presence(ring_geom)
 
             if canopy_stats is None:
-                ring_metrics[ring_key] = {
+                metrics = {
                     "canopy_mean": None,
                     "canopy_max": None,
                     "vegetation_density": fuel_presence,
@@ -250,13 +282,15 @@ class WildfireDataClient:
                 vegetation_density = canopy_stats["vegetation_density"]
                 if fuel_presence is not None:
                     vegetation_density = round((vegetation_density + fuel_presence) / 2.0, 1)
-                ring_metrics[ring_key] = {
+                metrics = {
                     "canopy_mean": canopy_stats["canopy_mean"],
                     "canopy_max": canopy_stats["canopy_max"],
                     "vegetation_density": vegetation_density,
                     "coverage_pct": canopy_stats["coverage_pct"],
                     "fuel_presence_proxy": fuel_presence,
                 }
+            ring_metrics[ring_key] = metrics
+            ring_metrics[zone_aliases[ring_key]] = dict(metrics)
 
         if ring_metrics:
             sources.append("Structure ring vegetation summaries")
@@ -275,19 +309,33 @@ class WildfireDataClient:
             },
         }, assumptions, sources
 
-    def _sample_raster_point(self, path: str, lat: float, lon: float) -> float | None:
+    def _sample_raster_point_raw(self, path: str, lat: float, lon: float) -> float | None:
         if not (rasterio and self._file_exists(path)):
             return None
         ds = self._open_raster(path)
         x, y = self._to_dataset_crs(ds, lon, lat)
+        sample = next(ds.sample([(x, y)]))[0]
+        nodata = ds.nodata
+        if nodata is not None and float(sample) == float(nodata):
+            return None
+        return float(sample)
+
+    def _sample_raster_point(self, path: str, lat: float, lon: float) -> float | None:
         try:
-            sample = next(ds.sample([(x, y)]))[0]
-            nodata = ds.nodata
-            if nodata is not None and float(sample) == float(nodata):
-                return None
-            return float(sample)
+            return self._sample_raster_point_raw(path, lat, lon)
         except Exception:
             return None
+
+    def _sample_layer_value(self, path: str, lat: float, lon: float) -> Tuple[float | None, str]:
+        if not self._file_exists(path):
+            return None, "missing"
+        try:
+            value = self._sample_raster_point_raw(path, lat, lon)
+        except Exception:
+            return None, "error"
+        if value is None:
+            return None, "missing"
+        return value, "ok"
 
     def _sample_circle(self, path: str, lat: float, lon: float, radius_m: float, step_m: float = 30.0) -> List[float]:
         if not (rasterio and self._file_exists(path)):
@@ -357,9 +405,15 @@ class WildfireDataClient:
                 weighted.append(50.0)
         return round(sum(weighted) / len(weighted), 1)
 
-    def _wildland_distance_index(self, lat: float, lon: float, fuel_path: str, canopy_path: str) -> float:
+    def _wildland_distance_metrics(
+        self,
+        lat: float,
+        lon: float,
+        fuel_path: str,
+        canopy_path: str,
+    ) -> Tuple[float | None, float | None]:
         if not (rasterio and (self._file_exists(fuel_path) or self._file_exists(canopy_path))):
-            return 50.0
+            return None, None
 
         for radius in (30, 60, 120, 250, 500, 1000, 2000):
             samples = max(8, int(2 * math.pi * radius / 30))
@@ -379,25 +433,28 @@ class WildfireDataClient:
                     is_wildland = True
 
                 if is_wildland:
-                    return round(max(0.0, min(100.0, 100.0 - (radius / 2000.0) * 100.0)), 1)
+                    index = round(max(0.0, min(100.0, 100.0 - (radius / 2000.0) * 100.0)), 1)
+                    return float(radius), index
 
-        return 0.0
+        # Layer exists and no contiguous wildland found within search radius.
+        return 2000.0, 0.0
 
-    def _historical_recurrence_index(self, lat: float, lon: float, perimeter_path: str) -> float:
+    def _historical_fire_metrics(self, lat: float, lon: float, perimeter_path: str) -> Tuple[float | None, float | None, str]:
         if not (shape and Point and self._file_exists(perimeter_path)):
-            return 40.0
+            return None, None, "missing"
 
         try:
             geoms = self._load_perimeters(perimeter_path)
         except Exception:
-            return 40.0
+            return None, None, "error"
 
         if not geoms:
-            return 20.0
+            return None, 0.0, "ok"
 
         pt = Point(lon, lat)
         near_1km = 0
         near_5km = 0
+        nearest_km: float | None = None
 
         lat_1 = self._meters_to_lat_deg(1000)
         lon_1 = self._meters_to_lon_deg(1000, lat)
@@ -414,12 +471,27 @@ class WildfireDataClient:
                 near_1km = max(near_1km, 2)
                 near_5km = max(near_5km, 3)
 
+            try:
+                # Shapely distance here is in degrees for EPSG:4326; convert approximately to km.
+                km = float(pt.distance(g)) * 111.32
+                nearest_km = km if nearest_km is None else min(nearest_km, km)
+            except Exception:
+                pass
+
         score = near_1km * 22.0 + near_5km * 6.0
-        return round(max(0.0, min(100.0, score)), 1)
+        return nearest_km, round(max(0.0, min(100.0, score)), 1), "ok"
 
     def collect_context(self, lat: float, lon: float) -> WildfireContext:
         assumptions: List[str] = []
         sources: List[str] = []
+        environmental_layer_status: dict[str, str] = {
+            "burn_probability": "missing",
+            "hazard": "missing",
+            "slope": "missing",
+            "fuel": "missing",
+            "canopy": "missing",
+            "fire_history": "missing",
+        }
         property_level_context: dict[str, Any] = {
             "footprint_used": False,
             "footprint_found": False,
@@ -432,16 +504,24 @@ class WildfireDataClient:
         if not (rasterio and np is not None and Transformer is not None):
             assumptions.append("Geospatial stack unavailable; install rasterio/numpy/pyproj/shapely.")
             return WildfireContext(
-                environmental_index=55.0,
-                slope_index=50.0,
-                aspect_index=50.0,
-                fuel_index=50.0,
-                moisture_index=55.0,
-                canopy_index=50.0,
-                wildland_distance_index=50.0,
-                historic_fire_index=40.0,
-                burn_probability_index=55.0,
-                hazard_severity_index=55.0,
+                environmental_index=None,
+                slope_index=None,
+                aspect_index=None,
+                fuel_index=None,
+                moisture_index=None,
+                canopy_index=None,
+                wildland_distance_index=None,
+                historic_fire_index=None,
+                burn_probability_index=None,
+                hazard_severity_index=None,
+                burn_probability=None,
+                wildfire_hazard=None,
+                slope=None,
+                fuel_model=None,
+                canopy_cover=None,
+                historic_fire_distance=None,
+                wildland_distance=None,
+                environmental_layer_status=environmental_layer_status,
                 data_sources=sources,
                 assumptions=assumptions,
                 structure_ring_metrics=structure_ring_metrics,
@@ -454,32 +534,36 @@ class WildfireDataClient:
         assumptions.extend(ring_assumptions)
         sources.extend(ring_sources)
 
-        burn_prob = self._sample_raster_point(self.paths["burn_prob"], lat, lon)
+        burn_prob, burn_status = self._sample_layer_value(self.paths["burn_prob"], lat, lon)
+        environmental_layer_status["burn_probability"] = burn_status
         if burn_prob is None:
             assumptions.append("Burn probability layer unavailable at property location.")
-            burn_probability_index = 55.0
+            burn_probability_index = None
         else:
             burn_probability_index = self._to_index(burn_prob, 0.0, 1.0 if burn_prob <= 1.0 else 100.0)
             sources.append("Burn probability raster")
 
-        hazard = self._sample_raster_point(self.paths["hazard"], lat, lon)
+        hazard, hazard_status = self._sample_layer_value(self.paths["hazard"], lat, lon)
+        environmental_layer_status["hazard"] = hazard_status
         if hazard is None:
             assumptions.append("Wildfire hazard severity layer unavailable at property location.")
-            hazard_severity_index = 55.0
+            hazard_severity_index = None
         else:
             hazard_severity_index = self._to_index(hazard, 0.0, 5.0 if hazard <= 5.0 else 100.0)
             sources.append("Wildfire hazard severity raster")
 
-        slope = self._sample_raster_point(self.paths["slope"], lat, lon)
-        aspect = self._sample_raster_point(self.paths["aspect"], lat, lon)
+        slope, slope_status = self._sample_layer_value(self.paths["slope"], lat, lon)
+        aspect, aspect_status = self._sample_layer_value(self.paths["aspect"], lat, lon)
         if slope is None or aspect is None:
             dem_path = self.paths["dem"]
             if self._file_exists(dem_path):
                 derived_slope, derived_aspect = self._derive_slope_aspect_from_dem(dem_path, lat, lon)
                 if slope is None and derived_slope is not None:
                     slope = derived_slope
+                    slope_status = "ok"
                 if aspect is None and derived_aspect is not None:
                     aspect = derived_aspect
+                    aspect_status = "ok"
                 if derived_slope is not None and derived_aspect is not None:
                     sources.append("DEM-derived slope/aspect")
                 else:
@@ -487,12 +571,13 @@ class WildfireDataClient:
             else:
                 assumptions.append("Slope/aspect rasters missing and DEM not configured.")
 
-        slope_index = 50.0 if slope is None else self._to_index(slope, 0.0, 45.0)
+        environmental_layer_status["slope"] = slope_status
+        slope_index = None if slope is None else self._to_index(slope, 0.0, 45.0)
         if slope is not None and "DEM-derived slope/aspect" not in sources:
             sources.append("Slope raster")
 
         if aspect is None:
-            aspect_index = 50.0
+            aspect_index = None
         else:
             a = float(aspect) % 360.0
             if 180.0 <= a <= 315.0:
@@ -504,67 +589,93 @@ class WildfireDataClient:
             if "DEM-derived slope/aspect" not in sources:
                 sources.append("Aspect raster")
 
-        fuel_samples = self._sample_circle(self.paths["fuel"], lat, lon, radius_m=100.0)
+        fuel_path = self.paths["fuel"]
+        fuel_samples = self._sample_circle(fuel_path, lat, lon, radius_m=100.0) if self._file_exists(fuel_path) else []
         if fuel_samples:
             fuel_index = self._fuel_combustibility_index(fuel_samples)
+            fuel_model = round(sum(fuel_samples) / len(fuel_samples), 2)
+            environmental_layer_status["fuel"] = "ok"
             sources.append("Fuel model raster")
         else:
-            fuel_index = 50.0
+            fuel_index = None
+            fuel_model = None
+            environmental_layer_status["fuel"] = "missing" if not self._file_exists(fuel_path) else "error"
             assumptions.append("Fuel model unavailable within 100m neighborhood.")
 
-        canopy_samples = self._sample_circle(self.paths["canopy"], lat, lon, radius_m=100.0)
+        canopy_path = self.paths["canopy"]
+        canopy_samples = self._sample_circle(canopy_path, lat, lon, radius_m=100.0) if self._file_exists(canopy_path) else []
         if canopy_samples:
             canopy_mean = sum(canopy_samples) / len(canopy_samples)
             canopy_index = self._to_index(canopy_mean, 0.0, 100.0)
+            canopy_cover = round(canopy_mean, 2)
+            environmental_layer_status["canopy"] = "ok"
             sources.append("Canopy density raster")
         else:
-            canopy_index = 45.0
+            canopy_index = None
+            canopy_cover = None
+            environmental_layer_status["canopy"] = "missing" if not self._file_exists(canopy_path) else "error"
             assumptions.append("Canopy density unavailable within 100m neighborhood.")
 
-        moisture = self._sample_raster_point(self.paths["moisture"], lat, lon)
+        moisture, _moisture_status = self._sample_layer_value(self.paths["moisture"], lat, lon)
         if moisture is None:
-            moisture_index = round(max(0.0, min(100.0, 0.5 * burn_probability_index + 0.5 * hazard_severity_index)), 1)
-            assumptions.append("Moisture/fuel dryness raster missing; dryness inferred from hazard and burn probability.")
+            moisture_index = None
+            assumptions.append("Moisture/fuel dryness raster missing; dryness could not be directly measured.")
         else:
             moisture_index = self._to_index(moisture, 0.0, 100.0)
             sources.append("Moisture/fuel dryness raster")
 
-        wildland_distance_index = self._wildland_distance_index(lat, lon, self.paths["fuel"], self.paths["canopy"])
-        if self._file_exists(self.paths["fuel"]) or self._file_exists(self.paths["canopy"]):
+        wildland_distance, wildland_distance_index = self._wildland_distance_metrics(lat, lon, fuel_path, canopy_path)
+        if wildland_distance is not None:
             sources.append("Distance to wildland vegetation (derived)")
         else:
-            assumptions.append("Fuel/canopy rasters missing; wildland distance defaulted.")
+            assumptions.append("Fuel/canopy rasters missing; wildland distance unavailable.")
 
-        historic_fire_index = self._historical_recurrence_index(lat, lon, self.paths["perimeters"])
-        if self._file_exists(self.paths["perimeters"]):
+        historic_fire_distance, historic_fire_index, fire_history_status = self._historical_fire_metrics(
+            lat, lon, self.paths["perimeters"]
+        )
+        environmental_layer_status["fire_history"] = fire_history_status
+        if fire_history_status == "ok":
             sources.append("Historical fire perimeter recurrence")
         else:
-            assumptions.append("Historical perimeter layer missing; recurrence defaulted.")
+            assumptions.append("Historical perimeter layer unavailable; recurrence unavailable.")
 
-        environmental = round(
-            0.20 * burn_probability_index
-            + 0.16 * hazard_severity_index
-            + 0.12 * slope_index
-            + 0.06 * aspect_index
-            + 0.12 * fuel_index
-            + 0.10 * moisture_index
-            + 0.10 * canopy_index
-            + 0.08 * wildland_distance_index
-            + 0.06 * historic_fire_index,
-            1,
-        )
+        weighted_terms = [
+            (0.20, burn_probability_index),
+            (0.16, hazard_severity_index),
+            (0.12, slope_index),
+            (0.06, aspect_index),
+            (0.12, fuel_index),
+            (0.10, moisture_index),
+            (0.10, canopy_index),
+            (0.08, wildland_distance_index),
+            (0.06, historic_fire_index),
+        ]
+        available_terms = [(w, v) for (w, v) in weighted_terms if v is not None]
+        environmental = None
+        if available_terms:
+            numerator = sum(w * float(v) for w, v in available_terms)
+            denominator = sum(w for w, _ in available_terms)
+            environmental = round(numerator / denominator, 1)
 
         return WildfireContext(
             environmental_index=environmental,
-            slope_index=round(slope_index, 1),
-            aspect_index=round(aspect_index, 1),
-            fuel_index=round(fuel_index, 1),
-            moisture_index=round(moisture_index, 1),
-            canopy_index=round(canopy_index, 1),
-            wildland_distance_index=round(wildland_distance_index, 1),
-            historic_fire_index=round(historic_fire_index, 1),
-            burn_probability_index=round(burn_probability_index, 1),
-            hazard_severity_index=round(hazard_severity_index, 1),
+            slope_index=None if slope_index is None else round(slope_index, 1),
+            aspect_index=None if aspect_index is None else round(aspect_index, 1),
+            fuel_index=None if fuel_index is None else round(fuel_index, 1),
+            moisture_index=None if moisture_index is None else round(moisture_index, 1),
+            canopy_index=None if canopy_index is None else round(canopy_index, 1),
+            wildland_distance_index=None if wildland_distance_index is None else round(wildland_distance_index, 1),
+            historic_fire_index=None if historic_fire_index is None else round(historic_fire_index, 1),
+            burn_probability_index=None if burn_probability_index is None else round(burn_probability_index, 1),
+            hazard_severity_index=None if hazard_severity_index is None else round(hazard_severity_index, 1),
+            burn_probability=burn_prob,
+            wildfire_hazard=hazard,
+            slope=slope,
+            fuel_model=fuel_model,
+            canopy_cover=canopy_cover,
+            historic_fire_distance=None if historic_fire_distance is None else round(historic_fire_distance, 2),
+            wildland_distance=wildland_distance,
+            environmental_layer_status=environmental_layer_status,
             data_sources=sorted(set(sources)),
             assumptions=assumptions,
             structure_ring_metrics=structure_ring_metrics,

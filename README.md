@@ -199,14 +199,16 @@ Assessment/report payloads include:
 - explainability: `submodel_scores`, `weighted_contributions`, `factor_breakdown`, `top_risk_drivers`, `top_protective_factors`, `explanation_summary`
 - homeowner insights: `property_findings` (plain-language findings derived from structure-ring vegetation context)
 - confidence gating: `confidence_tier` (`high|moderate|low|preliminary`) and `use_restriction`
+- environmental quality: `environmental_layer_status` (`ok|missing|error` per key layer) and `environmental_data_completeness_score`
 - property-level context: `property_level_context.footprint_used` and `property_level_context.ring_metrics`
-  - includes `footprint_status` (`used`, `not_found`, `source_unavailable`, `error`) for fallback transparency
+  - includes `footprint_status` (`used`, `not_found`, `provider_unavailable`, `error`) and `fallback_mode` (`footprint`, `point_based`) for fallback transparency
   - includes `fallback_mode` (`footprint` or `point_based`) for clear interpretation context
 - readiness and mitigation linkage fields
 
 `score_summaries` is included with three sections (`site_hazard`, `home_ignition_vulnerability`, `insurance_readiness`), each containing label, score, explanation, top drivers, protective factors, and next actions.
 
 If address geocoding cannot be verified, `/risk/assess` returns an error (no synthetic coordinate scoring in default behavior).
+Missing environmental layers are surfaced explicitly and do not silently default to neutral point values in the data layer.
 
 ## Setup
 

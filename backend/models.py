@@ -108,15 +108,23 @@ class FactorBreakdown(BaseModel):
 
 
 class EnvironmentalFactors(BaseModel):
-    burn_probability: float
-    hazard_severity: float
-    slope_topography: float
-    aspect_exposure: float
-    vegetation_fuel: float
-    drought_moisture: float
-    canopy_density: float
-    fuel_proximity: float
-    historical_fire_recurrence: float
+    burn_probability: Optional[float] = None
+    wildfire_hazard: Optional[float] = None
+    slope: Optional[float] = None
+    fuel_model: Optional[float] = None
+    canopy_cover: Optional[float] = None
+    historic_fire_distance: Optional[float] = None
+    wildland_distance: Optional[float] = None
+
+    # Legacy compatibility mirrors
+    hazard_severity: Optional[float] = None
+    slope_topography: Optional[float] = None
+    aspect_exposure: Optional[float] = None
+    vegetation_fuel: Optional[float] = None
+    drought_moisture: Optional[float] = None
+    canopy_density: Optional[float] = None
+    fuel_proximity: Optional[float] = None
+    historical_fire_recurrence: Optional[float] = None
 
 
 class AssumptionsBlock(BaseModel):
@@ -130,6 +138,7 @@ class AssumptionsBlock(BaseModel):
 class ConfidenceBlock(BaseModel):
     confidence_score: float
     data_completeness_score: float
+    environmental_data_completeness_score: float = 0.0
     confidence_tier: ConfidenceTier
     use_restriction: UseRestriction
     assumption_count: int
@@ -244,10 +253,12 @@ class AssessmentResult(BaseModel):
     assumptions_used: List[str] = Field(default_factory=list)
     confidence_score: float
     data_completeness_score: float = 0.0
+    environmental_data_completeness_score: float = 0.0
     confidence_tier: ConfidenceTier = "preliminary"
     use_restriction: UseRestriction = "not_for_underwriting_or_binding"
     low_confidence_flags: List[str]
     data_sources: List[str]
+    environmental_layer_status: Dict[str, str] = Field(default_factory=dict)
     property_level_context: Dict[str, object] = Field(default_factory=dict)
     mitigation_plan: List[MitigationAction]
     readiness_factors: List[ReadinessFactor] = Field(default_factory=list)

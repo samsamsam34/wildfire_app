@@ -72,7 +72,10 @@ from backend.models import (
 from backend.risk_engine import RiskComputation, RiskEngine
 from backend.scoring_config import load_scoring_config
 from backend.version import MODEL_VERSION
-from backend.wildfire_data import WildfireDataClient
+from backend.wildfire_data import (
+    WildfireDataClient,
+    compute_environmental_data_completeness,
+)
 
 app = FastAPI(title="WildfireRisk Advisor API", version="0.9.0")
 
@@ -227,7 +230,14 @@ def _merge_attributes(base: PropertyAttributes, overrides: PropertyAttributes) -
     return PropertyAttributes.model_validate(merged)
 
 
-def _build_assumption_tracking(payload: AddressRequest, assumptions_used: list[str], data_sources: list[str]) -> AssumptionsBlock:
+def _build_assumption_tracking(
+    payload: AddressRequest,
+    assumptions_used: list[str],
+    data_sources: list[str],
+    environmental_layer_status: dict[str, str],
+    property_level_context: dict[str, Any],
+    geocode_verified: bool = True,
+) -> AssumptionsBlock:
     observed_inputs: dict[str, object] = {"address": payload.address}
     observed_inputs.update(_attributes_to_dict(payload.attributes))
 
@@ -262,15 +272,25 @@ def _build_assumption_tracking(payload: AddressRequest, assumptions_used: list[s
     if attrs.vegetation_condition is None:
         missing_inputs.append("vegetation_condition")
 
-    source_blob = " ".join(data_sources).lower()
-    if "burn probability raster" not in source_blob:
-        missing_inputs.append("burn_probability_layer")
-    if "wildfire hazard severity raster" not in source_blob:
-        missing_inputs.append("hazard_severity_layer")
-    if "fuel model raster" not in source_blob:
-        missing_inputs.append("fuel_model_layer")
-    if "historical fire perimeter recurrence" not in source_blob:
-        missing_inputs.append("historical_fire_perimeter_layer")
+    layer_to_input = {
+        "burn_probability": "burn_probability_layer",
+        "hazard": "hazard_severity_layer",
+        "slope": "slope_layer",
+        "fuel": "fuel_model_layer",
+        "canopy": "canopy_layer",
+        "fire_history": "historical_fire_perimeter_layer",
+    }
+    for layer, status in (environmental_layer_status or {}).items():
+        if status != "ok":
+            missing_inputs.append(layer_to_input.get(layer, f"{layer}_layer"))
+
+    if not geocode_verified:
+        missing_inputs.append("geocode_verification")
+        assumptions_used.append("Geocoding fallback used; coordinates were not provider-verified.")
+
+    if not property_level_context.get("footprint_used"):
+        missing_inputs.append("building_footprint")
+        assumptions_used.append("Building footprint not found; vulnerability estimated using point context.")
 
     return AssumptionsBlock(
         confirmed_inputs=confirmed_inputs,
@@ -281,7 +301,14 @@ def _build_assumption_tracking(payload: AddressRequest, assumptions_used: list[s
     )
 
 
-def _build_confidence(assumptions: AssumptionsBlock) -> ConfidenceBlock:
+def _build_confidence(
+    assumptions: AssumptionsBlock,
+    *,
+    environmental_data_completeness: float,
+    geocode_verified: bool,
+    property_level_context: dict[str, Any],
+    environmental_layer_status: dict[str, str],
+) -> ConfidenceBlock:
     important_missing = len([m for m in assumptions.missing_inputs if m in CORE_FACT_FIELDS or m.endswith("_layer")])
     missing_layer_count = len([m for m in assumptions.missing_inputs if m.endswith("_layer")])
     inferred_count = len(assumptions.inferred_inputs)
@@ -292,12 +319,26 @@ def _build_confidence(assumptions: AssumptionsBlock) -> ConfidenceBlock:
         if any(k in note.lower() for k in ["unavailable", "failed", "fallback"])
     )
 
-    confidence = 100.0
-    confidence -= important_missing * 7.5
-    confidence -= inferred_count * 4.0
-    confidence -= external_fail_count * 8.0
-    confidence -= max(0, len(assumptions.assumptions_used) - external_fail_count) * 1.0
-    confidence += min(10.0, confirmed_core_count * 2.5)
+    data_completeness_score = round(max(0.0, min(100.0, 100.0 - (len(assumptions.missing_inputs) * 3.0))), 1)
+
+    provider_error_count = sum(1 for status in (environmental_layer_status or {}).values() if status == "error")
+    provider_health_score = 100.0
+    provider_health_score -= provider_error_count * 25.0
+    provider_health_score -= external_fail_count * 10.0
+    if not geocode_verified:
+        provider_health_score -= 35.0
+    if not property_level_context.get("footprint_used"):
+        provider_health_score -= 10.0
+    provider_health_score = max(0.0, min(100.0, provider_health_score))
+
+    confidence = (
+        0.5 * data_completeness_score
+        + 0.3 * environmental_data_completeness
+        + 0.2 * provider_health_score
+    )
+    confidence -= important_missing * 8.0
+    confidence -= inferred_count * 3.0
+    confidence += min(6.0, confirmed_core_count * 1.5)
     confidence = max(0.0, min(100.0, round(confidence, 1)))
 
     low_confidence_flags: list[str] = []
@@ -305,20 +346,24 @@ def _build_confidence(assumptions: AssumptionsBlock) -> ConfidenceBlock:
         low_confidence_flags.append("Multiple important inputs or layers are missing")
     if external_fail_count > 0:
         low_confidence_flags.append("At least one external provider or layer fetch failed")
+    if environmental_data_completeness < 80:
+        low_confidence_flags.append("Environmental layer coverage is incomplete")
     if inferred_count >= 3:
         low_confidence_flags.append("Several core property attributes were inferred")
+    if not geocode_verified:
+        low_confidence_flags.append("Address geocoding was not provider-verified")
+    if not property_level_context.get("footprint_used"):
+        low_confidence_flags.append("Building footprint unavailable; point-based property context used")
     if any("provisional" in note.lower() for note in assumptions.assumptions_used):
         low_confidence_flags.append("Access scoring is provisional and not yet parcel/egress-based")
     if confidence < 70:
         low_confidence_flags.append("Overall confidence below recommended underwriting threshold")
 
-    data_completeness_score = round(max(0.0, min(100.0, 100.0 - (len(assumptions.missing_inputs) * 3.0))), 1)
-
-    severe_layer_failure = external_fail_count >= 2 or missing_layer_count >= 3
-    major_layer_failure = external_fail_count >= 1 or missing_layer_count >= 1
+    severe_layer_failure = external_fail_count >= 2 or missing_layer_count >= 3 or provider_error_count >= 1
+    major_layer_failure = external_fail_count >= 1 or missing_layer_count >= 1 or provider_error_count >= 1
     multiple_critical_missing = important_missing >= 4
 
-    if confidence < 50 or severe_layer_failure or multiple_critical_missing:
+    if confidence < 50 or not geocode_verified or severe_layer_failure or multiple_critical_missing:
         confidence_tier = "preliminary"
     elif confidence < 70:
         confidence_tier = "low"
@@ -344,6 +389,7 @@ def _build_confidence(assumptions: AssumptionsBlock) -> ConfidenceBlock:
     return ConfidenceBlock(
         confidence_score=confidence,
         data_completeness_score=data_completeness_score,
+        environmental_data_completeness_score=environmental_data_completeness,
         confidence_tier=confidence_tier,
         use_restriction=use_restriction,
         assumption_count=len(assumptions.assumptions_used),
@@ -391,9 +437,9 @@ def _build_property_findings(property_level_context: dict[str, Any]) -> list[str
     if not isinstance(rings, dict) or not rings:
         return []
 
-    ring_0_5 = _density_from_ring(rings.get("ring_0_5_ft"))
-    ring_5_30 = _density_from_ring(rings.get("ring_5_30_ft"))
-    ring_30_100 = _density_from_ring(rings.get("ring_30_100_ft"))
+    ring_0_5 = _density_from_ring(rings.get("ring_0_5_ft") or rings.get("zone_0_5_ft"))
+    ring_5_30 = _density_from_ring(rings.get("ring_5_30_ft") or rings.get("zone_5_30_ft"))
+    ring_30_100 = _density_from_ring(rings.get("ring_30_100_ft") or rings.get("zone_30_100_ft"))
     findings: list[str] = []
 
     if ring_0_5 is not None and ring_0_5 >= 60:
@@ -428,8 +474,30 @@ def _normalize_property_level_context(raw_context: object) -> dict[str, Any]:
     footprint_used = bool(normalized.get("footprint_used"))
     normalized["footprint_used"] = footprint_used
     normalized.setdefault("footprint_status", "used" if footprint_used else "not_found")
+    if normalized.get("footprint_status") == "source_unavailable":
+        normalized["footprint_status"] = "provider_unavailable"
     normalized.setdefault("fallback_mode", "footprint" if footprint_used else "point_based")
-    normalized.setdefault("ring_metrics", None)
+    ring_metrics = normalized.get("ring_metrics")
+    if isinstance(ring_metrics, dict):
+        # Canonical zone keys for API consumers.
+        if "zone_0_5_ft" not in ring_metrics and "ring_0_5_ft" in ring_metrics:
+            ring_metrics["zone_0_5_ft"] = ring_metrics.get("ring_0_5_ft")
+        if "zone_5_30_ft" not in ring_metrics and "ring_5_30_ft" in ring_metrics:
+            ring_metrics["zone_5_30_ft"] = ring_metrics.get("ring_5_30_ft")
+        if "zone_30_100_ft" not in ring_metrics and "ring_30_100_ft" in ring_metrics:
+            ring_metrics["zone_30_100_ft"] = ring_metrics.get("ring_30_100_ft")
+
+        # Backward-compatible legacy aliases.
+        if "ring_0_5_ft" not in ring_metrics and "zone_0_5_ft" in ring_metrics:
+            ring_metrics["ring_0_5_ft"] = ring_metrics.get("zone_0_5_ft")
+        if "ring_5_30_ft" not in ring_metrics and "zone_5_30_ft" in ring_metrics:
+            ring_metrics["ring_5_30_ft"] = ring_metrics.get("zone_5_30_ft")
+        if "ring_30_100_ft" not in ring_metrics and "zone_30_100_ft" in ring_metrics:
+            ring_metrics["ring_30_100_ft"] = ring_metrics.get("zone_30_100_ft")
+
+        normalized["ring_metrics"] = ring_metrics
+    else:
+        normalized["ring_metrics"] = None
     return normalized
 
 
@@ -698,8 +766,15 @@ def _run_assessment(
         readiness.readiness_blockers,
     )
 
+    property_level_context = _normalize_property_level_context(context.property_level_context)
     factors = EnvironmentalFactors(
-        burn_probability=context.burn_probability_index,
+        burn_probability=context.burn_probability,
+        wildfire_hazard=context.wildfire_hazard,
+        slope=context.slope,
+        fuel_model=context.fuel_model,
+        canopy_cover=context.canopy_cover,
+        historic_fire_distance=context.historic_fire_distance,
+        wildland_distance=context.wildland_distance,
         hazard_severity=context.hazard_severity_index,
         slope_topography=context.slope_index,
         aspect_exposure=context.aspect_index,
@@ -712,10 +787,24 @@ def _run_assessment(
 
     all_assumptions = sorted(set(risk.assumptions))
     all_sources = [geocode_source] + context.data_sources
-    assumptions_block = _build_assumption_tracking(payload, all_assumptions, all_sources)
-    confidence_block = _build_confidence(assumptions_block)
+    environmental_data_completeness = compute_environmental_data_completeness(context)
+    assumptions_block = _build_assumption_tracking(
+        payload,
+        list(all_assumptions),
+        all_sources,
+        context.environmental_layer_status,
+        property_level_context,
+        geocode_verified=True,
+    )
+    all_assumptions = assumptions_block.assumptions_used
+    confidence_block = _build_confidence(
+        assumptions_block,
+        environmental_data_completeness=environmental_data_completeness,
+        geocode_verified=True,
+        property_level_context=property_level_context,
+        environmental_layer_status=context.environmental_layer_status,
+    )
 
-    property_level_context = _normalize_property_level_context(context.property_level_context)
     property_findings = _build_property_findings(property_level_context)
     top_risk_drivers = _merge_property_drivers(_build_top_risk_drivers(submodel_scores), property_findings)
     top_protective_factors = _build_top_protective_factors(payload, submodel_scores)
@@ -746,6 +835,13 @@ def _run_assessment(
     ]
     if any("fallback" in a.lower() or "unavailable" in a.lower() for a in all_assumptions):
         scoring_notes.append("One or more providers/layers required fallback assumptions.")
+    for layer, status in (context.environmental_layer_status or {}).items():
+        if status != "ok":
+            scoring_notes.append(
+                f"Environmental {layer.replace('_', ' ')} layer {status} — score uses partial data."
+            )
+    if not property_level_context.get("footprint_used"):
+        scoring_notes.append("Building footprint not found — vulnerability estimated using point context.")
     if confidence_block.use_restriction == "not_for_underwriting_or_binding":
         scoring_notes.append("Current confidence gating: not for underwriting or binding decisions.")
 
@@ -820,10 +916,12 @@ def _run_assessment(
         assumptions_used=all_assumptions,
         confidence_score=confidence_block.confidence_score,
         data_completeness_score=confidence_block.data_completeness_score,
+        environmental_data_completeness_score=confidence_block.environmental_data_completeness_score,
         confidence_tier=confidence_block.confidence_tier,
         use_restriction=confidence_block.use_restriction,
         low_confidence_flags=confidence_block.low_confidence_flags,
         data_sources=all_sources,
+        environmental_layer_status=context.environmental_layer_status,
         property_level_context=property_level_context,
         mitigation_plan=mitigation_plan,
         readiness_factors=readiness_factors,
@@ -864,6 +962,8 @@ def _run_assessment(
             "wildland_distance_index": context.wildland_distance_index,
             "historic_fire_index": context.historic_fire_index,
         },
+        "environmental_layer_status": context.environmental_layer_status,
+        "environmental_data_completeness": environmental_data_completeness,
         "property_level_context": property_level_context,
         "submodel_scores": {
             name: {
@@ -896,6 +996,7 @@ def _run_assessment(
         "confidence_gating": {
             "confidence_score": result.confidence_score,
             "data_completeness_score": result.data_completeness_score,
+            "environmental_data_completeness_score": result.environmental_data_completeness_score,
             "confidence_tier": result.confidence_tier,
             "use_restriction": result.use_restriction,
         },
@@ -1059,6 +1160,7 @@ def _build_report_export(
             "latitude": result.latitude,
             "longitude": result.longitude,
             "data_sources": result.data_sources,
+            "environmental_layer_status": result.environmental_layer_status,
             "property_level_context": result.property_level_context,
         },
         wildfire_risk_summary={
@@ -1092,6 +1194,7 @@ def _build_report_export(
             "assumptions_used": result.assumptions_used,
             "confidence_score": result.confidence_score,
             "data_completeness_score": result.data_completeness_score,
+            "environmental_data_completeness_score": result.environmental_data_completeness_score,
             "confidence_tier": result.confidence_tier,
             "use_restriction": result.use_restriction,
             "low_confidence_flags": result.low_confidence_flags,

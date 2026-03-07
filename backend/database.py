@@ -1008,6 +1008,11 @@ class AssessmentStore:
             payload["confidence_score"] = payload.get("confidence", {}).get("confidence_score", 60.0)
         if "data_completeness_score" not in payload:
             payload["data_completeness_score"] = payload.get("confidence", {}).get("data_completeness_score", 50.0)
+        if "environmental_data_completeness_score" not in payload:
+            payload["environmental_data_completeness_score"] = payload.get("confidence", {}).get(
+                "environmental_data_completeness_score",
+                0.0,
+            )
         payload.setdefault("confidence_tier", payload.get("confidence", {}).get("confidence_tier", "preliminary"))
         payload.setdefault(
             "use_restriction",
@@ -1026,10 +1031,25 @@ class AssessmentStore:
                 "ring_metrics": None,
             },
         )
+        payload.setdefault(
+            "environmental_layer_status",
+            {
+                "burn_probability": "missing",
+                "hazard": "missing",
+                "slope": "missing",
+                "fuel": "missing",
+                "canopy": "missing",
+                "fire_history": "missing",
+            },
+        )
+        for layer in ["burn_probability", "hazard", "slope", "fuel", "canopy", "fire_history"]:
+            payload["environmental_layer_status"].setdefault(layer, "missing")
         if isinstance(payload.get("property_level_context"), dict):
             plc = payload["property_level_context"]
             plc.setdefault("footprint_used", False)
             plc.setdefault("footprint_status", "not_found")
+            if plc.get("footprint_status") == "source_unavailable":
+                plc["footprint_status"] = "provider_unavailable"
             plc.setdefault("fallback_mode", "footprint" if plc.get("footprint_used") else "point_based")
             plc.setdefault("ring_metrics", None)
         payload.setdefault("mitigation_plan", payload.get("mitigation_recommendations", []))
@@ -1143,6 +1163,7 @@ class AssessmentStore:
             {
                 "confidence_score": payload["confidence_score"],
                 "data_completeness_score": payload["data_completeness_score"],
+                "environmental_data_completeness_score": payload["environmental_data_completeness_score"],
                 "confidence_tier": payload["confidence_tier"],
                 "use_restriction": payload["use_restriction"],
                 "assumption_count": len(payload["assumptions_used"]),
