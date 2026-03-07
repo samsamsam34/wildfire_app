@@ -136,6 +136,15 @@ Role-aware behavior includes:
 
 Each submodel includes score, weighted contribution, deterministic explanation, key inputs, and assumptions.
 
+### Score Decomposition (Trustworthiness)
+Assessments now return three distinct score families:
+- `site_hazard_score` (0-100): landscape/environmental pressure around the property
+- `home_ignition_vulnerability_score` (0-100): structure and near-structure susceptibility
+- `insurance_readiness_score` (0-100): rules-based insurer-oriented readiness advisory
+
+`wildfire_risk_score` is retained for compatibility and presented as a blended summary (`site_hazard_score` + `home_ignition_vulnerability_score`).
+`legacy_weighted_wildfire_risk_score` is included for traceability with prior weighting output.
+
 ### Property-Level Structure Ring Context (Sprint 2)
 The data layer now attempts building-footprint-based vegetation analysis before scoring:
 - footprint lookup from local vector data (`WF_LAYER_BUILDING_FOOTPRINTS_GEOJSON`)
@@ -189,6 +198,7 @@ Assessment/report payloads include:
 - confidence: `confidence_score`, `low_confidence_flags`
 - explainability: `submodel_scores`, `weighted_contributions`, `factor_breakdown`, `top_risk_drivers`, `top_protective_factors`, `explanation_summary`
 - homeowner insights: `property_findings` (plain-language findings derived from structure-ring vegetation context)
+- confidence gating: `confidence_tier` (`high|moderate|low|preliminary`) and `use_restriction`
 - property-level context: `property_level_context.footprint_used` and `property_level_context.ring_metrics`
   - includes `footprint_status` (`used`, `not_found`, `source_unavailable`, `error`) for fallback transparency
 - readiness and mitigation linkage fields
@@ -265,6 +275,7 @@ Deterministic tests in `tests/test_risk_assessment.py` cover:
 ## Current Limitations
 
 - Scoring/readiness remain transparent MVP heuristics, not carrier-approved underwriting models.
+- Outputs are advisory and should not be treated as calibrated premium or binding/underwriting decisions.
 - Access/egress scoring is still provisional and excluded from weighted wildfire total.
 - Building footprint support currently expects a local GeoJSON footprint source; no external footprint API integration yet.
 - Portfolio jobs are SQLite/background-task based; no distributed queue yet.

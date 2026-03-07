@@ -60,6 +60,7 @@ from backend.models import (
     SimulationRequest,
     SimulationResult,
     SimulationScenarioItem,
+    ScoreSectionSummary,
     SubmodelScore,
     UnderwritingRuleset,
     UnderwritingRulesetCreate,
@@ -120,6 +121,13 @@ ENVIRONMENTAL_SUBMODELS = [
 STRUCTURAL_SUBMODELS = [
     "structure_vulnerability_risk",
     "defensible_space_risk",
+]
+
+SITE_HAZARD_SUBMODELS = [
+    "vegetation_intensity_risk",
+    "fuel_proximity_risk",
+    "slope_topography_risk",
+    "historic_fire_risk",
 ]
 
 CORE_FACT_FIELDS = {"roof_type", "vent_type", "defensible_space_ft", "construction_year"}
@@ -281,6 +289,7 @@ def _build_assumption_tracking(payload: AddressRequest, assumptions_used: list[s
 
 def _build_confidence(assumptions: AssumptionsBlock) -> ConfidenceBlock:
     important_missing = len([m for m in assumptions.missing_inputs if m in CORE_FACT_FIELDS or m.endswith("_layer")])
+    missing_layer_count = len([m for m in assumptions.missing_inputs if m.endswith("_layer")])
     inferred_count = len(assumptions.inferred_inputs)
     confirmed_core_count = len([k for k in assumptions.confirmed_inputs if k in CORE_FACT_FIELDS])
     external_fail_count = sum(
@@ -311,9 +320,31 @@ def _build_confidence(assumptions: AssumptionsBlock) -> ConfidenceBlock:
 
     data_completeness_score = round(max(0.0, min(100.0, 100.0 - (len(assumptions.missing_inputs) * 3.0))), 1)
 
+    if confidence < 45 or important_missing >= 5 or external_fail_count >= 2:
+        confidence_tier = "preliminary"
+    elif confidence < 70 or important_missing >= 3 or external_fail_count >= 1:
+        confidence_tier = "low"
+    elif confidence < 85 or important_missing >= 1 or inferred_count >= 2:
+        confidence_tier = "moderate"
+    else:
+        confidence_tier = "high"
+
+    if confidence_tier == "preliminary" or missing_layer_count >= 2:
+        use_restriction = "not_for_underwriting_or_binding"
+    elif confidence < 70 and external_fail_count >= 1:
+        use_restriction = "not_for_underwriting_or_binding"
+    elif confidence_tier == "low":
+        use_restriction = "agent_or_inspector_review_recommended"
+    elif confidence_tier == "moderate":
+        use_restriction = "homeowner_review_recommended"
+    else:
+        use_restriction = "shareable"
+
     return ConfidenceBlock(
         confidence_score=confidence,
         data_completeness_score=data_completeness_score,
+        confidence_tier=confidence_tier,
+        use_restriction=use_restriction,
         assumption_count=len(assumptions.assumptions_used),
         low_confidence_flags=sorted(set(low_confidence_flags)),
         requires_user_verification=confidence < 70.0 or len(low_confidence_flags) > 0,
@@ -405,6 +436,94 @@ def _merge_property_drivers(base_drivers: list[str], property_findings: list[str
     return unique[:3]
 
 
+def _weighted_average(submodels: dict[str, SubmodelScore], keys: list[str]) -> float:
+    present = [submodels[k].score for k in keys if k in submodels]
+    if not present:
+        return 0.0
+    return round(sum(present) / len(present), 1)
+
+
+def _build_score_decomposition(
+    *,
+    submodels: dict[str, SubmodelScore],
+    context: object,
+) -> tuple[float, float]:
+    site_submodel_component = _weighted_average(submodels, SITE_HAZARD_SUBMODELS)
+    site_hazard_score = round(0.75 * site_submodel_component + 0.25 * float(getattr(context, "environmental_index", 50.0)), 1)
+
+    structure_component = _weighted_average(submodels, STRUCTURAL_SUBMODELS)
+    near_structure_component = _weighted_average(submodels, ["flame_contact_risk", "ember_exposure_risk"])
+    home_ignition_vulnerability_score = round(0.7 * structure_component + 0.3 * near_structure_component, 1)
+
+    return (
+        max(0.0, min(100.0, site_hazard_score)),
+        max(0.0, min(100.0, home_ignition_vulnerability_score)),
+    )
+
+
+def _build_score_sections(
+    *,
+    site_hazard_score: float,
+    home_ignition_vulnerability_score: float,
+    insurance_readiness_score: float,
+    top_risk_drivers: list[str],
+    top_protective_factors: list[str],
+    mitigation_plan,
+    property_findings: list[str],
+    readiness_blockers: list[str],
+    confidence_block: ConfidenceBlock,
+) -> tuple[ScoreSectionSummary, ScoreSectionSummary, ScoreSectionSummary]:
+    site_actions = [
+        m.title
+        for m in mitigation_plan
+        if any(
+            k in (m.impacted_submodels or [])
+            for k in ["vegetation_intensity_risk", "fuel_proximity_risk", "slope_topography_risk", "historic_fire_risk"]
+        )
+    ][:3]
+    home_actions = [
+        m.title
+        for m in mitigation_plan
+        if any(
+            k in (m.impacted_submodels or [])
+            for k in ["structure_vulnerability_risk", "defensible_space_risk", "flame_contact_risk", "ember_exposure_risk"]
+        )
+    ][:3]
+
+    site_section = ScoreSectionSummary(
+        summary=(
+            f"Site Hazard {site_hazard_score:.1f}/100 reflects landscape fuel, slope, and nearby fire pressure around the home."
+        ),
+        key_drivers=top_risk_drivers[:3],
+        protective_factors=top_protective_factors[:3],
+        next_actions=site_actions,
+    )
+
+    home_section = ScoreSectionSummary(
+        summary=(
+            f"Home Ignition Vulnerability {home_ignition_vulnerability_score:.1f}/100 reflects structure hardening and near-home ignition pathways."
+        ),
+        key_drivers=(property_findings[:3] or top_risk_drivers[:3]),
+        protective_factors=top_protective_factors[:3],
+        next_actions=home_actions,
+    )
+
+    readiness_actions = [m.title for m in mitigation_plan[:3]]
+    readiness_section = ScoreSectionSummary(
+        summary=(
+            f"Insurance Readiness {insurance_readiness_score:.1f}/100 is a heuristic advisory score and not carrier-approved underwriting."
+        ),
+        key_drivers=(readiness_blockers[:3] or ["No major readiness blockers detected"]),
+        protective_factors=top_protective_factors[:3],
+        next_actions=readiness_actions,
+    )
+
+    if confidence_block.use_restriction == "not_for_underwriting_or_binding":
+        readiness_section.summary += " Current confidence gating: not for underwriting or binding decisions."
+
+    return site_section, home_section, readiness_section
+
+
 def _build_factor_breakdown(submodels: dict[str, SubmodelScore], risk: RiskComputation) -> FactorBreakdown:
     canonical = {name: round(submodels[name].score, 1) for name in CANONICAL_SUBMODELS if name in submodels}
     environmental = {name: canonical[name] for name in ENVIRONMENTAL_SUBMODELS if name in canonical}
@@ -477,6 +596,11 @@ def _apply_ruleset_to_result(result: AssessmentResult, ruleset: UnderwritingRule
         result.insurance_readiness_score = round(max(0.0, min(100.0, result.insurance_readiness_score - extra_penalty)), 1)
         if result.risk_scores:
             result.risk_scores.insurance_readiness_score = result.insurance_readiness_score
+        if result.insurance_readiness_section:
+            result.insurance_readiness_section.summary = (
+                f"Insurance Readiness {result.insurance_readiness_score:.1f}/100 is a heuristic advisory score "
+                "and not carrier-approved underwriting."
+            )
 
     if required_priority_boost > 0:
         for rec in result.mitigation_plan:
@@ -502,14 +626,16 @@ def _run_assessment(
     portfolio_name: str | None = None,
     tags: list[str] | None = None,
 ) -> tuple[AssessmentResult, dict]:
-    pre_assumptions: list[str] = []
-
     try:
         lat, lon, geocode_source = geocoder.geocode(payload.address)
-    except Exception:
-        lat, lon = risk_engine.geocode_stub(payload.address)
-        geocode_source = "Deterministic geocode fallback"
-        pre_assumptions.append("Geocoding provider unavailable; fallback coordinates used.")
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Geocoding lookup failed; a trusted location match is required for this assessment. "
+                "Please verify the address and try again."
+            ),
+        ) from exc
 
     context = wildfire_data.collect_context(lat, lon)
     risk: RiskComputation = risk_engine.score(payload.attributes, lat, lon, context)
@@ -559,7 +685,7 @@ def _run_assessment(
         historical_fire_recurrence=context.historic_fire_index,
     )
 
-    all_assumptions = sorted(set(pre_assumptions + risk.assumptions))
+    all_assumptions = sorted(set(risk.assumptions))
     all_sources = [geocode_source] + context.data_sources
     assumptions_block = _build_assumption_tracking(payload, all_assumptions, all_sources)
     confidence_block = _build_confidence(assumptions_block)
@@ -568,20 +694,49 @@ def _run_assessment(
     top_risk_drivers = _merge_property_drivers(_build_top_risk_drivers(submodel_scores), property_findings)
     top_protective_factors = _build_top_protective_factors(payload, submodel_scores)
 
+    site_hazard_score, home_ignition_vulnerability_score = _build_score_decomposition(
+        submodels=submodel_scores,
+        context=context,
+    )
+    legacy_weighted_wildfire_risk_score = risk.total_score
+    blended_wildfire_risk_score = round(
+        max(0.0, min(100.0, 0.6 * site_hazard_score + 0.4 * home_ignition_vulnerability_score)),
+        1,
+    )
+
+    site_hazard_section, home_ignition_section, insurance_readiness_section = _build_score_sections(
+        site_hazard_score=site_hazard_score,
+        home_ignition_vulnerability_score=home_ignition_vulnerability_score,
+        insurance_readiness_score=readiness.insurance_readiness_score,
+        top_risk_drivers=top_risk_drivers,
+        top_protective_factors=top_protective_factors,
+        mitigation_plan=mitigation_plan,
+        property_findings=property_findings,
+        readiness_blockers=readiness.readiness_blockers,
+        confidence_block=confidence_block,
+    )
+
     scoring_notes = [
         ACCESS_PROVISIONAL_NOTE,
         "Submodel/weight framework and readiness rules are deterministic MVP heuristics for calibration and explainability.",
+        "Scores are advisory heuristics and not carrier-approved underwriting or premium predictions.",
     ]
     if any("fallback" in a.lower() or "unavailable" in a.lower() for a in all_assumptions):
         scoring_notes.append("One or more providers/layers required fallback assumptions.")
+    if confidence_block.use_restriction == "not_for_underwriting_or_binding":
+        scoring_notes.append("Current confidence gating: not for underwriting or binding decisions.")
 
     explanation_summary = (
-        f"Risk is driven by {', '.join(top_risk_drivers[:2])}. "
-        f"Insurance readiness summary: {readiness.readiness_summary} "
-        f"{ACCESS_PROVISIONAL_NOTE}"
+        f"Site Hazard: {site_hazard_score:.1f}/100. "
+        f"Home Ignition Vulnerability: {home_ignition_vulnerability_score:.1f}/100. "
+        f"Insurance Readiness: {readiness.insurance_readiness_score:.1f}/100. "
+        f"Primary drivers: {', '.join(top_risk_drivers[:2])}."
     )
 
-    risk_scores = RiskScores(wildfire_risk_score=risk.total_score, insurance_readiness_score=readiness.insurance_readiness_score)
+    risk_scores = RiskScores(
+        wildfire_risk_score=blended_wildfire_risk_score,
+        insurance_readiness_score=readiness.insurance_readiness_score,
+    )
     coordinates = Coordinates(latitude=lat, longitude=lon)
 
     readiness_factors = [
@@ -614,7 +769,10 @@ def _run_assessment(
         confirmed_fields=sorted(set(payload.confirmed_fields)),
         latitude=lat,
         longitude=lon,
-        wildfire_risk_score=risk.total_score,
+        wildfire_risk_score=blended_wildfire_risk_score,
+        legacy_weighted_wildfire_risk_score=legacy_weighted_wildfire_risk_score,
+        site_hazard_score=site_hazard_score,
+        home_ignition_vulnerability_score=home_ignition_vulnerability_score,
         insurance_readiness_score=readiness.insurance_readiness_score,
         risk_drivers=risk.drivers,
         factor_breakdown=breakdown,
@@ -631,6 +789,9 @@ def _run_assessment(
         missing_inputs=assumptions_block.missing_inputs,
         assumptions_used=all_assumptions,
         confidence_score=confidence_block.confidence_score,
+        data_completeness_score=confidence_block.data_completeness_score,
+        confidence_tier=confidence_block.confidence_tier,
+        use_restriction=confidence_block.use_restriction,
         low_confidence_flags=confidence_block.low_confidence_flags,
         data_sources=all_sources,
         property_level_context=context.property_level_context,
@@ -639,6 +800,9 @@ def _run_assessment(
         readiness_blockers=readiness.readiness_blockers,
         readiness_penalties=readiness.readiness_penalties,
         readiness_summary=readiness.readiness_summary,
+        site_hazard_section=site_hazard_section,
+        home_ignition_vulnerability_section=home_ignition_section,
+        insurance_readiness_section=insurance_readiness_section,
         model_version=MODEL_VERSION,
         generated_at=datetime.now(tz=timezone.utc),
         scoring_notes=scoring_notes,
@@ -690,6 +854,19 @@ def _run_assessment(
             "penalties": result.readiness_penalties,
             "factors": [f.model_dump() for f in result.readiness_factors],
             "summary": result.readiness_summary,
+        },
+        "score_decomposition": {
+            "site_hazard_score": result.site_hazard_score,
+            "home_ignition_vulnerability_score": result.home_ignition_vulnerability_score,
+            "wildfire_risk_score": result.wildfire_risk_score,
+            "legacy_weighted_wildfire_risk_score": result.legacy_weighted_wildfire_risk_score,
+            "insurance_readiness_score": result.insurance_readiness_score,
+        },
+        "confidence_gating": {
+            "confidence_score": result.confidence_score,
+            "data_completeness_score": result.data_completeness_score,
+            "confidence_tier": result.confidence_tier,
+            "use_restriction": result.use_restriction,
         },
         "assumptions_used": all_assumptions,
         "data_sources": all_sources,
@@ -855,6 +1032,11 @@ def _build_report_export(
         },
         wildfire_risk_summary={
             "wildfire_risk_score": result.wildfire_risk_score,
+            "legacy_weighted_wildfire_risk_score": result.legacy_weighted_wildfire_risk_score,
+            "site_hazard_score": result.site_hazard_score,
+            "home_ignition_vulnerability_score": result.home_ignition_vulnerability_score,
+            "site_hazard_section": result.site_hazard_section.model_dump(),
+            "home_ignition_vulnerability_section": result.home_ignition_vulnerability_section.model_dump(),
             "factor_breakdown": result.factor_breakdown.model_dump(),
             "property_findings": result.property_findings,
             "top_risk_drivers": result.top_risk_drivers,
@@ -863,6 +1045,7 @@ def _build_report_export(
         },
         insurance_readiness_summary={
             "insurance_readiness_score": result.insurance_readiness_score,
+            "insurance_readiness_section": result.insurance_readiness_section.model_dump(),
             "readiness_factors": [r.model_dump() for r in result.readiness_factors],
             "readiness_blockers": result.readiness_blockers,
             "readiness_penalties": result.readiness_penalties,
@@ -876,6 +1059,9 @@ def _build_report_export(
             "missing_inputs": result.missing_inputs,
             "assumptions_used": result.assumptions_used,
             "confidence_score": result.confidence_score,
+            "data_completeness_score": result.data_completeness_score,
+            "confidence_tier": result.confidence_tier,
+            "use_restriction": result.use_restriction,
             "low_confidence_flags": result.low_confidence_flags,
         },
         mitigation_recommendations=result.mitigation_plan,

@@ -22,6 +22,13 @@ WorkflowState = Literal[
     "declined",
     "escalated",
 ]
+ConfidenceTier = Literal["high", "moderate", "low", "preliminary"]
+UseRestriction = Literal[
+    "shareable",
+    "homeowner_review_recommended",
+    "agent_or_inspector_review_recommended",
+    "not_for_underwriting_or_binding",
+]
 
 
 class PropertyAttributes(BaseModel):
@@ -121,9 +128,18 @@ class AssumptionsBlock(BaseModel):
 class ConfidenceBlock(BaseModel):
     confidence_score: float
     data_completeness_score: float
+    confidence_tier: ConfidenceTier
+    use_restriction: UseRestriction
     assumption_count: int
     low_confidence_flags: List[str]
     requires_user_verification: bool
+
+
+class ScoreSectionSummary(BaseModel):
+    summary: str = ""
+    key_drivers: List[str] = Field(default_factory=list)
+    protective_factors: List[str] = Field(default_factory=list)
+    next_actions: List[str] = Field(default_factory=list)
 
 
 class SubmodelScore(BaseModel):
@@ -195,6 +211,9 @@ class AssessmentResult(BaseModel):
     latitude: float
     longitude: float
     wildfire_risk_score: float
+    legacy_weighted_wildfire_risk_score: float = 0.0
+    site_hazard_score: float = 0.0
+    home_ignition_vulnerability_score: float = 0.0
     insurance_readiness_score: float
     risk_drivers: RiskDrivers
     factor_breakdown: FactorBreakdown
@@ -211,6 +230,9 @@ class AssessmentResult(BaseModel):
     missing_inputs: List[str] = Field(default_factory=list)
     assumptions_used: List[str] = Field(default_factory=list)
     confidence_score: float
+    data_completeness_score: float = 0.0
+    confidence_tier: ConfidenceTier = "preliminary"
+    use_restriction: UseRestriction = "not_for_underwriting_or_binding"
     low_confidence_flags: List[str]
     data_sources: List[str]
     property_level_context: Dict[str, object] = Field(default_factory=dict)
@@ -219,6 +241,9 @@ class AssessmentResult(BaseModel):
     readiness_blockers: List[str] = Field(default_factory=list)
     readiness_penalties: Dict[str, float] = Field(default_factory=dict)
     readiness_summary: str = ""
+    site_hazard_section: ScoreSectionSummary = Field(default_factory=ScoreSectionSummary)
+    home_ignition_vulnerability_section: ScoreSectionSummary = Field(default_factory=ScoreSectionSummary)
+    insurance_readiness_section: ScoreSectionSummary = Field(default_factory=ScoreSectionSummary)
     model_version: str
     generated_at: datetime
     scoring_notes: List[str] = Field(default_factory=list)

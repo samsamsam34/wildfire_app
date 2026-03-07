@@ -102,6 +102,9 @@ def _assert_core_contract(body: dict) -> None:
         "model_version",
         "generated_at",
         "wildfire_risk_score",
+        "legacy_weighted_wildfire_risk_score",
+        "site_hazard_score",
+        "home_ignition_vulnerability_score",
         "insurance_readiness_score",
         "submodel_scores",
         "weighted_contributions",
@@ -121,17 +124,32 @@ def _assert_core_contract(body: dict) -> None:
         "missing_inputs",
         "assumptions_used",
         "confidence_score",
+        "data_completeness_score",
+        "confidence_tier",
+        "use_restriction",
         "low_confidence_flags",
         "mitigation_plan",
         "data_sources",
         "property_level_context",
+        "site_hazard_section",
+        "home_ignition_vulnerability_section",
+        "insurance_readiness_section",
         "review_status",
     ]
     for key in required:
         assert key in body
 
     assert 0.0 <= body["wildfire_risk_score"] <= 100.0
+    assert 0.0 <= body["site_hazard_score"] <= 100.0
+    assert 0.0 <= body["home_ignition_vulnerability_score"] <= 100.0
     assert 0.0 <= body["insurance_readiness_score"] <= 100.0
+    assert body["confidence_tier"] in {"high", "moderate", "low", "preliminary"}
+    assert body["use_restriction"] in {
+        "shareable",
+        "homeowner_review_recommended",
+        "agent_or_inspector_review_recommended",
+        "not_for_underwriting_or_binding",
+    }
 
     for sm in REQUIRED_SUBMODELS:
         assert sm in body["submodel_scores"]
@@ -171,6 +189,142 @@ def test_property_findings_fallback_empty_when_ring_data_missing(monkeypatch, tm
     assessed = _run(_payload("311 No Ring Data Ln", {"defensible_space_ft": 20}))
     assert "property_findings" in assessed
     assert assessed["property_findings"] == []
+
+
+def test_score_decomposition_and_blended_wildfire_score(monkeypatch, tmp_path):
+    ring_metrics = {
+        "ring_0_5_ft": {"vegetation_density": 55.0},
+        "ring_5_30_ft": {"vegetation_density": 60.0},
+        "ring_30_100_ft": {"vegetation_density": 62.0},
+    }
+    _setup(monkeypatch, tmp_path, _ctx(env=62.0, wildland=67.0, historic=58.0, ring_metrics=ring_metrics))
+
+    assessed = _run(
+        _payload(
+            "322 Score Split Ave",
+            {
+                "roof_type": "class a",
+                "vent_type": "ember-resistant",
+                "defensible_space_ft": 22,
+                "construction_year": 2015,
+            },
+            confirmed=["roof_type", "vent_type", "defensible_space_ft", "construction_year"],
+        )
+    )
+
+    expected_blended = round(0.6 * assessed["site_hazard_score"] + 0.4 * assessed["home_ignition_vulnerability_score"], 1)
+    assert assessed["wildfire_risk_score"] == expected_blended
+    assert assessed["legacy_weighted_wildfire_risk_score"] >= 0
+    assert assessed["insurance_readiness_score"] != round(100.0 - assessed["wildfire_risk_score"], 1)
+
+
+def test_confidence_tier_high_and_shareable_when_inputs_are_strong(monkeypatch, tmp_path):
+    ring_metrics = {
+        "ring_0_5_ft": {"vegetation_density": 20.0},
+        "ring_5_30_ft": {"vegetation_density": 25.0},
+        "ring_30_100_ft": {"vegetation_density": 30.0},
+    }
+    _setup(monkeypatch, tmp_path, _ctx(env=35.0, wildland=35.0, historic=20.0, ring_metrics=ring_metrics))
+
+    assessed = _run(
+        _payload(
+            "333 High Confidence Rd",
+            {
+                "roof_type": "class a",
+                "vent_type": "ember-resistant",
+                "defensible_space_ft": 35,
+                "construction_year": 2018,
+                "siding_type": "fiber cement",
+                "window_type": "dual pane tempered",
+                "vegetation_condition": "maintained",
+            },
+            confirmed=[
+                "roof_type",
+                "vent_type",
+                "defensible_space_ft",
+                "construction_year",
+            ],
+        )
+    )
+
+    assert assessed["confidence_tier"] == "high"
+    assert assessed["use_restriction"] == "shareable"
+
+
+def test_low_confidence_restriction_when_key_layers_missing(monkeypatch, tmp_path):
+    degraded = WildfireContext(
+        environmental_index=58.0,
+        slope_index=58.0,
+        aspect_index=50.0,
+        fuel_index=58.0,
+        moisture_index=58.0,
+        canopy_index=58.0,
+        wildland_distance_index=60.0,
+        historic_fire_index=55.0,
+        burn_probability_index=58.0,
+        hazard_severity_index=58.0,
+        data_sources=["test-geocoder"],
+        assumptions=[
+            "Burn probability layer unavailable at property location.",
+            "Fuel model unavailable within 100m neighborhood.",
+            "Historical perimeter layer missing; recurrence defaulted.",
+        ],
+        structure_ring_metrics={},
+        property_level_context={"footprint_used": False, "footprint_status": "source_unavailable", "ring_metrics": {}},
+    )
+    _setup(monkeypatch, tmp_path, degraded)
+
+    assessed = _run(_payload("344 Low Confidence Ct", {"defensible_space_ft": 10}))
+    assert assessed["confidence_tier"] in {"low", "preliminary"}
+    assert assessed["use_restriction"] == "not_for_underwriting_or_binding"
+
+
+def test_ring_metrics_increase_home_ignition_vulnerability_score(monkeypatch, tmp_path):
+    attrs = {
+        "roof_type": "class a",
+        "vent_type": "ember-resistant",
+        "defensible_space_ft": 20,
+        "construction_year": 2015,
+    }
+
+    low_ring = {
+        "ring_0_5_ft": {"vegetation_density": 10.0},
+        "ring_5_30_ft": {"vegetation_density": 20.0},
+        "ring_30_100_ft": {"vegetation_density": 30.0},
+    }
+    high_ring = {
+        "ring_0_5_ft": {"vegetation_density": 85.0},
+        "ring_5_30_ft": {"vegetation_density": 80.0},
+        "ring_30_100_ft": {"vegetation_density": 70.0},
+    }
+
+    _setup(monkeypatch, tmp_path, _ctx(env=55.0, wildland=55.0, historic=50.0, ring_metrics=low_ring))
+    low = _run(_payload("355 Ring Low", attrs))
+
+    _setup(monkeypatch, tmp_path, _ctx(env=55.0, wildland=55.0, historic=50.0, ring_metrics=high_ring))
+    high = _run(_payload("356 Ring High", attrs))
+
+    assert high["home_ignition_vulnerability_score"] > low["home_ignition_vulnerability_score"]
+
+
+def test_geocoding_failure_does_not_use_synthetic_coordinate_fallback(monkeypatch, tmp_path):
+    auth.API_KEYS = set()
+    monkeypatch.setattr(app_main.geocoder, "geocode", lambda _addr: (_ for _ in ()).throw(RuntimeError("nominatim unavailable")))
+    monkeypatch.setattr(app_main.wildfire_data, "collect_context", lambda _lat, _lon: _ctx(env=50.0, wildland=50.0, historic=50.0))
+    monkeypatch.setattr(app_main, "store", AssessmentStore(str(tmp_path / "geocode_fail.db")))
+
+    res = client.post(
+        "/risk/assess",
+        json={
+            "address": "404 Missing Geocode St",
+            "attributes": {},
+            "confirmed_fields": [],
+            "audience": "homeowner",
+            "tags": [],
+        },
+    )
+    assert res.status_code == 503
+    assert "trusted location match is required" in res.text
 
 
 def _run(payload: dict) -> dict:

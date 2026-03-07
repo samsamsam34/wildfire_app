@@ -919,6 +919,9 @@ class AssessmentStore:
         payload.setdefault("latitude", payload.get("coordinates", {}).get("latitude", 0.0))
         payload.setdefault("longitude", payload.get("coordinates", {}).get("longitude", 0.0))
         payload.setdefault("wildfire_risk_score", payload.get("risk_scores", {}).get("wildfire_risk_score", 0.0))
+        payload.setdefault("legacy_weighted_wildfire_risk_score", payload.get("wildfire_risk_score", 0.0))
+        payload.setdefault("site_hazard_score", payload.get("risk_drivers", {}).get("environmental", 0.0))
+        payload.setdefault("home_ignition_vulnerability_score", payload.get("risk_drivers", {}).get("structural", 0.0))
         payload.setdefault("insurance_readiness_score", payload.get("risk_scores", {}).get("insurance_readiness_score", 0.0))
 
         if "risk_drivers" not in payload:
@@ -1003,6 +1006,13 @@ class AssessmentStore:
 
         if "confidence_score" not in payload:
             payload["confidence_score"] = payload.get("confidence", {}).get("confidence_score", 60.0)
+        if "data_completeness_score" not in payload:
+            payload["data_completeness_score"] = payload.get("confidence", {}).get("data_completeness_score", 50.0)
+        payload.setdefault("confidence_tier", payload.get("confidence", {}).get("confidence_tier", "preliminary"))
+        payload.setdefault(
+            "use_restriction",
+            payload.get("confidence", {}).get("use_restriction", "not_for_underwriting_or_binding"),
+        )
         if "low_confidence_flags" not in payload:
             payload["low_confidence_flags"] = payload.get("confidence", {}).get("low_confidence_flags", [])
 
@@ -1015,6 +1025,33 @@ class AssessmentStore:
         payload.setdefault("readiness_blockers", [])
         payload.setdefault("readiness_penalties", {})
         payload.setdefault("readiness_summary", "Legacy row: readiness detail unavailable in this version.")
+        payload.setdefault(
+            "site_hazard_section",
+            {
+                "summary": "",
+                "key_drivers": payload.get("top_risk_drivers", [])[:3],
+                "protective_factors": payload.get("top_protective_factors", [])[:3],
+                "next_actions": [m.get("title", "") for m in payload.get("mitigation_plan", [])[:3]],
+            },
+        )
+        payload.setdefault(
+            "home_ignition_vulnerability_section",
+            {
+                "summary": "",
+                "key_drivers": payload.get("property_findings", [])[:3] or payload.get("top_risk_drivers", [])[:3],
+                "protective_factors": payload.get("top_protective_factors", [])[:3],
+                "next_actions": [m.get("title", "") for m in payload.get("mitigation_plan", [])[:3]],
+            },
+        )
+        payload.setdefault(
+            "insurance_readiness_section",
+            {
+                "summary": payload.get("readiness_summary", ""),
+                "key_drivers": payload.get("readiness_blockers", [])[:3],
+                "protective_factors": payload.get("top_protective_factors", [])[:3],
+                "next_actions": [m.get("title", "") for m in payload.get("mitigation_plan", [])[:3]],
+            },
+        )
 
         payload.setdefault("generated_at", created_at or self._now())
         payload.setdefault("scoring_notes", ["Access risk is provisional and not included in total scoring."])
@@ -1041,7 +1078,9 @@ class AssessmentStore:
             "confidence",
             {
                 "confidence_score": payload["confidence_score"],
-                "data_completeness_score": 50.0,
+                "data_completeness_score": payload["data_completeness_score"],
+                "confidence_tier": payload["confidence_tier"],
+                "use_restriction": payload["use_restriction"],
                 "assumption_count": len(payload["assumptions_used"]),
                 "low_confidence_flags": payload["low_confidence_flags"],
                 "requires_user_verification": True,
