@@ -2,30 +2,58 @@
 
 WildfireRisk Advisor is a FastAPI application for property-level wildfire risk and insurance-readiness workflows.
 
-Current release: **Step 3 productization layer** on top of the factorized Step 2 scoring engine.
+Current release: **Step 4 commercial workflow layer** on top of the Step 2/3 scoring/readiness/simulation foundation.
 
 ## What It Does
 
 - Runs address-level wildfire assessments with editable property facts.
 - Distinguishes confirmed facts from inferred defaults and missing inputs.
 - Returns factorized submodel scores and weighted contributions.
-- Returns separate insurance-readiness logic (factors, blockers, penalties, summary).
-- Supports what-if simulation scenarios for mitigation planning.
-- Persists assessments in SQLite and supports report export/view and assessment history listing.
+- Returns separate insurance-readiness outputs (factors, blockers, penalties, summary).
+- Supports reassessment and deterministic what-if simulation workflows.
+- Persists assessments in SQLite with backward-compatible payload upgrades.
+- Adds Step 4 B2B workflows: batch/portfolio, filtering, prioritization, audience-specific reports, annotations/review status, and assessment comparisons.
 
 ## Core Endpoints
 
+### Health and Core Risk
 - `GET /health`
 - `POST /risk/assess`
 - `POST /risk/reassess/{assessment_id}`
 - `POST /risk/simulate`
 - `POST /risk/debug`
+
+### Portfolio / Batch
+- `POST /portfolio/assess`
+- `GET /portfolio`
+- `GET /assessments`
+- `GET /assessments/summary`
+
+### Reports
 - `GET /report/{assessment_id}`
 - `GET /report/{assessment_id}/export`
-- `GET /report/{assessment_id}/view` (print-friendly HTML)
-- `GET /assessments`
+- `GET /report/{assessment_id}/view`
 
+All report endpoints accept:
+- `?audience=homeowner|agent|inspector|insurer`
+- (compat) `?audience_mode=...`
+
+### Review and Annotation Workflows
+- `POST /assessments/{assessment_id}/annotations`
+- `GET /assessments/{assessment_id}/annotations`
+- `PUT /assessments/{assessment_id}/review-status`
+- `GET /assessments/{assessment_id}/review-status`
+
+Compatibility aliases are also available:
+- `POST /assessment/{assessment_id}/annotations`
+- `GET /assessment/{assessment_id}/annotations`
+
+### Comparison Workflows
+- `GET /assessments/{assessment_id}/compare/{other_assessment_id}`
+- `GET /assessment/{assessment_id}/compare/{other_assessment_id}` (alias)
+- `GET /assessments/compare?ids=id1,id2,...`
 - `GET /assessments/{assessment_id}/scenarios`
+
 All non-health endpoints use API key auth (`X-API-Key`) when `WILDFIRE_API_KEYS` is configured.
 
 ## Setup
@@ -56,11 +84,9 @@ uvicorn backend.main:app --reload
 
 Frontend file: `frontend/public/index.html`
 
-## Step 2/3 Scoring + Readiness Architecture
+## Step 2+ Scoring Architecture
 
-### Wildfire Risk (factorized)
-
-The scoring engine uses explicit submodels:
+### Wildfire Risk (factorized submodels)
 - `vegetation_intensity_risk`
 - `fuel_proximity_risk`
 - `slope_topography_risk`
@@ -70,10 +96,9 @@ The scoring engine uses explicit submodels:
 - `structure_vulnerability_risk`
 - `defensible_space_risk`
 
-Each returns score, weighted contribution, explanation, key inputs, assumptions.
+Each submodel returns score, weighted contribution, explanation, key inputs, and assumptions.
 
 ### Insurance Readiness (separate rules engine)
-
 Readiness is computed independently from wildfire risk and returns:
 - `readiness_factors`
 - `readiness_blockers`
@@ -81,120 +106,143 @@ Readiness is computed independently from wildfire risk and returns:
 - `readiness_summary`
 
 ### Factor Breakdown
-
-`factor_breakdown` includes grouped Step 2 data:
+`factor_breakdown` includes:
 - `submodels`
 - `environmental`
 - `structural`
 
-Legacy coarse fields remain for compatibility:
+Legacy coarse compatibility fields remain:
 - `environmental_risk`
 - `structural_risk`
 - `access_risk`
 
-## Editable Property Facts and Assumptions
+## Step 4 B2B Workflows
 
-Assessment requests support richer facts:
-- `roof_type`, `vent_type`, `siding_type`, `window_type`
-- `defensible_space_ft`, `vegetation_condition`
-- `driveway_access_notes`, `construction_year`, `inspection_notes`
+### 1) Batch / Portfolio Assessment
+Use `POST /portfolio/assess` with multiple properties.
 
-You can also pass `confirmed_fields`.
-
-Responses include:
-- `confirmed_inputs`
-- `observed_inputs`
-- `inferred_inputs`
-- `missing_inputs`
-- `assumptions_used`
+Per-row output includes:
+- `address`
+- `assessment_id` (if success)
+- `wildfire_risk_score`
+- `insurance_readiness_score`
+- `top_risk_drivers`
+- `readiness_blockers`
 - `confidence_score`
-- `low_confidence_flags`
+- `status`
+- `error` (if failed)
 
-## What-If Simulation Workflow
+Portfolio-level summary fields include:
+- `total_properties`
+- `completed_count`
+- `failed_count`
+- `high_risk_count`
+- `blocker_count`
+- `average_wildfire_risk`
+- `average_insurance_readiness`
 
-Use `POST /risk/simulate` with either:
-- an `assessment_id` (recommended), or
-- an address + baseline attributes.
+### 2) Listing / Filtering / Prioritization
+`GET /portfolio` and `GET /assessments` support:
+- `sort_by`, `sort_dir`
+- risk/readiness range filters
+- `readiness_blocker` contains filter
+- `confidence_min`
+- `audience`
+- `tag`
+- `created_after`, `created_before`, `recent_days`
+- `limit`, `offset`
 
-Then provide:
-- `scenario_name`
-- `scenario_overrides`
-- `scenario_confirmed_fields`
+`GET /portfolio` and `GET /assessments/summary` return metrics:
+- total count
+- high-risk count
+- blocker count
+- average wildfire risk
+- average insurance readiness
 
-Simulation returns:
-- `baseline`
-- `simulated`
-- `delta` (risk/readiness)
-- `changed_inputs`
-- `next_best_actions`
+### 3) Audience-Specific Report Outputs
+Same assessment, different presentation emphasis via query parameter:
+- `audience=homeowner|agent|inspector|insurer`
 
-## Reports and Export
+Emphasis model:
+- `homeowner`: clear explanation and next steps
+- `agent`: disclosure-ready summary and mitigation talking points
+- `inspector`: observed vs inferred facts and assumptions/verification focus
+- `insurer`: blockers/penalties, confidence, and factorized contributions
 
-- `GET /report/{assessment_id}` returns the full structured assessment payload.
-- `GET /report/{assessment_id}/export` returns an export-oriented report contract with:
-  - property summary
-  - location summary
-  - wildfire risk summary
-  - insurance readiness summary
-  - assumptions/confidence
-  - mitigation recommendations
-- `GET /report/{assessment_id}/view` returns print-friendly HTML.
+### 4) Annotation and Review Workflow
+Annotations support:
+- `author_role`
+- `note`
+- `tags`
+- `visibility`
+- optional `review_status`
 
-## B2B-Friendly Workflow Support
+Review status values:
+- `pending`
+- `reviewed`
+- `flagged`
+- `approved`
 
-- Reassessment endpoint for updated facts on an existing property.
-- Assessment history listing (`GET /assessments`) and scenario history (`GET /assessments/{assessment_id}/scenarios`) for agents/inspectors/insurers.
-- Assessment history listing (`GET /assessments`) for agents/inspectors/insurers.
-- `audience` tagging (`homeowner|agent|inspector|insurer`) on assessments.
+### 5) Comparison Workflows
+Comparison outputs include:
+- wildfire/readiness score deltas
+- driver differences
+- blocker differences
+- mitigation title differences
+
+Supported by:
+- pair compare endpoints
+- multi-compare endpoint with `ids=...`
+- scenario listing endpoint for baseline/simulation audit trails
 
 ## Persistence and Compatibility
 
-SQLite table: `assessments`
+SQLite tables:
+- `assessments`
+- `assessment_scenarios`
+- `assessment_annotations`
+- `assessment_review_status`
 
-- Stores full payload JSON + `model_version`.
-- Legacy rows are upgraded in read path with safe defaults.
-- Missing Step 3 fields are backfilled (for example: `generated_at`, grouped `factor_breakdown`, readiness defaults).
+Compatibility behavior:
+- old rows remain readable
+- model version defaults safely for legacy rows
+- missing Step 2/3/4 fields are backfilled on read
 
 ## Model Versioning
-
-- Current model version: `1.3.0`
+- Current model version: `1.4.0`
 - Legacy fallback for old rows: `1.0.0`
 
 ## Dependencies
-
 `requirements.txt` includes:
 - Runtime: `fastapi`, `uvicorn`, `pydantic`
-- Geospatial stack: `numpy`, `rasterio`, `pyproj`, `shapely`
-- Testing: `pytest`, `httpx`
+- Geospatial: `numpy`, `rasterio`, `pyproj`, `shapely`
+- Test: `pytest`, `httpx`
+
+Without geospatial packages and configured layer files, the app runs in fallback mode rather than true layer-backed mode.
 
 ## Tests
-
-Deterministic tests are in `tests/test_risk_assessment.py`.
-They cover:
-- assessment/report shape parity
-- confirmed facts flow
-- reassessment flow
-- what-if simulation deltas
-- report export/view endpoints
-- assessment listing endpoint
-- deterministic outputs
-- legacy row compatibility
-- provisional access remains non-authoritative
+Deterministic tests in `tests/test_risk_assessment.py` cover:
+- core assess/report shape parity
+- simulation/reassessment
+- batch portfolio + partial failure handling
+- filtering/sorting/summary workflows
+- audience report outputs
+- annotation/review workflows
+- comparison endpoints
+- legacy compatibility
 
 ## Current Limitations
 
-- Scoring and readiness logic are transparent MVP heuristics, not carrier-approved underwriting models.
-- Access/egress scoring remains provisional and is not weighted into total wildfire risk.
-- No user-account/multi-tenant system yet; API key auth is shared-environment only.
-- No built-in PDF generator yet (HTML report view is provided for print/export pipeline integration).
+- Scoring/readiness logic are transparent MVP heuristics, not carrier-approved underwriting models.
+- Access/egress scoring remains provisional and not weighted into total wildfire risk.
+- Batch execution is synchronous.
+- API-key auth is shared-environment only (no tenant/user identity model yet).
+- No native PDF generation; HTML report view and JSON export are provided.
 
-## Ready for Step 4
-
-Step 3 foundation is in place:
-- editable/confirmed property facts and reassessment flow
-- deterministic what-if simulation workflow with delta outputs
-- shareable report export + print-friendly view
-- saved assessment history and saved scenario history endpoints
-- compatibility-safe persistence and deterministic regression tests
-
-This repo is now ready to move into Step 4 experience and workflow expansion.
+## Ready for Step 5
+The Step 4 foundation now includes:
+- batch and portfolio operations with prioritization filters/metrics
+- audience-specific reporting layers
+- inspector/broker/insurer annotation + review status workflows
+- structured comparison endpoints for underwriting and broker review
+- deterministic, test-covered, backward-compatible persistence and API contracts

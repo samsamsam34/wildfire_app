@@ -6,6 +6,9 @@ from typing import Dict, List, Literal, Optional
 from pydantic import BaseModel, Field
 
 Audience = Literal["homeowner", "agent", "inspector", "insurer"]
+AnnotationRole = Literal["homeowner", "agent", "broker", "inspector", "insurer"]
+AnnotationVisibility = Literal["internal", "shared"]
+ReviewStatus = Literal["pending", "reviewed", "flagged", "approved"]
 
 
 class PropertyAttributes(BaseModel):
@@ -25,6 +28,7 @@ class AddressRequest(BaseModel):
     attributes: PropertyAttributes = Field(default_factory=PropertyAttributes)
     confirmed_fields: List[str] = Field(default_factory=list)
     audience: Audience = "homeowner"
+    tags: List[str] = Field(default_factory=list)
 
 
 class ReassessmentRequest(BaseModel):
@@ -152,6 +156,11 @@ class AssessmentResult(BaseModel):
     assessment_id: str
     address: str
     audience: Audience = "homeowner"
+    report_audience: Optional[Audience] = None
+    audience_highlights: List[str] = Field(default_factory=list)
+    portfolio_name: Optional[str] = None
+    tags: List[str] = Field(default_factory=list)
+    review_status: ReviewStatus = "pending"
     property_facts: Dict[str, object] = Field(default_factory=dict)
     confirmed_fields: List[str] = Field(default_factory=list)
 
@@ -216,6 +225,10 @@ class AssessmentListItem(BaseModel):
     wildfire_risk_score: float
     insurance_readiness_score: float
     model_version: str
+    confidence_score: float = 0.0
+    readiness_blockers: List[str] = Field(default_factory=list)
+    tags: List[str] = Field(default_factory=list)
+    review_status: ReviewStatus = "pending"
 
 
 class SimulationScenarioItem(BaseModel):
@@ -231,6 +244,9 @@ class ReportExport(BaseModel):
     assessment_id: str
     generated_at: str
     model_version: str
+    audience_mode: Audience = "homeowner"
+    audience_highlights: List[str] = Field(default_factory=list)
+    audience_focus: Dict[str, object] = Field(default_factory=dict)
     property_summary: Dict[str, object]
     location_summary: Dict[str, object]
     wildfire_risk_summary: Dict[str, object]
@@ -240,3 +256,124 @@ class ReportExport(BaseModel):
     assumptions_confidence: Dict[str, object]
     mitigation_recommendations: List[MitigationAction]
     simulation: Optional[Dict[str, object]] = None
+
+
+class BatchAssessmentItem(BaseModel):
+    row_id: Optional[str] = None
+    address: str
+    attributes: PropertyAttributes = Field(default_factory=PropertyAttributes)
+    confirmed_fields: List[str] = Field(default_factory=list)
+    audience: Audience = "homeowner"
+    tags: List[str] = Field(default_factory=list)
+
+
+class BatchAssessmentRequest(BaseModel):
+    portfolio_name: Optional[str] = None
+    items: List[BatchAssessmentItem] = Field(default_factory=list)
+
+
+class BatchAssessmentResultItem(BaseModel):
+    row_id: Optional[str] = None
+    address: str
+    status: Literal["success", "failed"]
+    error: Optional[str] = None
+    assessment_id: Optional[str] = None
+    wildfire_risk_score: Optional[float] = None
+    insurance_readiness_score: Optional[float] = None
+    top_risk_drivers: List[str] = Field(default_factory=list)
+    readiness_blockers: List[str] = Field(default_factory=list)
+    confidence_score: Optional[float] = None
+
+
+class BatchAssessmentResponse(BaseModel):
+    portfolio_name: Optional[str] = None
+
+    # Step 4 contract fields.
+    total_properties: int
+    completed_count: int
+    failed_count: int
+    high_risk_count: int
+    blocker_count: int
+    average_wildfire_risk: float
+    average_insurance_readiness: float
+
+    # Backward-compatibility mirrors.
+    total: int
+    succeeded: int
+    failed: int
+
+    results: List[BatchAssessmentResultItem] = Field(default_factory=list)
+
+
+class PortfolioSummary(BaseModel):
+    total_count: int
+    high_risk_count: int
+    blocker_count: int
+    avg_wildfire_risk: float
+    avg_insurance_readiness: float
+
+
+class PortfolioResponse(BaseModel):
+    limit: int
+    offset: int
+    total: int
+    items: List[AssessmentListItem] = Field(default_factory=list)
+    summary: PortfolioSummary
+
+
+class AssessmentSummaryResponse(BaseModel):
+    summary: PortfolioSummary
+
+
+class AssessmentAnnotationCreate(BaseModel):
+    author_role: AnnotationRole
+    note: str = Field(..., min_length=1, max_length=2000)
+    tags: List[str] = Field(default_factory=list)
+    visibility: AnnotationVisibility = "internal"
+    review_status: Optional[ReviewStatus] = None
+
+
+class AssessmentAnnotation(BaseModel):
+    annotation_id: str
+    assessment_id: str
+    created_at: str
+    author_role: AnnotationRole
+    note: str
+    tags: List[str] = Field(default_factory=list)
+    visibility: AnnotationVisibility = "internal"
+    review_status: ReviewStatus = "pending"
+
+
+class AssessmentReviewStatusUpdate(BaseModel):
+    review_status: ReviewStatus
+
+
+class AssessmentReviewStatus(BaseModel):
+    assessment_id: str
+    review_status: ReviewStatus
+    updated_at: str
+
+
+class AssessmentComparisonItem(BaseModel):
+    assessment_id: str
+    address: str
+    wildfire_risk_score: float
+    insurance_readiness_score: float
+    top_risk_drivers: List[str] = Field(default_factory=list)
+    readiness_blockers: List[str] = Field(default_factory=list)
+    mitigation_titles: List[str] = Field(default_factory=list)
+
+
+class AssessmentComparisonResult(BaseModel):
+    base: AssessmentComparisonItem
+    other: AssessmentComparisonItem
+    wildfire_risk_delta: float
+    insurance_readiness_delta: float
+    driver_differences: Dict[str, List[str]]
+    blocker_differences: Dict[str, List[str]]
+    mitigation_differences: Dict[str, List[str]]
+
+
+class AssessmentComparisonResponse(BaseModel):
+    requested_ids: List[str] = Field(default_factory=list)
+    comparisons: List[AssessmentComparisonResult] = Field(default_factory=list)

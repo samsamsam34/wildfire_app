@@ -14,14 +14,26 @@ from backend.geocoding import Geocoder
 from backend.mitigation import build_mitigation_plan
 from backend.models import (
     AddressRequest,
+    AssessmentAnnotation,
+    AssessmentAnnotationCreate,
+    AssessmentComparisonItem,
+    AssessmentComparisonResponse,
+    AssessmentComparisonResult,
     AssessmentListItem,
     AssessmentResult,
+    AssessmentReviewStatus,
+    AssessmentReviewStatusUpdate,
+    AssessmentSummaryResponse,
     AssumptionsBlock,
+    Audience,
+    BatchAssessmentRequest,
+    BatchAssessmentResponse,
+    BatchAssessmentResultItem,
     ConfidenceBlock,
     Coordinates,
     EnvironmentalFactors,
     FactorBreakdown,
-    MitigationAction,
+    PortfolioResponse,
     PropertyAttributes,
     ReadinessFactor,
     ReassessmentRequest,
@@ -39,7 +51,7 @@ from backend.scoring_config import load_scoring_config
 from backend.version import MODEL_VERSION
 from backend.wildfire_data import WildfireDataClient
 
-app = FastAPI(title="WildfireRisk Advisor API", version="0.7.0")
+app = FastAPI(title="WildfireRisk Advisor API", version="0.8.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -252,7 +264,13 @@ def _build_top_protective_factors(payload: AddressRequest, submodels: dict[str, 
     return factors[:3]
 
 
-def _run_assessment(payload: AddressRequest, *, assessment_id: str | None = None) -> tuple[AssessmentResult, dict]:
+def _run_assessment(
+    payload: AddressRequest,
+    *,
+    assessment_id: str | None = None,
+    portfolio_name: str | None = None,
+    tags: list[str] | None = None,
+) -> tuple[AssessmentResult, dict]:
     pre_assumptions: list[str] = []
 
     try:
@@ -341,11 +359,16 @@ def _run_assessment(payload: AddressRequest, *, assessment_id: str | None = None
 
     submodel_explanations = {k: v.explanation for k, v in submodel_scores.items()}
     fact_map = _attributes_to_dict(payload.attributes)
+    final_tags = sorted(set((payload.tags or []) + (tags or [])))
 
     result = AssessmentResult(
         assessment_id=assessment_id or str(uuid4()),
         address=payload.address,
         audience=payload.audience,
+        report_audience=payload.audience,
+        portfolio_name=portfolio_name,
+        tags=final_tags,
+        review_status="pending",
         property_facts=fact_map,
         confirmed_fields=sorted(set(payload.confirmed_fields)),
         latitude=lat,
@@ -422,6 +445,8 @@ def _run_assessment(payload: AddressRequest, *, assessment_id: str | None = None
         },
         "assumptions_used": all_assumptions,
         "data_sources": all_sources,
+        "tags": final_tags,
+        "portfolio_name": portfolio_name,
         "config": {
             "submodel_weights": scoring_config.submodel_weights,
             "readiness_penalties": scoring_config.readiness_penalties,
@@ -438,17 +463,102 @@ def _payload_from_assessment(existing: AssessmentResult) -> AddressRequest:
         attributes=PropertyAttributes.model_validate(existing.property_facts or {}),
         confirmed_fields=list(existing.confirmed_fields),
         audience=existing.audience,
+        tags=list(existing.tags),
     )
 
 
-def _build_report_export(result: AssessmentResult) -> ReportExport:
+def _audience_highlights(result: AssessmentResult, audience_mode: Audience) -> list[str]:
+    if audience_mode == "homeowner":
+        return [
+            "Focus first on the top two mitigation actions to reduce ignition pathways.",
+            "Use readiness blockers as a practical home-hardening checklist.",
+        ]
+    if audience_mode == "agent":
+        return [
+            "Use risk/readiness and mitigation points in disclosure conversations.",
+            "Document which blockers were resolved before closing timelines.",
+        ]
+    if audience_mode == "inspector":
+        return [
+            "Validate observed vs inferred inputs and capture evidence in inspection notes.",
+            "Prioritize verification of high-impact factors tied to readiness blockers.",
+        ]
+    return [
+        "Prioritize properties with severe blockers and low confidence for manual review.",
+        "Use factorized submodel contributions to triage mitigation-driven eligibility improvements.",
+    ]
+
+
+def _audience_focus(result: AssessmentResult, audience_mode: Audience) -> dict[str, object]:
+    if audience_mode == "homeowner":
+        return {
+            "next_steps": result.mitigation_plan[:3],
+            "plain_language_summary": result.explanation_summary,
+        }
+    if audience_mode == "agent":
+        return {
+            "disclosure_summary": {
+                "top_risk_drivers": result.top_risk_drivers,
+                "top_protective_factors": result.top_protective_factors,
+                "readiness_blockers": result.readiness_blockers,
+            },
+            "mitigation_talking_points": [m.title for m in result.mitigation_plan[:4]],
+        }
+    if audience_mode == "inspector":
+        return {
+            "observed_inputs": result.observed_inputs,
+            "inferred_inputs": result.inferred_inputs,
+            "missing_inputs": result.missing_inputs,
+            "assumptions_used": result.assumptions_used,
+            "inspection_notes": result.property_facts.get("inspection_notes"),
+        }
+    return {
+        "readiness_blockers": result.readiness_blockers,
+        "readiness_penalties": result.readiness_penalties,
+        "confidence_score": result.confidence_score,
+        "weighted_contributions": {k: v.model_dump() for k, v in result.weighted_contributions.items()},
+    }
+
+
+def _resolve_audience(
+    assessment: AssessmentResult,
+    audience: Audience | None,
+    audience_mode: Audience | None,
+) -> Audience:
+    return audience or audience_mode or assessment.audience
+
+
+def _apply_audience_view(
+    assessment: AssessmentResult,
+    audience: Audience | None,
+    audience_mode: Audience | None,
+) -> AssessmentResult:
+    mode = _resolve_audience(assessment, audience, audience_mode)
+    view = assessment.model_copy(deep=True)
+    view.report_audience = mode
+    view.audience_highlights = _audience_highlights(view, mode)
+    return view
+
+
+def _build_report_export(
+    result: AssessmentResult,
+    audience: Audience | None = None,
+    audience_mode: Audience | None = None,
+) -> ReportExport:
+    mode = _resolve_audience(result, audience, audience_mode)
     return ReportExport(
         assessment_id=result.assessment_id,
         generated_at=result.generated_at.isoformat(),
         model_version=result.model_version,
+        audience_mode=mode,
+        audience_highlights=_audience_highlights(result, mode),
+        audience_focus=_audience_focus(result, mode),
         property_summary={
             "address": result.address,
             "audience": result.audience,
+            "portfolio_name": result.portfolio_name,
+            "tags": result.tags,
+            "review_status": result.review_status,
             "property_facts": result.property_facts,
             "confirmed_fields": result.confirmed_fields,
         },
@@ -458,6 +568,7 @@ def _build_report_export(result: AssessmentResult) -> ReportExport:
             "factor_breakdown": result.factor_breakdown.model_dump(),
             "top_risk_drivers": result.top_risk_drivers,
             "top_protective_factors": result.top_protective_factors,
+            "weighted_contributions": {k: v.model_dump() for k, v in result.weighted_contributions.items()},
         },
         insurance_readiness_summary={
             "insurance_readiness_score": result.insurance_readiness_score,
@@ -480,7 +591,14 @@ def _build_report_export(result: AssessmentResult) -> ReportExport:
     )
 
 
-def _build_report_html(result: AssessmentResult) -> str:
+def _build_report_html(
+    result: AssessmentResult,
+    audience: Audience | None = None,
+    audience_mode: Audience | None = None,
+) -> str:
+    mode = _resolve_audience(result, audience, audience_mode)
+    highlights = _audience_highlights(result, mode)
+    focus = _audience_focus(result, mode)
     blockers = "<li>None</li>" if not result.readiness_blockers else "".join(f"<li>{b}</li>" for b in result.readiness_blockers)
     mitigations = "".join(
         f"<li><strong>{m.title}</strong>: {m.reason}"
@@ -489,6 +607,7 @@ def _build_report_html(result: AssessmentResult) -> str:
     )
     drivers = "".join(f"<li>{d}</li>" for d in result.top_risk_drivers)
     protective = "".join(f"<li>{p}</li>" for p in result.top_protective_factors)
+    audience_notes = "".join(f"<li>{n}</li>" for n in highlights)
 
     return f"""
 <!doctype html>
@@ -498,11 +617,12 @@ body {{ font-family: Arial, sans-serif; margin: 2rem; color: #1f2937; }}
 .card {{ border:1px solid #ddd; border-radius:10px; padding:1rem; margin-bottom:1rem; }}
 .row {{ display:flex; gap:1rem; flex-wrap:wrap; }}
 .badge {{ display:inline-block; padding:0.2rem 0.5rem; border-radius:999px; background:#f3f4f6; font-size:0.8rem; }}
+pre {{ white-space: pre-wrap; }}
 </style></head>
 <body>
 <h1>WildfireRisk Advisor Report</h1>
-<p><span class=\"badge\">Assessment {result.assessment_id}</span> <span class=\"badge\">Model {result.model_version}</span> <span class=\"badge\">Generated {result.generated_at.isoformat()}</span></p>
-<div class=\"card\"><h2>Property</h2><p>{result.address}</p><p>Audience: {result.audience}</p></div>
+<p><span class=\"badge\">Assessment {result.assessment_id}</span> <span class=\"badge\">Model {result.model_version}</span> <span class=\"badge\">Generated {result.generated_at.isoformat()}</span> <span class=\"badge\">Audience View {mode}</span></p>
+<div class=\"card\"><h2>Property</h2><p>{result.address}</p><p>Audience: {result.audience}</p><p>Review Status: {result.review_status}</p><p>Portfolio: {result.portfolio_name or 'n/a'}</p><p>Tags: {', '.join(result.tags) if result.tags else 'none'}</p></div>
 <div class=\"row\">
 <div class=\"card\"><h3>Wildfire Risk Score</h3><p>{result.wildfire_risk_score}</p></div>
 <div class=\"card\"><h3>Insurance Readiness Score</h3><p>{result.insurance_readiness_score}</p></div>
@@ -511,12 +631,54 @@ body {{ font-family: Arial, sans-serif; margin: 2rem; color: #1f2937; }}
 <div class=\"card\"><h3>Top Protective Factors</h3><ul>{protective}</ul></div>
 <div class=\"card\"><h3>Readiness Blockers</h3><ul>{blockers}</ul></div>
 <div class=\"card\"><h3>Mitigation Recommendations</h3><ul>{mitigations}</ul></div>
+<div class=\"card\"><h3>Audience-Specific Highlights ({mode})</h3><ul>{audience_notes}</ul></div>
+<div class=\"card\"><h3>Audience Focus Payload</h3><pre>{focus}</pre></div>
 <div class=\"card\"><h3>Assumptions & Confidence</h3>
 <p>Confidence: {result.confidence_score}</p>
 <p>Assumptions: {', '.join(result.assumptions_used) if result.assumptions_used else 'None'}</p>
 </div>
 </body></html>
 """
+
+
+def _to_comparison_item(result: AssessmentResult) -> AssessmentComparisonItem:
+    return AssessmentComparisonItem(
+        assessment_id=result.assessment_id,
+        address=result.address,
+        wildfire_risk_score=result.wildfire_risk_score,
+        insurance_readiness_score=result.insurance_readiness_score,
+        top_risk_drivers=result.top_risk_drivers,
+        readiness_blockers=result.readiness_blockers,
+        mitigation_titles=[m.title for m in result.mitigation_plan],
+    )
+
+
+def _compare_results(base: AssessmentResult, other: AssessmentResult) -> AssessmentComparisonResult:
+    base_drivers = set(base.top_risk_drivers)
+    other_drivers = set(other.top_risk_drivers)
+    base_blockers = set(base.readiness_blockers)
+    other_blockers = set(other.readiness_blockers)
+    base_mitigations = {m.title for m in base.mitigation_plan}
+    other_mitigations = {m.title for m in other.mitigation_plan}
+
+    return AssessmentComparisonResult(
+        base=_to_comparison_item(base),
+        other=_to_comparison_item(other),
+        wildfire_risk_delta=round(other.wildfire_risk_score - base.wildfire_risk_score, 1),
+        insurance_readiness_delta=round(other.insurance_readiness_score - base.insurance_readiness_score, 1),
+        driver_differences={
+            "added": sorted(other_drivers - base_drivers),
+            "removed": sorted(base_drivers - other_drivers),
+        },
+        blocker_differences={
+            "added": sorted(other_blockers - base_blockers),
+            "removed": sorted(base_blockers - other_blockers),
+        },
+        mitigation_differences={
+            "added": sorted(other_mitigations - base_mitigations),
+            "removed": sorted(base_mitigations - other_mitigations),
+        },
+    )
 
 
 @app.get("/health")
@@ -546,8 +708,10 @@ def reassess_risk(assessment_id: str, payload: ReassessmentRequest) -> Assessmen
         attributes=merged_attrs,
         confirmed_fields=merged_confirmed,
         audience=payload.audience or base_req.audience,
+        tags=base_req.tags,
     )
-    result, _ = _run_assessment(req)
+    result, _ = _run_assessment(req, portfolio_name=existing.portfolio_name, tags=existing.tags)
+    result.review_status = existing.review_status
     store.save(result)
     return result
 
@@ -576,6 +740,7 @@ def simulate_risk(payload: SimulationRequest) -> SimulationResult:
         attributes=baseline_attrs,
         confirmed_fields=baseline_confirmed,
         audience=base_req.audience,
+        tags=base_req.tags,
     )
 
     baseline, _ = _run_assessment(baseline_req)
@@ -587,6 +752,7 @@ def simulate_risk(payload: SimulationRequest) -> SimulationResult:
         attributes=simulated_attrs,
         confirmed_fields=simulated_confirmed,
         audience=base_req.audience,
+        tags=base_req.tags,
     )
     simulated, _ = _run_assessment(simulated_req)
 
@@ -622,33 +788,374 @@ def debug_risk(payload: AddressRequest) -> dict:
     return debug_payload
 
 
+@app.post("/portfolio/assess", response_model=BatchAssessmentResponse, dependencies=[Depends(require_api_key)])
+def portfolio_assess(payload: BatchAssessmentRequest) -> BatchAssessmentResponse:
+    if not payload.items:
+        raise HTTPException(status_code=400, detail="Batch request must include at least one property item")
+
+    results: list[BatchAssessmentResultItem] = []
+    success_count = 0
+
+    for idx, item in enumerate(payload.items):
+        row_id = item.row_id or str(idx + 1)
+        if not item.address or not item.address.strip():
+            results.append(
+                BatchAssessmentResultItem(
+                    row_id=row_id,
+                    address=item.address,
+                    status="failed",
+                    error="Address is required",
+                )
+            )
+            continue
+
+        req = AddressRequest(
+            address=item.address,
+            attributes=item.attributes,
+            confirmed_fields=item.confirmed_fields,
+            audience=item.audience,
+            tags=item.tags,
+        )
+        try:
+            assessment, _ = _run_assessment(req, portfolio_name=payload.portfolio_name, tags=item.tags)
+            store.save(assessment)
+            success_count += 1
+            results.append(
+                BatchAssessmentResultItem(
+                    row_id=row_id,
+                    address=item.address,
+                    status="success",
+                    assessment_id=assessment.assessment_id,
+                    wildfire_risk_score=assessment.wildfire_risk_score,
+                    insurance_readiness_score=assessment.insurance_readiness_score,
+                    top_risk_drivers=assessment.top_risk_drivers,
+                    readiness_blockers=assessment.readiness_blockers,
+                    confidence_score=assessment.confidence_score,
+                )
+            )
+        except Exception as exc:  # pragma: no cover - defensive to preserve partial success behavior
+            results.append(
+                BatchAssessmentResultItem(
+                    row_id=row_id,
+                    address=item.address,
+                    status="failed",
+                    error=str(exc),
+                )
+            )
+
+    successful = [r for r in results if r.status == "success"]
+    avg_risk = round(
+        sum((r.wildfire_risk_score or 0.0) for r in successful) / len(successful), 1
+    ) if successful else 0.0
+    avg_readiness = round(
+        sum((r.insurance_readiness_score or 0.0) for r in successful) / len(successful), 1
+    ) if successful else 0.0
+
+    high_risk_count = sum(1 for r in successful if (r.wildfire_risk_score or 0.0) >= 70.0)
+    blocker_count = sum(1 for r in successful if r.readiness_blockers)
+
+    return BatchAssessmentResponse(
+        portfolio_name=payload.portfolio_name,
+        total_properties=len(payload.items),
+        completed_count=success_count,
+        failed_count=len(payload.items) - success_count,
+        high_risk_count=high_risk_count,
+        blocker_count=blocker_count,
+        average_wildfire_risk=avg_risk,
+        average_insurance_readiness=avg_readiness,
+        total=len(payload.items),
+        succeeded=success_count,
+        failed=len(payload.items) - success_count,
+        results=results,
+    )
+
+
 @app.get("/report/{assessment_id}", response_model=AssessmentResult, dependencies=[Depends(require_api_key)])
-def get_report(assessment_id: str) -> AssessmentResult:
+def get_report(
+    assessment_id: str,
+    audience: Audience | None = Query(default=None),
+    audience_mode: Audience | None = Query(default=None),
+) -> AssessmentResult:
     result = store.get(assessment_id)
     if not result:
         raise HTTPException(status_code=404, detail="Assessment not found")
-    return result
+    return _apply_audience_view(result, audience=audience, audience_mode=audience_mode)
 
 
 @app.get("/report/{assessment_id}/export", response_model=ReportExport, dependencies=[Depends(require_api_key)])
-def export_report(assessment_id: str) -> ReportExport:
+def export_report(
+    assessment_id: str,
+    audience: Audience | None = Query(default=None),
+    audience_mode: Audience | None = Query(default=None),
+) -> ReportExport:
     result = store.get(assessment_id)
     if not result:
         raise HTTPException(status_code=404, detail="Assessment not found")
-    return _build_report_export(result)
+    return _build_report_export(result, audience=audience, audience_mode=audience_mode)
 
 
 @app.get("/report/{assessment_id}/view", response_class=HTMLResponse, dependencies=[Depends(require_api_key)])
-def view_report(assessment_id: str) -> HTMLResponse:
+def view_report(
+    assessment_id: str,
+    audience: Audience | None = Query(default=None),
+    audience_mode: Audience | None = Query(default=None),
+) -> HTMLResponse:
     result = store.get(assessment_id)
     if not result:
         raise HTTPException(status_code=404, detail="Assessment not found")
-    return HTMLResponse(_build_report_html(result))
+    return HTMLResponse(_build_report_html(result, audience=audience, audience_mode=audience_mode))
+
+
+@app.get("/portfolio", response_model=PortfolioResponse, dependencies=[Depends(require_api_key)])
+def get_portfolio(
+    sort_by: str = Query(default="created_at"),
+    sort_dir: str = Query(default="desc"),
+    min_risk: float | None = Query(default=None, ge=0, le=100),
+    max_risk: float | None = Query(default=None, ge=0, le=100),
+    min_readiness: float | None = Query(default=None, ge=0, le=100),
+    max_readiness: float | None = Query(default=None, ge=0, le=100),
+    readiness_blocker: str | None = Query(default=None),
+    confidence_min: float | None = Query(default=None, ge=0, le=100),
+    audience: Audience | None = Query(default=None),
+    tag: str | None = Query(default=None),
+    created_after: str | None = Query(default=None),
+    created_before: str | None = Query(default=None),
+    recent_days: int | None = Query(default=None, ge=0),
+    limit: int = Query(default=20, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+) -> PortfolioResponse:
+    items, total, summary = store.query_assessments(
+        sort_by=sort_by,
+        sort_dir=sort_dir,
+        min_risk=min_risk,
+        max_risk=max_risk,
+        min_readiness=min_readiness,
+        max_readiness=max_readiness,
+        readiness_blocker=readiness_blocker,
+        confidence_min=confidence_min,
+        audience=audience,
+        tag=tag,
+        created_after=created_after,
+        created_before=created_before,
+        recent_days=recent_days,
+        limit=limit,
+        offset=offset,
+    )
+    return PortfolioResponse(limit=limit, offset=offset, total=total, items=items, summary=summary)
 
 
 @app.get("/assessments", response_model=list[AssessmentListItem], dependencies=[Depends(require_api_key)])
-def list_assessments(limit: int = Query(default=20, ge=1, le=200)) -> list[AssessmentListItem]:
-    return store.list_assessments(limit=limit)
+def list_assessments(
+    sort_by: str = Query(default="created_at"),
+    sort_dir: str = Query(default="desc"),
+    min_risk: float | None = Query(default=None, ge=0, le=100),
+    max_risk: float | None = Query(default=None, ge=0, le=100),
+    min_readiness: float | None = Query(default=None, ge=0, le=100),
+    max_readiness: float | None = Query(default=None, ge=0, le=100),
+    readiness_blocker: str | None = Query(default=None),
+    confidence_min: float | None = Query(default=None, ge=0, le=100),
+    audience: Audience | None = Query(default=None),
+    tag: str | None = Query(default=None),
+    created_after: str | None = Query(default=None),
+    created_before: str | None = Query(default=None),
+    recent_days: int | None = Query(default=None, ge=0),
+    limit: int = Query(default=20, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+) -> list[AssessmentListItem]:
+    return store.list_assessments(
+        limit=limit,
+        offset=offset,
+        sort_by=sort_by,
+        sort_dir=sort_dir,
+        min_risk=min_risk,
+        max_risk=max_risk,
+        min_readiness=min_readiness,
+        max_readiness=max_readiness,
+        readiness_blocker=readiness_blocker,
+        confidence_min=confidence_min,
+        audience=audience,
+        tag=tag,
+        created_after=created_after,
+        created_before=created_before,
+        recent_days=recent_days,
+    )
+
+
+@app.get("/assessments/summary", response_model=AssessmentSummaryResponse, dependencies=[Depends(require_api_key)])
+def assessments_summary(
+    min_risk: float | None = Query(default=None, ge=0, le=100),
+    max_risk: float | None = Query(default=None, ge=0, le=100),
+    min_readiness: float | None = Query(default=None, ge=0, le=100),
+    max_readiness: float | None = Query(default=None, ge=0, le=100),
+    readiness_blocker: str | None = Query(default=None),
+    confidence_min: float | None = Query(default=None, ge=0, le=100),
+    audience: Audience | None = Query(default=None),
+    tag: str | None = Query(default=None),
+    created_after: str | None = Query(default=None),
+    created_before: str | None = Query(default=None),
+    recent_days: int | None = Query(default=None, ge=0),
+) -> AssessmentSummaryResponse:
+    summary = store.summary_assessments(
+        min_risk=min_risk,
+        max_risk=max_risk,
+        min_readiness=min_readiness,
+        max_readiness=max_readiness,
+        readiness_blocker=readiness_blocker,
+        confidence_min=confidence_min,
+        audience=audience,
+        tag=tag,
+        created_after=created_after,
+        created_before=created_before,
+        recent_days=recent_days,
+    )
+    return AssessmentSummaryResponse(summary=summary)
+
+
+@app.post(
+    "/assessments/{assessment_id}/annotations",
+    response_model=AssessmentAnnotation,
+    dependencies=[Depends(require_api_key)],
+)
+def add_assessment_annotation(
+    assessment_id: str,
+    payload: AssessmentAnnotationCreate,
+) -> AssessmentAnnotation:
+    if not store.get(assessment_id):
+        raise HTTPException(status_code=404, detail="Assessment not found")
+    annotation = store.save_annotation(
+        assessment_id=assessment_id,
+        author_role=payload.author_role,
+        note=payload.note,
+        tags=payload.tags,
+        visibility=payload.visibility,
+        review_status=payload.review_status,
+    )
+    return annotation
+
+
+@app.get(
+    "/assessments/{assessment_id}/annotations",
+    response_model=list[AssessmentAnnotation],
+    dependencies=[Depends(require_api_key)],
+)
+def list_assessment_annotations(
+    assessment_id: str,
+    visibility: str | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=500),
+) -> list[AssessmentAnnotation]:
+    if not store.get(assessment_id):
+        raise HTTPException(status_code=404, detail="Assessment not found")
+
+    annotations = store.list_annotations(assessment_id=assessment_id, limit=limit)
+    if visibility:
+        annotations = [a for a in annotations if a.visibility == visibility]
+    return annotations
+
+
+# Singular aliases for compatibility with docs/examples.
+@app.post(
+    "/assessment/{assessment_id}/annotations",
+    response_model=AssessmentAnnotation,
+    dependencies=[Depends(require_api_key)],
+)
+def add_assessment_annotation_alias(
+    assessment_id: str,
+    payload: AssessmentAnnotationCreate,
+) -> AssessmentAnnotation:
+    return add_assessment_annotation(assessment_id, payload)
+
+
+@app.get(
+    "/assessment/{assessment_id}/annotations",
+    response_model=list[AssessmentAnnotation],
+    dependencies=[Depends(require_api_key)],
+)
+def list_assessment_annotations_alias(
+    assessment_id: str,
+    visibility: str | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=500),
+) -> list[AssessmentAnnotation]:
+    return list_assessment_annotations(assessment_id, visibility, limit)
+
+
+@app.put(
+    "/assessments/{assessment_id}/review-status",
+    response_model=AssessmentReviewStatus,
+    dependencies=[Depends(require_api_key)],
+)
+def update_review_status(
+    assessment_id: str,
+    payload: AssessmentReviewStatusUpdate,
+) -> AssessmentReviewStatus:
+    if not store.get(assessment_id):
+        raise HTTPException(status_code=404, detail="Assessment not found")
+    return store.set_review_status(assessment_id, payload.review_status)
+
+
+@app.get(
+    "/assessments/{assessment_id}/review-status",
+    response_model=AssessmentReviewStatus,
+    dependencies=[Depends(require_api_key)],
+)
+def get_review_status(assessment_id: str) -> AssessmentReviewStatus:
+    if not store.get(assessment_id):
+        raise HTTPException(status_code=404, detail="Assessment not found")
+    status = store.get_review_status(assessment_id)
+    if status:
+        return status
+    return store.set_review_status(assessment_id, "pending")
+
+
+@app.get(
+    "/assessments/{assessment_id}/compare/{other_assessment_id}",
+    response_model=AssessmentComparisonResult,
+    dependencies=[Depends(require_api_key)],
+)
+def compare_assessments_pair(
+    assessment_id: str,
+    other_assessment_id: str,
+) -> AssessmentComparisonResult:
+    base = store.get(assessment_id)
+    if not base:
+        raise HTTPException(status_code=404, detail="Base assessment not found")
+    other = store.get(other_assessment_id)
+    if not other:
+        raise HTTPException(status_code=404, detail="Other assessment not found")
+    return _compare_results(base, other)
+
+
+@app.get(
+    "/assessment/{assessment_id}/compare/{other_assessment_id}",
+    response_model=AssessmentComparisonResult,
+    dependencies=[Depends(require_api_key)],
+)
+def compare_assessments_pair_alias(
+    assessment_id: str,
+    other_assessment_id: str,
+) -> AssessmentComparisonResult:
+    return compare_assessments_pair(assessment_id, other_assessment_id)
+
+
+@app.get(
+    "/assessments/compare",
+    response_model=AssessmentComparisonResponse,
+    dependencies=[Depends(require_api_key)],
+)
+def compare_assessments_multi(ids: str = Query(..., min_length=3)) -> AssessmentComparisonResponse:
+    requested_ids = [i.strip() for i in ids.split(",") if i.strip()]
+    if len(requested_ids) < 2:
+        raise HTTPException(status_code=400, detail="Provide at least two assessment ids")
+
+    loaded: list[AssessmentResult] = []
+    for assessment_id in requested_ids:
+        row = store.get(assessment_id)
+        if not row:
+            raise HTTPException(status_code=404, detail=f"Assessment not found: {assessment_id}")
+        loaded.append(row)
+
+    base = loaded[0]
+    comparisons = [_compare_results(base, other) for other in loaded[1:]]
+    return AssessmentComparisonResponse(requested_ids=requested_ids, comparisons=comparisons)
 
 
 @app.get(

@@ -26,17 +26,19 @@
           radial-gradient(circle at 80% 100%, #ffeecf 0%, transparent 45%),
           var(--bg);
       }
-      .wrap { max-width: 1120px; margin: 0 auto; padding: 1rem; }
+      .wrap { max-width: 1220px; margin: 0 auto; padding: 1rem; display: grid; gap: 1rem; }
       h1, h2, h3 { margin: 0 0 0.5rem; }
-      .grid { display: grid; gap: 1rem; }
-      .g2 { grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); }
-      .g3 { grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
       .card {
         background: var(--card);
         border: 1px solid var(--line);
         border-radius: 14px;
         padding: 1rem;
       }
+      .grid { display: grid; gap: 1rem; }
+      .g2 { grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
+      .g3 { grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); }
+      .g4 { grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
+      .row { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 0.7rem; }
       label { display: block; font-size: 0.82rem; color: var(--muted); margin-bottom: 0.2rem; }
       input, select, textarea, button {
         width: 100%;
@@ -45,13 +47,18 @@
         padding: 0.58rem 0.72rem;
         font: inherit;
       }
-      textarea { min-height: 74px; resize: vertical; }
-      .row { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 0.7rem; }
-      button { background: var(--accent); border: none; color: #fff; cursor: pointer; font-weight: 600; }
+      textarea { min-height: 80px; resize: vertical; }
+      button {
+        background: var(--accent);
+        border: none;
+        color: #fff;
+        cursor: pointer;
+        font-weight: 600;
+      }
       button.secondary { background: #374151; }
       .actions { display: flex; gap: 0.6rem; flex-wrap: wrap; margin-top: 0.7rem; }
       .actions button { width: auto; padding-inline: 1rem; }
-      .metric { font-size: 1.55rem; font-weight: 700; }
+      .metric { font-size: 1.5rem; font-weight: 700; }
       .muted { color: var(--muted); font-size: 0.88rem; }
       .pill { display: inline-block; padding: 0.25rem 0.5rem; border-radius: 999px; border: 1px solid var(--line); margin: 0.15rem 0.2rem 0 0; font-size: 0.78rem; }
       .good { color: var(--good); }
@@ -60,15 +67,24 @@
       ul { margin: 0.35rem 0 0; padding-left: 1.15rem; }
       table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
       th, td { border-bottom: 1px solid var(--line); padding: 0.35rem 0.2rem; text-align: left; }
-      .hidden { display: none; }
-      @media (max-width: 640px) { .actions button { width: 100%; } }
+      pre {
+        white-space: pre-wrap;
+        background: #f9f6ef;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 0.6rem;
+        font-size: 0.83rem;
+      }
+      @media (max-width: 640px) {
+        .actions button { width: 100%; }
+      }
     </style>
   </head>
   <body>
-    <div class="wrap grid">
+    <div class="wrap">
       <div class="card">
         <h1>WildfireRisk Advisor</h1>
-        <p class="muted">Assessment, assumption override, mitigation simulation, and report workflow for homeowners and B2B users.</p>
+        <p class="muted">Step 4 B2B layer: portfolio/batch processing, filtering and prioritization, audience-specific reports, annotations/review, and assessment comparison workflows.</p>
       </div>
 
       <div class="card">
@@ -76,6 +92,8 @@
         <div class="row">
           <div><label>API Key</label><input id="apiKey" /></div>
           <div><label>Audience</label><select id="audience"><option>homeowner</option><option>agent</option><option>inspector</option><option>insurer</option></select></div>
+          <div><label>Portfolio Name</label><input id="portfolio_name" placeholder="Q2 Renewal Review" /></div>
+          <div><label>Tags (comma)</label><input id="tags" placeholder="renewal,ca,norcal" /></div>
         </div>
         <div style="margin-top:0.6rem;"><label>Address</label><input id="address" placeholder="123 Main St, Denver, CO" /></div>
 
@@ -86,14 +104,13 @@
           <div><label>Siding Type</label><input id="siding_type" /></div>
           <div><label>Window Type</label><input id="window_type" /></div>
           <div><label>Defensible Space (ft)</label><input id="defensible_space_ft" type="number" min="0" step="1" /></div>
-          <div><label>Vegetation Condition</label><input id="vegetation_condition" placeholder="light / moderate / dense" /></div>
+          <div><label>Vegetation Condition</label><input id="vegetation_condition" /></div>
           <div><label>Construction Year</label><input id="construction_year" type="number" min="1800" max="2100" /></div>
         </div>
         <div class="row" style="margin-top:0.6rem;">
           <div><label>Driveway Access Notes</label><textarea id="driveway_access_notes"></textarea></div>
           <div><label>Inspection Notes</label><textarea id="inspection_notes"></textarea></div>
         </div>
-
         <div style="margin-top:0.6rem;">
           <label>Confirmed Fields (comma separated)</label>
           <input id="confirmed_fields" placeholder="roof_type, vent_type, defensible_space_ft" />
@@ -105,10 +122,11 @@
         </div>
       </div>
 
-      <div class="grid g3">
+      <div class="grid g4">
         <div class="card"><h3>Wildfire Risk</h3><div class="metric" id="riskScore">-</div></div>
         <div class="card"><h3>Readiness</h3><div class="metric" id="readinessScore">-</div></div>
         <div class="card"><h3>Confidence</h3><div class="metric" id="confidenceScore">-</div></div>
+        <div class="card"><h3>Review Status</h3><div class="metric" id="reviewStatus">-</div></div>
       </div>
 
       <div class="grid g2">
@@ -117,6 +135,8 @@
           <ul id="drivers"></ul>
           <h3 style="margin-top:0.8rem;">Protective Factors</h3>
           <ul id="protective"></ul>
+          <h3 style="margin-top:0.8rem;">Readiness Blockers</h3>
+          <ul id="blockers"></ul>
         </div>
         <div class="card">
           <h3>Assumptions & Confidence Flags</h3>
@@ -139,14 +159,13 @@
       </div>
 
       <div class="card">
-        <h2>What-If Simulator</h2>
-        <p class="muted">Apply hypothetical upgrades to the latest assessment.</p>
+        <h2>Simulation</h2>
         <div class="row">
           <div><label>Scenario Name</label><input id="scenario_name" value="upgrade_plan" /></div>
           <div><label>Scenario Roof</label><input id="sim_roof_type" placeholder="class a" /></div>
           <div><label>Scenario Vent</label><input id="sim_vent_type" placeholder="ember-resistant" /></div>
           <div><label>Scenario Defensible Space (ft)</label><input id="sim_defensible_space_ft" type="number" min="0" /></div>
-          <div><label>Scenario Vegetation Condition</label><input id="sim_vegetation_condition" /></div>
+          <div><label>Scenario Vegetation</label><input id="sim_vegetation_condition" /></div>
         </div>
         <div style="margin-top:0.6rem;"><label>Scenario Confirmed Fields</label><input id="scenario_confirmed_fields" placeholder="roof_type, vent_type, defensible_space_ft" /></div>
         <div class="actions"><button id="simulateBtn">Run Simulation</button></div>
@@ -154,12 +173,74 @@
       </div>
 
       <div class="card">
-        <h2>Reports & History</h2>
+        <h2>Batch / Portfolio Assess</h2>
+        <label>Addresses (one per line)</label>
+        <textarea id="batch_addresses" placeholder="10 Pine Rd, Boulder, CO\n22 Oak Ave, Golden, CO"></textarea>
         <div class="actions">
-          <button id="openReportBtn">Open Printable Report</button>
-          <button class="secondary" id="refreshHistoryBtn">Refresh Assessments</button>
+          <button id="runBatchBtn">Run Batch</button>
+        </div>
+        <div id="batchSummary" class="muted"></div>
+        <ul id="batchResults"></ul>
+      </div>
+
+      <div class="card">
+        <h2>Portfolio Filters + Summary</h2>
+        <div class="row">
+          <div><label>Sort By</label><select id="sort_by"><option value="created_at">created_at</option><option value="wildfire_risk_score">wildfire_risk_score</option><option value="insurance_readiness_score">insurance_readiness_score</option><option value="confidence_score">confidence_score</option></select></div>
+          <div><label>Sort Dir</label><select id="sort_dir"><option value="desc">desc</option><option value="asc">asc</option></select></div>
+          <div><label>Min Risk</label><input id="min_risk" type="number" min="0" max="100" /></div>
+          <div><label>Min Readiness</label><input id="min_readiness" type="number" min="0" max="100" /></div>
+          <div><label>Readiness Blocker Contains</label><input id="readiness_blocker" /></div>
+          <div><label>Min Confidence</label><input id="confidence_min" type="number" min="0" max="100" /></div>
+          <div><label>Audience</label><select id="filter_audience"><option value="">(any)</option><option>homeowner</option><option>agent</option><option>inspector</option><option>insurer</option></select></div>
+          <div><label>Tag</label><input id="filter_tag" /></div>
+          <div><label>Created After (ISO)</label><input id="created_after" placeholder="2026-03-01T00:00:00+00:00" /></div>
+          <div><label>Recent Days</label><input id="recent_days" type="number" min="0" /></div>
+        </div>
+        <div class="actions">
+          <button id="refreshPortfolioBtn">Refresh Portfolio</button>
+        </div>
+        <div class="grid g4" style="margin-top:0.6rem;">
+          <div class="card"><div class="muted">Total</div><div class="metric" id="sum_total">0</div></div>
+          <div class="card"><div class="muted">High Risk</div><div class="metric" id="sum_high_risk">0</div></div>
+          <div class="card"><div class="muted">Blockers</div><div class="metric" id="sum_blocker">0</div></div>
+          <div class="card"><div class="muted">Avg Risk</div><div class="metric" id="sum_avg_risk">0</div></div>
+          <div class="card"><div class="muted">Avg Readiness</div><div class="metric" id="sum_avg_readiness">0</div></div>
         </div>
         <ul id="history"></ul>
+      </div>
+
+      <div class="card">
+        <h2>Reports, Review, and Annotations</h2>
+        <div class="row">
+          <div><label>Report Audience</label><select id="report_audience"><option>homeowner</option><option>agent</option><option>inspector</option><option>insurer</option></select></div>
+          <div><label>Set Review Status</label><select id="review_status"><option>pending</option><option>reviewed</option><option>flagged</option><option>approved</option></select></div>
+          <div><label>Annotation Role</label><select id="annotation_role"><option>homeowner</option><option>agent</option><option>broker</option><option>inspector</option><option>insurer</option></select></div>
+          <div><label>Annotation Visibility</label><select id="annotation_visibility"><option>internal</option><option>shared</option></select></div>
+          <div><label>Annotation Tags (comma)</label><input id="annotation_tags" /></div>
+        </div>
+        <div style="margin-top:0.6rem;"><label>Annotation Note</label><textarea id="annotation_note"></textarea></div>
+        <div class="actions">
+          <button id="openReportBtn">Open Printable Report</button>
+          <button class="secondary" id="exportReportBtn">Open Export JSON</button>
+          <button id="setReviewBtn">Update Review Status</button>
+          <button class="secondary" id="addAnnotationBtn">Add Annotation</button>
+          <button class="secondary" id="loadAnnotationsBtn">Load Annotations</button>
+        </div>
+        <ul id="annotations"></ul>
+      </div>
+
+      <div class="card">
+        <h2>Assessment Comparison</h2>
+        <div class="row">
+          <div><label>Compare IDs (comma)</label><input id="compare_ids" placeholder="id1,id2,id3" /></div>
+          <div><label>Compare Latest Against ID</label><input id="compare_other" placeholder="other-assessment-id" /></div>
+        </div>
+        <div class="actions">
+          <button id="compareMultiBtn">Compare Multi</button>
+          <button class="secondary" id="comparePairBtn">Compare Latest Pair</button>
+        </div>
+        <pre id="compareOutput">No comparison run yet.</pre>
       </div>
     </div>
 
@@ -172,6 +253,13 @@
 
       function parseCSV(input) {
         return input.split(",").map(v => v.trim()).filter(Boolean);
+      }
+
+      function getNum(id) {
+        const raw = document.getElementById(id)?.value;
+        if (raw === undefined || raw === null || raw === "") return null;
+        const n = Number(raw);
+        return Number.isFinite(n) ? n : null;
       }
 
       function getAttributes(prefix = "") {
@@ -208,26 +296,23 @@
 
       function renderAssessment(data) {
         latestAssessment = data;
-        document.getElementById("riskScore").textContent = data.wildfire_risk_score.toFixed(1);
-        document.getElementById("readinessScore").textContent = data.insurance_readiness_score.toFixed(1);
-        document.getElementById("confidenceScore").textContent = data.confidence_score.toFixed(1);
+        document.getElementById("riskScore").textContent = Number(data.wildfire_risk_score || 0).toFixed(1);
+        document.getElementById("readinessScore").textContent = Number(data.insurance_readiness_score || 0).toFixed(1);
+        document.getElementById("confidenceScore").textContent = Number(data.confidence_score || 0).toFixed(1);
+        document.getElementById("reviewStatus").textContent = data.review_status || "pending";
 
-        const drivers = document.getElementById("drivers");
-        drivers.innerHTML = data.top_risk_drivers.map(d => `<li>${d}</li>`).join("") || "<li>None</li>";
-        const protective = document.getElementById("protective");
-        protective.innerHTML = data.top_protective_factors.map(d => `<li>${d}</li>`).join("") || "<li>None</li>";
+        document.getElementById("drivers").innerHTML = (data.top_risk_drivers || []).map(d => `<li>${d}</li>`).join("") || "<li>None</li>";
+        document.getElementById("protective").innerHTML = (data.top_protective_factors || []).map(d => `<li>${d}</li>`).join("") || "<li>None</li>";
+        document.getElementById("blockers").innerHTML = (data.readiness_blockers || []).map(d => `<li>${d}</li>`).join("") || "<li>None</li>";
 
-        document.getElementById("assumptions").innerHTML =
-          (data.assumptions_used || []).map(a => `<li>${a}</li>`).join("") || "<li>None</li>";
-        document.getElementById("flags").innerHTML =
-          (data.low_confidence_flags || []).map(f => `<span class="pill warn">${f}</span>`).join("");
+        document.getElementById("assumptions").innerHTML = (data.assumptions_used || []).map(a => `<li>${a}</li>`).join("") || "<li>None</li>";
+        document.getElementById("flags").innerHTML = (data.low_confidence_flags || []).map(f => `<span class="pill warn">${f}</span>`).join("");
 
-        const body = document.getElementById("submodels");
         const rows = Object.entries(data.submodel_scores || {})
           .filter(([k]) => k.endsWith("_risk"))
           .map(([k, v]) => `<tr><td>${k}</td><td>${v.score}</td><td>${v.weighted_contribution}</td></tr>`)
           .join("");
-        body.innerHTML = rows;
+        document.getElementById("submodels").innerHTML = rows;
 
         document.getElementById("mitigations").innerHTML =
           (data.mitigation_plan || []).map(m => `<li><strong>${m.title}</strong>: ${m.reason}</li>`).join("") || "<li>None</li>";
@@ -240,6 +325,7 @@
             audience: document.getElementById("audience").value,
             attributes: getAttributes(),
             confirmed_fields: parseCSV(document.getElementById("confirmed_fields").value),
+            tags: parseCSV(document.getElementById("tags").value),
           };
 
           let data;
@@ -253,17 +339,14 @@
             data = await api("/risk/assess", payload, "POST");
           }
           renderAssessment(data);
-          await refreshHistory();
+          await refreshPortfolio();
         } catch (e) {
           alert(e.message);
         }
       }
 
       async function runSimulation() {
-        if (!latestAssessment) {
-          alert("Run an assessment first.");
-          return;
-        }
+        if (!latestAssessment) return alert("Run an assessment first.");
         try {
           const sim = await api("/risk/simulate", {
             assessment_id: latestAssessment.assessment_id,
@@ -274,34 +357,99 @@
 
           const d = sim.delta;
           document.getElementById("simResult").innerHTML =
-            `Baseline risk ${sim.baseline.wildfire_risk_score.toFixed(1)} -> ${sim.simulated.wildfire_risk_score.toFixed(1)} ` +
+            `Risk: ${sim.baseline.wildfire_risk_score.toFixed(1)} -> ${sim.simulated.wildfire_risk_score.toFixed(1)} ` +
             `(<span class="${d.wildfire_risk_score_delta <= 0 ? "good" : "bad"}">${d.wildfire_risk_score_delta.toFixed(1)}</span>)<br>` +
-            `Baseline readiness ${sim.baseline.insurance_readiness_score.toFixed(1)} -> ${sim.simulated.insurance_readiness_score.toFixed(1)} ` +
+            `Readiness: ${sim.baseline.insurance_readiness_score.toFixed(1)} -> ${sim.simulated.insurance_readiness_score.toFixed(1)} ` +
             `(<span class="${d.insurance_readiness_score_delta >= 0 ? "good" : "bad"}">${d.insurance_readiness_score_delta.toFixed(1)}</span>)`;
         } catch (e) {
           alert(e.message);
         }
       }
 
-      async function refreshHistory() {
+      async function runBatch() {
         try {
-          const rows = await api("/assessments?limit=10");
-          document.getElementById("history").innerHTML = rows.map((r) =>
-            `<li><strong>${r.address}</strong> (${r.created_at}) - risk ${r.wildfire_risk_score}, readiness ${r.insurance_readiness_score}</li>`
+          const lines = document.getElementById("batch_addresses").value
+            .split("\n")
+            .map(v => v.trim());
+          if (!lines.length) return alert("Provide at least one address line.");
+
+          const payload = {
+            portfolio_name: document.getElementById("portfolio_name").value || null,
+            items: lines.map((address, idx) => ({
+              row_id: String(idx + 1),
+              address,
+              attributes: getAttributes(),
+              confirmed_fields: parseCSV(document.getElementById("confirmed_fields").value),
+              audience: document.getElementById("audience").value,
+              tags: parseCSV(document.getElementById("tags").value),
+            })),
+          };
+
+          const res = await api("/portfolio/assess", payload, "POST");
+          document.getElementById("batchSummary").textContent =
+            `total=${res.total_properties}, completed=${res.completed_count}, failed=${res.failed_count}, ` +
+            `highRisk=${res.high_risk_count}, blockers=${res.blocker_count}, avgRisk=${res.average_wildfire_risk}, avgReadiness=${res.average_insurance_readiness}`;
+          document.getElementById("batchResults").innerHTML = (res.results || []).map(r =>
+            `<li><strong>${r.address}</strong> [${r.status}] ${r.assessment_id || ""} ` +
+            `${r.error ? `<span class="bad">${r.error}</span>` : `risk ${r.wildfire_risk_score}, readiness ${r.insurance_readiness_score}, blockers ${(r.readiness_blockers || []).length}`}</li>`
           ).join("");
-        } catch {
-          document.getElementById("history").innerHTML = "<li>Unable to load history.</li>";
+          await refreshPortfolio();
+        } catch (e) {
+          alert(e.message);
         }
       }
 
-      document.getElementById("assessBtn").addEventListener("click", () => runAssessment(false));
-      document.getElementById("reassessBtn").addEventListener("click", () => runAssessment(true));
-      document.getElementById("simulateBtn").addEventListener("click", runSimulation);
-      document.getElementById("refreshHistoryBtn").addEventListener("click", refreshHistory);
-      document.getElementById("openReportBtn").addEventListener("click", async () => {
+      function buildPortfolioQuery() {
+        const params = new URLSearchParams();
+        params.set("limit", "25");
+        params.set("offset", "0");
+        params.set("sort_by", document.getElementById("sort_by").value);
+        params.set("sort_dir", document.getElementById("sort_dir").value);
+
+        const minRisk = getNum("min_risk");
+        const minReadiness = getNum("min_readiness");
+        const confidence = getNum("confidence_min");
+        const recentDays = getNum("recent_days");
+        if (minRisk !== null) params.set("min_risk", String(minRisk));
+        if (minReadiness !== null) params.set("min_readiness", String(minReadiness));
+        if (confidence !== null) params.set("confidence_min", String(confidence));
+        if (recentDays !== null) params.set("recent_days", String(recentDays));
+
+        const rb = document.getElementById("readiness_blocker").value.trim();
+        if (rb) params.set("readiness_blocker", rb);
+        const aud = document.getElementById("filter_audience").value;
+        if (aud) params.set("audience", aud);
+        const tag = document.getElementById("filter_tag").value.trim();
+        if (tag) params.set("tag", tag);
+        const createdAfter = document.getElementById("created_after").value.trim();
+        if (createdAfter) params.set("created_after", createdAfter);
+
+        return params.toString();
+      }
+
+      async function refreshPortfolio() {
+        try {
+          const data = await api(`/portfolio?${buildPortfolioQuery()}`);
+          const summary = data.summary || {};
+          document.getElementById("sum_total").textContent = summary.total_count ?? 0;
+          document.getElementById("sum_high_risk").textContent = summary.high_risk_count ?? 0;
+          document.getElementById("sum_blocker").textContent = summary.blocker_count ?? 0;
+          document.getElementById("sum_avg_risk").textContent = Number(summary.avg_wildfire_risk || 0).toFixed(1);
+          document.getElementById("sum_avg_readiness").textContent = Number(summary.avg_insurance_readiness || 0).toFixed(1);
+
+          document.getElementById("history").innerHTML = (data.items || []).map(r =>
+            `<li><strong>${r.address}</strong> (${r.created_at}) - risk ${r.wildfire_risk_score}, readiness ${r.insurance_readiness_score}, confidence ${r.confidence_score}, review ${r.review_status}, blockers ${(r.readiness_blockers || []).length}, tags ${(r.tags || []).join("|") || "-"}</li>`
+          ).join("");
+        } catch {
+          document.getElementById("history").innerHTML = "<li>Unable to load portfolio.</li>";
+        }
+      }
+
+      async function openReportView() {
         if (!latestAssessment) return alert("Run an assessment first.");
         try {
-          const html = await api(`/report//view`);
+          const audience = document.getElementById("report_audience").value;
+          const html = await api(`/report/${latestAssessment.assessment_id}/view?audience=${encodeURIComponent(audience)}`);
           const w = window.open("", "_blank");
           if (w) {
             w.document.open();
@@ -311,9 +459,103 @@
         } catch (e) {
           alert(e.message);
         }
-      });
+      }
 
-      refreshHistory();
+      async function exportReportJson() {
+        if (!latestAssessment) return alert("Run an assessment first.");
+        try {
+          const audience = document.getElementById("report_audience").value;
+          const data = await api(`/report/${latestAssessment.assessment_id}/export?audience=${encodeURIComponent(audience)}`);
+          const w = window.open("", "_blank");
+          if (w) {
+            w.document.open();
+            w.document.write(`<pre>${JSON.stringify(data, null, 2)}</pre>`);
+            w.document.close();
+          }
+        } catch (e) {
+          alert(e.message);
+        }
+      }
+
+      async function setReviewStatus() {
+        if (!latestAssessment) return alert("Run an assessment first.");
+        try {
+          const review_status = document.getElementById("review_status").value;
+          const res = await api(`/assessments/${latestAssessment.assessment_id}/review-status`, { review_status }, "PUT");
+          document.getElementById("reviewStatus").textContent = res.review_status;
+          await refreshPortfolio();
+        } catch (e) {
+          alert(e.message);
+        }
+      }
+
+      async function addAnnotation() {
+        if (!latestAssessment) return alert("Run an assessment first.");
+        try {
+          await api(`/assessments/${latestAssessment.assessment_id}/annotations`, {
+            author_role: document.getElementById("annotation_role").value,
+            note: document.getElementById("annotation_note").value,
+            tags: parseCSV(document.getElementById("annotation_tags").value),
+            visibility: document.getElementById("annotation_visibility").value,
+            review_status: document.getElementById("review_status").value,
+          }, "POST");
+          document.getElementById("annotation_note").value = "";
+          await loadAnnotations();
+          await refreshPortfolio();
+        } catch (e) {
+          alert(e.message);
+        }
+      }
+
+      async function loadAnnotations() {
+        if (!latestAssessment) return alert("Run an assessment first.");
+        try {
+          const rows = await api(`/assessments/${latestAssessment.assessment_id}/annotations?limit=50`);
+          document.getElementById("annotations").innerHTML = (rows || []).map(r =>
+            `<li><strong>${r.author_role}</strong> [${r.visibility}] (${r.created_at}) status=${r.review_status} - ${r.note} ${(r.tags || []).length ? `<em>tags: ${(r.tags || []).join(", ")}</em>` : ""}</li>`
+          ).join("") || "<li>No annotations.</li>";
+        } catch (e) {
+          alert(e.message);
+        }
+      }
+
+      async function compareMulti() {
+        try {
+          const ids = document.getElementById("compare_ids").value.trim();
+          if (!ids) return alert("Provide comma-separated assessment ids.");
+          const res = await api(`/assessments/compare?ids=${encodeURIComponent(ids)}`);
+          document.getElementById("compareOutput").textContent = JSON.stringify(res, null, 2);
+        } catch (e) {
+          alert(e.message);
+        }
+      }
+
+      async function comparePair() {
+        if (!latestAssessment) return alert("Run an assessment first.");
+        try {
+          const other = document.getElementById("compare_other").value.trim();
+          if (!other) return alert("Provide other assessment id.");
+          const res = await api(`/assessments/${latestAssessment.assessment_id}/compare/${other}`);
+          document.getElementById("compareOutput").textContent = JSON.stringify(res, null, 2);
+        } catch (e) {
+          alert(e.message);
+        }
+      }
+
+      document.getElementById("assessBtn").addEventListener("click", () => runAssessment(false));
+      document.getElementById("reassessBtn").addEventListener("click", () => runAssessment(true));
+      document.getElementById("simulateBtn").addEventListener("click", runSimulation);
+      document.getElementById("runBatchBtn").addEventListener("click", runBatch);
+      document.getElementById("refreshPortfolioBtn").addEventListener("click", refreshPortfolio);
+      document.getElementById("openReportBtn").addEventListener("click", openReportView);
+      document.getElementById("exportReportBtn").addEventListener("click", exportReportJson);
+      document.getElementById("setReviewBtn").addEventListener("click", setReviewStatus);
+      document.getElementById("addAnnotationBtn").addEventListener("click", addAnnotation);
+      document.getElementById("loadAnnotationsBtn").addEventListener("click", loadAnnotations);
+      document.getElementById("compareMultiBtn").addEventListener("click", compareMulti);
+      document.getElementById("comparePairBtn").addEventListener("click", comparePair);
+
+      refreshPortfolio();
     </script>
   </body>
 </html>

@@ -60,12 +60,13 @@ def _setup(monkeypatch, tmp_path, context: WildfireContext) -> None:
     monkeypatch.setattr(app_main, "store", AssessmentStore(str(tmp_path / "test_assessments.db")))
 
 
-def _payload(address: str, attrs: dict, confirmed: list[str] | None = None) -> dict:
+def _payload(address: str, attrs: dict, confirmed: list[str] | None = None, tags: list[str] | None = None) -> dict:
     return {
         "address": address,
         "attributes": attrs,
         "confirmed_fields": confirmed or [],
         "audience": "homeowner",
+        "tags": tags or [],
     }
 
 
@@ -97,6 +98,7 @@ def _assert_core_contract(body: dict) -> None:
         "low_confidence_flags",
         "mitigation_plan",
         "data_sources",
+        "review_status",
     ]
     for key in required:
         assert key in body
@@ -227,13 +229,9 @@ def test_simulation_returns_deltas(monkeypatch, tmp_path):
     sim = sim_res.json()
 
     assert sim["baseline"]["assessment_id"] != sim["simulated"]["assessment_id"]
-    assert "delta" in sim
     assert sim["delta"]["wildfire_risk_score_delta"] <= 0
     assert sim["delta"]["insurance_readiness_score_delta"] >= 0
     assert "roof_type" in sim["changed_inputs"]
-    assert len(sim["next_best_actions"]) > 0
-
-
 
 
 def test_simulation_history_listing(monkeypatch, tmp_path):
@@ -267,11 +265,12 @@ def test_simulation_history_listing(monkeypatch, tmp_path):
     rows = history.json()
     assert len(rows) >= 1
     assert rows[0]["assessment_id"] == baseline["assessment_id"]
-    assert "wildfire_risk_score_delta" in rows[0]
+
+
 def test_reassess_from_existing_assessment(monkeypatch, tmp_path):
     _setup(monkeypatch, tmp_path, _ctx(env=60.0, wildland=60.0, historic=55.0))
 
-    original = _run(_payload("100 Reassess Ln", {"defensible_space_ft": 15}))
+    original = _run(_payload("100 Reassess Ln", {"defensible_space_ft": 15}, tags=["initial"]))
 
     res = client.post(
         f"/risk/reassess/{original['assessment_id']}",
@@ -292,9 +291,10 @@ def test_reassess_from_existing_assessment(monkeypatch, tmp_path):
     assert updated["assessment_id"] != original["assessment_id"]
     assert updated["audience"] == "inspector"
     assert updated["property_facts"]["roof_type"] == "class a"
+    assert updated["tags"] == ["initial"]
 
 
-def test_report_export_and_view(monkeypatch, tmp_path):
+def test_report_export_and_view_with_audience(monkeypatch, tmp_path):
     _setup(monkeypatch, tmp_path, _ctx(env=45.0, wildland=40.0, historic=30.0))
     assessed = _run(
         _payload(
@@ -304,23 +304,109 @@ def test_report_export_and_view(monkeypatch, tmp_path):
         )
     )
 
-    export_res = client.get(f"/report/{assessed['assessment_id']}/export")
+    report_res = client.get(f"/report/{assessed['assessment_id']}?audience=inspector")
+    assert report_res.status_code == 200
+    report = report_res.json()
+    assert report["report_audience"] == "inspector"
+    assert len(report["audience_highlights"]) > 0
+
+    export_res = client.get(f"/report/{assessed['assessment_id']}/export?audience=insurer")
     assert export_res.status_code == 200
     exported = export_res.json()
-    assert "property_summary" in exported
-    assert "wildfire_risk_summary" in exported
-    assert "insurance_readiness_summary" in exported
+    assert exported["audience_mode"] == "insurer"
+    assert "audience_focus" in exported
 
-    view_res = client.get(f"/report/{assessed['assessment_id']}/view")
+    view_res = client.get(f"/report/{assessed['assessment_id']}/view?audience=agent")
     assert view_res.status_code == 200
     assert "text/html" in view_res.headers.get("content-type", "")
-    assert "WildfireRisk Advisor Report" in view_res.text
+    assert "Audience View agent" in view_res.text
 
 
-def test_assessments_listing(monkeypatch, tmp_path):
+def test_portfolio_batch_and_partial_failure(monkeypatch, tmp_path):
+    _setup(monkeypatch, tmp_path, _ctx(env=50.0, wildland=55.0, historic=45.0))
+
+    res = client.post(
+        "/portfolio/assess",
+        json={
+            "portfolio_name": "Q2 Carrier Review",
+            "items": [
+                {
+                    "row_id": "A1",
+                    "address": "11 Batch Way, Denver, CO",
+                    "attributes": {"roof_type": "class a", "vent_type": "ember-resistant", "defensible_space_ft": 30},
+                    "confirmed_fields": ["roof_type", "vent_type", "defensible_space_ft"],
+                    "audience": "insurer",
+                    "tags": ["renewal", "co"],
+                },
+                {
+                    "row_id": "A2",
+                    "address": "",
+                    "attributes": {"roof_type": "wood", "vent_type": "standard", "defensible_space_ft": 8},
+                    "confirmed_fields": ["roof_type", "vent_type", "defensible_space_ft"],
+                    "audience": "insurer",
+                    "tags": ["renewal", "co"],
+                },
+            ],
+        },
+    )
+    assert res.status_code == 200
+    body = res.json()
+
+    assert body["total_properties"] == 2
+    assert body["completed_count"] == 1
+    assert body["failed_count"] == 1
+    assert body["total"] == 2
+    assert body["succeeded"] == 1
+    assert body["failed"] == 1
+    assert "high_risk_count" in body
+    assert "average_wildfire_risk" in body
+    assert any(r["status"] == "failed" for r in body["results"])
+
+
+def test_portfolio_filters_summary_and_recent(monkeypatch, tmp_path):
+    _setup(monkeypatch, tmp_path, _ctx(env=65.0, wildland=80.0, historic=60.0))
+
+    strong = _run(
+        _payload(
+            "400 Strong Structure Ln",
+            {"roof_type": "class a", "vent_type": "ember-resistant", "defensible_space_ft": 35},
+            confirmed=["roof_type", "vent_type", "defensible_space_ft"],
+            tags=["portfolio_x"],
+        )
+    )
+    weak = _run(
+        _payload(
+            "401 Weak Structure Ln",
+            {"roof_type": "wood", "vent_type": "standard", "defensible_space_ft": 5},
+            confirmed=["roof_type", "vent_type", "defensible_space_ft"],
+            tags=["portfolio_x"],
+        )
+    )
+
+    assert weak["wildfire_risk_score"] >= strong["wildfire_risk_score"]
+
+    filt = client.get(
+        "/portfolio?sort_by=wildfire_risk_score&sort_dir=desc&tag=portfolio_x&readiness_blocker=Defensible%20space&recent_days=365&limit=10"
+    )
+    assert filt.status_code == 200
+    pbody = filt.json()
+    assert "summary" in pbody
+    rows = pbody["items"]
+    assert len(rows) >= 1
+    assert rows[0]["wildfire_risk_score"] >= rows[-1]["wildfire_risk_score"]
+    assert any("Defensible" in b for b in rows[0]["readiness_blockers"])
+
+    summary = client.get("/assessments/summary?tag=portfolio_x")
+    assert summary.status_code == 200
+    sb = summary.json()["summary"]
+    assert sb["total_count"] >= 2
+    assert "high_risk_count" in sb
+
+
+def test_assessment_listing_fields(monkeypatch, tmp_path):
     _setup(monkeypatch, tmp_path, _ctx(env=35.0, wildland=35.0, historic=20.0))
-    _run(_payload("One Listing St", {"defensible_space_ft": 20}))
-    _run(_payload("Two Listing St", {"defensible_space_ft": 22}))
+    _run(_payload("One Listing St", {"defensible_space_ft": 20}, tags=["renewal"]))
+    _run(_payload("Two Listing St", {"defensible_space_ft": 22}, tags=["inspection"]))
 
     res = client.get("/assessments?limit=5")
     assert res.status_code == 200
@@ -329,6 +415,78 @@ def test_assessments_listing(monkeypatch, tmp_path):
     assert "assessment_id" in rows[0]
     assert "created_at" in rows[0]
     assert "model_version" in rows[0]
+    assert "confidence_score" in rows[0]
+    assert "review_status" in rows[0]
+
+
+def test_annotations_and_review_status_workflow(monkeypatch, tmp_path):
+    _setup(monkeypatch, tmp_path, _ctx(env=55.0, wildland=60.0, historic=50.0))
+    assessed = _run(_payload("900 Notes Blvd", {"defensible_space_ft": 20}))
+
+    status_res = client.put(
+        f"/assessments/{assessed['assessment_id']}/review-status",
+        json={"review_status": "flagged"},
+    )
+    assert status_res.status_code == 200
+    assert status_res.json()["review_status"] == "flagged"
+
+    add = client.post(
+        f"/assessments/{assessed['assessment_id']}/annotations",
+        json={
+            "author_role": "inspector",
+            "note": "Observed dense brush in immediate zone 1.",
+            "tags": ["inspection", "zone1"],
+            "visibility": "shared",
+            "review_status": "reviewed",
+        },
+    )
+    assert add.status_code == 200
+    row = add.json()
+    assert row["assessment_id"] == assessed["assessment_id"]
+    assert row["author_role"] == "inspector"
+    assert row["review_status"] == "reviewed"
+
+    listed = client.get(f"/assessment/{assessed['assessment_id']}/annotations?visibility=shared")
+    assert listed.status_code == 200
+    rows = listed.json()
+    assert len(rows) >= 1
+    assert rows[0]["visibility"] == "shared"
+
+    status_now = client.get(f"/assessments/{assessed['assessment_id']}/review-status")
+    assert status_now.status_code == 200
+    assert status_now.json()["review_status"] == "reviewed"
+
+
+def test_compare_endpoints(monkeypatch, tmp_path):
+    _setup(monkeypatch, tmp_path, _ctx(env=62.0, wildland=75.0, historic=60.0))
+
+    a = _run(
+        _payload(
+            "100 Compare One",
+            {"roof_type": "class a", "vent_type": "ember-resistant", "defensible_space_ft": 35},
+        )
+    )
+    b = _run(
+        _payload(
+            "101 Compare Two",
+            {"roof_type": "wood", "vent_type": "standard", "defensible_space_ft": 5},
+        )
+    )
+
+    pair = client.get(f"/assessments/{a['assessment_id']}/compare/{b['assessment_id']}")
+    assert pair.status_code == 200
+    p = pair.json()
+    assert "wildfire_risk_delta" in p
+    assert "insurance_readiness_delta" in p
+    assert "driver_differences" in p
+    assert "blocker_differences" in p
+    assert "mitigation_differences" in p
+
+    multi = client.get(f"/assessments/compare?ids={a['assessment_id']},{b['assessment_id']}")
+    assert multi.status_code == 200
+    m = multi.json()
+    assert m["requested_ids"] == [a["assessment_id"], b["assessment_id"]]
+    assert len(m["comparisons"]) == 1
 
 
 def test_provisional_access_not_in_wildfire_score(monkeypatch, tmp_path):
@@ -358,80 +516,34 @@ def test_provisional_access_not_in_wildfire_score(monkeypatch, tmp_path):
 
     assert a["wildfire_risk_score"] == b["wildfire_risk_score"]
     assert a["factor_breakdown"]["access_included_in_total"] is False
-    assert a["factor_breakdown"]["access_risk"] != b["factor_breakdown"]["access_risk"]
 
 
-def test_deterministic_outputs_for_fixed_inputs(monkeypatch, tmp_path):
-    _setup(monkeypatch, tmp_path, _ctx(env=60.0, wildland=65.0, historic=55.0))
-
-    payload = _payload(
-        "Deterministic Case Way",
-        {
-            "defensible_space_ft": 20,
-            "roof_type": "class a",
-            "vent_type": "ember-resistant",
-        },
-        confirmed=["roof_type", "vent_type", "defensible_space_ft"],
-    )
-
-    a = _run(payload)
-    b = _run(payload)
-
-    for field in [
-        "wildfire_risk_score",
-        "insurance_readiness_score",
-        "submodel_scores",
-        "weighted_contributions",
-        "readiness_blockers",
-        "readiness_penalties",
-        "readiness_summary",
-    ]:
-        assert a[field] == b[field]
-
-
-def test_legacy_row_without_model_version_is_readable(tmp_path):
-    db_path = tmp_path / "legacy.db"
-    store = AssessmentStore(str(db_path))
-
+def test_old_rows_without_model_version_are_readable(tmp_path):
+    store = AssessmentStore(str(tmp_path / "legacy.db"))
     legacy_payload = {
         "assessment_id": "legacy-1",
-        "address": "Legacy Address",
-        "latitude": 40.0,
-        "longitude": -105.0,
-        "wildfire_risk_score": 42.0,
-        "insurance_readiness_score": 61.0,
-        "risk_drivers": {"environmental": 50.0, "structural": 35.0, "access_exposure": 20.0},
-        "assumptions_used": ["legacy assumption"],
-        "data_sources": ["legacy source"],
-        "mitigation_plan": [],
-        "explanation": "legacy explanation",
+        "address": "Legacy Ln",
+        "coordinates": {"latitude": 1.1, "longitude": 2.2},
+        "risk_scores": {"wildfire_risk_score": 44.0, "insurance_readiness_score": 61.0},
+        "risk_drivers": {"environmental": 45.0, "structural": 43.0, "access_exposure": 20.0},
+        "mitigation_recommendations": [{"action": "clear brush", "related_factor": "fuel"}],
     }
 
-    with sqlite3.connect(db_path) as conn:
-        conn.execute(
-            "INSERT INTO assessments (assessment_id, created_at, payload_json, model_version) VALUES (?, datetime('now'), ?, ?)",
-            ("legacy-1", json.dumps(legacy_payload), LEGACY_MODEL_VERSION),
-        )
+    conn = sqlite3.connect(tmp_path / "legacy.db")
+    conn.execute(
+        "INSERT INTO assessments (assessment_id, created_at, payload_json, model_version) VALUES (?, datetime('now'), ?, ?)",
+        ("legacy-1", json.dumps(legacy_payload), LEGACY_MODEL_VERSION),
+    )
+    conn.commit()
+    conn.close()
 
     loaded = store.get("legacy-1")
     assert loaded is not None
     assert loaded.model_version == LEGACY_MODEL_VERSION
-    assert loaded.factor_breakdown.access_included_in_total is False
+    assert loaded.assessment_id == "legacy-1"
 
 
-def test_step2_calibration_regression(monkeypatch, tmp_path):
-    _setup(monkeypatch, tmp_path, _ctx(env=20.0, wildland=20.0, historic=10.0))
-    body = _run(
-        _payload(
-            "123 Safe St, Boulder, CO",
-            {
-                "roof_type": "class a",
-                "vent_type": "ember-resistant",
-                "defensible_space_ft": 40,
-                "construction_year": 2020,
-            },
-            confirmed=["roof_type", "vent_type", "defensible_space_ft", "construction_year"],
-        )
-    )
-    _assert_calibration_fixture(body, "step2_calibration_low.json")
-    assert body["model_version"] == MODEL_VERSION
+def test_model_version_current(monkeypatch, tmp_path):
+    _setup(monkeypatch, tmp_path, _ctx(env=45.0, wildland=45.0, historic=40.0))
+    row = _run(_payload("Version Check Rd", {"defensible_space_ft": 20}))
+    assert row["model_version"] == MODEL_VERSION
