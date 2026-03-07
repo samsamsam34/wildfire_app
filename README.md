@@ -350,6 +350,35 @@ python scripts/prepare_region_layers.py \
 
 In this mode, the prep pipeline attempts to resolve source assets using adapters, then downloads/caches/clips/validates outputs.
 
+### Validate prepared region before runtime use
+
+After prep, run the validator before relying on runtime scoring:
+
+```bash
+python scripts/validate_prepared_region.py \
+  --region-id marin_ca \
+  --sample-lat 38.02 \
+  --sample-lon -122.55 \
+  --update-manifest
+```
+
+Validation checks:
+- manifest can be loaded and bounds parsed
+- required files exist and map to runtime layer keys
+- prepared files are openable and intersect manifest bbox
+- sample point resolves to the prepared region (when provided)
+
+Validation output includes:
+- `ready_for_runtime` (`yes`/`no`)
+- `scoring_readiness` (`full_scoring` | `partial_scoring_only` | `insufficient_data_behavior_only`)
+- explicit blockers/warnings and recommended next action
+
+When `--update-manifest` is used, manifest fields are updated:
+- `validation_run_at`
+- `validation_status`
+- `runtime_compatibility_status`
+- `validation_notes`
+
 Archive handling:
 - `.zip` inputs are supported for raster/vector layer sources.
 - The preparer uses deterministic selection rules and fails clearly on ambiguous archives.
