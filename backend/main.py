@@ -1160,6 +1160,12 @@ def _apply_hard_trust_guardrails(
         downgrade_reasons.append("Verified geocode unavailable.")
         trust_tier_blockers.append("Verified geocode unavailable.")
 
+    if updated.confidence_score <= 0.0:
+        updated.confidence_tier = "preliminary"
+        updated.use_restriction = "not_for_underwriting_or_binding"
+        downgrade_reasons.append("Confidence score is zero due to missing critical evidence.")
+        trust_tier_blockers.append("Confidence score is zero due to missing critical evidence.")
+
     if any("point-based fallback" in r.lower() for r in home_eligibility.blocking_reasons):
         if updated.use_restriction == "shareable":
             updated.use_restriction = "homeowner_review_recommended"
@@ -1211,6 +1217,50 @@ def _build_assessment_diagnostics(
     )
 
 
+def _apply_score_availability(
+    *,
+    site_hazard_score: float,
+    home_ignition_vulnerability_score: float,
+    insurance_readiness_score: float,
+    blended_wildfire_risk_score: float,
+    legacy_weighted_wildfire_risk_score: float,
+    site_hazard_eligibility: ScoreEligibility,
+    home_vulnerability_eligibility: ScoreEligibility,
+    insurance_readiness_eligibility: ScoreEligibility,
+) -> tuple[dict[str, float | None | bool], list[str]]:
+    site_available = site_hazard_eligibility.eligibility_status != "insufficient"
+    home_available = home_vulnerability_eligibility.eligibility_status != "insufficient"
+    readiness_available = insurance_readiness_eligibility.eligibility_status != "insufficient"
+    wildfire_available = site_available and home_available
+
+    notes: list[str] = []
+    if not site_available:
+        notes.append("Wildfire score not computed because required environmental layers were unavailable.")
+    if not home_available:
+        notes.append(
+            "Home vulnerability score not computed because no footprint/ring context or confirmed structure facts were available."
+        )
+    if not readiness_available:
+        notes.append(
+            "Insurance readiness score not computed because site hazard and structure evidence were insufficient."
+        )
+
+    return (
+        {
+            "site_hazard_score": site_hazard_score if site_available else None,
+            "home_ignition_vulnerability_score": home_ignition_vulnerability_score if home_available else None,
+            "insurance_readiness_score": insurance_readiness_score if readiness_available else None,
+            "wildfire_risk_score": blended_wildfire_risk_score if wildfire_available else None,
+            "legacy_weighted_wildfire_risk_score": legacy_weighted_wildfire_risk_score if wildfire_available else None,
+            "site_hazard_score_available": site_available,
+            "home_ignition_vulnerability_score_available": home_available,
+            "insurance_readiness_score_available": readiness_available,
+            "wildfire_risk_score_available": wildfire_available,
+        },
+        notes,
+    )
+
+
 def _merge_property_drivers(base_drivers: list[str], property_findings: list[str]) -> list[str]:
     if not property_findings:
         return base_drivers[:3]
@@ -1244,9 +1294,9 @@ def _build_score_decomposition(
 
 def _build_score_sections(
     *,
-    site_hazard_score: float,
-    home_ignition_vulnerability_score: float,
-    insurance_readiness_score: float,
+    site_hazard_score: float | None,
+    home_ignition_vulnerability_score: float | None,
+    insurance_readiness_score: float | None,
     top_risk_drivers: list[str],
     top_protective_factors: list[str],
     mitigation_plan,
@@ -1254,6 +1304,9 @@ def _build_score_sections(
     readiness_blockers: list[str],
     confidence_block: ConfidenceBlock,
 ) -> tuple[ScoreSectionSummary, ScoreSectionSummary, ScoreSectionSummary]:
+    def _score_text(value: float | None) -> str:
+        return f"{value:.1f}/100" if value is not None else "not computed"
+
     site_actions = [
         m.title
         for m in mitigation_plan
@@ -1275,7 +1328,7 @@ def _build_score_sections(
         label="Site Hazard",
         score=site_hazard_score,
         summary=(
-            f"Site Hazard {site_hazard_score:.1f}/100 reflects landscape fuel, slope, and nearby fire pressure around the home."
+            f"Site Hazard {_score_text(site_hazard_score)} reflects landscape fuel, slope, and nearby fire pressure around the home."
         ),
         explanation="What the landscape is doing around your property.",
         top_drivers=top_risk_drivers[:3],
@@ -1289,7 +1342,7 @@ def _build_score_sections(
         label="Home Ignition Vulnerability",
         score=home_ignition_vulnerability_score,
         summary=(
-            f"Home Ignition Vulnerability {home_ignition_vulnerability_score:.1f}/100 reflects structure hardening and near-home ignition pathways."
+            f"Home Ignition Vulnerability {_score_text(home_ignition_vulnerability_score)} reflects structure hardening and near-home ignition pathways."
         ),
         explanation="What the home and immediate surroundings are contributing.",
         top_drivers=(property_findings[:3] or top_risk_drivers[:3]),
@@ -1304,7 +1357,7 @@ def _build_score_sections(
         label="Insurance Readiness",
         score=insurance_readiness_score,
         summary=(
-            f"Insurance Readiness {insurance_readiness_score:.1f}/100 is a heuristic advisory score and not carrier-approved underwriting."
+            f"Insurance Readiness {_score_text(insurance_readiness_score)} is a heuristic advisory score and not carrier-approved underwriting."
         ),
         explanation="What an insurer is likely to care about next.",
         top_drivers=(readiness_blockers[:3] or ["No major readiness blockers detected"]),
@@ -1376,7 +1429,7 @@ def _apply_ruleset_to_result(result: AssessmentResult, ruleset: UnderwritingRule
             extra_penalty += max(0.0, new_value - float(value))
         result.readiness_penalties = scaled
 
-    if result.wildfire_risk_score >= risk_blocker_threshold:
+    if result.wildfire_risk_score is not None and result.wildfire_risk_score >= risk_blocker_threshold:
         blocker = f"Carrier profile threshold exceeded ({ruleset.ruleset_id})"
         if blocker not in result.readiness_blockers:
             result.readiness_blockers.append(blocker)
@@ -1388,7 +1441,7 @@ def _apply_ruleset_to_result(result: AssessmentResult, ruleset: UnderwritingRule
             result.readiness_blockers.append(blocker)
             extra_penalty += 4.0
 
-    if extra_penalty > 0:
+    if extra_penalty > 0 and result.insurance_readiness_score is not None:
         result.insurance_readiness_score = round(max(0.0, min(100.0, result.insurance_readiness_score - extra_penalty)), 1)
         if result.risk_scores:
             result.risk_scores.insurance_readiness_score = result.insurance_readiness_score
@@ -1558,17 +1611,32 @@ def _run_assessment(
     top_risk_drivers = _merge_property_drivers(_build_top_risk_drivers(submodel_scores), property_findings)
     top_protective_factors = _build_top_protective_factors(payload, submodel_scores)
 
-    site_hazard_score, home_ignition_vulnerability_score = _build_score_decomposition(risk=risk)
-    legacy_weighted_wildfire_risk_score = risk.total_score
-    blended_wildfire_risk_score = risk_engine.compute_blended_wildfire_score(
-        site_hazard_score=site_hazard_score,
-        home_ignition_vulnerability_score=home_ignition_vulnerability_score,
+    raw_site_hazard_score, raw_home_ignition_vulnerability_score = _build_score_decomposition(risk=risk)
+    raw_legacy_weighted_wildfire_risk_score = risk.total_score
+    raw_blended_wildfire_risk_score = risk_engine.compute_blended_wildfire_score(
+        site_hazard_score=raw_site_hazard_score,
+        home_ignition_vulnerability_score=raw_home_ignition_vulnerability_score,
     )
+    score_outputs, score_availability_notes = _apply_score_availability(
+        site_hazard_score=raw_site_hazard_score,
+        home_ignition_vulnerability_score=raw_home_ignition_vulnerability_score,
+        insurance_readiness_score=readiness.insurance_readiness_score,
+        blended_wildfire_risk_score=raw_blended_wildfire_risk_score,
+        legacy_weighted_wildfire_risk_score=raw_legacy_weighted_wildfire_risk_score,
+        site_hazard_eligibility=site_hazard_eligibility,
+        home_vulnerability_eligibility=home_vulnerability_eligibility,
+        insurance_readiness_eligibility=insurance_readiness_eligibility,
+    )
+    site_hazard_score = score_outputs["site_hazard_score"]
+    home_ignition_vulnerability_score = score_outputs["home_ignition_vulnerability_score"]
+    insurance_readiness_score = score_outputs["insurance_readiness_score"]
+    blended_wildfire_risk_score = score_outputs["wildfire_risk_score"]
+    legacy_weighted_wildfire_risk_score = score_outputs["legacy_weighted_wildfire_risk_score"]
 
     site_hazard_section, home_ignition_section, insurance_readiness_section = _build_score_sections(
         site_hazard_score=site_hazard_score,
         home_ignition_vulnerability_score=home_ignition_vulnerability_score,
-        insurance_readiness_score=readiness.insurance_readiness_score,
+        insurance_readiness_score=insurance_readiness_score,
         top_risk_drivers=top_risk_drivers,
         top_protective_factors=top_protective_factors,
         mitigation_plan=mitigation_plan,
@@ -1632,6 +1700,7 @@ def _run_assessment(
         )
     if confidence_block.use_restriction == "not_for_underwriting_or_binding":
         scoring_notes.append("Current confidence gating: not for underwriting or binding decisions.")
+    scoring_notes.extend(score_availability_notes)
     if assessment_status != "fully_scored":
         scoring_notes.append(
             f"Assessment status is {assessment_status}; review blockers before using this output for high-trust decisions."
@@ -1639,10 +1708,13 @@ def _run_assessment(
     if assessment_blockers:
         scoring_notes.append("Assessment blockers: " + ", ".join(assessment_blockers[:6]) + ".")
 
+    def _score_phrase(label: str, value: float | None) -> str:
+        return f"{label}: {value:.1f}/100" if value is not None else f"{label}: not computed"
+
     explanation_summary = (
-        f"Site Hazard: {site_hazard_score:.1f}/100. "
-        f"Home Ignition Vulnerability: {home_ignition_vulnerability_score:.1f}/100. "
-        f"Insurance Readiness: {readiness.insurance_readiness_score:.1f}/100. "
+        f"{_score_phrase('Site Hazard', site_hazard_score)}. "
+        f"{_score_phrase('Home Ignition Vulnerability', home_ignition_vulnerability_score)}. "
+        f"{_score_phrase('Insurance Readiness', insurance_readiness_score)}. "
         f"Primary drivers: {', '.join(top_risk_drivers[:2])}."
     )
 
@@ -1650,7 +1722,11 @@ def _run_assessment(
         site_hazard_score=site_hazard_score,
         home_ignition_vulnerability_score=home_ignition_vulnerability_score,
         wildfire_risk_score=blended_wildfire_risk_score,
-        insurance_readiness_score=readiness.insurance_readiness_score,
+        insurance_readiness_score=insurance_readiness_score,
+        site_hazard_score_available=bool(score_outputs["site_hazard_score_available"]),
+        home_ignition_vulnerability_score_available=bool(score_outputs["home_ignition_vulnerability_score_available"]),
+        wildfire_risk_score_available=bool(score_outputs["wildfire_risk_score_available"]),
+        insurance_readiness_score_available=bool(score_outputs["insurance_readiness_score_available"]),
     )
     score_summaries = ScoreSummaries(
         site_hazard=site_hazard_section,
@@ -1693,7 +1769,11 @@ def _run_assessment(
         legacy_weighted_wildfire_risk_score=legacy_weighted_wildfire_risk_score,
         site_hazard_score=site_hazard_score,
         home_ignition_vulnerability_score=home_ignition_vulnerability_score,
-        insurance_readiness_score=readiness.insurance_readiness_score,
+        insurance_readiness_score=insurance_readiness_score,
+        wildfire_risk_score_available=bool(score_outputs["wildfire_risk_score_available"]),
+        site_hazard_score_available=bool(score_outputs["site_hazard_score_available"]),
+        home_ignition_vulnerability_score_available=bool(score_outputs["home_ignition_vulnerability_score_available"]),
+        insurance_readiness_score_available=bool(score_outputs["insurance_readiness_score_available"]),
         risk_drivers=risk.drivers,
         factor_breakdown=breakdown,
         submodel_scores=submodel_scores,
@@ -1796,10 +1876,14 @@ def _run_assessment(
         },
         "score_decomposition": {
             "site_hazard_score": result.site_hazard_score,
+            "site_hazard_score_available": result.site_hazard_score_available,
             "home_ignition_vulnerability_score": result.home_ignition_vulnerability_score,
+            "home_ignition_vulnerability_score_available": result.home_ignition_vulnerability_score_available,
             "wildfire_risk_score": result.wildfire_risk_score,
+            "wildfire_risk_score_available": result.wildfire_risk_score_available,
             "legacy_weighted_wildfire_risk_score": result.legacy_weighted_wildfire_risk_score,
             "insurance_readiness_score": result.insurance_readiness_score,
+            "insurance_readiness_score_available": result.insurance_readiness_score_available,
         },
         "confidence_gating": {
             "confidence_score": result.confidence_score,
@@ -1996,9 +2080,12 @@ def _build_report_export(
         },
         wildfire_risk_summary={
             "wildfire_risk_score": result.wildfire_risk_score,
+            "wildfire_risk_score_available": result.wildfire_risk_score_available,
             "legacy_weighted_wildfire_risk_score": result.legacy_weighted_wildfire_risk_score,
             "site_hazard_score": result.site_hazard_score,
+            "site_hazard_score_available": result.site_hazard_score_available,
             "home_ignition_vulnerability_score": result.home_ignition_vulnerability_score,
+            "home_ignition_vulnerability_score_available": result.home_ignition_vulnerability_score_available,
             "site_hazard_eligibility": result.site_hazard_eligibility.model_dump(),
             "home_ignition_vulnerability_eligibility": result.home_vulnerability_eligibility.model_dump(),
             "assessment_status": result.assessment_status,
@@ -2014,6 +2101,7 @@ def _build_report_export(
         },
         insurance_readiness_summary={
             "insurance_readiness_score": result.insurance_readiness_score,
+            "insurance_readiness_score_available": result.insurance_readiness_score_available,
             "insurance_readiness_section": result.insurance_readiness_section.model_dump(),
             "insurance_readiness_eligibility": result.insurance_readiness_eligibility.model_dump(),
             "readiness_factors": [r.model_dump() for r in result.readiness_factors],
@@ -2037,6 +2125,10 @@ def _build_report_export(
             "stale_data_share": result.data_provenance.summary.stale_data_share,
             "heuristic_input_count": result.data_provenance.summary.heuristic_input_count,
             "current_input_count": result.data_provenance.summary.current_input_count,
+            "wildfire_risk_score_available": result.wildfire_risk_score_available,
+            "site_hazard_score_available": result.site_hazard_score_available,
+            "home_ignition_vulnerability_score_available": result.home_ignition_vulnerability_score_available,
+            "insurance_readiness_score_available": result.insurance_readiness_score_available,
             "confidence_tier": result.confidence_tier,
             "use_restriction": result.use_restriction,
             "low_confidence_flags": result.low_confidence_flags,
@@ -2057,6 +2149,9 @@ def _build_report_html(
     audience: Audience | None = None,
     audience_mode: Audience | None = None,
 ) -> str:
+    def _score_html(value: float | None) -> str:
+        return f"{value:.1f}" if value is not None else "Not computed"
+
     mode = _resolve_audience(result, actor, audience, audience_mode)
     highlights = _audience_highlights(result, mode)
     focus = _audience_focus(result, mode)
@@ -2086,8 +2181,8 @@ pre {{ white-space: pre-wrap; }}
 <div class=\"card\"><h2>Property</h2><p>{result.address}</p><p>Organization: {result.organization_id}</p><p>Audience: {result.audience}</p><p>Review Status: {result.review_status}</p><p>Workflow: {result.workflow_state}</p><p>Assigned: {result.assigned_reviewer or 'n/a'}</p><p>Portfolio: {result.portfolio_name or 'n/a'}</p><p>Tags: {', '.join(result.tags) if result.tags else 'none'}</p></div>
 <div class=\"card\"><h3>Ruleset</h3><p>{result.ruleset_name} ({result.ruleset_id} v{result.ruleset_version})</p><p>{result.ruleset_description}</p></div>
 <div class=\"row\">
-<div class=\"card\"><h3>Wildfire Risk Score</h3><p>{result.wildfire_risk_score}</p></div>
-<div class=\"card\"><h3>Insurance Readiness Score</h3><p>{result.insurance_readiness_score}</p></div>
+<div class=\"card\"><h3>Wildfire Risk Score</h3><p>{_score_html(result.wildfire_risk_score)}</p></div>
+<div class=\"card\"><h3>Insurance Readiness Score</h3><p>{_score_html(result.insurance_readiness_score)}</p></div>
 </div>
 <div class=\"card\"><h3>Top Risk Drivers</h3><ul>{drivers}</ul></div>
 <div class=\"card\"><h3>Top Protective Factors</h3><ul>{protective}</ul></div>
@@ -2116,6 +2211,11 @@ def _to_comparison_item(result: AssessmentResult) -> AssessmentComparisonItem:
 
 
 def _compare_results(base: AssessmentResult, other: AssessmentResult) -> AssessmentComparisonResult:
+    def _delta(before: float | None, after: float | None) -> float | None:
+        if before is None or after is None:
+            return None
+        return round(after - before, 1)
+
     base_drivers = set(base.top_risk_drivers)
     other_drivers = set(other.top_risk_drivers)
     base_blockers = set(base.readiness_blockers)
@@ -2126,8 +2226,8 @@ def _compare_results(base: AssessmentResult, other: AssessmentResult) -> Assessm
     return AssessmentComparisonResult(
         base=_to_comparison_item(base),
         other=_to_comparison_item(other),
-        wildfire_risk_delta=round(other.wildfire_risk_score - base.wildfire_risk_score, 1),
-        insurance_readiness_delta=round(other.insurance_readiness_score - base.insurance_readiness_score, 1),
+        wildfire_risk_delta=_delta(base.wildfire_risk_score, other.wildfire_risk_score),
+        insurance_readiness_delta=_delta(base.insurance_readiness_score, other.insurance_readiness_score),
         driver_differences={
             "added": sorted(other_drivers - base_drivers),
             "removed": sorted(base_drivers - other_drivers),
@@ -2216,8 +2316,8 @@ def _list_item_to_csv(rows: list[AssessmentListItem]) -> str:
                 "created_at": item.created_at,
                 "organization_id": item.organization_id,
                 "address": item.address,
-                "wildfire_risk_score": item.wildfire_risk_score,
-                "insurance_readiness_score": item.insurance_readiness_score,
+                "wildfire_risk_score": item.wildfire_risk_score if item.wildfire_risk_score is not None else "",
+                "insurance_readiness_score": item.insurance_readiness_score if item.insurance_readiness_score is not None else "",
                 "confidence_score": item.confidence_score,
                 "top_risk_drivers": " | ".join(assessment.top_risk_drivers if assessment else []),
                 "readiness_blockers": " | ".join(item.readiness_blockers),
@@ -2657,15 +2757,21 @@ def simulate_risk(
         if before.get(key) != after.get(key):
             changed_inputs[key] = {"before": before.get(key), "after": after.get(key)}
 
+    def _delta(before_score: float | None, after_score: float | None) -> float | None:
+        if before_score is None or after_score is None:
+            return None
+        return round(after_score - before_score, 1)
+
+    wildfire_delta = _delta(baseline.wildfire_risk_score, simulated.wildfire_risk_score)
+    readiness_delta = _delta(baseline.insurance_readiness_score, simulated.insurance_readiness_score)
+
     sim_result = SimulationResult(
         scenario_name=payload.scenario_name,
         baseline=baseline,
         simulated=simulated,
         delta=SimulationDelta(
-            wildfire_risk_score_delta=round(simulated.wildfire_risk_score - baseline.wildfire_risk_score, 1),
-            insurance_readiness_score_delta=round(
-                simulated.insurance_readiness_score - baseline.insurance_readiness_score, 1
-            ),
+            wildfire_risk_score_delta=wildfire_delta,
+            insurance_readiness_score_delta=readiness_delta,
         ),
         changed_inputs=changed_inputs,
         next_best_actions=simulated.mitigation_plan,
@@ -2674,19 +2780,17 @@ def simulate_risk(
         base_scores=baseline.risk_scores,
         simulated_scores=simulated.risk_scores,
         score_delta=SimulationDelta(
-            wildfire_risk_score_delta=round(simulated.wildfire_risk_score - baseline.wildfire_risk_score, 1),
-            insurance_readiness_score_delta=round(
-                simulated.insurance_readiness_score - baseline.insurance_readiness_score, 1
-            ),
+            wildfire_risk_score_delta=wildfire_delta,
+            insurance_readiness_score_delta=readiness_delta,
         ),
         base_confidence=baseline.confidence,
         simulated_confidence=simulated.confidence,
         base_assumptions=baseline.assumptions,
         simulated_assumptions=simulated.assumptions,
         summary=(
-            f"Wildfire risk changed by {round(simulated.wildfire_risk_score - baseline.wildfire_risk_score, 1)} "
+            f"Wildfire risk changed by {wildfire_delta if wildfire_delta is not None else 'not computed'} "
             f"and insurance readiness changed by "
-            f"{round(simulated.insurance_readiness_score - baseline.insurance_readiness_score, 1)}."
+            f"{readiness_delta if readiness_delta is not None else 'not computed'}."
         ),
     )
 

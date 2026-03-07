@@ -569,12 +569,19 @@
       function renderAssessment(data) {
         latestAssessment = data;
 
-        const riskScore = Number(data.wildfire_risk_score || 0);
-        const riskMeta = riskBand(riskScore);
         const scoreEl = document.getElementById("riskScore");
-        scoreEl.textContent = riskScore.toFixed(1);
-        scoreEl.className = `score ${riskMeta.cls}`;
-        document.getElementById("riskLabel").textContent = riskMeta.label;
+        const riskAvailable = data.wildfire_risk_score_available !== false && data.wildfire_risk_score !== null && data.wildfire_risk_score !== undefined;
+        if (riskAvailable) {
+          const riskScore = Number(data.wildfire_risk_score);
+          const riskMeta = riskBand(riskScore);
+          scoreEl.textContent = riskScore.toFixed(1);
+          scoreEl.className = `score ${riskMeta.cls}`;
+          document.getElementById("riskLabel").textContent = riskMeta.label;
+        } else {
+          scoreEl.textContent = "—";
+          scoreEl.className = "score warn";
+          document.getElementById("riskLabel").textContent = "Not enough data to score";
+        }
 
         document.getElementById("summaryText").textContent = data.explanation_summary || "No summary available yet.";
         const propertyFindings = getPropertyFindings(data);
@@ -606,8 +613,15 @@
           .join("");
         document.getElementById("submodels").innerHTML = rows || "<tr><td colspan='3' class='muted'>No factor data.</td></tr>";
 
-        const readiness = Number(data.insurance_readiness_score || 0).toFixed(1);
-        document.getElementById("readinessText").textContent = `Insurance readiness score: ${readiness}`;
+        const readinessAvailable = data.insurance_readiness_score_available !== false
+          && data.insurance_readiness_score !== null
+          && data.insurance_readiness_score !== undefined;
+        if (readinessAvailable) {
+          const readiness = Number(data.insurance_readiness_score).toFixed(1);
+          document.getElementById("readinessText").textContent = `Insurance readiness score: ${readiness}`;
+        } else {
+          document.getElementById("readinessText").textContent = "Insurance readiness score: not computed (insufficient evidence)";
+        }
         document.getElementById("propertyContextText").textContent = buildPropertyContextSummary(data, propertyFindings);
       }
 
@@ -649,6 +663,7 @@
         }
 
         try {
+          const fmt = (value) => (value === null || value === undefined || Number.isNaN(Number(value)) ? "Not computed" : Number(value).toFixed(1));
           const sim = await api("/risk/simulate", {
             assessment_id: latestAssessment.assessment_id,
             scenario_name: document.getElementById("scenario_name").value || "what_if",
@@ -662,12 +677,12 @@
             .join("<br>");
 
           document.getElementById("simResult").innerHTML =
-            `<strong>Before:</strong> ${sim.baseline.wildfire_risk_score.toFixed(1)}<br>` +
-            `<strong>After:</strong> ${sim.simulated.wildfire_risk_score.toFixed(1)}<br>` +
-            `<strong>Change:</strong> ${delta.wildfire_risk_score_delta.toFixed(1)} wildfire risk points<br><br>` +
-            `<strong>Readiness Before:</strong> ${sim.baseline.insurance_readiness_score.toFixed(1)}<br>` +
-            `<strong>Readiness After:</strong> ${sim.simulated.insurance_readiness_score.toFixed(1)}<br>` +
-            `<strong>Readiness Change:</strong> ${delta.insurance_readiness_score_delta.toFixed(1)} points<br><br>` +
+            `<strong>Before:</strong> ${fmt(sim.baseline.wildfire_risk_score)}<br>` +
+            `<strong>After:</strong> ${fmt(sim.simulated.wildfire_risk_score)}<br>` +
+            `<strong>Change:</strong> ${fmt(delta.wildfire_risk_score_delta)} wildfire risk points<br><br>` +
+            `<strong>Readiness Before:</strong> ${fmt(sim.baseline.insurance_readiness_score)}<br>` +
+            `<strong>Readiness After:</strong> ${fmt(sim.simulated.insurance_readiness_score)}<br>` +
+            `<strong>Readiness Change:</strong> ${fmt(delta.insurance_readiness_score_delta)} points<br><br>` +
             `<strong>What changed:</strong><br>${changed || "No changes detected."}<br><br>` +
             `<strong>Around the home after upgrades:</strong><br>${(sim.simulated?.property_findings || []).slice(0, 2).join("<br>") || "No additional structure-specific findings."}<br><br>` +
             `<strong>Summary:</strong> ${sim.summary || "Simulation complete."}`;

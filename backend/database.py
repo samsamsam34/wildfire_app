@@ -918,11 +918,27 @@ class AssessmentStore:
 
         payload.setdefault("latitude", payload.get("coordinates", {}).get("latitude", 0.0))
         payload.setdefault("longitude", payload.get("coordinates", {}).get("longitude", 0.0))
-        payload.setdefault("wildfire_risk_score", payload.get("risk_scores", {}).get("wildfire_risk_score", 0.0))
-        payload.setdefault("legacy_weighted_wildfire_risk_score", payload.get("wildfire_risk_score", 0.0))
-        payload.setdefault("site_hazard_score", payload.get("risk_drivers", {}).get("environmental", 0.0))
-        payload.setdefault("home_ignition_vulnerability_score", payload.get("risk_drivers", {}).get("structural", 0.0))
-        payload.setdefault("insurance_readiness_score", payload.get("risk_scores", {}).get("insurance_readiness_score", 0.0))
+        payload.setdefault("wildfire_risk_score", payload.get("risk_scores", {}).get("wildfire_risk_score"))
+        payload.setdefault("legacy_weighted_wildfire_risk_score", payload.get("wildfire_risk_score"))
+        payload.setdefault(
+            "site_hazard_score",
+            payload.get("risk_scores", {}).get("site_hazard_score", payload.get("risk_drivers", {}).get("environmental")),
+        )
+        payload.setdefault(
+            "home_ignition_vulnerability_score",
+            payload.get("risk_scores", {}).get(
+                "home_ignition_vulnerability_score",
+                payload.get("risk_drivers", {}).get("structural"),
+            ),
+        )
+        payload.setdefault("insurance_readiness_score", payload.get("risk_scores", {}).get("insurance_readiness_score"))
+        payload.setdefault("wildfire_risk_score_available", payload.get("wildfire_risk_score") is not None)
+        payload.setdefault("site_hazard_score_available", payload.get("site_hazard_score") is not None)
+        payload.setdefault(
+            "home_ignition_vulnerability_score_available",
+            payload.get("home_ignition_vulnerability_score") is not None,
+        )
+        payload.setdefault("insurance_readiness_score_available", payload.get("insurance_readiness_score") is not None)
 
         if "risk_drivers" not in payload:
             fb = payload.get("factor_breakdown", {}) or {}
@@ -1203,7 +1219,7 @@ class AssessmentStore:
             "site_hazard_section",
             {
                 "label": "Site Hazard",
-                "score": payload.get("site_hazard_score", 0.0),
+                "score": payload.get("site_hazard_score"),
                 "summary": "",
                 "explanation": "What the landscape is doing around your property.",
                 "top_drivers": payload.get("top_risk_drivers", [])[:3],
@@ -1217,7 +1233,7 @@ class AssessmentStore:
             "home_ignition_vulnerability_section",
             {
                 "label": "Home Ignition Vulnerability",
-                "score": payload.get("home_ignition_vulnerability_score", 0.0),
+                "score": payload.get("home_ignition_vulnerability_score"),
                 "summary": "",
                 "explanation": "What the home and immediate surroundings are contributing.",
                 "top_drivers": payload.get("property_findings", [])[:3] or payload.get("top_risk_drivers", [])[:3],
@@ -1231,7 +1247,7 @@ class AssessmentStore:
             "insurance_readiness_section",
             {
                 "label": "Insurance Readiness",
-                "score": payload.get("insurance_readiness_score", 0.0),
+                "score": payload.get("insurance_readiness_score"),
                 "summary": payload.get("readiness_summary", ""),
                 "explanation": "What an insurer is likely to care about next.",
                 "top_drivers": payload.get("readiness_blockers", [])[:3],
@@ -1270,6 +1286,16 @@ class AssessmentStore:
                 "home_ignition_vulnerability_score": payload["home_ignition_vulnerability_score"],
                 "wildfire_risk_score": payload["wildfire_risk_score"],
                 "insurance_readiness_score": payload["insurance_readiness_score"],
+                "site_hazard_score_available": payload.get("site_hazard_score_available", payload["site_hazard_score"] is not None),
+                "home_ignition_vulnerability_score_available": payload.get(
+                    "home_ignition_vulnerability_score_available",
+                    payload["home_ignition_vulnerability_score"] is not None,
+                ),
+                "wildfire_risk_score_available": payload.get("wildfire_risk_score_available", payload["wildfire_risk_score"] is not None),
+                "insurance_readiness_score_available": payload.get(
+                    "insurance_readiness_score_available",
+                    payload["insurance_readiness_score"] is not None,
+                ),
             },
         )
         payload["risk_scores"].setdefault("site_hazard_score", payload["site_hazard_score"])
@@ -1279,6 +1305,16 @@ class AssessmentStore:
         )
         payload["risk_scores"].setdefault("wildfire_risk_score", payload["wildfire_risk_score"])
         payload["risk_scores"].setdefault("insurance_readiness_score", payload["insurance_readiness_score"])
+        payload["risk_scores"].setdefault("site_hazard_score_available", payload.get("site_hazard_score_available", payload["site_hazard_score"] is not None))
+        payload["risk_scores"].setdefault(
+            "home_ignition_vulnerability_score_available",
+            payload.get("home_ignition_vulnerability_score_available", payload["home_ignition_vulnerability_score"] is not None),
+        )
+        payload["risk_scores"].setdefault("wildfire_risk_score_available", payload.get("wildfire_risk_score_available", payload["wildfire_risk_score"] is not None))
+        payload["risk_scores"].setdefault(
+            "insurance_readiness_score_available",
+            payload.get("insurance_readiness_score_available", payload["insurance_readiness_score"] is not None),
+        )
         payload["score_summaries"].setdefault("site_hazard", payload.get("site_hazard_section", {}))
         payload["score_summaries"].setdefault(
             "home_ignition_vulnerability",
@@ -1347,6 +1383,14 @@ class AssessmentStore:
         return AssessmentResult.model_validate(upgraded)
 
     def _load_assessment_records(self) -> list[dict[str, Any]]:
+        def _to_optional_float(value: Any) -> float | None:
+            if value is None:
+                return None
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                return None
+
         with self._connect() as conn:
             rows = conn.execute(
                 "SELECT assessment_id, created_at, payload_json, model_version FROM assessments"
@@ -1367,8 +1411,8 @@ class AssessmentStore:
                     "address": upgraded.get("address", ""),
                     "organization_id": upgraded.get("organization_id", DEFAULT_ORG_ID),
                     "audience": upgraded.get("audience", "homeowner"),
-                    "wildfire_risk_score": float(upgraded.get("wildfire_risk_score", 0.0)),
-                    "insurance_readiness_score": float(upgraded.get("insurance_readiness_score", 0.0)),
+                    "wildfire_risk_score": _to_optional_float(upgraded.get("wildfire_risk_score")),
+                    "insurance_readiness_score": _to_optional_float(upgraded.get("insurance_readiness_score")),
                     "model_version": upgraded.get("model_version", LEGACY_MODEL_VERSION),
                     "confidence_score": float(upgraded.get("confidence_score", 0.0)),
                     "readiness_blockers": list(upgraded.get("readiness_blockers", [])),
@@ -1394,9 +1438,11 @@ class AssessmentStore:
             )
 
         total = len(records)
-        avg_risk = round(sum(r["wildfire_risk_score"] for r in records) / total, 1)
-        avg_readiness = round(sum(r["insurance_readiness_score"] for r in records) / total, 1)
-        high_risk_count = sum(1 for r in records if r["wildfire_risk_score"] >= 70.0)
+        risk_values = [r["wildfire_risk_score"] for r in records if r["wildfire_risk_score"] is not None]
+        readiness_values = [r["insurance_readiness_score"] for r in records if r["insurance_readiness_score"] is not None]
+        avg_risk = round(sum(risk_values) / len(risk_values), 1) if risk_values else 0.0
+        avg_readiness = round(sum(readiness_values) / len(readiness_values), 1) if readiness_values else 0.0
+        high_risk_count = sum(1 for r in records if (r["wildfire_risk_score"] or 0.0) >= 70.0)
         blocker_count = sum(1 for r in records if r["readiness_blockers"])
 
         return PortfolioSummary(
@@ -1441,13 +1487,21 @@ class AssessmentStore:
         if organization_id:
             records = [r for r in records if r["organization_id"] == organization_id]
         if min_risk is not None:
-            records = [r for r in records if r["wildfire_risk_score"] >= min_risk]
+            records = [r for r in records if r["wildfire_risk_score"] is not None and r["wildfire_risk_score"] >= min_risk]
         if max_risk is not None:
-            records = [r for r in records if r["wildfire_risk_score"] <= max_risk]
+            records = [r for r in records if r["wildfire_risk_score"] is not None and r["wildfire_risk_score"] <= max_risk]
         if min_readiness is not None:
-            records = [r for r in records if r["insurance_readiness_score"] >= min_readiness]
+            records = [
+                r
+                for r in records
+                if r["insurance_readiness_score"] is not None and r["insurance_readiness_score"] >= min_readiness
+            ]
         if max_readiness is not None:
-            records = [r for r in records if r["insurance_readiness_score"] <= max_readiness]
+            records = [
+                r
+                for r in records
+                if r["insurance_readiness_score"] is not None and r["insurance_readiness_score"] <= max_readiness
+            ]
         if confidence_min is not None:
             records = [r for r in records if r["confidence_score"] >= confidence_min]
         if audience is not None:
@@ -1483,7 +1537,10 @@ class AssessmentStore:
         }
         sort_key = sort_map.get(sort_by, "created_dt")
         reverse = sort_dir.lower() != "asc"
-        records.sort(key=lambda r: r[sort_key], reverse=reverse)
+        records.sort(
+            key=lambda r: (r[sort_key] is None, r[sort_key]),
+            reverse=reverse,
+        )
 
         paged = records[offset : offset + limit]
         items = [

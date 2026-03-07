@@ -208,6 +208,13 @@ Assessment/report payloads include:
     - `assessment_status` (`fully_scored|partially_scored|insufficient_data`)
     - `assessment_blockers`
   - `assessment_diagnostics` for developer/debug trust tracing
+- insufficient-data score handling:
+  - score values are `null` when minimum evidence is insufficient (not `0` as a fake no-risk signal)
+  - availability flags are included:
+    - `wildfire_risk_score_available`
+    - `site_hazard_score_available`
+    - `home_ignition_vulnerability_score_available`
+    - `insurance_readiness_score_available`
 - environmental quality: `environmental_layer_status` (`ok|missing|error` per key layer) and `environmental_data_completeness_score`
 - data coverage/provenance:
   - `direct_data_coverage_score`, `inferred_data_coverage_score`, `missing_data_share`

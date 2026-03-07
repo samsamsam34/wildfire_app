@@ -125,6 +125,10 @@ def _assert_core_contract(body: dict) -> None:
         "site_hazard_score",
         "home_ignition_vulnerability_score",
         "insurance_readiness_score",
+        "wildfire_risk_score_available",
+        "site_hazard_score_available",
+        "home_ignition_vulnerability_score_available",
+        "insurance_readiness_score_available",
         "submodel_scores",
         "weighted_contributions",
         "submodel_explanations",
@@ -175,10 +179,18 @@ def _assert_core_contract(body: dict) -> None:
     for key in required:
         assert key in body
 
-    assert 0.0 <= body["wildfire_risk_score"] <= 100.0
-    assert 0.0 <= body["site_hazard_score"] <= 100.0
-    assert 0.0 <= body["home_ignition_vulnerability_score"] <= 100.0
-    assert 0.0 <= body["insurance_readiness_score"] <= 100.0
+    for score_key, availability_key in [
+        ("wildfire_risk_score", "wildfire_risk_score_available"),
+        ("site_hazard_score", "site_hazard_score_available"),
+        ("home_ignition_vulnerability_score", "home_ignition_vulnerability_score_available"),
+        ("insurance_readiness_score", "insurance_readiness_score_available"),
+    ]:
+        if body[availability_key]:
+            assert body[score_key] is not None
+            assert 0.0 <= float(body[score_key]) <= 100.0
+        else:
+            assert body[score_key] is None
+
     assert 0.0 <= body["environmental_data_completeness_score"] <= 100.0
     assert 0.0 <= body["direct_data_coverage_score"] <= 100.0
     assert 0.0 <= body["inferred_data_coverage_score"] <= 100.0
@@ -192,6 +204,16 @@ def _assert_core_contract(body: dict) -> None:
     assert body["risk_scores"]["home_ignition_vulnerability_score"] == body["home_ignition_vulnerability_score"]
     assert body["risk_scores"]["wildfire_risk_score"] == body["wildfire_risk_score"]
     assert body["risk_scores"]["insurance_readiness_score"] == body["insurance_readiness_score"]
+    assert body["risk_scores"]["site_hazard_score_available"] == body["site_hazard_score_available"]
+    assert (
+        body["risk_scores"]["home_ignition_vulnerability_score_available"]
+        == body["home_ignition_vulnerability_score_available"]
+    )
+    assert body["risk_scores"]["wildfire_risk_score_available"] == body["wildfire_risk_score_available"]
+    assert (
+        body["risk_scores"]["insurance_readiness_score_available"]
+        == body["insurance_readiness_score_available"]
+    )
     assert set(body["score_summaries"].keys()) == {
         "site_hazard",
         "home_ignition_vulnerability",
@@ -204,7 +226,8 @@ def _assert_core_contract(body: dict) -> None:
         assert "top_drivers" in section
         assert "protective_factors" in section
         assert "next_actions" in section
-        assert 0.0 <= float(section["score"]) <= 100.0
+        if section["score"] is not None:
+            assert 0.0 <= float(section["score"]) <= 100.0
 
     assert body["confidence_tier"] in {"high", "moderate", "low", "preliminary"}
     assert body["use_restriction"] in {
@@ -1704,6 +1727,20 @@ def test_score_family_eligibility_insufficient_path_and_hard_blocker(monkeypatch
     assert assessed["assessment_status"] == "insufficient_data"
     assert assessed["use_restriction"] == "not_for_underwriting_or_binding"
     assert assessed["assessment_blockers"]
+    assert assessed["wildfire_risk_score_available"] is False
+    assert assessed["site_hazard_score_available"] is False
+    assert assessed["home_ignition_vulnerability_score_available"] is False
+    assert assessed["insurance_readiness_score_available"] is False
+    assert assessed["wildfire_risk_score"] is None
+    assert assessed["site_hazard_score"] is None
+    assert assessed["home_ignition_vulnerability_score"] is None
+    assert assessed["insurance_readiness_score"] is None
+    notes = " ".join(assessed["scoring_notes"]).lower()
+    assert "wildfire score not computed" in notes
+    assert "home vulnerability score not computed" in notes
+    assert "insurance readiness score not computed" in notes
+    assert assessed["confidence_tier"] == "preliminary"
+    assert assessed["confidence_score"] == 0.0
 
 
 def test_assessment_diagnostics_and_report_persistence(monkeypatch, tmp_path):

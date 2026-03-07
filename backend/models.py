@@ -89,10 +89,14 @@ class Coordinates(BaseModel):
 
 
 class RiskScores(BaseModel):
-    site_hazard_score: float
-    home_ignition_vulnerability_score: float
-    wildfire_risk_score: float
-    insurance_readiness_score: float
+    site_hazard_score: Optional[float] = None
+    home_ignition_vulnerability_score: Optional[float] = None
+    wildfire_risk_score: Optional[float] = None
+    insurance_readiness_score: Optional[float] = None
+    site_hazard_score_available: bool = False
+    home_ignition_vulnerability_score_available: bool = False
+    wildfire_risk_score_available: bool = False
+    insurance_readiness_score_available: bool = False
 
 
 class RiskDrivers(BaseModel):
@@ -221,7 +225,7 @@ class AssessmentDiagnostics(BaseModel):
 
 class ScoreSectionSummary(BaseModel):
     label: str = ""
-    score: float = 0.0
+    score: Optional[float] = None
     summary: str = ""
     explanation: str = ""
     top_drivers: List[str] = Field(default_factory=list)
@@ -305,11 +309,15 @@ class AssessmentResult(BaseModel):
 
     latitude: float
     longitude: float
-    wildfire_risk_score: float
-    legacy_weighted_wildfire_risk_score: float = 0.0
-    site_hazard_score: float = 0.0
-    home_ignition_vulnerability_score: float = 0.0
-    insurance_readiness_score: float
+    wildfire_risk_score: Optional[float] = None
+    legacy_weighted_wildfire_risk_score: Optional[float] = None
+    site_hazard_score: Optional[float] = None
+    home_ignition_vulnerability_score: Optional[float] = None
+    insurance_readiness_score: Optional[float] = None
+    wildfire_risk_score_available: bool = False
+    site_hazard_score_available: bool = False
+    home_ignition_vulnerability_score_available: bool = False
+    insurance_readiness_score_available: bool = False
     risk_drivers: RiskDrivers
     factor_breakdown: FactorBreakdown
     submodel_scores: Dict[str, SubmodelScore] = Field(default_factory=dict)
@@ -371,8 +379,8 @@ class AssessmentResult(BaseModel):
 
 
 class SimulationDelta(BaseModel):
-    wildfire_risk_score_delta: float
-    insurance_readiness_score_delta: float
+    wildfire_risk_score_delta: Optional[float] = None
+    insurance_readiness_score_delta: Optional[float] = None
 
 
 class SimulationResult(BaseModel):
@@ -402,8 +410,8 @@ class AssessmentListItem(BaseModel):
     address: str
     organization_id: str = "default_org"
     audience: Audience = "homeowner"
-    wildfire_risk_score: float
-    insurance_readiness_score: float
+    wildfire_risk_score: Optional[float] = None
+    insurance_readiness_score: Optional[float] = None
     model_version: str
     confidence_score: float = 0.0
     readiness_blockers: List[str] = Field(default_factory=list)
@@ -568,8 +576,8 @@ class AssessmentWorkflowInfo(BaseModel):
 class AssessmentComparisonItem(BaseModel):
     assessment_id: str
     address: str
-    wildfire_risk_score: float
-    insurance_readiness_score: float
+    wildfire_risk_score: Optional[float] = None
+    insurance_readiness_score: Optional[float] = None
     top_risk_drivers: List[str] = Field(default_factory=list)
     readiness_blockers: List[str] = Field(default_factory=list)
     mitigation_titles: List[str] = Field(default_factory=list)
@@ -578,8 +586,8 @@ class AssessmentComparisonItem(BaseModel):
 class AssessmentComparisonResult(BaseModel):
     base: AssessmentComparisonItem
     other: AssessmentComparisonItem
-    wildfire_risk_delta: float
-    insurance_readiness_delta: float
+    wildfire_risk_delta: Optional[float] = None
+    insurance_readiness_delta: Optional[float] = None
     driver_differences: Dict[str, List[str]]
     blocker_differences: Dict[str, List[str]]
     mitigation_differences: Dict[str, List[str]]
