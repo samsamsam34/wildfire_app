@@ -3,16 +3,15 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>WildfireRisk Advisor - Step 5 Ops Console</title>
+    <title>WildfireRisk Advisor</title>
     <style>
       :root {
-        --bg: #f3efe6;
-        --card: #fffaf1;
-        --line: #e2d7c5;
+        --bg: #f6f3ec;
+        --card: #fffdf8;
+        --line: #e6ddcf;
         --text: #1f2937;
         --muted: #6b7280;
-        --accent: #a6402a;
-        --dark: #273444;
+        --accent: #9a3a2a;
         --good: #0f766e;
         --warn: #b45309;
         --bad: #b91c1c;
@@ -20,45 +19,44 @@
       * { box-sizing: border-box; }
       body {
         margin: 0;
-        color: var(--text);
         font-family: "Avenir Next", "Segoe UI", sans-serif;
+        color: var(--text);
         background:
-          radial-gradient(circle at 15% 0%, #ffe2c3 0%, transparent 40%),
-          radial-gradient(circle at 80% 100%, #f8edcf 0%, transparent 45%),
+          radial-gradient(circle at 15% 0%, #ffe7ca 0%, transparent 40%),
+          radial-gradient(circle at 85% 100%, #f8efd6 0%, transparent 45%),
           var(--bg);
       }
-      .wrap { max-width: 1280px; margin: 0 auto; padding: 1rem; display: grid; gap: 1rem; }
+      .wrap { max-width: 980px; margin: 0 auto; padding: 1rem; display: grid; gap: 1rem; }
       .card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 1rem; }
-      .grid { display: grid; gap: 1rem; }
-      .g2 { grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); }
-      .g3 { grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
-      .g4 { grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); }
-      h1, h2, h3 { margin: 0 0 0.5rem; }
-      p, .muted { color: var(--muted); margin: 0; }
+      h1, h2, h3 { margin: 0 0 0.45rem; }
+      p { margin: 0; color: var(--muted); }
+      .row { display: grid; gap: 0.65rem; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
+      .results { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
       label { display: block; font-size: 0.82rem; color: var(--muted); margin-bottom: 0.2rem; }
-      input, select, textarea, button {
+      input, button {
         width: 100%;
-        border: 1px solid #d4c8b4;
         border-radius: 10px;
+        border: 1px solid #d7ccb9;
         padding: 0.58rem 0.72rem;
         font: inherit;
         background: white;
       }
-      textarea { min-height: 85px; resize: vertical; }
-      button { border: none; background: var(--accent); color: white; font-weight: 600; cursor: pointer; }
-      button.secondary { background: var(--dark); }
-      .actions { display: flex; flex-wrap: wrap; gap: 0.6rem; margin-top: 0.7rem; }
-      .actions button { width: auto; padding-inline: 0.95rem; }
-      .row { display: grid; gap: 0.6rem; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
-      .metric { font-size: 1.5rem; font-weight: 700; }
-      .pill { display: inline-block; border: 1px solid var(--line); border-radius: 999px; padding: 0.2rem 0.5rem; margin: 0.18rem 0.2rem 0 0; font-size: 0.78rem; }
-      .good { color: var(--good); }
-      .warn { color: var(--warn); }
-      .bad { color: var(--bad); }
-      ul { margin: 0.35rem 0 0; padding-left: 1.2rem; }
-      table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
-      th, td { border-bottom: 1px solid var(--line); padding: 0.35rem 0.22rem; text-align: left; vertical-align: top; }
-      pre { white-space: pre-wrap; font-size: 0.82rem; background: #f9f6ef; border: 1px solid var(--line); border-radius: 8px; padding: 0.7rem; }
+      button { border: none; background: var(--accent); color: white; cursor: pointer; font-weight: 600; }
+      button.secondary { background: #374151; }
+      .actions { display: flex; flex-wrap: wrap; gap: 0.6rem; margin-top: 0.8rem; }
+      .actions button { width: auto; padding-inline: 1rem; }
+      .score { font-size: 2rem; font-weight: 700; line-height: 1; margin: 0.25rem 0; }
+      .score.good { color: var(--good); }
+      .score.warn { color: var(--warn); }
+      .score.bad { color: var(--bad); }
+      ul { margin: 0.35rem 0 0; padding-left: 1.15rem; }
+      .muted { color: var(--muted); }
+      .pill { display: inline-block; border: 1px solid var(--line); border-radius: 999px; padding: 0.2rem 0.5rem; margin: 0.15rem 0.2rem 0 0; font-size: 0.78rem; }
+      .sim-box { margin-top: 0.65rem; color: var(--text); }
+      details { border-top: 1px solid var(--line); padding-top: 0.8rem; }
+      summary { cursor: pointer; font-weight: 600; margin-bottom: 0.65rem; }
+      table { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
+      th, td { border-bottom: 1px solid var(--line); padding: 0.35rem 0.2rem; text-align: left; }
       @media (max-width: 640px) {
         .actions button { width: 100%; }
       }
@@ -66,666 +64,287 @@
   </head>
   <body>
     <div class="wrap">
-      <div class="card">
-        <h1>WildfireRisk Advisor - Step 5 Ops Console</h1>
-        <p>Enterprise workflow layer: org scope, role-aware controls, portfolio jobs, CSV import/export, rulesets, assignment/workflow, and audit summaries.</p>
-      </div>
+      <section class="card">
+        <h1>Understand Your Home's Wildfire Risk</h1>
+        <p>Enter your address to see your home's wildfire risk and the most helpful next steps.</p>
+      </section>
 
-      <div class="card">
-        <h2>Session Context</h2>
+      <section class="card">
+        <h2>1. Start With Your Address</h2>
         <div class="row">
-          <div><label>API Key</label><input id="apiKey" value="dev-key-1" /></div>
-          <div><label>User Role</label><select id="user_role"><option>admin</option><option>underwriter</option><option>broker</option><option>inspector</option><option>agent</option><option>viewer</option></select></div>
-          <div><label>Organization ID</label><input id="organization_id" value="default_org" /></div>
-          <div><label>User ID</label><input id="user_id" value="demo_user" /></div>
-          <div><label>Ruleset</label><select id="ruleset_id"><option value="default">default</option></select></div>
-          <div><label>Audience</label><select id="audience"><option>homeowner</option><option>agent</option><option>inspector</option><option>insurer</option></select></div>
+          <div>
+            <label>API Key (for local testing)</label>
+            <input id="apiKey" value="dev-key-1" />
+          </div>
+          <div>
+            <label>Address</label>
+            <input id="address" placeholder="123 Main St, Boulder, CO" />
+          </div>
         </div>
-        <div class="actions">
-          <button id="loadRulesetsBtn" class="secondary">Reload Rulesets</button>
-          <button id="loadOrgsBtn" class="secondary">List Organizations</button>
-        </div>
-        <div id="orgRulesetInfo" class="muted" style="margin-top:0.6rem;">No org/ruleset data loaded yet.</div>
-      </div>
+      </section>
 
-      <div class="card">
-        <h2>Assessment Input</h2>
-        <div><label>Address</label><input id="address" placeholder="123 Main St, Denver, CO" /></div>
+      <section class="card">
+        <h2>2. Optional Home Facts</h2>
+        <p>Confirm what you know. We estimate the rest.</p>
         <div class="row" style="margin-top:0.6rem;">
-          <div><label>Portfolio Name</label><input id="portfolio_name" placeholder="Q3 Renewal Review" /></div>
-          <div><label>Tags (comma)</label><input id="tags" placeholder="renewal,co" /></div>
-          <div><label>Confirmed Fields (comma)</label><input id="confirmed_fields" placeholder="roof_type,vent_type,defensible_space_ft" /></div>
-        </div>
-
-        <h3 style="margin-top:1rem;">Property Facts</h3>
-        <div class="row">
-          <div><label>Roof Type</label><input id="roof_type" placeholder="class a / wood" /></div>
-          <div><label>Vent Type</label><input id="vent_type" placeholder="ember-resistant / standard" /></div>
-          <div><label>Siding Type</label><input id="siding_type" /></div>
-          <div><label>Window Type</label><input id="window_type" /></div>
-          <div><label>Defensible Space (ft)</label><input id="defensible_space_ft" type="number" min="0" step="1" /></div>
-          <div><label>Vegetation Condition</label><input id="vegetation_condition" /></div>
+          <div><label>Roof Type</label><input id="roof_type" placeholder="class a, metal, wood" /></div>
+          <div><label>Vent Type</label><input id="vent_type" placeholder="ember-resistant or standard" /></div>
+          <div><label>Defensible Space (ft)</label><input id="defensible_space_ft" type="number" min="0" /></div>
+          <div><label>Vegetation Condition</label><input id="vegetation_condition" placeholder="light, moderate, dense" /></div>
           <div><label>Construction Year</label><input id="construction_year" type="number" min="1800" max="2100" /></div>
         </div>
-        <div class="row" style="margin-top:0.6rem;">
-          <div><label>Driveway Access Notes</label><textarea id="driveway_access_notes"></textarea></div>
-          <div><label>Inspection Notes</label><textarea id="inspection_notes"></textarea></div>
+        <div style="margin-top:0.6rem;">
+          <label>Confirmed Fields (comma separated)</label>
+          <input id="confirmed_fields" placeholder="roof_type, vent_type, defensible_space_ft" />
         </div>
-
         <div class="actions">
           <button id="assessBtn">Run Assessment</button>
-          <button id="reassessBtn" class="secondary">Reassess Latest</button>
-          <button id="debugBtn" class="secondary">Debug Payload</button>
+          <button id="reassessBtn" class="secondary">Update Last Assessment</button>
         </div>
-      </div>
+      </section>
 
-      <div class="grid g4">
-        <div class="card"><h3>Wildfire Risk</h3><div class="metric" id="riskScore">-</div></div>
-        <div class="card"><h3>Readiness</h3><div class="metric" id="readinessScore">-</div></div>
-        <div class="card"><h3>Confidence</h3><div class="metric" id="confidenceScore">-</div></div>
-        <div class="card"><h3>Workflow</h3><div class="metric" id="workflowState">-</div></div>
-      </div>
-
-      <div class="grid g2">
+      <section class="results">
         <div class="card">
-          <h3>Drivers and Blockers</h3>
-          <strong>Top Risk Drivers</strong><ul id="drivers"></ul>
-          <strong>Top Protective Factors</strong><ul id="protective"></ul>
-          <strong>Readiness Blockers</strong><ul id="blockers"></ul>
+          <h2>3. Current Risk</h2>
+          <div id="riskScore" class="score">-</div>
+          <div id="riskLabel" class="muted">Run an assessment to see your score.</div>
+          <p id="summaryText" style="margin-top:0.6rem;">We'll explain your score in plain language here.</p>
         </div>
+
         <div class="card">
-          <h3>Assumptions and Confidence Flags</h3>
-          <ul id="assumptions"></ul>
-          <div id="flags"></div>
-          <h3 style="margin-top:0.8rem;">Scoring Notes</h3>
-          <ul id="scoringNotes"></ul>
+          <h2>4. Why This Home May Be at Risk</h2>
+          <p>These are the biggest factors affecting this home.</p>
+          <ul id="drivers"><li class="muted">No factors yet.</li></ul>
+          <h3 style="margin-top:0.8rem;">What Is Helping Lower Risk</h3>
+          <ul id="protective"><li class="muted">No protective factors yet.</li></ul>
         </div>
-      </div>
 
-      <div class="card">
-        <h2>Submodel Breakdown</h2>
-        <table>
-          <thead><tr><th>Submodel</th><th>Score</th><th>Contribution</th><th>Explanation</th></tr></thead>
-          <tbody id="submodels"></tbody>
-        </table>
-      </div>
-
-      <div class="card">
-        <h2>Mitigation Recommendations</h2>
-        <ul id="mitigations"></ul>
-      </div>
-
-      <div class="card">
-        <h2>Simulation</h2>
-        <div class="row">
-          <div><label>Scenario Name</label><input id="scenario_name" value="upgrade_plan" /></div>
-          <div><label>Scenario Roof</label><input id="sim_roof_type" /></div>
-          <div><label>Scenario Vent</label><input id="sim_vent_type" /></div>
-          <div><label>Scenario Defensible Space (ft)</label><input id="sim_defensible_space_ft" type="number" min="0" /></div>
-          <div><label>Scenario Vegetation</label><input id="sim_vegetation_condition" /></div>
-        </div>
-        <div style="margin-top:0.6rem;"><label>Scenario Confirmed Fields (comma)</label><input id="scenario_confirmed_fields" placeholder="roof_type,vent_type" /></div>
-        <div class="actions"><button id="simulateBtn">Run Simulation</button></div>
-        <div id="simResult" class="muted" style="margin-top:0.6rem;">No simulation run yet.</div>
-      </div>
-
-      <div class="grid g2">
         <div class="card">
-          <h2>Batch Assess (Synchronous)</h2>
-          <label>Addresses (one per line)</label>
-          <textarea id="batch_addresses" placeholder="10 Pine Rd, Boulder, CO&#10;22 Oak Ave, Golden, CO"></textarea>
-          <div class="actions"><button id="runBatchBtn">Run Batch</button></div>
-          <div id="batchSummary" class="muted"></div>
-          <ul id="batchResults"></ul>
+          <h2>5. Best Next Steps</h2>
+          <p>Focus on the top actions first.</p>
+          <ul id="mitigations"><li class="muted">Recommendations will appear after assessment.</li></ul>
         </div>
-        <div class="card">
-          <h2>Portfolio Job (Async Abstraction)</h2>
-          <label>Job Addresses (one per line)</label>
-          <textarea id="job_addresses" placeholder="40 Cedar St, Denver, CO&#10;41 Cedar St, Denver, CO"></textarea>
-          <div class="row" style="margin-top:0.6rem;">
-            <div><label>Process Immediately</label><select id="job_immediate"><option value="true">true</option><option value="false">false</option></select></div>
-            <div><label>Job ID</label><input id="job_id" placeholder="paste existing job id" /></div>
-          </div>
-          <div class="actions">
-            <button id="createJobBtn">Create Portfolio Job</button>
-            <button id="refreshJobBtn" class="secondary">Refresh Job Status</button>
-            <button id="jobResultsBtn" class="secondary">Load Job Results</button>
-            <button id="jobCsvBtn" class="secondary">Open Job CSV</button>
-            <button id="jobPackBtn" class="secondary">Open Report Pack</button>
-          </div>
-          <pre id="jobOutput">No job activity yet.</pre>
-        </div>
-      </div>
+      </section>
 
-      <div class="card">
-        <h2>CSV Import / Export</h2>
-        <label>CSV Text</label>
-        <textarea id="csv_text" placeholder="address,roof_type,vent_type,defensible_space_ft,confirmed_fields,tags,audience&#10;123 Main,class a,ember-resistant,30,roof_type|vent_type|defensible_space_ft,renewal|co,insurer"></textarea>
+      <section class="card">
+        <h2>6. See How Upgrades Could Help</h2>
+        <p>Try a few changes to see how they could lower risk.</p>
+        <div class="row" style="margin-top:0.6rem;">
+          <div><label>Scenario Name</label><input id="scenario_name" value="home_upgrade_plan" /></div>
+          <div><label>New Roof Type</label><input id="sim_roof_type" placeholder="class a" /></div>
+          <div><label>New Vent Type</label><input id="sim_vent_type" placeholder="ember-resistant" /></div>
+          <div><label>New Defensible Space (ft)</label><input id="sim_defensible_space_ft" type="number" min="0" /></div>
+          <div><label>New Vegetation Condition</label><input id="sim_vegetation_condition" placeholder="reduced" /></div>
+        </div>
+        <div style="margin-top:0.6rem;">
+          <label>Scenario Confirmed Fields (comma separated)</label>
+          <input id="scenario_confirmed_fields" placeholder="roof_type, vent_type, defensible_space_ft" />
+        </div>
         <div class="actions">
-          <button id="importCsvBtn">Import CSV</button>
-          <button id="exportPortfolioCsvBtn" class="secondary">Export Portfolio CSV</button>
+          <button id="simulateBtn">Run Simulation</button>
         </div>
-        <pre id="csvOutput">No CSV activity yet.</pre>
-      </div>
+        <div id="simResult" class="sim-box muted">No simulation run yet.</div>
+      </section>
 
-      <div class="grid g2">
-        <div class="card">
-          <h2>Review / Assignment Workflow</h2>
-          <div class="row">
-            <div><label>Review Status</label><select id="review_status"><option>pending</option><option>reviewed</option><option>flagged</option><option>approved</option></select></div>
-            <div><label>Assign Reviewer</label><input id="assigned_reviewer" placeholder="uw_21" /></div>
-            <div><label>Assigned Role</label><select id="assigned_role"><option value="">(none)</option><option>underwriter</option><option>broker</option><option>inspector</option><option>agent</option></select></div>
-            <div><label>Workflow State</label><select id="workflow_state"><option>new</option><option>triaged</option><option>needs_inspection</option><option>mitigation_pending</option><option>ready_for_review</option><option>approved</option><option>declined</option><option>escalated</option></select></div>
-          </div>
-          <div class="actions">
-            <button id="setReviewBtn">Set Review Status</button>
-            <button id="assignBtn" class="secondary">Assign</button>
-            <button id="setWorkflowBtn" class="secondary">Set Workflow</button>
-            <button id="getWorkflowBtn" class="secondary">Get Workflow</button>
-          </div>
-          <pre id="workflowOutput">No workflow updates yet.</pre>
+      <section class="card">
+        <h2>7. Report</h2>
+        <p class="muted">Optional: open a printable report or exported JSON.</p>
+        <div class="actions">
+          <button id="openReportBtn" class="secondary">Open Printable Report</button>
+          <button id="exportReportBtn" class="secondary">Open Export JSON</button>
         </div>
+      </section>
 
-        <div class="card">
-          <h2>Annotations</h2>
+      <section class="card">
+        <details>
+          <summary>Details: How this was estimated</summary>
           <div class="row">
-            <div><label>Author Role</label><select id="annotation_role"><option>homeowner</option><option>agent</option><option>broker</option><option>inspector</option><option>insurer</option></select></div>
-            <div><label>Visibility</label><select id="annotation_visibility"><option>internal</option><option>shared</option></select></div>
-            <div><label>Tags (comma)</label><input id="annotation_tags" /></div>
+            <div>
+              <h3>Confidence</h3>
+              <p id="confidenceText" class="muted">-</p>
+              <div id="flags"></div>
+            </div>
+            <div>
+              <h3>What We Estimated</h3>
+              <ul id="assumptions"><li class="muted">No estimates shown yet.</li></ul>
+            </div>
           </div>
-          <div style="margin-top:0.6rem;"><label>Note</label><textarea id="annotation_note"></textarea></div>
-          <div class="actions">
-            <button id="addAnnotationBtn">Add Annotation</button>
-            <button id="loadAnnotationsBtn" class="secondary">Load Annotations</button>
-          </div>
-          <ul id="annotations"></ul>
-        </div>
-      </div>
 
-      <div class="grid g2">
-        <div class="card">
-          <h2>Reports and Comparison</h2>
-          <div class="row">
-            <div><label>Report Audience</label><select id="report_audience"><option>homeowner</option><option>agent</option><option>inspector</option><option>insurer</option></select></div>
-            <div><label>Compare IDs (comma)</label><input id="compare_ids" placeholder="id1,id2,id3" /></div>
-            <div><label>Compare Latest Against</label><input id="compare_other" placeholder="other_assessment_id" /></div>
-          </div>
-          <div class="actions">
-            <button id="openReportBtn">Open Printable Report</button>
-            <button id="exportReportBtn" class="secondary">Open Export JSON</button>
-            <button id="compareMultiBtn" class="secondary">Compare Multi</button>
-            <button id="comparePairBtn" class="secondary">Compare Latest Pair</button>
-          </div>
-          <pre id="compareOutput">No comparison run yet.</pre>
-        </div>
+          <h3 style="margin-top:0.9rem;">Technical Factor Breakdown</h3>
+          <table>
+            <thead><tr><th>Factor</th><th>Score</th><th>Contribution</th></tr></thead>
+            <tbody id="submodels"><tr><td colspan="3" class="muted">No data yet.</td></tr></tbody>
+          </table>
 
-        <div class="card">
-          <h2>Portfolio Listing and Ops Summary</h2>
-          <div class="row">
-            <div><label>Sort By</label><select id="sort_by"><option value="created_at">created_at</option><option value="wildfire_risk_score">wildfire_risk_score</option><option value="insurance_readiness_score">insurance_readiness_score</option><option value="confidence_score">confidence_score</option></select></div>
-            <div><label>Sort Dir</label><select id="sort_dir"><option value="desc">desc</option><option value="asc">asc</option></select></div>
-            <div><label>Min Risk</label><input id="min_risk" type="number" min="0" max="100" /></div>
-            <div><label>Min Readiness</label><input id="min_readiness" type="number" min="0" max="100" /></div>
-            <div><label>Readiness Blocker Contains</label><input id="readiness_blocker" /></div>
-            <div><label>Min Confidence</label><input id="confidence_min" type="number" min="0" max="100" /></div>
-            <div><label>Filter Audience</label><select id="filter_audience"><option value="">(any)</option><option>homeowner</option><option>agent</option><option>inspector</option><option>insurer</option></select></div>
-            <div><label>Filter Tag</label><input id="filter_tag" /></div>
-            <div><label>Recent Days</label><input id="recent_days" type="number" min="0" /></div>
-          </div>
-          <div class="actions">
-            <button id="refreshPortfolioBtn">Refresh Portfolio</button>
-            <button id="adminSummaryBtn" class="secondary">Load Admin Summary</button>
-            <button id="auditBtn" class="secondary">Load Audit Events</button>
-          </div>
-          <div class="grid g4" style="margin-top:0.6rem;">
-            <div class="card"><div class="muted">Total</div><div class="metric" id="sum_total">0</div></div>
-            <div class="card"><div class="muted">High Risk</div><div class="metric" id="sum_high_risk">0</div></div>
-            <div class="card"><div class="muted">Blockers</div><div class="metric" id="sum_blocker">0</div></div>
-            <div class="card"><div class="muted">Avg Risk</div><div class="metric" id="sum_avg_risk">0</div></div>
-            <div class="card"><div class="muted">Avg Readiness</div><div class="metric" id="sum_avg_readiness">0</div></div>
-          </div>
-          <ul id="history"></ul>
-          <pre id="opsOutput">No ops summary yet.</pre>
-        </div>
-      </div>
+          <h3 style="margin-top:0.9rem;">Insurance Readiness (Reference)</h3>
+          <p id="readinessText" class="muted">-</p>
+        </details>
+      </section>
     </div>
 
     <script>
       const apiBase = (window.WILDFIRE_API_BASE || "http://127.0.0.1:8000").replace(/\/$/, "");
+      const apiKeyInput = document.getElementById("apiKey");
+      apiKeyInput.value = localStorage.getItem("wildfire_api_key") || "dev-key-1";
+
       let latestAssessment = null;
 
-      const keyInput = document.getElementById("apiKey");
-      const roleInput = document.getElementById("user_role");
-      const orgInput = document.getElementById("organization_id");
-      const userInput = document.getElementById("user_id");
-
-      keyInput.value = localStorage.getItem("wildfire_api_key") || "dev-key-1";
-      roleInput.value = localStorage.getItem("wildfire_user_role") || "admin";
-      orgInput.value = localStorage.getItem("wildfire_org_id") || "default_org";
-      userInput.value = localStorage.getItem("wildfire_user_id") || "demo_user";
-
-      function persistSession() {
-        localStorage.setItem("wildfire_api_key", keyInput.value.trim());
-        localStorage.setItem("wildfire_user_role", roleInput.value);
-        localStorage.setItem("wildfire_org_id", orgInput.value.trim());
-        localStorage.setItem("wildfire_user_id", userInput.value.trim());
-      }
-
       function parseCSV(text) {
-        return text.split(",").map(v => v.trim()).filter(Boolean);
+        return (text || "").split(",").map(v => v.trim()).filter(Boolean);
       }
 
       function getNum(id) {
         const raw = document.getElementById(id)?.value;
-        if (raw === undefined || raw === null || raw === "") return null;
+        if (raw === "" || raw === undefined || raw === null) return null;
         const n = Number(raw);
         return Number.isFinite(n) ? n : null;
       }
 
       function getAttributes(prefix = "") {
-        const fields = [
-          "roof_type", "vent_type", "siding_type", "window_type", "defensible_space_ft",
-          "vegetation_condition", "driveway_access_notes", "construction_year", "inspection_notes"
-        ];
-        const out = {};
-        fields.forEach((f) => {
-          const el = document.getElementById(prefix + f);
-          if (!el || el.value === "") return;
-          out[f] = ["defensible_space_ft", "construction_year"].includes(f) ? Number(el.value) : el.value;
-        });
-        return out;
+        const attrs = {};
+        const roof = document.getElementById(prefix + "roof_type")?.value;
+        const vent = document.getElementById(prefix + "vent_type")?.value;
+        const space = getNum(prefix + "defensible_space_ft");
+        const veg = document.getElementById(prefix + "vegetation_condition")?.value;
+        const year = getNum(prefix + "construction_year");
+
+        if (roof) attrs.roof_type = roof;
+        if (vent) attrs.vent_type = vent;
+        if (space !== null) attrs.defensible_space_ft = space;
+        if (veg) attrs.vegetation_condition = veg;
+        if (year !== null) attrs.construction_year = year;
+        return attrs;
       }
 
       async function api(path, body = null, method = "GET") {
-        persistSession();
-        const headers = {
-          "X-API-Key": keyInput.value.trim(),
-          "X-User-Role": roleInput.value,
-          "X-Organization-Id": orgInput.value.trim() || "default_org",
-          "X-User-Id": userInput.value.trim() || "demo_user",
+        const key = apiKeyInput.value.trim();
+        localStorage.setItem("wildfire_api_key", key);
+
+        const opts = {
+          method,
+          headers: { "X-API-Key": key }
         };
-        const opts = { method, headers };
         if (body) {
           opts.headers["Content-Type"] = "application/json";
           opts.body = JSON.stringify(body);
         }
+
         const res = await fetch(`${apiBase}${path}`, opts);
         if (!res.ok) throw new Error(`API ${res.status}: ${await res.text()}`);
+
         const contentType = res.headers.get("content-type") || "";
-        if (contentType.includes("application/json")) return await res.json();
-        return await res.text();
+        if (contentType.includes("application/json")) return res.json();
+        return res.text();
+      }
+
+      function riskBand(score) {
+        if (score >= 70) return { label: "Higher risk", cls: "bad" };
+        if (score >= 40) return { label: "Moderate risk", cls: "warn" };
+        return { label: "Lower risk", cls: "good" };
       }
 
       function renderAssessment(data) {
         latestAssessment = data;
-        document.getElementById("riskScore").textContent = Number(data.wildfire_risk_score || 0).toFixed(1);
-        document.getElementById("readinessScore").textContent = Number(data.insurance_readiness_score || 0).toFixed(1);
-        document.getElementById("confidenceScore").textContent = Number(data.confidence_score || 0).toFixed(1);
-        document.getElementById("workflowState").textContent = data.workflow_state || "new";
 
-        document.getElementById("drivers").innerHTML = (data.top_risk_drivers || []).map(v => `<li>${v}</li>`).join("") || "<li>None</li>";
-        document.getElementById("protective").innerHTML = (data.top_protective_factors || []).map(v => `<li>${v}</li>`).join("") || "<li>None</li>";
-        document.getElementById("blockers").innerHTML = (data.readiness_blockers || []).map(v => `<li>${v}</li>`).join("") || "<li>None</li>";
+        const riskScore = Number(data.wildfire_risk_score || 0);
+        const riskMeta = riskBand(riskScore);
+        const scoreEl = document.getElementById("riskScore");
+        scoreEl.textContent = riskScore.toFixed(1);
+        scoreEl.className = `score ${riskMeta.cls}`;
+        document.getElementById("riskLabel").textContent = riskMeta.label;
 
-        document.getElementById("assumptions").innerHTML = (data.assumptions_used || []).map(v => `<li>${v}</li>`).join("") || "<li>None</li>";
-        document.getElementById("flags").innerHTML = (data.low_confidence_flags || []).map(v => `<span class="pill warn">${v}</span>`).join("");
-        document.getElementById("scoringNotes").innerHTML = (data.scoring_notes || []).map(v => `<li>${v}</li>`).join("") || "<li>None</li>";
+        document.getElementById("summaryText").textContent = data.explanation_summary || "No summary available yet.";
+        document.getElementById("drivers").innerHTML = (data.top_risk_drivers || []).slice(0, 3).map(v => `<li>${v}</li>`).join("") || "<li class='muted'>No factors listed.</li>";
+        document.getElementById("protective").innerHTML = (data.top_protective_factors || []).slice(0, 3).map(v => `<li>${v}</li>`).join("") || "<li class='muted'>No factors listed.</li>";
+
+        document.getElementById("mitigations").innerHTML = (data.mitigation_plan || []).slice(0, 3)
+          .map(m => `<li><strong>${m.title}</strong>: ${m.reason}</li>`)
+          .join("") || "<li class='muted'>No recommendations yet.</li>";
+
+        document.getElementById("confidenceText").textContent =
+          `Confidence score: ${Number(data.confidence_score || 0).toFixed(1)} / 100`;
+
+        document.getElementById("assumptions").innerHTML = (data.assumptions_used || []).map(v => `<li>${v}</li>`).join("") || "<li class='muted'>No assumptions listed.</li>";
+        document.getElementById("flags").innerHTML = (data.low_confidence_flags || []).map(v => `<span class='pill'>${v}</span>`).join("");
 
         const rows = Object.entries(data.submodel_scores || {})
           .filter(([k]) => k.endsWith("_risk"))
-          .map(([k, v]) => `<tr><td>${k}</td><td>${v.score}</td><td>${v.weighted_contribution}</td><td>${v.explanation || ""}</td></tr>`)
+          .map(([k, v]) => `<tr><td>${k}</td><td>${v.score}</td><td>${v.weighted_contribution}</td></tr>`)
           .join("");
-        document.getElementById("submodels").innerHTML = rows || "<tr><td colspan='4'>No submodel data.</td></tr>";
+        document.getElementById("submodels").innerHTML = rows || "<tr><td colspan='3' class='muted'>No factor data.</td></tr>";
 
-        document.getElementById("mitigations").innerHTML =
-          (data.mitigation_plan || []).map(m => `<li><strong>${m.title}</strong>: ${m.reason}</li>`).join("") || "<li>None</li>";
+        const readiness = Number(data.insurance_readiness_score || 0).toFixed(1);
+        document.getElementById("readinessText").textContent = `Insurance readiness score: ${readiness}`;
       }
 
       function buildAssessmentPayload() {
         return {
           address: document.getElementById("address").value,
-          audience: document.getElementById("audience").value,
           attributes: getAttributes(),
           confirmed_fields: parseCSV(document.getElementById("confirmed_fields").value),
-          tags: parseCSV(document.getElementById("tags").value),
-          organization_id: orgInput.value.trim() || "default_org",
-          ruleset_id: document.getElementById("ruleset_id").value || "default",
+          audience: "homeowner"
         };
       }
 
       async function runAssessment(reassess = false) {
         try {
           const payload = buildAssessmentPayload();
-          const result = (reassess && latestAssessment)
+          if (!payload.address?.trim()) {
+            alert("Please enter an address.");
+            return;
+          }
+
+          const data = (reassess && latestAssessment)
             ? await api(`/risk/reassess/${latestAssessment.assessment_id}`, {
-                audience: payload.audience,
                 attributes: payload.attributes,
                 confirmed_fields: payload.confirmed_fields,
-                ruleset_id: payload.ruleset_id,
+                audience: "homeowner"
               }, "POST")
             : await api("/risk/assess", payload, "POST");
-          renderAssessment(result);
-          await refreshPortfolio();
-        } catch (err) {
-          alert(err.message);
-        }
-      }
 
-      async function runDebug() {
-        try {
-          const result = await api("/risk/debug", buildAssessmentPayload(), "POST");
-          document.getElementById("compareOutput").textContent = JSON.stringify(result, null, 2);
+          renderAssessment(data);
         } catch (err) {
           alert(err.message);
         }
       }
 
       async function runSimulation() {
-        if (!latestAssessment) return alert("Run an assessment first.");
+        if (!latestAssessment) {
+          alert("Run an assessment first.");
+          return;
+        }
+
         try {
           const sim = await api("/risk/simulate", {
             assessment_id: latestAssessment.assessment_id,
             scenario_name: document.getElementById("scenario_name").value || "what_if",
             scenario_overrides: getAttributes("sim_"),
-            scenario_confirmed_fields: parseCSV(document.getElementById("scenario_confirmed_fields").value),
+            scenario_confirmed_fields: parseCSV(document.getElementById("scenario_confirmed_fields").value)
           }, "POST");
 
-          const d = sim.delta;
+          const delta = sim.delta || sim.score_delta;
           const changed = Object.entries(sim.changed_inputs || {})
             .map(([k, v]) => `${k}: ${v.before ?? "(none)"} -> ${v.after ?? "(none)"}`)
             .join("<br>");
-          const summary = sim.summary || "Simulation completed.";
+
           document.getElementById("simResult").innerHTML =
-            `Risk ${sim.baseline.wildfire_risk_score.toFixed(1)} -> ${sim.simulated.wildfire_risk_score.toFixed(1)} ` +
-            `(<span class="${d.wildfire_risk_score_delta <= 0 ? "good" : "bad"}">${d.wildfire_risk_score_delta.toFixed(1)}</span>)<br>` +
-            `Readiness ${sim.baseline.insurance_readiness_score.toFixed(1)} -> ${sim.simulated.insurance_readiness_score.toFixed(1)} ` +
-            `(<span class="${d.insurance_readiness_score_delta >= 0 ? "good" : "bad"}">${d.insurance_readiness_score_delta.toFixed(1)}</span>)<br><br>` +
-            `<strong>Changed inputs</strong><br>${changed || "None"}<br><br>` +
-            `<strong>Summary</strong><br>${summary}`;
+            `<strong>Before:</strong> ${sim.baseline.wildfire_risk_score.toFixed(1)}<br>` +
+            `<strong>After:</strong> ${sim.simulated.wildfire_risk_score.toFixed(1)}<br>` +
+            `<strong>Change:</strong> ${delta.wildfire_risk_score_delta.toFixed(1)} wildfire risk points<br><br>` +
+            `<strong>Readiness Before:</strong> ${sim.baseline.insurance_readiness_score.toFixed(1)}<br>` +
+            `<strong>Readiness After:</strong> ${sim.simulated.insurance_readiness_score.toFixed(1)}<br>` +
+            `<strong>Readiness Change:</strong> ${delta.insurance_readiness_score_delta.toFixed(1)} points<br><br>` +
+            `<strong>What changed:</strong><br>${changed || "No changes detected."}<br><br>` +
+            `<strong>Summary:</strong> ${sim.summary || "Simulation complete."}`;
         } catch (err) {
           alert(err.message);
-        }
-      }
-
-      function buildBatchItems(textAreaId) {
-        const lines = (document.getElementById(textAreaId).value || "")
-          .split("\n")
-          .map(v => v.trim())
-          .filter(v => v.length > 0);
-
-        return lines.map((address, idx) => ({
-          row_id: String(idx + 1),
-          address,
-          attributes: getAttributes(),
-          confirmed_fields: parseCSV(document.getElementById("confirmed_fields").value),
-          audience: document.getElementById("audience").value,
-          tags: parseCSV(document.getElementById("tags").value),
-        }));
-      }
-
-      async function runBatch() {
-        try {
-          const items = buildBatchItems("batch_addresses");
-          if (!items.length) return alert("Provide at least one batch address.");
-
-          const res = await api("/portfolio/assess", {
-            portfolio_name: document.getElementById("portfolio_name").value || null,
-            organization_id: orgInput.value.trim() || "default_org",
-            ruleset_id: document.getElementById("ruleset_id").value || "default",
-            items,
-          }, "POST");
-
-          document.getElementById("batchSummary").textContent =
-            `total=${res.total_properties} completed=${res.completed_count} failed=${res.failed_count} highRisk=${res.high_risk_count} blockers=${res.blocker_count}`;
-          document.getElementById("batchResults").innerHTML = (res.results || []).map(r =>
-            `<li><strong>${r.address}</strong> [${r.status}] ${r.assessment_id || ""} ` +
-            `${r.error ? `<span class="bad">${r.error}</span>` : `risk ${r.wildfire_risk_score}, readiness ${r.insurance_readiness_score}`}</li>`
-          ).join("");
-          await refreshPortfolio();
-        } catch (err) {
-          alert(err.message);
-        }
-      }
-
-      async function createPortfolioJob() {
-        try {
-          const items = buildBatchItems("job_addresses");
-          if (!items.length) return alert("Provide at least one job address.");
-
-          const res = await api("/portfolio/jobs", {
-            portfolio_name: document.getElementById("portfolio_name").value || null,
-            organization_id: orgInput.value.trim() || "default_org",
-            ruleset_id: document.getElementById("ruleset_id").value || "default",
-            process_immediately: document.getElementById("job_immediate").value === "true",
-            items,
-          }, "POST");
-
-          document.getElementById("job_id").value = res.job_id;
-          document.getElementById("jobOutput").textContent = JSON.stringify(res, null, 2);
-          await refreshPortfolio();
-        } catch (err) {
-          alert(err.message);
-        }
-      }
-
-      async function refreshJobStatus() {
-        const jobId = document.getElementById("job_id").value.trim();
-        if (!jobId) return alert("Provide job id.");
-        try {
-          const res = await api(`/portfolio/jobs/${encodeURIComponent(jobId)}`);
-          document.getElementById("jobOutput").textContent = JSON.stringify(res, null, 2);
-        } catch (err) {
-          alert(err.message);
-        }
-      }
-
-      async function loadJobResults() {
-        const jobId = document.getElementById("job_id").value.trim();
-        if (!jobId) return alert("Provide job id.");
-        try {
-          const res = await api(`/portfolio/jobs/${encodeURIComponent(jobId)}/results`);
-          document.getElementById("jobOutput").textContent = JSON.stringify(res, null, 2);
-        } catch (err) {
-          alert(err.message);
-        }
-      }
-
-      async function openJobCsv() {
-        const jobId = document.getElementById("job_id").value.trim();
-        if (!jobId) return alert("Provide job id.");
-        try {
-          const csvText = await api(`/portfolio/jobs/${encodeURIComponent(jobId)}/export/csv`);
-          const w = window.open("", "_blank");
-          if (w) {
-            w.document.open();
-            w.document.write(`<pre>${csvText}</pre>`);
-            w.document.close();
-          }
-        } catch (err) {
-          alert(err.message);
-        }
-      }
-
-      async function openJobReportPack() {
-        const jobId = document.getElementById("job_id").value.trim();
-        if (!jobId) return alert("Provide job id.");
-        try {
-          const res = await api(`/portfolio/jobs/${encodeURIComponent(jobId)}/report-pack`);
-          const w = window.open("", "_blank");
-          if (w) {
-            w.document.open();
-            w.document.write(`<pre>${JSON.stringify(res, null, 2)}</pre>`);
-            w.document.close();
-          }
-        } catch (err) {
-          alert(err.message);
-        }
-      }
-
-      async function importCsv() {
-        try {
-          const res = await api("/portfolio/import/csv", {
-            csv_text: document.getElementById("csv_text").value,
-            portfolio_name: document.getElementById("portfolio_name").value || null,
-            organization_id: orgInput.value.trim() || "default_org",
-            ruleset_id: document.getElementById("ruleset_id").value || "default",
-            audience: document.getElementById("audience").value,
-            tags: parseCSV(document.getElementById("tags").value),
-            process_immediately: true,
-          }, "POST");
-          document.getElementById("job_id").value = res.job.job_id;
-          document.getElementById("csvOutput").textContent = JSON.stringify(res, null, 2);
-          await refreshPortfolio();
-        } catch (err) {
-          alert(err.message);
-        }
-      }
-
-      async function exportPortfolioCsv() {
-        const portfolio = document.getElementById("portfolio_name").value.trim();
-        if (!portfolio) return alert("Provide portfolio name.");
-        try {
-          const res = await api(`/portfolio/${encodeURIComponent(portfolio)}/export/csv?organization_id=${encodeURIComponent(orgInput.value.trim() || "default_org")}`);
-          const w = window.open("", "_blank");
-          if (w) {
-            w.document.open();
-            w.document.write(`<pre>${res}</pre>`);
-            w.document.close();
-          }
-        } catch (err) {
-          alert(err.message);
-        }
-      }
-
-      async function setReviewStatus() {
-        if (!latestAssessment) return alert("Run an assessment first.");
-        try {
-          const res = await api(`/assessments/${latestAssessment.assessment_id}/review-status`, {
-            review_status: document.getElementById("review_status").value,
-          }, "PUT");
-          document.getElementById("workflowOutput").textContent = JSON.stringify(res, null, 2);
-          await refreshPortfolio();
-        } catch (err) {
-          alert(err.message);
-        }
-      }
-
-      async function assignAssessment() {
-        if (!latestAssessment) return alert("Run an assessment first.");
-        try {
-          const res = await api(`/assessment/${latestAssessment.assessment_id}/assign`, {
-            assigned_reviewer: document.getElementById("assigned_reviewer").value || null,
-            assigned_role: document.getElementById("assigned_role").value || null,
-          }, "POST");
-          document.getElementById("workflowOutput").textContent = JSON.stringify(res, null, 2);
-          await refreshPortfolio();
-        } catch (err) {
-          alert(err.message);
-        }
-      }
-
-      async function setWorkflowState() {
-        if (!latestAssessment) return alert("Run an assessment first.");
-        try {
-          const res = await api(`/assessment/${latestAssessment.assessment_id}/workflow`, {
-            workflow_state: document.getElementById("workflow_state").value,
-          }, "POST");
-          document.getElementById("workflowOutput").textContent = JSON.stringify(res, null, 2);
-          await refreshPortfolio();
-        } catch (err) {
-          alert(err.message);
-        }
-      }
-
-      async function getWorkflowState() {
-        if (!latestAssessment) return alert("Run an assessment first.");
-        try {
-          const res = await api(`/assessment/${latestAssessment.assessment_id}/workflow`);
-          document.getElementById("workflowOutput").textContent = JSON.stringify(res, null, 2);
-        } catch (err) {
-          alert(err.message);
-        }
-      }
-
-      async function addAnnotation() {
-        if (!latestAssessment) return alert("Run an assessment first.");
-        try {
-          await api(`/assessments/${latestAssessment.assessment_id}/annotations`, {
-            author_role: document.getElementById("annotation_role").value,
-            note: document.getElementById("annotation_note").value,
-            tags: parseCSV(document.getElementById("annotation_tags").value),
-            visibility: document.getElementById("annotation_visibility").value,
-            review_status: document.getElementById("review_status").value,
-          }, "POST");
-          document.getElementById("annotation_note").value = "";
-          await loadAnnotations();
-        } catch (err) {
-          alert(err.message);
-        }
-      }
-
-      async function loadAnnotations() {
-        if (!latestAssessment) return alert("Run an assessment first.");
-        try {
-          const rows = await api(`/assessments/${latestAssessment.assessment_id}/annotations?limit=50`);
-          document.getElementById("annotations").innerHTML = (rows || []).map(r =>
-            `<li><strong>${r.author_role}</strong> [${r.visibility}] (${r.created_at}) status=${r.review_status}: ${r.note}</li>`
-          ).join("") || "<li>No annotations.</li>";
-        } catch (err) {
-          alert(err.message);
-        }
-      }
-
-      function buildPortfolioQuery() {
-        const q = new URLSearchParams();
-        q.set("limit", "25");
-        q.set("offset", "0");
-        q.set("sort_by", document.getElementById("sort_by").value);
-        q.set("sort_dir", document.getElementById("sort_dir").value);
-        q.set("organization_id", orgInput.value.trim() || "default_org");
-
-        const minRisk = getNum("min_risk");
-        const minReadiness = getNum("min_readiness");
-        const confidence = getNum("confidence_min");
-        const recentDays = getNum("recent_days");
-        if (minRisk !== null) q.set("min_risk", String(minRisk));
-        if (minReadiness !== null) q.set("min_readiness", String(minReadiness));
-        if (confidence !== null) q.set("confidence_min", String(confidence));
-        if (recentDays !== null) q.set("recent_days", String(recentDays));
-
-        const blocker = document.getElementById("readiness_blocker").value.trim();
-        const tag = document.getElementById("filter_tag").value.trim();
-        const audience = document.getElementById("filter_audience").value;
-        if (blocker) q.set("readiness_blocker", blocker);
-        if (tag) q.set("tag", tag);
-        if (audience) q.set("audience", audience);
-
-        return q.toString();
-      }
-
-      async function refreshPortfolio() {
-        try {
-          const res = await api(`/portfolio?${buildPortfolioQuery()}`);
-          const s = res.summary || {};
-          document.getElementById("sum_total").textContent = s.total_count ?? 0;
-          document.getElementById("sum_high_risk").textContent = s.high_risk_count ?? 0;
-          document.getElementById("sum_blocker").textContent = s.blocker_count ?? 0;
-          document.getElementById("sum_avg_risk").textContent = Number(s.avg_wildfire_risk || 0).toFixed(1);
-          document.getElementById("sum_avg_readiness").textContent = Number(s.avg_insurance_readiness || 0).toFixed(1);
-
-          document.getElementById("history").innerHTML = (res.items || []).map(r =>
-            `<li><strong>${r.address}</strong> (${r.created_at}) risk=${r.wildfire_risk_score}, readiness=${r.insurance_readiness_score}, review=${r.review_status}, workflow=${r.workflow_state}, ruleset=${r.ruleset_id}</li>`
-          ).join("") || "<li>No results.</li>";
-        } catch (err) {
-          document.getElementById("history").innerHTML = `<li class="bad">${err.message}</li>`;
         }
       }
 
       async function openReportView() {
         if (!latestAssessment) return alert("Run an assessment first.");
         try {
-          const audience = document.getElementById("report_audience").value;
-          const html = await api(`/report/${latestAssessment.assessment_id}/view?audience=${encodeURIComponent(audience)}`);
+          const html = await api(`/report/${latestAssessment.assessment_id}/view?audience=homeowner`);
           const w = window.open("", "_blank");
           if (w) {
             w.document.open();
@@ -737,15 +356,14 @@
         }
       }
 
-      async function openReportExport() {
+      async function exportReport() {
         if (!latestAssessment) return alert("Run an assessment first.");
         try {
-          const audience = document.getElementById("report_audience").value;
-          const json = await api(`/report/${latestAssessment.assessment_id}/export?audience=${encodeURIComponent(audience)}`);
+          const data = await api(`/report/${latestAssessment.assessment_id}/export?audience=homeowner`);
           const w = window.open("", "_blank");
           if (w) {
             w.document.open();
-            w.document.write(`<pre>${JSON.stringify(json, null, 2)}</pre>`);
+            w.document.write(`<pre>${JSON.stringify(data, null, 2)}</pre>`);
             w.document.close();
           }
         } catch (err) {
@@ -753,99 +371,11 @@
         }
       }
 
-      async function compareMulti() {
-        try {
-          const ids = document.getElementById("compare_ids").value.trim();
-          if (!ids) return alert("Provide assessment ids.");
-          const res = await api(`/assessments/compare?ids=${encodeURIComponent(ids)}`);
-          document.getElementById("compareOutput").textContent = JSON.stringify(res, null, 2);
-        } catch (err) {
-          alert(err.message);
-        }
-      }
-
-      async function comparePair() {
-        if (!latestAssessment) return alert("Run an assessment first.");
-        try {
-          const other = document.getElementById("compare_other").value.trim();
-          if (!other) return alert("Provide other assessment id.");
-          const res = await api(`/assessments/${latestAssessment.assessment_id}/compare/${other}`);
-          document.getElementById("compareOutput").textContent = JSON.stringify(res, null, 2);
-        } catch (err) {
-          alert(err.message);
-        }
-      }
-
-      async function loadRulesets() {
-        try {
-          const rulesets = await api("/underwriting/rulesets");
-          const sel = document.getElementById("ruleset_id");
-          sel.innerHTML = rulesets.map(r => `<option value="${r.ruleset_id}">${r.ruleset_id} - ${r.ruleset_name}</option>`).join("");
-          document.getElementById("orgRulesetInfo").textContent = `Loaded ${rulesets.length} rulesets.`;
-        } catch (err) {
-          document.getElementById("orgRulesetInfo").textContent = `Ruleset load failed: ${err.message}`;
-        }
-      }
-
-      async function loadOrganizations() {
-        try {
-          const orgs = await api("/organizations");
-          document.getElementById("orgRulesetInfo").textContent = `Organizations: ${orgs.map(o => `${o.organization_id} (${o.organization_type})`).join(", ")}`;
-        } catch (err) {
-          document.getElementById("orgRulesetInfo").textContent = `Organization load failed: ${err.message}`;
-        }
-      }
-
-      async function loadAdminSummary() {
-        try {
-          const org = orgInput.value.trim() || "default_org";
-          const res = await api(`/admin/summary?organization_id=${encodeURIComponent(org)}&recent_days=365`);
-          document.getElementById("opsOutput").textContent = JSON.stringify(res, null, 2);
-        } catch (err) {
-          document.getElementById("opsOutput").textContent = err.message;
-        }
-      }
-
-      async function loadAuditEvents() {
-        try {
-          const org = orgInput.value.trim() || "default_org";
-          const res = await api(`/audit/events?organization_id=${encodeURIComponent(org)}&limit=50`);
-          document.getElementById("opsOutput").textContent = JSON.stringify(res, null, 2);
-        } catch (err) {
-          document.getElementById("opsOutput").textContent = err.message;
-        }
-      }
-
       document.getElementById("assessBtn").addEventListener("click", () => runAssessment(false));
       document.getElementById("reassessBtn").addEventListener("click", () => runAssessment(true));
-      document.getElementById("debugBtn").addEventListener("click", runDebug);
       document.getElementById("simulateBtn").addEventListener("click", runSimulation);
-      document.getElementById("runBatchBtn").addEventListener("click", runBatch);
-      document.getElementById("createJobBtn").addEventListener("click", createPortfolioJob);
-      document.getElementById("refreshJobBtn").addEventListener("click", refreshJobStatus);
-      document.getElementById("jobResultsBtn").addEventListener("click", loadJobResults);
-      document.getElementById("jobCsvBtn").addEventListener("click", openJobCsv);
-      document.getElementById("jobPackBtn").addEventListener("click", openJobReportPack);
-      document.getElementById("importCsvBtn").addEventListener("click", importCsv);
-      document.getElementById("exportPortfolioCsvBtn").addEventListener("click", exportPortfolioCsv);
-      document.getElementById("setReviewBtn").addEventListener("click", setReviewStatus);
-      document.getElementById("assignBtn").addEventListener("click", assignAssessment);
-      document.getElementById("setWorkflowBtn").addEventListener("click", setWorkflowState);
-      document.getElementById("getWorkflowBtn").addEventListener("click", getWorkflowState);
-      document.getElementById("addAnnotationBtn").addEventListener("click", addAnnotation);
-      document.getElementById("loadAnnotationsBtn").addEventListener("click", loadAnnotations);
       document.getElementById("openReportBtn").addEventListener("click", openReportView);
-      document.getElementById("exportReportBtn").addEventListener("click", openReportExport);
-      document.getElementById("compareMultiBtn").addEventListener("click", compareMulti);
-      document.getElementById("comparePairBtn").addEventListener("click", comparePair);
-      document.getElementById("refreshPortfolioBtn").addEventListener("click", refreshPortfolio);
-      document.getElementById("adminSummaryBtn").addEventListener("click", loadAdminSummary);
-      document.getElementById("auditBtn").addEventListener("click", loadAuditEvents);
-      document.getElementById("loadRulesetsBtn").addEventListener("click", loadRulesets);
-      document.getElementById("loadOrgsBtn").addEventListener("click", loadOrganizations);
-
-      loadRulesets();
-      refreshPortfolio();
+      document.getElementById("exportReportBtn").addEventListener("click", exportReport);
     </script>
   </body>
 </html>
