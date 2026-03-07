@@ -563,7 +563,7 @@ def _build_property_findings(property_level_context: dict[str, Any]) -> list[str
         findings.append("The immediate 0-5 foot zone appears relatively clear.")
 
     if ring_5_30 is not None and ring_5_30 >= 60:
-        findings.append("Tree or shrub cover is elevated within 30 feet of the structure.")
+        findings.append("Defensible space appears limited within 30 feet of the structure.")
     elif ring_5_30 is not None and ring_5_30 <= 35:
         findings.append("Vegetation conditions within 30 feet look more manageable.")
 

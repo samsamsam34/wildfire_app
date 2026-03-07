@@ -359,6 +359,9 @@
 
           <h3 style="margin-top:0.9rem;">Insurance Readiness (Reference)</h3>
           <p id="readinessText" class="muted">-</p>
+
+          <h3 style="margin-top:0.9rem;">Property-Level Context</h3>
+          <p id="propertyContextText" class="muted">No property-level context available yet.</p>
         </details>
       </section>
     </div>
@@ -497,7 +500,7 @@
           findings.push("Vegetation is dense very close to the home.");
         }
         if (ring530 !== null && ring530 >= 60) {
-          findings.push("Tree and shrub cover is elevated within 30 feet.");
+          findings.push("Defensible space appears limited within 30 feet of the structure.");
         }
         if (ring30100 !== null && ring30100 >= 65) {
           findings.push("Vegetation and fuels are elevated within 100 feet.");
@@ -507,6 +510,53 @@
         }
 
         return findings.slice(0, 3);
+      }
+
+      function toHomeownerDriverText(raw) {
+        const text = String(raw || "").trim();
+        const map = {
+          "dense vegetation close to the home": "Dense vegetation is very close to the home.",
+          "limited defensible space within 30 feet": "Defensible space appears limited within 30 feet.",
+          "elevated vegetation and fuels within 100 feet": "Vegetation and fuels are elevated within 100 feet.",
+          "high ember exposure": "Ember exposure appears elevated for this location.",
+          "high flame-contact exposure": "Nearby fuels may increase direct flame-contact risk.",
+          "close proximity to wildland fuels": "Wildland fuels are close enough to increase fire pressure.",
+          "slope/topography amplification": "Terrain may increase fire spread toward the home.",
+          "dense and dry vegetation": "Vegetation appears dense and dry in this area.",
+          "insufficient defensible space": "Defensible space appears insufficient.",
+          "high structure vulnerability": "Home hardening details may leave the structure vulnerable."
+        };
+        return map[text] || text;
+      }
+
+      function buildPropertyContextSummary(data, findings) {
+        const ctx = data?.property_level_context || {};
+        const fallbackMode = ctx?.fallback_mode || "point_based";
+        const footprintUsed = !!ctx?.footprint_used;
+
+        if (footprintUsed) {
+          if (findings.length > 0) {
+            return "Property-level ring analysis was used around the structure (0-5 ft, 5-30 ft, 30-100 ft).";
+          }
+          return "Building-footprint ring analysis was available, but no elevated near-structure findings were detected.";
+        }
+
+        if (fallbackMode === "point_based") {
+          return "Building footprint rings were unavailable, so this estimate used nearby point-based context instead.";
+        }
+        return "Property-level ring analysis was not available for this assessment.";
+      }
+
+      function buildNextStepsHint(findings) {
+        if (!Array.isArray(findings) || findings.length === 0) return "Focus on the top actions first.";
+        const lower = findings.map(v => String(v).toLowerCase());
+        if (lower.some(v => v.includes("within 5 feet") || v.includes("very close"))) {
+          return "Start with the immediate area around the home, then work outward.";
+        }
+        if (lower.some(v => v.includes("30 feet") || v.includes("defensible space"))) {
+          return "Prioritize defensible space improvements within 30 feet of the structure.";
+        }
+        return "These actions are prioritized based on what we found around the home.";
       }
 
       function getPropertyFindings(data) {
@@ -532,12 +582,13 @@
           .map(v => `<li>${v}</li>`)
           .join("") || "<li class='muted'>No structure-specific findings available for this assessment.</li>";
 
-        document.getElementById("drivers").innerHTML = (data.top_risk_drivers || []).slice(0, 3).map(v => `<li>${v}</li>`).join("") || "<li class='muted'>No factors listed.</li>";
+        document.getElementById("drivers").innerHTML = (data.top_risk_drivers || [])
+          .slice(0, 3)
+          .map(v => `<li>${toHomeownerDriverText(v)}</li>`)
+          .join("") || "<li class='muted'>No factors listed.</li>";
         document.getElementById("protective").innerHTML = (data.top_protective_factors || []).slice(0, 3).map(v => `<li>${v}</li>`).join("") || "<li class='muted'>No factors listed.</li>";
 
-        document.getElementById("nextStepsText").textContent = propertyFindings.length
-          ? "These actions are prioritized using what we found around the structure."
-          : "Focus on the top actions first.";
+        document.getElementById("nextStepsText").textContent = buildNextStepsHint(propertyFindings);
 
         document.getElementById("mitigations").innerHTML = (data.mitigation_plan || []).slice(0, 3)
           .map(m => `<li><strong>${m.title}</strong>: ${m.reason}</li>`)
@@ -557,6 +608,7 @@
 
         const readiness = Number(data.insurance_readiness_score || 0).toFixed(1);
         document.getElementById("readinessText").textContent = `Insurance readiness score: ${readiness}`;
+        document.getElementById("propertyContextText").textContent = buildPropertyContextSummary(data, propertyFindings);
       }
 
       function buildAssessmentPayload() {
@@ -617,6 +669,7 @@
             `<strong>Readiness After:</strong> ${sim.simulated.insurance_readiness_score.toFixed(1)}<br>` +
             `<strong>Readiness Change:</strong> ${delta.insurance_readiness_score_delta.toFixed(1)} points<br><br>` +
             `<strong>What changed:</strong><br>${changed || "No changes detected."}<br><br>` +
+            `<strong>Around the home after upgrades:</strong><br>${(sim.simulated?.property_findings || []).slice(0, 2).join("<br>") || "No additional structure-specific findings."}<br><br>` +
             `<strong>Summary:</strong> ${sim.summary || "Simulation complete."}`;
         } catch (err) {
           alert(err.message);

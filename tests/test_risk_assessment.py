@@ -289,6 +289,7 @@ def test_property_findings_from_ring_metrics_surface_in_assessment(monkeypatch, 
     assert len(assessed["property_findings"]) >= 1
     assert any("within 5 feet" in f.lower() for f in assessed["property_findings"])
     assert any("30 feet" in f.lower() for f in assessed["property_findings"])
+    assert any("defensible space" in f.lower() for f in assessed["property_findings"])
     assert any("dense vegetation close to the home" == d for d in assessed["top_risk_drivers"])
     assert assessed["property_level_context"]["footprint_used"] is True
     assert assessed["property_level_context"]["fallback_mode"] == "footprint"
@@ -1251,6 +1252,7 @@ def test_ring_metrics_influence_risk_and_mitigation():
     )
     titles = [rec.title.lower() for rec in high_plan]
     assert any("0-5 ft zone" in title for title in titles)
+    assert any("5-30 ft zone" in title for title in titles)
 
 
 def _headers(role: str = "admin", org: str = "default_org", user: str = "test_user") -> dict:
