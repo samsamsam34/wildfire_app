@@ -160,6 +160,12 @@ def _assert_core_contract(body: dict) -> None:
         "site_hazard_input_quality",
         "home_vulnerability_input_quality",
         "insurance_readiness_input_quality",
+        "site_hazard_eligibility",
+        "home_vulnerability_eligibility",
+        "insurance_readiness_eligibility",
+        "assessment_status",
+        "assessment_blockers",
+        "assessment_diagnostics",
         "property_level_context",
         "site_hazard_section",
         "home_ignition_vulnerability_section",
@@ -207,6 +213,7 @@ def _assert_core_contract(body: dict) -> None:
         "agent_or_inspector_review_recommended",
         "not_for_underwriting_or_binding",
     }
+    assert body["assessment_status"] in {"fully_scored", "partially_scored", "insufficient_data"}
 
     for sm in REQUIRED_SUBMODELS:
         assert sm in body["submodel_scores"]
@@ -225,6 +232,17 @@ def _assert_core_contract(body: dict) -> None:
     assert "inputs" in body["data_provenance"]
     assert "summary" in body["data_provenance"]
     assert "stale_data_share" in body["data_provenance"]["summary"]
+    for eligibility_key in [
+        "site_hazard_eligibility",
+        "home_vulnerability_eligibility",
+        "insurance_readiness_eligibility",
+    ]:
+        eligibility = body[eligibility_key]
+        assert "eligible" in eligibility
+        assert "eligibility_status" in eligibility
+        assert "blocking_reasons" in eligibility
+        assert "caveats" in eligibility
+        assert eligibility["eligibility_status"] in {"full", "partial", "insufficient"}
     for quality_key in [
         "site_hazard_input_quality",
         "home_vulnerability_input_quality",
@@ -236,6 +254,17 @@ def _assert_core_contract(body: dict) -> None:
         assert "stale_share" in quality
         assert "missing_share" in quality
         assert "heuristic_count" in quality
+    diagnostics = body["assessment_diagnostics"]
+    for key in [
+        "critical_inputs_present",
+        "critical_inputs_missing",
+        "stale_inputs",
+        "inferred_inputs",
+        "heuristic_inputs",
+        "confidence_downgrade_reasons",
+        "trust_tier_blockers",
+    ]:
+        assert key in diagnostics
 
 
 def test_property_findings_from_ring_metrics_surface_in_assessment(monkeypatch, tmp_path):
@@ -1568,6 +1597,126 @@ def test_confidence_reduces_when_ring_metrics_unavailable(monkeypatch, tmp_path)
 
     assert assessed_with["confidence_score"] >= assessed_without["confidence_score"]
     assert assessed_without["property_level_context"]["fallback_mode"] == "point_based"
+
+
+def test_score_family_eligibility_full_path(monkeypatch, tmp_path):
+    _setup(
+        monkeypatch,
+        tmp_path,
+        _ctx(
+            env=42.0,
+            wildland=38.0,
+            historic=30.0,
+            ring_metrics={
+                "zone_0_5_ft": {"vegetation_density": 20.0},
+                "zone_5_30_ft": {"vegetation_density": 30.0},
+                "zone_30_100_ft": {"vegetation_density": 35.0},
+            },
+        ),
+    )
+    assessed = _run(
+        _payload(
+            "Full Eligibility Way",
+            {
+                "roof_type": "class a",
+                "vent_type": "ember-resistant",
+                "defensible_space_ft": 35,
+                "construction_year": 2018,
+            },
+            confirmed=["roof_type", "vent_type", "defensible_space_ft", "construction_year"],
+        )
+    )
+    assert assessed["site_hazard_eligibility"]["eligibility_status"] == "full"
+    assert assessed["home_vulnerability_eligibility"]["eligibility_status"] == "full"
+    assert assessed["insurance_readiness_eligibility"]["eligibility_status"] == "full"
+    assert assessed["assessment_status"] == "fully_scored"
+
+
+def test_score_family_eligibility_partial_path(monkeypatch, tmp_path):
+    partial_ctx = _ctx(env=56.0, wildland=50.0, historic=45.0, ring_metrics={})
+    partial_ctx.slope_index = None
+    partial_ctx.slope = None
+    partial_ctx.environmental_layer_status["slope"] = "missing"
+    partial_ctx.property_level_context = {
+        "footprint_used": False,
+        "footprint_status": "not_found",
+        "fallback_mode": "point_based",
+        "ring_metrics": None,
+    }
+    _setup(monkeypatch, tmp_path, partial_ctx)
+
+    assessed = _run(
+        _payload(
+            "Partial Eligibility Way",
+            {"roof_type": "class a", "vent_type": "ember-resistant", "defensible_space_ft": 25},
+            confirmed=["roof_type", "vent_type", "defensible_space_ft"],
+        )
+    )
+    assert assessed["site_hazard_eligibility"]["eligibility_status"] == "partial"
+    assert assessed["home_vulnerability_eligibility"]["eligibility_status"] == "partial"
+    assert assessed["assessment_status"] == "partially_scored"
+    assert assessed["home_vulnerability_eligibility"]["caveats"]
+
+
+def test_score_family_eligibility_insufficient_path_and_hard_blocker(monkeypatch, tmp_path):
+    insufficient_ctx = _ctx(
+        env=0.0,
+        wildland=0.0,
+        historic=0.0,
+        ring_metrics={},
+        environmental_layer_status={
+            "burn_probability": "missing",
+            "hazard": "missing",
+            "slope": "missing",
+            "fuel": "missing",
+            "canopy": "missing",
+            "fire_history": "missing",
+        },
+    )
+    insufficient_ctx.burn_probability_index = None
+    insufficient_ctx.hazard_severity_index = None
+    insufficient_ctx.slope_index = None
+    insufficient_ctx.fuel_index = None
+    insufficient_ctx.canopy_index = None
+    insufficient_ctx.historic_fire_index = None
+    insufficient_ctx.wildland_distance_index = None
+    insufficient_ctx.burn_probability = None
+    insufficient_ctx.wildfire_hazard = None
+    insufficient_ctx.slope = None
+    insufficient_ctx.fuel_model = None
+    insufficient_ctx.canopy_cover = None
+    insufficient_ctx.historic_fire_distance = None
+    insufficient_ctx.wildland_distance = None
+    insufficient_ctx.property_level_context = {
+        "footprint_used": False,
+        "footprint_status": "provider_unavailable",
+        "fallback_mode": "point_based",
+        "ring_metrics": None,
+    }
+    _setup(monkeypatch, tmp_path, insufficient_ctx)
+
+    assessed = _run(_payload("Insufficient Evidence Way", {}, confirmed=[]))
+    assert assessed["site_hazard_eligibility"]["eligibility_status"] == "insufficient"
+    assert assessed["home_vulnerability_eligibility"]["eligibility_status"] == "insufficient"
+    assert assessed["insurance_readiness_eligibility"]["eligibility_status"] == "insufficient"
+    assert assessed["assessment_status"] == "insufficient_data"
+    assert assessed["use_restriction"] == "not_for_underwriting_or_binding"
+    assert assessed["assessment_blockers"]
+
+
+def test_assessment_diagnostics_and_report_persistence(monkeypatch, tmp_path):
+    _setup(monkeypatch, tmp_path, _ctx(env=50.0, wildland=48.0, historic=42.0, ring_metrics={}))
+    assessed = _run(_payload("Diagnostics Persist Way", {"defensible_space_ft": 12}))
+    diagnostics = assessed["assessment_diagnostics"]
+    assert "critical_inputs_present" in diagnostics
+    assert "critical_inputs_missing" in diagnostics
+    assert "trust_tier_blockers" in diagnostics
+
+    report = client.get(f"/report/{assessed['assessment_id']}")
+    assert report.status_code == 200
+    body = report.json()
+    assert "assessment_diagnostics" in body
+    assert set(body["assessment_diagnostics"].keys()) == set(diagnostics.keys())
 
 
 def test_provenance_freshness_status_classification(monkeypatch, tmp_path):

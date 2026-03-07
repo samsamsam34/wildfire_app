@@ -199,6 +199,15 @@ Assessment/report payloads include:
 - explainability: `submodel_scores`, `weighted_contributions`, `factor_breakdown`, `top_risk_drivers`, `top_protective_factors`, `explanation_summary`
 - homeowner insights: `property_findings` (plain-language findings derived from structure-ring vegetation context)
 - confidence gating: `confidence_tier` (`high|moderate|low|preliminary`) and `use_restriction`
+- assessment eligibility guardrails:
+  - score-family eligibility blocks:
+    - `site_hazard_eligibility`
+    - `home_vulnerability_eligibility`
+    - `insurance_readiness_eligibility`
+  - assessment-level status:
+    - `assessment_status` (`fully_scored|partially_scored|insufficient_data`)
+    - `assessment_blockers`
+  - `assessment_diagnostics` for developer/debug trust tracing
 - environmental quality: `environmental_layer_status` (`ok|missing|error` per key layer) and `environmental_data_completeness_score`
 - data coverage/provenance:
   - `direct_data_coverage_score`, `inferred_data_coverage_score`, `missing_data_share`
@@ -223,6 +232,7 @@ Assessment/report payloads include:
 If address geocoding cannot be verified, `/risk/assess` returns an error (no synthetic coordinate scoring in default behavior).
 Missing environmental layers are surfaced explicitly and do not silently default to neutral point values in the data layer.
 If critical inputs are stale/unknown or provider errors occur, confidence tier and use restriction are downgraded deterministically.
+Hard trust blockers force `not_for_underwriting_or_binding` when minimum evidence is insufficient.
 
 ## Setup
 

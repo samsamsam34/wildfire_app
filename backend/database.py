@@ -1143,6 +1143,47 @@ class AssessmentStore:
                 "heuristic_count": 0,
             },
         )
+        payload.setdefault(
+            "site_hazard_eligibility",
+            {
+                "eligible": False,
+                "eligibility_status": "insufficient",
+                "blocking_reasons": [],
+                "caveats": [],
+            },
+        )
+        payload.setdefault(
+            "home_vulnerability_eligibility",
+            {
+                "eligible": False,
+                "eligibility_status": "insufficient",
+                "blocking_reasons": [],
+                "caveats": [],
+            },
+        )
+        payload.setdefault(
+            "insurance_readiness_eligibility",
+            {
+                "eligible": False,
+                "eligibility_status": "insufficient",
+                "blocking_reasons": [],
+                "caveats": [],
+            },
+        )
+        payload.setdefault("assessment_status", "insufficient_data")
+        payload.setdefault("assessment_blockers", [])
+        payload.setdefault(
+            "assessment_diagnostics",
+            {
+                "critical_inputs_present": [],
+                "critical_inputs_missing": [],
+                "stale_inputs": [],
+                "inferred_inputs": [],
+                "heuristic_inputs": [],
+                "confidence_downgrade_reasons": [],
+                "trust_tier_blockers": [],
+            },
+        )
         if isinstance(payload.get("property_level_context"), dict):
             plc = payload["property_level_context"]
             plc.setdefault("footprint_used", False)

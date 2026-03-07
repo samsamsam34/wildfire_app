@@ -29,6 +29,8 @@ UseRestriction = Literal[
     "agent_or_inspector_review_recommended",
     "not_for_underwriting_or_binding",
 ]
+EligibilityStatus = Literal["full", "partial", "insufficient"]
+AssessmentStatus = Literal["fully_scored", "partially_scored", "insufficient_data"]
 SourceType = Literal[
     "observed",
     "footprint_derived",
@@ -200,6 +202,23 @@ class ScoreFamilyInputQuality(BaseModel):
     heuristic_count: int = 0
 
 
+class ScoreEligibility(BaseModel):
+    eligible: bool = False
+    eligibility_status: EligibilityStatus = "insufficient"
+    blocking_reasons: List[str] = Field(default_factory=list)
+    caveats: List[str] = Field(default_factory=list)
+
+
+class AssessmentDiagnostics(BaseModel):
+    critical_inputs_present: List[str] = Field(default_factory=list)
+    critical_inputs_missing: List[str] = Field(default_factory=list)
+    stale_inputs: List[str] = Field(default_factory=list)
+    inferred_inputs: List[str] = Field(default_factory=list)
+    heuristic_inputs: List[str] = Field(default_factory=list)
+    confidence_downgrade_reasons: List[str] = Field(default_factory=list)
+    trust_tier_blockers: List[str] = Field(default_factory=list)
+
+
 class ScoreSectionSummary(BaseModel):
     label: str = ""
     score: float = 0.0
@@ -321,6 +340,12 @@ class AssessmentResult(BaseModel):
     site_hazard_input_quality: ScoreFamilyInputQuality = Field(default_factory=ScoreFamilyInputQuality)
     home_vulnerability_input_quality: ScoreFamilyInputQuality = Field(default_factory=ScoreFamilyInputQuality)
     insurance_readiness_input_quality: ScoreFamilyInputQuality = Field(default_factory=ScoreFamilyInputQuality)
+    site_hazard_eligibility: ScoreEligibility = Field(default_factory=ScoreEligibility)
+    home_vulnerability_eligibility: ScoreEligibility = Field(default_factory=ScoreEligibility)
+    insurance_readiness_eligibility: ScoreEligibility = Field(default_factory=ScoreEligibility)
+    assessment_status: AssessmentStatus = "insufficient_data"
+    assessment_blockers: List[str] = Field(default_factory=list)
+    assessment_diagnostics: AssessmentDiagnostics = Field(default_factory=AssessmentDiagnostics)
     property_level_context: Dict[str, object] = Field(default_factory=dict)
     mitigation_plan: List[MitigationAction]
     readiness_factors: List[ReadinessFactor] = Field(default_factory=list)

@@ -17,6 +17,8 @@ from backend.database import AssessmentStore, DEFAULT_ORG_ID
 from backend.geocoding import Geocoder
 from backend.mitigation import build_mitigation_plan
 from backend.models import (
+    AssessmentDiagnostics,
+    AssessmentStatus,
     AddressRequest,
     AdminSummary,
     AssessmentAnnotation,
@@ -45,6 +47,7 @@ from backend.models import (
     CSVImportResponse,
     DataProvenanceBlock,
     DataProvenanceSummary,
+    EligibilityStatus,
     EnvironmentalFactors,
     FreshnessStatus,
     InputSourceMetadata,
@@ -66,6 +69,7 @@ from backend.models import (
     SimulationResult,
     SimulationScenarioItem,
     ScoreFamilyInputQuality,
+    ScoreEligibility,
     ScoreSummaries,
     ScoreSectionSummary,
     SubmodelScore,
@@ -982,6 +986,231 @@ def _build_score_family_input_quality(
     return site_quality, home_quality, readiness_quality
 
 
+def _structure_fact_known(payload: AddressRequest, assumptions: AssumptionsBlock, field: str) -> bool:
+    if getattr(payload.attributes, field, None) is not None:
+        return True
+    if field in assumptions.inferred_inputs:
+        return True
+    return False
+
+
+def _build_score_eligibility(
+    *,
+    payload: AddressRequest,
+    context: object,
+    property_level_context: dict[str, Any],
+    assumptions: AssumptionsBlock,
+    geocode_verified: bool,
+) -> tuple[ScoreEligibility, ScoreEligibility, ScoreEligibility, AssessmentStatus, list[str]]:
+    burn_or_hazard = getattr(context, "burn_probability_index", None) is not None or getattr(
+        context, "hazard_severity_index", None
+    ) is not None
+    slope_ok = getattr(context, "slope_index", None) is not None
+    fuel_or_canopy = getattr(context, "fuel_index", None) is not None or getattr(context, "canopy_index", None) is not None
+
+    site_blockers: list[str] = []
+    site_caveats: list[str] = []
+    if not geocode_verified:
+        site_blockers.append("Verified geocode unavailable")
+    if not burn_or_hazard:
+        site_blockers.append("Burn probability and hazard layers unavailable")
+    if not slope_ok:
+        site_blockers.append("Slope layer missing")
+    if not fuel_or_canopy:
+        site_blockers.append("Fuel and canopy context unavailable")
+
+    available_site_evidence = sum([burn_or_hazard, slope_ok, fuel_or_canopy])
+    site_status: EligibilityStatus
+    if geocode_verified and burn_or_hazard and slope_ok and fuel_or_canopy:
+        site_status = "full"
+    elif geocode_verified and available_site_evidence >= 2:
+        site_status = "partial"
+        site_caveats.append("Site Hazard is based on partial environmental coverage.")
+    else:
+        site_status = "insufficient"
+
+    site_eligibility = ScoreEligibility(
+        eligible=site_status != "insufficient",
+        eligibility_status=site_status,
+        blocking_reasons=sorted(set(site_blockers)),
+        caveats=sorted(set(site_caveats)),
+    )
+
+    rings = property_level_context.get("ring_metrics") if isinstance(property_level_context, dict) else None
+    ring_signal = False
+    if isinstance(rings, dict):
+        for key in ["zone_0_5_ft", "zone_5_30_ft", "zone_30_100_ft", "ring_0_5_ft", "ring_5_30_ft", "ring_30_100_ft"]:
+            zone = rings.get(key)
+            if isinstance(zone, dict) and zone.get("vegetation_density") is not None:
+                ring_signal = True
+                break
+    footprint_used = bool(property_level_context.get("footprint_used"))
+
+    structure_context = any(
+        _structure_fact_known(payload, assumptions, field)
+        for field in ["roof_type", "vent_type", "defensible_space_ft", "construction_year"]
+    )
+    near_structure_signal = ring_signal or getattr(context, "fuel_index", None) is not None or getattr(
+        context, "canopy_index", None
+    ) is not None
+
+    home_blockers: list[str] = []
+    home_caveats: list[str] = []
+    if not geocode_verified:
+        home_blockers.append("Verified geocode unavailable")
+    if not structure_context and not ring_signal:
+        home_blockers.append("Structure context unavailable and footprint/ring context unavailable")
+    if not near_structure_signal:
+        home_blockers.append("No near-structure vegetation/fuel signal available")
+    if not footprint_used:
+        home_blockers.append("Building footprint not found; using point-based fallback")
+        home_caveats.append("Home Ignition Vulnerability used point-based fallback instead of footprint rings.")
+
+    home_status: EligibilityStatus
+    if geocode_verified and near_structure_signal and (structure_context or ring_signal) and footprint_used and ring_signal:
+        home_status = "full"
+    elif geocode_verified and near_structure_signal and (structure_context or ring_signal):
+        home_status = "partial"
+    else:
+        home_status = "insufficient"
+
+    home_eligibility = ScoreEligibility(
+        eligible=home_status != "insufficient",
+        eligibility_status=home_status,
+        blocking_reasons=sorted(set(home_blockers)),
+        caveats=sorted(set(home_caveats)),
+    )
+
+    known_structure_count = sum(
+        1
+        for field in ["roof_type", "vent_type", "defensible_space_ft"]
+        if _structure_fact_known(payload, assumptions, field)
+    )
+    readiness_blockers: list[str] = []
+    readiness_caveats: list[str] = []
+    if site_status == "insufficient":
+        readiness_blockers.append("Site Hazard evidence is insufficient")
+    if home_status == "insufficient":
+        readiness_blockers.append("Home Ignition Vulnerability evidence is insufficient")
+    if known_structure_count < 2:
+        readiness_blockers.append("Too many unknown structure facts for readiness rules")
+    elif known_structure_count < 3:
+        readiness_caveats.append("Insurance Readiness is limited by unknown roof/vent/defensible-space attributes.")
+
+    readiness_status: EligibilityStatus
+    if site_status != "insufficient" and home_status != "insufficient" and known_structure_count >= 3:
+        readiness_status = "full"
+    elif site_status != "insufficient" and home_status != "insufficient" and known_structure_count >= 2:
+        readiness_status = "partial"
+    else:
+        readiness_status = "insufficient"
+
+    readiness_eligibility = ScoreEligibility(
+        eligible=readiness_status != "insufficient",
+        eligibility_status=readiness_status,
+        blocking_reasons=sorted(set(readiness_blockers)),
+        caveats=sorted(set(readiness_caveats)),
+    )
+
+    if "insufficient" in {site_status, home_status, readiness_status}:
+        assessment_status: AssessmentStatus = "insufficient_data"
+    elif {site_status, home_status, readiness_status} == {"full"}:
+        assessment_status = "fully_scored"
+    else:
+        assessment_status = "partially_scored"
+
+    assessment_blockers = sorted(
+        set(site_eligibility.blocking_reasons + home_eligibility.blocking_reasons + readiness_eligibility.blocking_reasons)
+    )
+    return site_eligibility, home_eligibility, readiness_eligibility, assessment_status, assessment_blockers
+
+
+def _apply_hard_trust_guardrails(
+    confidence: ConfidenceBlock,
+    *,
+    site_eligibility: ScoreEligibility,
+    home_eligibility: ScoreEligibility,
+    readiness_eligibility: ScoreEligibility,
+    assessment_status: AssessmentStatus,
+) -> tuple[ConfidenceBlock, list[str], list[str]]:
+    updated = confidence.model_copy(deep=True)
+    downgrade_reasons: list[str] = []
+    trust_tier_blockers: list[str] = []
+
+    if assessment_status == "insufficient_data":
+        updated.confidence_tier = "preliminary"
+        updated.use_restriction = "not_for_underwriting_or_binding"
+        downgrade_reasons.append("Minimum evidence requirements not met for one or more score families.")
+        trust_tier_blockers.append("Insufficient evidence for at least one score family.")
+    elif assessment_status == "partially_scored" and updated.confidence_tier == "high":
+        updated.confidence_tier = "moderate"
+        downgrade_reasons.append("Partial evidence path prevents high confidence.")
+        trust_tier_blockers.append("Assessment is partially scored.")
+
+    if site_eligibility.eligibility_status != "full":
+        trust_tier_blockers.append("Site Hazard evidence is partial or insufficient.")
+    if home_eligibility.eligibility_status != "full":
+        trust_tier_blockers.append("Home Ignition Vulnerability evidence is partial or insufficient.")
+    if readiness_eligibility.eligibility_status != "full":
+        trust_tier_blockers.append("Insurance Readiness evidence is partial or insufficient.")
+
+    if any("verified geocode unavailable" in r.lower() for r in site_eligibility.blocking_reasons + home_eligibility.blocking_reasons):
+        updated.confidence_tier = "preliminary"
+        updated.use_restriction = "not_for_underwriting_or_binding"
+        downgrade_reasons.append("Verified geocode unavailable.")
+        trust_tier_blockers.append("Verified geocode unavailable.")
+
+    if any("point-based fallback" in r.lower() for r in home_eligibility.blocking_reasons):
+        if updated.use_restriction == "shareable":
+            updated.use_restriction = "homeowner_review_recommended"
+        downgrade_reasons.append("Property-level footprint/ring context unavailable; point-based fallback used.")
+
+    if readiness_eligibility.eligibility_status == "insufficient":
+        updated.use_restriction = "not_for_underwriting_or_binding"
+    elif readiness_eligibility.eligibility_status == "partial" and updated.use_restriction == "shareable":
+        updated.use_restriction = "agent_or_inspector_review_recommended"
+
+    if downgrade_reasons:
+        updated.low_confidence_flags = sorted(set(updated.low_confidence_flags + downgrade_reasons))
+    return updated, sorted(set(downgrade_reasons)), sorted(set(trust_tier_blockers))
+
+
+def _build_assessment_diagnostics(
+    *,
+    data_provenance: DataProvenanceBlock,
+    confidence_downgrade_reasons: list[str],
+    trust_tier_blockers: list[str],
+) -> AssessmentDiagnostics:
+    critical_present: list[str] = []
+    critical_missing: list[str] = []
+    stale_inputs: list[str] = []
+    inferred_inputs: list[str] = []
+    heuristic_inputs: list[str] = []
+
+    for meta in data_provenance.inputs:
+        if meta.field_name in CRITICAL_PROVENANCE_FIELDS:
+            if meta.source_type in LOW_QUALITY_SOURCE_TYPES:
+                critical_missing.append(meta.field_name)
+            else:
+                critical_present.append(meta.field_name)
+        if meta.freshness_status == "stale":
+            stale_inputs.append(meta.field_name)
+        if meta.source_type in INFERRED_SOURCE_TYPES:
+            inferred_inputs.append(meta.field_name)
+        if meta.source_type == "heuristic":
+            heuristic_inputs.append(meta.field_name)
+
+    return AssessmentDiagnostics(
+        critical_inputs_present=sorted(set(critical_present)),
+        critical_inputs_missing=sorted(set(critical_missing)),
+        stale_inputs=sorted(set(stale_inputs)),
+        inferred_inputs=sorted(set(inferred_inputs)),
+        heuristic_inputs=sorted(set(heuristic_inputs)),
+        confidence_downgrade_reasons=sorted(set(confidence_downgrade_reasons)),
+        trust_tier_blockers=sorted(set(trust_tier_blockers)),
+    )
+
+
 def _merge_property_drivers(base_drivers: list[str], property_findings: list[str]) -> list[str]:
     if not property_findings:
         return base_drivers[:3]
@@ -1287,6 +1516,19 @@ def _run_assessment(
         )
     )
     (
+        site_hazard_eligibility,
+        home_vulnerability_eligibility,
+        insurance_readiness_eligibility,
+        assessment_status,
+        assessment_blockers,
+    ) = _build_score_eligibility(
+        payload=payload,
+        context=context,
+        property_level_context=property_level_context,
+        assumptions=assumptions_block,
+        geocode_verified=True,
+    )
+    (
         site_hazard_input_quality,
         home_vulnerability_input_quality,
         insurance_readiness_input_quality,
@@ -1298,6 +1540,18 @@ def _run_assessment(
         property_level_context=property_level_context,
         environmental_layer_status=context.environmental_layer_status,
         data_provenance=data_provenance,
+    )
+    confidence_block, confidence_downgrade_reasons, trust_tier_blockers = _apply_hard_trust_guardrails(
+        confidence_block,
+        site_eligibility=site_hazard_eligibility,
+        home_eligibility=home_vulnerability_eligibility,
+        readiness_eligibility=insurance_readiness_eligibility,
+        assessment_status=assessment_status,
+    )
+    assessment_diagnostics = _build_assessment_diagnostics(
+        data_provenance=data_provenance,
+        confidence_downgrade_reasons=confidence_downgrade_reasons,
+        trust_tier_blockers=trust_tier_blockers + assessment_blockers,
     )
 
     property_findings = _build_property_findings(property_level_context)
@@ -1322,6 +1576,12 @@ def _run_assessment(
         readiness_blockers=readiness.readiness_blockers,
         confidence_block=confidence_block,
     )
+    if site_hazard_eligibility.caveats:
+        site_hazard_section.summary += " " + " ".join(site_hazard_eligibility.caveats[:2])
+    if home_vulnerability_eligibility.caveats:
+        home_ignition_section.summary += " " + " ".join(home_vulnerability_eligibility.caveats[:2])
+    if insurance_readiness_eligibility.caveats:
+        insurance_readiness_section.summary += " " + " ".join(insurance_readiness_eligibility.caveats[:2])
 
     scoring_notes = [
         ACCESS_PROVISIONAL_NOTE,
@@ -1372,6 +1632,12 @@ def _run_assessment(
         )
     if confidence_block.use_restriction == "not_for_underwriting_or_binding":
         scoring_notes.append("Current confidence gating: not for underwriting or binding decisions.")
+    if assessment_status != "fully_scored":
+        scoring_notes.append(
+            f"Assessment status is {assessment_status}; review blockers before using this output for high-trust decisions."
+        )
+    if assessment_blockers:
+        scoring_notes.append("Assessment blockers: " + ", ".join(assessment_blockers[:6]) + ".")
 
     explanation_summary = (
         f"Site Hazard: {site_hazard_score:.1f}/100. "
@@ -1458,6 +1724,12 @@ def _run_assessment(
         site_hazard_input_quality=site_hazard_input_quality,
         home_vulnerability_input_quality=home_vulnerability_input_quality,
         insurance_readiness_input_quality=insurance_readiness_input_quality,
+        site_hazard_eligibility=site_hazard_eligibility,
+        home_vulnerability_eligibility=home_vulnerability_eligibility,
+        insurance_readiness_eligibility=insurance_readiness_eligibility,
+        assessment_status=assessment_status,
+        assessment_blockers=assessment_blockers,
+        assessment_diagnostics=assessment_diagnostics,
         property_level_context=property_level_context,
         mitigation_plan=mitigation_plan,
         readiness_factors=readiness_factors,
@@ -1536,6 +1808,13 @@ def _run_assessment(
             "confidence_tier": result.confidence_tier,
             "use_restriction": result.use_restriction,
         },
+        "eligibility": {
+            "site_hazard": result.site_hazard_eligibility.model_dump(),
+            "home_ignition_vulnerability": result.home_vulnerability_eligibility.model_dump(),
+            "insurance_readiness": result.insurance_readiness_eligibility.model_dump(),
+            "assessment_status": result.assessment_status,
+            "assessment_blockers": result.assessment_blockers,
+        },
         "coverage": {
             "direct_data_coverage_score": result.direct_data_coverage_score,
             "inferred_data_coverage_score": result.inferred_data_coverage_score,
@@ -1548,6 +1827,7 @@ def _run_assessment(
             "home_vulnerability": result.home_vulnerability_input_quality.model_dump(),
             "insurance_readiness": result.insurance_readiness_input_quality.model_dump(),
         },
+        "assessment_diagnostics": result.assessment_diagnostics.model_dump(),
         "data_provenance": result.data_provenance.model_dump(),
         "assumptions_used": all_assumptions,
         "data_sources": all_sources,
@@ -1712,12 +1992,17 @@ def _build_report_export(
             "environmental_layer_status": result.environmental_layer_status,
             "data_provenance": result.data_provenance.model_dump(),
             "property_level_context": result.property_level_context,
+            "assessment_diagnostics": result.assessment_diagnostics.model_dump(),
         },
         wildfire_risk_summary={
             "wildfire_risk_score": result.wildfire_risk_score,
             "legacy_weighted_wildfire_risk_score": result.legacy_weighted_wildfire_risk_score,
             "site_hazard_score": result.site_hazard_score,
             "home_ignition_vulnerability_score": result.home_ignition_vulnerability_score,
+            "site_hazard_eligibility": result.site_hazard_eligibility.model_dump(),
+            "home_ignition_vulnerability_eligibility": result.home_vulnerability_eligibility.model_dump(),
+            "assessment_status": result.assessment_status,
+            "assessment_blockers": result.assessment_blockers,
             "score_summaries": result.score_summaries.model_dump(),
             "site_hazard_section": result.site_hazard_section.model_dump(),
             "home_ignition_vulnerability_section": result.home_ignition_vulnerability_section.model_dump(),
@@ -1730,6 +2015,7 @@ def _build_report_export(
         insurance_readiness_summary={
             "insurance_readiness_score": result.insurance_readiness_score,
             "insurance_readiness_section": result.insurance_readiness_section.model_dump(),
+            "insurance_readiness_eligibility": result.insurance_readiness_eligibility.model_dump(),
             "readiness_factors": [r.model_dump() for r in result.readiness_factors],
             "readiness_blockers": result.readiness_blockers,
             "readiness_penalties": result.readiness_penalties,
@@ -1754,6 +2040,8 @@ def _build_report_export(
             "confidence_tier": result.confidence_tier,
             "use_restriction": result.use_restriction,
             "low_confidence_flags": result.low_confidence_flags,
+            "assessment_status": result.assessment_status,
+            "assessment_blockers": result.assessment_blockers,
             "site_hazard_input_quality": result.site_hazard_input_quality.model_dump(),
             "home_vulnerability_input_quality": result.home_vulnerability_input_quality.model_dump(),
             "insurance_readiness_input_quality": result.insurance_readiness_input_quality.model_dump(),

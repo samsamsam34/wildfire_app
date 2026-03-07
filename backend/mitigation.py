@@ -154,7 +154,7 @@ def build_mitigation_plan(
     if (
         "High vegetation intensity near structure" in readiness_blockers
         or submodel_scores.get("vegetation_intensity_risk", 0) >= 65
-        or context.canopy_index >= 65
+        or ((context.canopy_index if context.canopy_index is not None else 0.0) >= 65)
     ):
         add_rec(
             title="Thin dense vegetation and break canopy continuity near the home",
