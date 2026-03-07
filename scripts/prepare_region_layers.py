@@ -201,7 +201,11 @@ def main() -> None:
     )
 
     prepared = manifest.get("prepared_layers", [])
+    attempted = manifest.get("attempted_layers", [])
+    discovered = manifest.get("discovered_layers", [])
     skipped = manifest.get("skipped_layers", [])
+    unsupported = manifest.get("unsupported_auto_discovery_layers", [])
+    required_blockers = manifest.get("required_blockers", [])
     failed = manifest.get("failed_layers", [])
     out_root = args.region_data_dir or "data/regions"
     manifest_path = None if args.dry_run else f"{out_root}/{args.region_id}/manifest.json"
@@ -212,8 +216,12 @@ def main() -> None:
                 "final_status": manifest.get("final_status"),
                 "preparation_status": manifest.get("preparation_status"),
                 "prepared_layers": prepared,
+                "attempted_layers": attempted,
+                "discovered_layers": discovered,
                 "skipped_layers": skipped,
+                "unsupported_auto_discovery_layers": unsupported,
                 "failed_layers": failed,
+                "required_blockers": required_blockers,
                 "slope_derived": manifest.get("slope_derived", False),
                 "archives_extracted": manifest.get("archives_extracted", False),
                 "auto_discovery_used": manifest.get("download_config", {}).get("auto_discover", False),

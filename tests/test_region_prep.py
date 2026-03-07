@@ -245,7 +245,27 @@ def test_dry_run_does_not_write_outputs(tmp_path):
         auto_discover=False,
     )
     assert manifest["preparation_status"] == "dry_run"
+    assert manifest["final_status"] == "dry_run_ready"
+    assert manifest["errors"] == []
     assert not (region_root / "dry_run_region").exists()
+    assert "dem" in manifest["attempted_layers"]
+    assert "fuel" in manifest["skipped_layers"]
+    assert "fuel" in manifest["unsupported_auto_discovery_layers"]
+
+
+def test_dry_run_with_no_layers_is_partial_not_failed(tmp_path):
+    manifest = prepare_region_layers(
+        region_id="dry_run_none_region",
+        display_name="Dry Run None Region",
+        bounds={"min_lon": 0.0, "min_lat": 0.0, "max_lon": 1.0, "max_lat": 1.0},
+        region_data_dir=tmp_path / "regions",
+        dry_run=True,
+        auto_discover=False,
+    )
+    assert manifest["preparation_status"] == "dry_run"
+    assert manifest["final_status"] == "dry_run_partial"
+    assert "dem" in manifest["required_blockers"]
+    assert manifest["errors"] == []
 
 
 def test_zip_archive_extraction_for_raster(tmp_path):
@@ -320,8 +340,8 @@ def test_checksum_verification_success_and_failure(tmp_path):
 
 
 def test_partial_mode_and_temp_cleanup_flags(monkeypatch, tmp_path):
-    sources = _sources(tmp_path, include_slope=True)
-    sources.pop("dem")
+    sources = _sources(tmp_path, include_slope=False)
+    sources.pop("fuel")
     monkeypatch.setattr(prep_region.urllib.request, "urlopen", lambda *_a, **_k: (_ for _ in ()).throw(TimeoutError("fail")))
     monkeypatch.setattr(prep_region.time, "sleep", lambda _s: None)
 
@@ -330,7 +350,7 @@ def test_partial_mode_and_temp_cleanup_flags(monkeypatch, tmp_path):
         display_name="Partial Region",
         bounds={"min_lon": 0.0, "min_lat": 0.0, "max_lon": 1.0, "max_lat": 1.0},
         layer_sources=sources,
-        layer_urls={"dem": "https://example.test/dem.tif"},
+        layer_urls={"fuel": "https://example.test/fuel.tif"},
         region_data_dir=tmp_path / "regions",
         allow_partial=True,
         keep_temp_on_failure=True,
@@ -339,9 +359,29 @@ def test_partial_mode_and_temp_cleanup_flags(monkeypatch, tmp_path):
     )
     assert partial["preparation_status"] == "partial"
     assert partial["final_status"] == "partial"
-    assert "dem" in partial["failed_layers"]
+    assert "fuel" in partial["failed_layers"]
+    assert "dem" not in partial["required_blockers"]
     assert partial["warnings"]
     assert (tmp_path / "regions" / "partial_region" / "_downloads").exists()
+
+
+def test_allow_partial_still_fails_when_minimum_layers_missing(monkeypatch, tmp_path):
+    sources = _sources(tmp_path, include_slope=True)
+    sources.pop("dem")
+    monkeypatch.setattr(prep_region.urllib.request, "urlopen", lambda *_a, **_k: (_ for _ in ()).throw(TimeoutError("fail")))
+    monkeypatch.setattr(prep_region.time, "sleep", lambda _s: None)
+    manifest = prepare_region_layers(
+        region_id="partial_minimum_fail_region",
+        display_name="Partial Minimum Fail Region",
+        bounds={"min_lon": 0.0, "min_lat": 0.0, "max_lon": 1.0, "max_lat": 1.0},
+        layer_sources=sources,
+        layer_urls={"dem": "https://example.test/dem.tif"},
+        region_data_dir=tmp_path / "regions",
+        allow_partial=True,
+        auto_discover=False,
+    )
+    assert manifest["final_status"] == "failed"
+    assert "dem" in manifest["required_blockers"]
 
 
 def test_usgs_dem_adapter_resolves_assets(monkeypatch):

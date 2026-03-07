@@ -71,6 +71,7 @@ AUTOMATION_NOTES = {
 
 OPTIONAL_LAYER_KEYS = ("burn_probability", "wildfire_hazard", "moisture", "aspect")
 BASE_REQUIRED_KEYS = ("dem", "fuel", "canopy", "fire_perimeters", "building_footprints")
+MINIMUM_REQUIRED_KEYS = ("dem", "slope")
 
 
 @dataclass
@@ -1062,8 +1063,8 @@ def prepare_region_layers(
         layers_meta[layer_key] = layer_meta
         if layer_meta.get("extraction_performed"):
             archives_extracted = True
-        if layer_meta.get("validation_status") in {"missing", "error"}:
-            errors.append(f"{layer_key} preparation {layer_meta.get('validation_status')}")
+        if layer_meta.get("validation_status") == "error":
+            errors.append(f"{layer_key} preparation error")
 
     for layer_key in BASE_REQUIRED_KEYS:
         try:
@@ -1097,26 +1098,49 @@ def prepare_region_layers(
             _prepare_layer("slope")
         else:
             if dry_run:
-                files["slope"] = STANDARD_LAYER_FILENAMES["slope"]
-                layers_meta["slope"] = {
-                    "source_name": "dem.tif",
-                    "source_type": "derived_from_dem",
-                    "source_mode": "derived",
-                    "source_url": None,
-                    "dataset_version": (metadata.get("slope", {}) or {}).get("dataset_version"),
-                    "freshness_timestamp": (metadata.get("slope", {}) or {}).get("freshness_timestamp"),
-                    "downloaded_at": None,
-                    "download_status": "dry_run",
-                    "bytes_downloaded": 0,
-                    "extraction_performed": False,
-                    "extracted_path": None,
-                    "checksum_status": "not_provided",
-                    "retry_count_used": 0,
-                    "timeout_seconds": float(download_timeout),
-                    "clipped_to_bbox": True,
-                    "validation_status": "dry_run",
-                    "notes": "Slope will be derived from dem.tif because no slope source was provided.",
-                }
+                dem_ready = layers_meta.get("dem", {}).get("validation_status") in {"dry_run", "ok"}
+                if dem_ready:
+                    files["slope"] = STANDARD_LAYER_FILENAMES["slope"]
+                    layers_meta["slope"] = {
+                        "source_name": "dem.tif",
+                        "source_type": "derived_from_dem",
+                        "source_mode": "derived",
+                        "source_url": None,
+                        "dataset_version": (metadata.get("slope", {}) or {}).get("dataset_version"),
+                        "freshness_timestamp": (metadata.get("slope", {}) or {}).get("freshness_timestamp"),
+                        "downloaded_at": None,
+                        "download_status": "dry_run",
+                        "bytes_downloaded": 0,
+                        "extraction_performed": False,
+                        "extracted_path": None,
+                        "checksum_status": "not_provided",
+                        "retry_count_used": 0,
+                        "timeout_seconds": float(download_timeout),
+                        "clipped_to_bbox": True,
+                        "validation_status": "dry_run",
+                        "notes": "Slope will be derived from dem.tif because no slope source was provided.",
+                    }
+                else:
+                    layers_meta["slope"] = {
+                        "source_name": "slope",
+                        "source_type": "missing",
+                        "source_mode": "missing",
+                        "source_url": None,
+                        "dataset_version": (metadata.get("slope", {}) or {}).get("dataset_version"),
+                        "freshness_timestamp": (metadata.get("slope", {}) or {}).get("freshness_timestamp"),
+                        "downloaded_at": None,
+                        "download_status": "missing",
+                        "bytes_downloaded": 0,
+                        "extraction_performed": False,
+                        "extracted_path": None,
+                        "checksum_status": "not_provided",
+                        "retry_count_used": 0,
+                        "timeout_seconds": float(download_timeout),
+                        "clipped_to_bbox": False,
+                        "validation_status": "missing",
+                        "notes": "Slope cannot be derived in dry-run because dem is unavailable.",
+                    }
+                    warnings.append("Slope dry-run skipped because dem was not available for derivation.")
             else:
                 dem_prepared = region_dir / STANDARD_LAYER_FILENAMES["dem"]
                 slope_out = region_dir / STANDARD_LAYER_FILENAMES["slope"]
@@ -1175,6 +1199,7 @@ def prepare_region_layers(
         try:
             _prepare_layer(optional_layer)
         except Exception as exc:
+            errors.append(f"{optional_layer} optional layer preparation failed: {exc}")
             warnings.append(f"{optional_layer} optional layer preparation failed: {exc}")
             layers_meta[optional_layer] = {
                 "source_name": optional_layer,
@@ -1196,23 +1221,60 @@ def prepare_region_layers(
                 "notes": str(exc),
             }
 
-    required_missing = [k for k in REQUIRED_REGION_FILES if k not in files]
-    if required_missing:
-        errors.extend([f"{k} output missing after preparation" for k in required_missing])
-
+    requested_layers = set((layer_sources or {}).keys()) | set((layer_urls or {}).keys())
     prepared_layers = sorted([k for k, v in layers_meta.items() if v.get("validation_status") == "ok"])
     skipped_layers = sorted([k for k, v in layers_meta.items() if v.get("validation_status") == "missing"])
     failed_layers = sorted([k for k, v in layers_meta.items() if v.get("validation_status") == "error"])
+    attempted_layers = sorted(
+        [
+            k
+            for k, v in layers_meta.items()
+            if v.get("validation_status") in {"ok", "error", "dry_run"} and v.get("source_mode") != "missing"
+        ]
+    )
+    discovered_layers = sorted([k for k, v in layers_meta.items() if bool(v.get("discovered_source"))])
+    unsupported_auto_discovery_layers = sorted(
+        [
+            k
+            for k, v in layers_meta.items()
+            if auto_discover
+            and v.get("validation_status") == "missing"
+            and k not in requested_layers
+            and not bool(v.get("discovered_source"))
+        ]
+    )
+
+    full_required_missing = [k for k in REQUIRED_REGION_FILES if k not in files]
+    minimum_required_missing = [k for k in MINIMUM_REQUIRED_KEYS if k not in files]
+    required_blockers = minimum_required_missing if (allow_partial or dry_run) else full_required_missing
+
+    for layer_key in skipped_layers:
+        if layer_key in unsupported_auto_discovery_layers:
+            warnings.append(
+                f"{layer_key} skipped: no source provided and auto-discovery support is unavailable or unresolved."
+            )
+        elif layer_key not in requested_layers:
+            warnings.append(f"{layer_key} skipped: no source provided.")
+
+    if required_blockers:
+        blocker_scope = "minimum" if allow_partial else "full"
+        for layer_key in required_blockers:
+            warnings.append(f"Required ({blocker_scope}) layer missing: {layer_key}.")
+            if not dry_run:
+                errors.append(f"{layer_key} required output missing after preparation")
 
     if dry_run:
         preparation_status = "dry_run"
-        final_status = "failed" if required_missing else "success"
-    elif errors and allow_partial:
+        final_status = "dry_run_ready" if not required_blockers and not errors else "dry_run_partial"
+    elif errors and allow_partial and not minimum_required_missing:
         preparation_status = "partial"
         final_status = "partial"
     elif errors:
         preparation_status = "failed"
         final_status = "failed"
+    elif allow_partial and full_required_missing:
+        preparation_status = "partial"
+        final_status = "partial"
     else:
         preparation_status = "prepared"
         final_status = "success"
@@ -1238,8 +1300,14 @@ def prepare_region_layers(
         "files": files,
         "layers": layers_meta,
         "prepared_layers": prepared_layers,
+        "attempted_layers": attempted_layers,
+        "discovered_layers": discovered_layers,
         "skipped_layers": skipped_layers,
+        "unsupported_auto_discovery_layers": unsupported_auto_discovery_layers,
         "failed_layers": failed_layers,
+        "required_blockers": required_blockers,
+        "minimum_required_missing": minimum_required_missing,
+        "full_required_missing": full_required_missing,
         "warnings": sorted(set(warnings)),
         "errors": sorted(set(errors)),
         "download_config": {

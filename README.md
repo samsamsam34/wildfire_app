@@ -340,6 +340,14 @@ Common hardening flags:
 - `--no-auto-discovery`: disable dataset discovery adapters and require explicit sources
 - optional per-layer checksum flags (for example `--dem-checksum sha256:<hex>`, `--fuel-checksum sha256:<hex>`)
 
+Dry-run and partial semantics:
+- `dry-run` does not execute clipping/download outputs and does not write a manifest.
+- `final_status=dry_run_ready` means minimum prep evidence is available (`dem` + derivable `slope`), even if other layers are skipped.
+- `final_status=dry_run_partial` means minimum prep evidence is not yet available.
+- skipped layers without configured sources are reported in `skipped_layers` / `unsupported_auto_discovery_layers` as warnings (not hard errors).
+- `allow_partial` can return `final_status=partial` when minimum layers are ready but non-minimum layers fail/skip.
+- actual `failed` status is reserved for true execution/config/validation failures or missing minimum required layers.
+
 Auto-discovery pilot flow:
 
 ```bash
