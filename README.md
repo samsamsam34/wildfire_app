@@ -29,6 +29,45 @@ Current release: **Step 5 enterprise operations layer** on top of the Step 2/3/4
 
 Report endpoints accept `?audience=homeowner|agent|inspector|insurer` (and compatibility alias `audience_mode`).
 
+### Homeowner Simulation API
+`POST /risk/simulate` supports:
+- simulate from an existing assessment (`assessment_id`)
+- or simulate directly from `address` + base `attributes`
+
+Example request:
+
+```json
+{
+  "assessment_id": "abc123",
+  "scenario_name": "Defensible space + roof upgrade",
+  "scenario_overrides": {
+    "roof_type": "class_a",
+    "defensible_space_ft": 30
+  }
+}
+```
+
+Example response excerpt:
+
+```json
+{
+  "base_scores": {
+    "wildfire_risk_score": 71,
+    "insurance_readiness_score": 58
+  },
+  "simulated_scores": {
+    "wildfire_risk_score": 48,
+    "insurance_readiness_score": 79
+  },
+  "score_delta": {
+    "wildfire_risk_score_delta": -23,
+    "insurance_readiness_score_delta": 21
+  }
+}
+```
+
+The response also includes `changed_inputs`, baseline/simulated assumptions, and baseline/simulated confidence blocks for homeowner explainability.
+
 ### Portfolio and Batch
 - `POST /portfolio/assess`
 - `GET /portfolio`

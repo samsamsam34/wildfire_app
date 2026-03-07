@@ -636,6 +636,24 @@ def _run_assessment(
     return result, debug_payload
 
 
+def _compute_assessment(
+    payload: AddressRequest,
+    *,
+    organization_id: str,
+    ruleset: UnderwritingRuleset,
+    portfolio_name: str | None = None,
+    tags: list[str] | None = None,
+) -> AssessmentResult:
+    result, _ = _run_assessment(
+        payload,
+        organization_id=organization_id,
+        ruleset=ruleset,
+        portfolio_name=portfolio_name,
+        tags=tags,
+    )
+    return result
+
+
 def _payload_from_assessment(existing: AssessmentResult) -> AddressRequest:
     return AddressRequest(
         address=existing.address,
@@ -1246,7 +1264,7 @@ def assess_risk(
 
     ruleset = _get_ruleset_or_default(payload.ruleset_id)
 
-    result, _ = _run_assessment(
+    result = _compute_assessment(
         payload,
         organization_id=organization_id,
         ruleset=ruleset,
@@ -1291,7 +1309,7 @@ def reassess_risk(
         organization_id=existing.organization_id,
         ruleset_id=ruleset.ruleset_id,
     )
-    result, _ = _run_assessment(
+    result = _compute_assessment(
         req,
         organization_id=existing.organization_id,
         ruleset=ruleset,
@@ -1360,7 +1378,7 @@ def simulate_risk(
         ruleset_id=ruleset.ruleset_id,
     )
 
-    baseline, _ = _run_assessment(
+    baseline = _compute_assessment(
         baseline_req,
         organization_id=org_id,
         ruleset=ruleset,
@@ -1377,7 +1395,7 @@ def simulate_risk(
         organization_id=org_id,
         ruleset_id=ruleset.ruleset_id,
     )
-    simulated, _ = _run_assessment(
+    simulated = _compute_assessment(
         simulated_req,
         organization_id=org_id,
         ruleset=ruleset,
