@@ -32,6 +32,30 @@
       p { margin: 0; color: var(--muted); }
       .row { display: grid; gap: 0.65rem; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
       .results { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
+      .facts-card { background: #fffefb; border-color: #e5dbc9; }
+      .facts-head { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; }
+      .optional-badge {
+        font-size: 0.74rem;
+        color: #7c5e2b;
+        border: 1px solid #e7d8bc;
+        background: #fff4dd;
+        padding: 0.18rem 0.5rem;
+        border-radius: 999px;
+      }
+      .facts-help { margin-top: 0.25rem; }
+      .facts-why { margin-top: 0.45rem; font-size: 0.86rem; color: #8b6d35; }
+      .facts-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 0.9rem;
+        margin-top: 0.8rem;
+      }
+      .fact-field {
+        border: 1px solid #efe5d7;
+        border-radius: 12px;
+        padding: 0.72rem;
+        background: #fffdfa;
+      }
       label { display: block; font-size: 0.82rem; color: var(--muted); margin-bottom: 0.2rem; }
       input, select, button {
         width: 100%;
@@ -59,6 +83,7 @@
       table { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
       th, td { border-bottom: 1px solid var(--line); padding: 0.35rem 0.2rem; text-align: left; }
       @media (max-width: 640px) {
+        .facts-grid { grid-template-columns: 1fr; }
         .actions button { width: 100%; }
       }
     </style>
@@ -84,12 +109,16 @@
         </div>
       </section>
 
-      <section class="card">
-        <h2>2. Optional Home Facts</h2>
-        <p>Optional: If you know a few details about your home, they can improve the accuracy of the estimate.</p>
+      <section class="card facts-card">
+        <div class="facts-head">
+          <h2>2. Home details</h2>
+          <span class="optional-badge">Optional</span>
+        </div>
+        <p class="facts-help">If you know a few details about your home, they can improve the estimate. It's okay to leave anything as Unsure.</p>
+        <p class="facts-why">Why this helps: details like roof type and defensible space can improve accuracy and recommendations.</p>
 
-        <div class="row" style="margin-top:0.7rem;">
-          <div>
+        <div class="facts-grid">
+          <div class="fact-field">
             <label>Roof type</label>
             <select id="roof_type">
               <option value="">Unsure</option>
@@ -102,7 +131,7 @@
             <input id="roof_type_other" class="other-input" placeholder="Enter roof type" />
           </div>
 
-          <div>
+          <div class="fact-field">
             <label>Vent protection</label>
             <select id="vent_type">
               <option value="">Unsure</option>
@@ -114,7 +143,7 @@
             <input id="vent_type_other" class="other-input" placeholder="Enter vent type" />
           </div>
 
-          <div>
+          <div class="fact-field">
             <label>Siding material</label>
             <select id="siding_type">
               <option value="">Unsure</option>
@@ -127,8 +156,8 @@
             <input id="siding_type_other" class="other-input" placeholder="Enter siding material" />
           </div>
 
-          <div>
-            <label>Deck or fence attached to house</label>
+          <div class="fact-field">
+            <label>Deck or fence attached to the house</label>
             <select id="deck_attachment">
               <option value="">Unsure</option>
               <option value="no_deck_attached">No deck attached</option>
@@ -140,7 +169,7 @@
             <input id="deck_attachment_other" class="other-input" placeholder="Enter deck/fence detail" />
           </div>
 
-          <div>
+          <div class="fact-field">
             <label>Defensible space around the home</label>
             <select id="defensible_space">
               <option value="">Unsure</option>
@@ -151,7 +180,7 @@
             </select>
           </div>
 
-          <div>
+          <div class="fact-field">
             <label>Approximate construction year</label>
             <select id="year_built">
               <option value="">Unsure</option>
