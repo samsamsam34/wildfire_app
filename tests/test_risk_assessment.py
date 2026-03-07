@@ -157,6 +157,9 @@ def _assert_core_contract(body: dict) -> None:
         "inferred_data_coverage_score",
         "missing_data_share",
         "data_provenance",
+        "site_hazard_input_quality",
+        "home_vulnerability_input_quality",
+        "insurance_readiness_input_quality",
         "property_level_context",
         "site_hazard_section",
         "home_ignition_vulnerability_section",
@@ -219,6 +222,20 @@ def _assert_core_contract(body: dict) -> None:
     assert "environmental_inputs_used" in body["data_provenance"]
     assert "property_inputs_used" in body["data_provenance"]
     assert "missing_inputs" in body["data_provenance"]
+    assert "inputs" in body["data_provenance"]
+    assert "summary" in body["data_provenance"]
+    assert "stale_data_share" in body["data_provenance"]["summary"]
+    for quality_key in [
+        "site_hazard_input_quality",
+        "home_vulnerability_input_quality",
+        "insurance_readiness_input_quality",
+    ]:
+        quality = body[quality_key]
+        assert "direct_coverage" in quality
+        assert "inferred_coverage" in quality
+        assert "stale_share" in quality
+        assert "missing_share" in quality
+        assert "heuristic_count" in quality
 
 
 def test_property_findings_from_ring_metrics_surface_in_assessment(monkeypatch, tmp_path):
@@ -1513,6 +1530,15 @@ def test_coverage_scores_and_provenance_reflect_missing_vs_user_inputs(monkeypat
     assert assessed["inferred_data_coverage_score"] > 0
     assert assessed["data_provenance"]["property_inputs_used"]["roof_type"]["source_type"] == "user_provided"
     assert assessed["data_provenance"]["property_inputs_used"]["zone_0_5_ft"]["source_type"] == "missing"
+    assert "summary" in assessed["data_provenance"]
+    assert "stale_data_share" in assessed["data_provenance"]["summary"]
+    assert "heuristic_input_count" in assessed["data_provenance"]["summary"]
+    assert "current_input_count" in assessed["data_provenance"]["summary"]
+    burn_meta = assessed["input_source_metadata"]["burn_probability"]
+    assert burn_meta["provider_status"] in {"ok", "missing", "error"}
+    assert burn_meta["freshness_status"] in {"current", "aging", "stale", "unknown"}
+    assert isinstance(burn_meta["used_in_scoring"], bool)
+    assert 0.0 <= float(burn_meta["confidence_weight"]) <= 1.0
 
 
 def test_confidence_reduces_when_ring_metrics_unavailable(monkeypatch, tmp_path):
@@ -1542,3 +1568,92 @@ def test_confidence_reduces_when_ring_metrics_unavailable(monkeypatch, tmp_path)
 
     assert assessed_with["confidence_score"] >= assessed_without["confidence_score"]
     assert assessed_without["property_level_context"]["fallback_mode"] == "point_based"
+
+
+def test_provenance_freshness_status_classification(monkeypatch, tmp_path):
+    monkeypatch.setenv("WF_LAYER_BURN_PROB_DATE", "2099-01-01")
+    monkeypatch.setenv("WF_LAYER_HAZARD_SEVERITY_DATE", "2010-01-01")
+    monkeypatch.setenv("WF_LAYER_SLOPE_DATE", "2018-01-01")
+    monkeypatch.setenv("WF_LAYER_FUEL_DATE", "2017-01-01")
+    monkeypatch.setenv("WF_LAYER_CANOPY_DATE", "2016-01-01")
+    monkeypatch.setenv("WF_LAYER_FIRE_PERIMETERS_DATE", "2015-01-01")
+
+    _setup(monkeypatch, tmp_path, _ctx(env=52.0, wildland=57.0, historic=49.0))
+    assessed = _run(_payload("Freshness Status Rd", {"roof_type": "class a", "vent_type": "ember-resistant"}))
+
+    burn = assessed["input_source_metadata"]["burn_probability"]
+    hazard = assessed["input_source_metadata"]["wildfire_hazard"]
+    assert burn["freshness_status"] in {"current", "aging", "stale", "unknown"}
+    assert hazard["freshness_status"] in {"current", "aging", "stale", "unknown"}
+    assert assessed["data_provenance"]["summary"]["stale_data_share"] >= 0.0
+
+
+def test_stale_critical_inputs_reduce_confidence_and_block_shareable(monkeypatch, tmp_path):
+    attrs = {
+        "roof_type": "class a",
+        "vent_type": "ember-resistant",
+        "defensible_space_ft": 40,
+        "construction_year": 2019,
+    }
+    fresh_ctx = _ctx(
+        env=40.0,
+        wildland=35.0,
+        historic=30.0,
+        ring_metrics={
+            "zone_0_5_ft": {"vegetation_density": 12.0},
+            "zone_5_30_ft": {"vegetation_density": 22.0},
+            "zone_30_100_ft": {"vegetation_density": 30.0},
+        },
+    )
+    _setup(monkeypatch, tmp_path, fresh_ctx)
+    fresh = _run(_payload("Fresh Inputs Ave", attrs, confirmed=["roof_type", "vent_type", "defensible_space_ft", "construction_year"]))
+
+    monkeypatch.setenv("WF_LAYER_BURN_PROB_DATE", "2010-01-01")
+    monkeypatch.setenv("WF_LAYER_HAZARD_SEVERITY_DATE", "2010-01-01")
+    monkeypatch.setenv("WF_LAYER_SLOPE_DATE", "2010-01-01")
+    monkeypatch.setenv("WF_LAYER_FUEL_DATE", "2010-01-01")
+    monkeypatch.setenv("WF_LAYER_CANOPY_DATE", "2010-01-01")
+    monkeypatch.setenv("WF_LAYER_FIRE_PERIMETERS_DATE", "2010-01-01")
+    stale_ctx = _ctx(
+        env=40.0,
+        wildland=35.0,
+        historic=30.0,
+        ring_metrics={
+            "zone_0_5_ft": {"vegetation_density": 12.0},
+            "zone_5_30_ft": {"vegetation_density": 22.0},
+            "zone_30_100_ft": {"vegetation_density": 30.0},
+        },
+    )
+    _setup(monkeypatch, tmp_path, stale_ctx)
+    stale = _run(_payload("Stale Inputs Ave", attrs, confirmed=["roof_type", "vent_type", "defensible_space_ft", "construction_year"]))
+
+    assert stale["confidence_score"] <= fresh["confidence_score"]
+    assert stale["confidence_tier"] in {"moderate", "low", "preliminary"}
+    assert stale["use_restriction"] != "shareable"
+    assert stale["data_provenance"]["summary"]["stale_data_share"] > 0.0
+
+
+def test_old_rows_without_provenance_defaults_are_readable(tmp_path):
+    store = AssessmentStore(str(tmp_path / "legacy_no_prov.db"))
+    legacy_payload = {
+        "assessment_id": "legacy-prov-1",
+        "address": "Legacy Provenance Ln",
+        "coordinates": {"latitude": 1.1, "longitude": 2.2},
+        "risk_scores": {"wildfire_risk_score": 44.0, "insurance_readiness_score": 61.0},
+        "risk_drivers": {"environmental": 45.0, "structural": 43.0, "access_exposure": 20.0},
+        "mitigation_recommendations": [{"action": "clear brush", "related_factor": "fuel"}],
+    }
+    conn = sqlite3.connect(tmp_path / "legacy_no_prov.db")
+    conn.execute(
+        "INSERT INTO assessments (assessment_id, created_at, payload_json, model_version) VALUES (?, datetime('now'), ?, ?)",
+        ("legacy-prov-1", json.dumps(legacy_payload), LEGACY_MODEL_VERSION),
+    )
+    conn.commit()
+    conn.close()
+
+    loaded = store.get("legacy-prov-1")
+    assert loaded is not None
+    assert loaded.data_provenance.summary.missing_data_share >= 0.0
+    assert isinstance(loaded.site_hazard_input_quality.model_dump(), dict)
+    assert isinstance(loaded.home_vulnerability_input_quality.model_dump(), dict)
+    assert isinstance(loaded.insurance_readiness_input_quality.model_dump(), dict)

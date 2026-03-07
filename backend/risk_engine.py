@@ -68,7 +68,7 @@ class RiskEngine:
 
         roof = (attrs.roof_type or "unknown").lower()
         vent = (attrs.vent_type or "unknown").lower()
-        defensible_ft = attrs.defensible_space_ft if attrs.defensible_space_ft is not None else 15.0
+        defensible_ft = attrs.defensible_space_ft
         ring_metrics = context.structure_ring_metrics or {}
         context_assumptions: List[str] = []
 

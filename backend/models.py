@@ -37,6 +37,8 @@ SourceType = Literal[
     "heuristic",
     "missing",
 ]
+FreshnessStatus = Literal["current", "aging", "stale", "unknown"]
+ProviderStatus = Literal["ok", "missing", "error"]
 
 
 class PropertyAttributes(BaseModel):
@@ -155,20 +157,47 @@ class ConfidenceBlock(BaseModel):
 
 
 class InputSourceMetadata(BaseModel):
+    field_name: str = ""
     source_type: SourceType
     source_name: str
+    provider_status: ProviderStatus = "ok"
+    freshness_status: FreshnessStatus = "unknown"
+    used_in_scoring: bool = True
+    confidence_weight: float = 0.0
     observed_at: Optional[str] = None
+    loaded_at: Optional[str] = None
     dataset_version: Optional[str] = None
-    spatial_resolution: Optional[str] = None
+    spatial_resolution_m: Optional[float] = None
+    source_class: Optional[str] = None
+    spatial_resolution: Optional[str] = None  # legacy compatibility
     details: Optional[str] = None
 
 
+class DataProvenanceSummary(BaseModel):
+    direct_data_coverage_score: float = 0.0
+    inferred_data_coverage_score: float = 0.0
+    missing_data_share: float = 0.0
+    stale_data_share: float = 0.0
+    heuristic_input_count: int = 0
+    current_input_count: int = 0
+
+
 class DataProvenanceBlock(BaseModel):
+    inputs: List[InputSourceMetadata] = Field(default_factory=list)
+    summary: DataProvenanceSummary = Field(default_factory=DataProvenanceSummary)
     environmental_inputs_used: Dict[str, InputSourceMetadata] = Field(default_factory=dict)
     property_inputs_used: Dict[str, InputSourceMetadata] = Field(default_factory=dict)
     inferred_inputs_used: List[str] = Field(default_factory=list)
     missing_inputs: List[str] = Field(default_factory=list)
     heuristic_inputs_used: List[str] = Field(default_factory=list)
+
+
+class ScoreFamilyInputQuality(BaseModel):
+    direct_coverage: float = 0.0
+    inferred_coverage: float = 0.0
+    stale_share: float = 0.0
+    missing_share: float = 0.0
+    heuristic_count: int = 0
 
 
 class ScoreSectionSummary(BaseModel):
@@ -289,6 +318,9 @@ class AssessmentResult(BaseModel):
     inferred_data_coverage_score: float = 0.0
     missing_data_share: float = 0.0
     data_provenance: DataProvenanceBlock = Field(default_factory=DataProvenanceBlock)
+    site_hazard_input_quality: ScoreFamilyInputQuality = Field(default_factory=ScoreFamilyInputQuality)
+    home_vulnerability_input_quality: ScoreFamilyInputQuality = Field(default_factory=ScoreFamilyInputQuality)
+    insurance_readiness_input_quality: ScoreFamilyInputQuality = Field(default_factory=ScoreFamilyInputQuality)
     property_level_context: Dict[str, object] = Field(default_factory=dict)
     mitigation_plan: List[MitigationAction]
     readiness_factors: List[ReadinessFactor] = Field(default_factory=list)

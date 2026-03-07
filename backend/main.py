@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import io
+import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable
@@ -43,7 +44,9 @@ from backend.models import (
     CSVImportRequest,
     CSVImportResponse,
     DataProvenanceBlock,
+    DataProvenanceSummary,
     EnvironmentalFactors,
+    FreshnessStatus,
     InputSourceMetadata,
     FactorBreakdown,
     Organization,
@@ -62,6 +65,7 @@ from backend.models import (
     SimulationRequest,
     SimulationResult,
     SimulationScenarioItem,
+    ScoreFamilyInputQuality,
     ScoreSummaries,
     ScoreSectionSummary,
     SubmodelScore,
@@ -130,6 +134,67 @@ STRUCTURAL_SUBMODELS = [
 ]
 
 CORE_FACT_FIELDS = {"roof_type", "vent_type", "defensible_space_ft", "construction_year"}
+DIRECT_SOURCE_TYPES = {"observed", "footprint_derived"}
+INFERRED_SOURCE_TYPES = {"user_provided", "public_record_inferred"}
+LOW_QUALITY_SOURCE_TYPES = {"missing", "heuristic"}
+
+FRESHNESS_POLICY_DEFAULTS_DAYS: dict[str, tuple[int, int]] = {
+    "environmental_raster": (180, 365),
+    "fire_history_layer": (365, 730),
+    "user_provided": (30, 180),
+    "public_record_inferred": (365, 1095),
+    "footprint_derived": (365, 1095),
+}
+
+CRITICAL_PROVENANCE_FIELDS = {
+    "burn_probability",
+    "wildfire_hazard",
+    "slope",
+    "fuel_model",
+    "canopy_cover",
+    "historic_fire_distance",
+    "wildland_distance",
+    "roof_type",
+    "vent_type",
+    "defensible_space_ft",
+    "zone_0_5_ft",
+    "zone_5_30_ft",
+}
+
+SCORE_FAMILY_FIELDS = {
+    "site_hazard": [
+        "burn_probability",
+        "wildfire_hazard",
+        "slope",
+        "fuel_model",
+        "canopy_cover",
+        "historic_fire_distance",
+        "wildland_distance",
+    ],
+    "home_vulnerability": [
+        "roof_type",
+        "vent_type",
+        "defensible_space_ft",
+        "vegetation_condition",
+        "construction_year",
+        "zone_0_5_ft",
+        "zone_5_30_ft",
+        "zone_30_100_ft",
+        "footprint_used",
+    ],
+    "insurance_readiness": [
+        "roof_type",
+        "vent_type",
+        "defensible_space_ft",
+        "construction_year",
+        "vegetation_condition",
+        "zone_0_5_ft",
+        "zone_5_30_ft",
+        "fuel_model",
+        "wildland_distance",
+        "historic_fire_distance",
+    ],
+}
 
 ALLOWED_ROLES: set[str] = {"admin", "underwriter", "broker", "inspector", "agent", "viewer"}
 WRITE_ROLES: set[str] = {"admin", "underwriter", "broker", "inspector", "agent"}
@@ -310,6 +375,7 @@ def _build_confidence(
     geocode_verified: bool,
     property_level_context: dict[str, Any],
     environmental_layer_status: dict[str, str],
+    data_provenance: DataProvenanceBlock | None = None,
 ) -> ConfidenceBlock:
     important_missing = len([m for m in assumptions.missing_inputs if m in CORE_FACT_FIELDS or m.endswith("_layer")])
     missing_layer_count = len([m for m in assumptions.missing_inputs if m.endswith("_layer")])
@@ -333,6 +399,19 @@ def _build_confidence(
         provider_health_score -= 10.0
     provider_health_score = max(0.0, min(100.0, provider_health_score))
 
+    provenance_summary = data_provenance.summary if data_provenance else DataProvenanceSummary()
+    stale_share = float(provenance_summary.stale_data_share or 0.0)
+    heuristic_count = int(provenance_summary.heuristic_input_count or 0)
+    critical_unknown_or_stale = 0
+    critical_provider_errors = 0
+    if data_provenance:
+        for meta in data_provenance.inputs:
+            if meta.field_name in CRITICAL_PROVENANCE_FIELDS:
+                if meta.provider_status == "error":
+                    critical_provider_errors += 1
+                if meta.source_type not in LOW_QUALITY_SOURCE_TYPES and meta.freshness_status in {"stale", "unknown"}:
+                    critical_unknown_or_stale += 1
+
     confidence = (
         0.5 * data_completeness_score
         + 0.3 * environmental_data_completeness
@@ -340,6 +419,9 @@ def _build_confidence(
     )
     confidence -= important_missing * 8.0
     confidence -= inferred_count * 3.0
+    confidence -= min(20.0, stale_share * 0.25)
+    confidence -= critical_unknown_or_stale * 3.5
+    confidence -= min(8.0, heuristic_count * 1.5)
     confidence += min(6.0, confirmed_core_count * 1.5)
     confidence = max(0.0, min(100.0, round(confidence, 1)))
 
@@ -356,6 +438,12 @@ def _build_confidence(
         low_confidence_flags.append("Address geocoding was not provider-verified")
     if not property_level_context.get("footprint_used"):
         low_confidence_flags.append("Building footprint unavailable; point-based property context used")
+    if stale_share > 0:
+        low_confidence_flags.append("Some inputs are stale relative to freshness policy")
+    if critical_unknown_or_stale > 0:
+        low_confidence_flags.append("Critical inputs have stale or unknown freshness metadata")
+    if heuristic_count > 0:
+        low_confidence_flags.append("Heuristic inputs are present in the scoring context")
     if any("provisional" in note.lower() for note in assumptions.assumptions_used):
         low_confidence_flags.append("Access scoring is provisional and not yet parcel/egress-based")
     if confidence < 70:
@@ -365,11 +453,22 @@ def _build_confidence(
     major_layer_failure = external_fail_count >= 1 or missing_layer_count >= 1 or provider_error_count >= 1
     multiple_critical_missing = important_missing >= 4
 
-    if confidence < 50 or not geocode_verified or severe_layer_failure or multiple_critical_missing:
+    if (
+        confidence < 50
+        or not geocode_verified
+        or severe_layer_failure
+        or multiple_critical_missing
+        or critical_provider_errors >= 1
+    ):
         confidence_tier = "preliminary"
-    elif confidence < 70:
+    elif confidence < 70 or stale_share >= 25.0 or critical_unknown_or_stale >= 3:
         confidence_tier = "low"
-    elif confidence < 85:
+    elif (
+        confidence < 85
+        or stale_share > 10.0
+        or critical_unknown_or_stale > 0
+        or heuristic_count > 1
+    ):
         confidence_tier = "moderate"
     elif major_layer_failure:
         confidence_tier = "moderate"
@@ -380,6 +479,9 @@ def _build_confidence(
         environmental_data_completeness < 90.0
         or not property_level_context.get("footprint_used")
         or provider_error_count > 0
+        or stale_share > 5.0
+        or critical_unknown_or_stale > 0
+        or heuristic_count > 1
     ):
         confidence_tier = "moderate"
 
@@ -392,7 +494,7 @@ def _build_confidence(
     else:
         use_restriction = "not_for_underwriting_or_binding"
 
-    if severe_layer_failure or missing_layer_count >= 2:
+    if severe_layer_failure or missing_layer_count >= 2 or stale_share >= 25.0 or critical_unknown_or_stale >= 3:
         use_restriction = "not_for_underwriting_or_binding"
 
     return ConfidenceBlock(
@@ -517,34 +619,210 @@ def _build_data_provenance(
     context: object,
     property_level_context: dict[str, Any],
 ) -> tuple[dict[str, InputSourceMetadata], DataProvenanceBlock, float, float, float]:
+    now_iso = datetime.now(tz=timezone.utc).isoformat()
     env_status = getattr(context, "environmental_layer_status", {}) or {}
-    env_sources: dict[str, InputSourceMetadata] = {}
-    env_specs = [
-        ("burn_probability", "Burn probability raster", "point"),
-        ("wildfire_hazard", "Wildfire hazard raster", "point"),
-        ("slope", "Slope raster/DEM", "point"),
-        ("fuel_model", "Fuel model raster", "100m neighborhood"),
-        ("canopy_cover", "Canopy raster", "100m neighborhood"),
-        ("historic_fire_distance", "Historical fire perimeters", "derived"),
-        ("wildland_distance", "Distance-to-wildland derivation", "derived"),
-    ]
-    for key, source_name, resolution in env_specs:
-        status_key = {
-            "wildfire_hazard": "hazard",
-            "fuel_model": "fuel",
-            "canopy_cover": "canopy",
-            "historic_fire_distance": "fire_history",
-        }.get(key, key)
-        layer_state = env_status.get(status_key, "missing")
-        env_sources[key] = InputSourceMetadata(
-            source_type="observed" if layer_state == "ok" else "missing",
+
+    def _int_env(name: str, default: int) -> int:
+        raw = os.getenv(name)
+        if raw is None:
+            return default
+        try:
+            parsed = int(raw)
+            return parsed if parsed > 0 else default
+        except ValueError:
+            return default
+
+    def _freshness_thresholds(source_class: str | None) -> tuple[int, int] | None:
+        if not source_class or source_class not in FRESHNESS_POLICY_DEFAULTS_DAYS:
+            return None
+        default_current, default_aging = FRESHNESS_POLICY_DEFAULTS_DAYS[source_class]
+        prefix = source_class.upper()
+        current_days = _int_env(f"WF_FRESHNESS_{prefix}_CURRENT_DAYS", default_current)
+        aging_days = _int_env(f"WF_FRESHNESS_{prefix}_AGING_DAYS", default_aging)
+        if aging_days < current_days:
+            aging_days = current_days
+        return current_days, aging_days
+
+    def _parse_iso(value: str | None) -> datetime | None:
+        if not value:
+            return None
+        v = value.strip()
+        if not v:
+            return None
+        try:
+            if len(v) == 10:
+                parsed = datetime.fromisoformat(v + "T00:00:00+00:00")
+            else:
+                parsed = datetime.fromisoformat(v.replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return parsed.astimezone(timezone.utc)
+        except ValueError:
+            return None
+
+    def _freshness_status(source_class: str | None, observed_at: str | None) -> FreshnessStatus:
+        if source_class in {"missing", "heuristic"}:
+            return "unknown"
+        thresholds = _freshness_thresholds(source_class)
+        observed_dt = _parse_iso(observed_at)
+        if thresholds is None or observed_dt is None:
+            return "unknown"
+        age_days = max(0.0, (datetime.now(tz=timezone.utc) - observed_dt).total_seconds() / 86400.0)
+        current_days, aging_days = thresholds
+        if age_days <= current_days:
+            return "current"
+        if age_days <= aging_days:
+            return "aging"
+        return "stale"
+
+    def _confidence_weight(source_type: str, provider_status: str, freshness: FreshnessStatus) -> float:
+        base = {
+            "observed": 1.0,
+            "footprint_derived": 0.95,
+            "user_provided": 0.8,
+            "public_record_inferred": 0.65,
+            "heuristic": 0.35,
+            "missing": 0.0,
+        }.get(source_type, 0.0)
+        provider_mult = {"ok": 1.0, "missing": 0.65, "error": 0.45}.get(provider_status, 0.6)
+        freshness_mult = {"current": 1.0, "aging": 0.85, "stale": 0.55, "unknown": 0.7}.get(freshness, 0.7)
+        return round(max(0.0, min(1.0, base * provider_mult * freshness_mult)), 2)
+
+    def _provider_status(layer_state: str) -> str:
+        if layer_state in {"ok", "missing", "error"}:
+            return layer_state
+        return "missing"
+
+    def _metadata(
+        *,
+        field_name: str,
+        source_type: str,
+        source_name: str,
+        provider_status: str = "ok",
+        source_class: str | None = None,
+        dataset_version: str | None = None,
+        observed_at: str | None = None,
+        spatial_resolution_m: float | None = None,
+        used_in_scoring: bool = True,
+        details: str | None = None,
+    ) -> InputSourceMetadata:
+        freshness = _freshness_status(source_class or source_type, observed_at)
+        return InputSourceMetadata(
+            field_name=field_name,
+            source_type=source_type,
             source_name=source_name,
-            spatial_resolution=resolution,
+            provider_status=provider_status,  # type: ignore[arg-type]
+            freshness_status=freshness,
+            used_in_scoring=used_in_scoring,
+            confidence_weight=_confidence_weight(source_type, provider_status, freshness),
+            observed_at=observed_at,
+            loaded_at=now_iso,
+            dataset_version=dataset_version,
+            spatial_resolution_m=spatial_resolution_m,
+            source_class=source_class,
+            details=details,
+        )
+
+    env_dataset_meta = {
+        "burn_probability": (
+            "Burn probability raster",
+            "environmental_raster",
+            os.getenv("WF_LAYER_BURN_PROB_VERSION"),
+            os.getenv("WF_LAYER_BURN_PROB_DATE"),
+            30.0,
+        ),
+        "wildfire_hazard": (
+            "Wildfire hazard severity raster",
+            "environmental_raster",
+            os.getenv("WF_LAYER_HAZARD_SEVERITY_VERSION"),
+            os.getenv("WF_LAYER_HAZARD_SEVERITY_DATE"),
+            30.0,
+        ),
+        "slope": (
+            "Slope raster/DEM",
+            "environmental_raster",
+            os.getenv("WF_LAYER_SLOPE_VERSION") or os.getenv("WF_LAYER_DEM_VERSION"),
+            os.getenv("WF_LAYER_SLOPE_DATE") or os.getenv("WF_LAYER_DEM_DATE"),
+            30.0,
+        ),
+        "fuel_model": (
+            "Fuel model raster",
+            "environmental_raster",
+            os.getenv("WF_LAYER_FUEL_VERSION"),
+            os.getenv("WF_LAYER_FUEL_DATE"),
+            100.0,
+        ),
+        "canopy_cover": (
+            "Canopy cover raster",
+            "environmental_raster",
+            os.getenv("WF_LAYER_CANOPY_VERSION"),
+            os.getenv("WF_LAYER_CANOPY_DATE"),
+            100.0,
+        ),
+        "historic_fire_distance": (
+            "Historical fire perimeter layer",
+            "fire_history_layer",
+            os.getenv("WF_LAYER_FIRE_PERIMETERS_VERSION"),
+            os.getenv("WF_LAYER_FIRE_PERIMETERS_DATE"),
+            250.0,
+        ),
+        "wildland_distance": (
+            "Distance-to-wildland derivation",
+            "environmental_raster",
+            os.getenv("WF_LAYER_FUEL_VERSION") or os.getenv("WF_LAYER_CANOPY_VERSION"),
+            os.getenv("WF_LAYER_FUEL_DATE") or os.getenv("WF_LAYER_CANOPY_DATE"),
+            100.0,
+        ),
+    }
+
+    env_value_getters = {
+        "burn_probability": getattr(context, "burn_probability", None),
+        "wildfire_hazard": getattr(context, "wildfire_hazard", None),
+        "slope": getattr(context, "slope", None),
+        "fuel_model": getattr(context, "fuel_model", None),
+        "canopy_cover": getattr(context, "canopy_cover", None),
+        "historic_fire_distance": getattr(context, "historic_fire_distance", None),
+        "wildland_distance": getattr(context, "wildland_distance", None),
+    }
+    env_status_keys = {
+        "burn_probability": "burn_probability",
+        "wildfire_hazard": "hazard",
+        "slope": "slope",
+        "fuel_model": "fuel",
+        "canopy_cover": "canopy",
+        "historic_fire_distance": "fire_history",
+        "wildland_distance": "fuel",
+    }
+
+    env_sources: dict[str, InputSourceMetadata] = {}
+    for field, value in env_value_getters.items():
+        status_key = env_status_keys[field]
+        layer_state = env_status.get(status_key, "missing")
+        provider = _provider_status(layer_state)
+        if field == "wildland_distance" and value is not None:
+            provider = "ok"
+        source_name, source_class, dataset_version, observed_at, resolution_m = env_dataset_meta[field]
+        if value is not None and provider == "ok":
+            source_type = "observed"
+            obs_date = observed_at or now_iso
+        else:
+            source_type = "missing"
+            obs_date = observed_at
+        env_sources[field] = _metadata(
+            field_name=field,
+            source_type=source_type,
+            source_name=source_name,
+            provider_status=provider,
+            source_class=source_class,
+            dataset_version=dataset_version,
+            observed_at=obs_date,
+            spatial_resolution_m=resolution_m,
+            used_in_scoring=True,
             details=f"layer_status={layer_state}",
         )
 
     property_sources: dict[str, InputSourceMetadata] = {}
-    for field in [
+    attr_fields = [
         "roof_type",
         "vent_type",
         "siding_type",
@@ -552,66 +830,156 @@ def _build_data_provenance(
         "defensible_space_ft",
         "construction_year",
         "vegetation_condition",
-    ]:
+    ]
+    for field in attr_fields:
         value = getattr(payload.attributes, field, None)
         if value is not None:
-            stype = "user_provided"
-            detail = "Provided by user at assessment time."
+            source_type = "user_provided"
+            source_class = "user_provided"
+            details = "Provided by homeowner/user."
+            observed_at = now_iso
         elif field in assumptions.inferred_inputs:
-            stype = "public_record_inferred" if field == "construction_year" else "heuristic"
-            detail = "Inferred due to missing user input."
+            source_type = "public_record_inferred" if field in {"construction_year"} else "heuristic"
+            source_class = source_type
+            details = "Inferred due to missing explicit input."
+            observed_at = None
         else:
-            stype = "missing"
-            detail = "Not provided."
-        property_sources[field] = InputSourceMetadata(
-            source_type=stype,
+            source_type = "missing"
+            source_class = "missing"
+            details = "Field not provided."
+            observed_at = None
+
+        property_sources[field] = _metadata(
+            field_name=field,
+            source_type=source_type,
             source_name="property_facts_form",
-            details=detail,
+            provider_status="ok",
+            source_class=source_class,
+            observed_at=observed_at,
+            used_in_scoring=field in {"roof_type", "vent_type", "defensible_space_ft", "construction_year"},
+            details=details,
         )
+
+    footprint_status = str(property_level_context.get("footprint_status", "not_found"))
+    footprint_provider_status = "ok"
+    if footprint_status in {"provider_unavailable", "not_found"}:
+        footprint_provider_status = "missing"
+    elif footprint_status == "error":
+        footprint_provider_status = "error"
+
+    footprint_used = bool(property_level_context.get("footprint_used"))
+    property_sources["footprint_used"] = _metadata(
+        field_name="footprint_used",
+        source_type="footprint_derived" if footprint_used else "missing",
+        source_name="building_footprint_lookup",
+        provider_status=footprint_provider_status,
+        source_class="footprint_derived",
+        dataset_version=os.getenv("WF_BUILDING_FOOTPRINT_VERSION"),
+        observed_at=os.getenv("WF_BUILDING_FOOTPRINT_DATE") or (now_iso if footprint_used else None),
+        used_in_scoring=False,
+        details=f"footprint_status={footprint_status}",
+    )
 
     rings = property_level_context.get("ring_metrics") if isinstance(property_level_context, dict) else None
     for zone_key in ["zone_0_5_ft", "zone_5_30_ft", "zone_30_100_ft"]:
         zone_data = rings.get(zone_key) if isinstance(rings, dict) else None
         density = zone_data.get("vegetation_density") if isinstance(zone_data, dict) else None
-        if density is not None:
-            stype = "footprint_derived"
-            detail = "Measured from building-footprint buffer ring."
-        else:
-            stype = "missing"
-            detail = "Footprint/ring metric unavailable."
-        property_sources[zone_key] = InputSourceMetadata(
-            source_type=stype,
+        source_type = "footprint_derived" if density is not None else "missing"
+        details = "Measured from building-footprint buffer ring." if density is not None else "Ring metric unavailable."
+        property_sources[zone_key] = _metadata(
+            field_name=zone_key,
+            source_type=source_type,
             source_name="building_footprint_ring_analysis",
-            spatial_resolution=zone_key.replace("zone_", "").replace("_", " "),
-            details=detail,
+            provider_status=footprint_provider_status if density is None else "ok",
+            source_class="footprint_derived",
+            dataset_version=os.getenv("WF_BUILDING_FOOTPRINT_VERSION"),
+            observed_at=os.getenv("WF_BUILDING_FOOTPRINT_DATE") or (now_iso if density is not None else None),
+            used_in_scoring=True,
+            spatial_resolution_m={"zone_0_5_ft": 1.5, "zone_5_30_ft": 9.1, "zone_30_100_ft": 30.5}[zone_key],
+            details=details,
         )
 
-    merged = {**env_sources, **property_sources}
-    total = max(1, len(merged))
-    direct_count = sum(1 for meta in merged.values() if meta.source_type in {"observed", "footprint_derived"})
-    inferred_count = sum(
-        1
-        for meta in merged.values()
-        if meta.source_type in {"user_provided", "public_record_inferred"}
+    property_sources["access_exposure"] = _metadata(
+        field_name="access_exposure",
+        source_type="heuristic",
+        source_name="synthetic_access_placeholder",
+        provider_status="ok",
+        source_class="heuristic",
+        observed_at=None,
+        used_in_scoring=False,
+        details="Provisional synthetic placeholder; not parcel-verified and not included in wildfire total.",
     )
-    missing_count = sum(1 for meta in merged.values() if meta.source_type in {"missing", "heuristic"})
+
+    merged = {**env_sources, **property_sources}
+    inputs = [merged[key] for key in sorted(merged.keys())]
+    total = max(1, len(inputs))
+
+    direct_count = sum(1 for meta in inputs if meta.source_type in DIRECT_SOURCE_TYPES)
+    inferred_count = sum(1 for meta in inputs if meta.source_type in INFERRED_SOURCE_TYPES)
+    missing_count = sum(1 for meta in inputs if meta.source_type in LOW_QUALITY_SOURCE_TYPES)
+    stale_count = sum(1 for meta in inputs if meta.freshness_status == "stale")
+    current_count = sum(1 for meta in inputs if meta.freshness_status == "current")
 
     direct_score = round((direct_count / total) * 100.0, 1)
     inferred_score = round((inferred_count / total) * 100.0, 1)
     missing_share = round((missing_count / total) * 100.0, 1)
+    stale_share = round((stale_count / total) * 100.0, 1)
 
+    summary = DataProvenanceSummary(
+        direct_data_coverage_score=direct_score,
+        inferred_data_coverage_score=inferred_score,
+        missing_data_share=missing_share,
+        stale_data_share=stale_share,
+        heuristic_input_count=sum(1 for meta in inputs if meta.source_type == "heuristic"),
+        current_input_count=current_count,
+    )
     provenance = DataProvenanceBlock(
+        inputs=inputs,
+        summary=summary,
         environmental_inputs_used=env_sources,
         property_inputs_used=property_sources,
         inferred_inputs_used=sorted(
             key
             for key, meta in merged.items()
-            if meta.source_type in {"user_provided", "public_record_inferred"}
+            if meta.source_type in INFERRED_SOURCE_TYPES
         ),
         missing_inputs=sorted(key for key, meta in merged.items() if meta.source_type == "missing"),
         heuristic_inputs_used=sorted(key for key, meta in merged.items() if meta.source_type == "heuristic"),
     )
     return merged, provenance, direct_score, inferred_score, missing_share
+
+
+def _score_family_quality(
+    input_source_metadata: dict[str, InputSourceMetadata],
+    fields: list[str],
+) -> ScoreFamilyInputQuality:
+    selected = [input_source_metadata[k] for k in fields if k in input_source_metadata]
+    if not selected:
+        return ScoreFamilyInputQuality()
+
+    total = float(len(selected))
+    direct = sum(1 for meta in selected if meta.source_type in DIRECT_SOURCE_TYPES)
+    inferred = sum(1 for meta in selected if meta.source_type in INFERRED_SOURCE_TYPES)
+    stale = sum(1 for meta in selected if meta.freshness_status == "stale")
+    missing = sum(1 for meta in selected if meta.source_type == "missing")
+    heuristic = sum(1 for meta in selected if meta.source_type == "heuristic")
+
+    return ScoreFamilyInputQuality(
+        direct_coverage=round((direct / total) * 100.0, 1),
+        inferred_coverage=round((inferred / total) * 100.0, 1),
+        stale_share=round((stale / total) * 100.0, 1),
+        missing_share=round((missing / total) * 100.0, 1),
+        heuristic_count=heuristic,
+    )
+
+
+def _build_score_family_input_quality(
+    input_source_metadata: dict[str, InputSourceMetadata],
+) -> tuple[ScoreFamilyInputQuality, ScoreFamilyInputQuality, ScoreFamilyInputQuality]:
+    site_quality = _score_family_quality(input_source_metadata, SCORE_FAMILY_FIELDS["site_hazard"])
+    home_quality = _score_family_quality(input_source_metadata, SCORE_FAMILY_FIELDS["home_vulnerability"])
+    readiness_quality = _score_family_quality(input_source_metadata, SCORE_FAMILY_FIELDS["insurance_readiness"])
+    return site_quality, home_quality, readiness_quality
 
 
 def _merge_property_drivers(base_drivers: list[str], property_findings: list[str]) -> list[str]:
@@ -910,13 +1278,6 @@ def _run_assessment(
         geocode_verified=True,
     )
     all_assumptions = assumptions_block.assumptions_used
-    confidence_block = _build_confidence(
-        assumptions_block,
-        environmental_data_completeness=environmental_data_completeness,
-        geocode_verified=True,
-        property_level_context=property_level_context,
-        environmental_layer_status=context.environmental_layer_status,
-    )
     input_source_metadata, data_provenance, direct_data_coverage_score, inferred_data_coverage_score, missing_data_share = (
         _build_data_provenance(
             payload=payload,
@@ -924,6 +1285,19 @@ def _run_assessment(
             context=context,
             property_level_context=property_level_context,
         )
+    )
+    (
+        site_hazard_input_quality,
+        home_vulnerability_input_quality,
+        insurance_readiness_input_quality,
+    ) = _build_score_family_input_quality(input_source_metadata)
+    confidence_block = _build_confidence(
+        assumptions_block,
+        environmental_data_completeness=environmental_data_completeness,
+        geocode_verified=True,
+        property_level_context=property_level_context,
+        environmental_layer_status=context.environmental_layer_status,
+        data_provenance=data_provenance,
     )
 
     property_findings = _build_property_findings(property_level_context)
@@ -963,9 +1337,38 @@ def _run_assessment(
             )
     if not property_level_context.get("footprint_used"):
         scoring_notes.append("Building footprint not found — vulnerability estimated using point context.")
+    else:
+        scoring_notes.append("Structure ring metrics were derived from building-footprint context.")
     if data_provenance.heuristic_inputs_used:
         scoring_notes.append(
             "Heuristic inputs used: " + ", ".join(data_provenance.heuristic_inputs_used[:6]) + "."
+        )
+    if data_provenance.summary.stale_data_share > 0:
+        scoring_notes.append(
+            f"{data_provenance.summary.stale_data_share:.1f}% of tracked inputs are stale per freshness policy."
+        )
+    stale_fields = [meta.field_name for meta in data_provenance.inputs if meta.freshness_status == "stale"]
+    if stale_fields:
+        scoring_notes.append("Stale inputs: " + ", ".join(sorted(stale_fields)[:6]) + ".")
+    critical_unknown = [
+        meta.field_name
+        for meta in data_provenance.inputs
+        if meta.field_name in CRITICAL_PROVENANCE_FIELDS
+        and meta.freshness_status == "unknown"
+        and meta.source_type not in LOW_QUALITY_SOURCE_TYPES
+    ]
+    if critical_unknown:
+        scoring_notes.append(
+            "Critical inputs with unknown freshness: " + ", ".join(sorted(critical_unknown)[:6]) + "."
+        )
+    user_unverified_fields = [
+        meta.field_name
+        for meta in data_provenance.inputs
+        if meta.source_type == "user_provided" and meta.field_name in {"roof_type", "vent_type", "defensible_space_ft"}
+    ]
+    if user_unverified_fields:
+        scoring_notes.append(
+            "User-provided structure details are unverified: " + ", ".join(sorted(user_unverified_fields)) + "."
         )
     if confidence_block.use_restriction == "not_for_underwriting_or_binding":
         scoring_notes.append("Current confidence gating: not for underwriting or binding decisions.")
@@ -1052,6 +1455,9 @@ def _run_assessment(
         inferred_data_coverage_score=inferred_data_coverage_score,
         missing_data_share=missing_data_share,
         data_provenance=data_provenance,
+        site_hazard_input_quality=site_hazard_input_quality,
+        home_vulnerability_input_quality=home_vulnerability_input_quality,
+        insurance_readiness_input_quality=insurance_readiness_input_quality,
         property_level_context=property_level_context,
         mitigation_plan=mitigation_plan,
         readiness_factors=readiness_factors,
@@ -1134,6 +1540,13 @@ def _run_assessment(
             "direct_data_coverage_score": result.direct_data_coverage_score,
             "inferred_data_coverage_score": result.inferred_data_coverage_score,
             "missing_data_share": result.missing_data_share,
+            "stale_data_share": result.data_provenance.summary.stale_data_share,
+            "heuristic_input_count": result.data_provenance.summary.heuristic_input_count,
+        },
+        "score_family_input_quality": {
+            "site_hazard": result.site_hazard_input_quality.model_dump(),
+            "home_vulnerability": result.home_vulnerability_input_quality.model_dump(),
+            "insurance_readiness": result.insurance_readiness_input_quality.model_dump(),
         },
         "data_provenance": result.data_provenance.model_dump(),
         "assumptions_used": all_assumptions,
@@ -1335,9 +1748,15 @@ def _build_report_export(
             "direct_data_coverage_score": result.direct_data_coverage_score,
             "inferred_data_coverage_score": result.inferred_data_coverage_score,
             "missing_data_share": result.missing_data_share,
+            "stale_data_share": result.data_provenance.summary.stale_data_share,
+            "heuristic_input_count": result.data_provenance.summary.heuristic_input_count,
+            "current_input_count": result.data_provenance.summary.current_input_count,
             "confidence_tier": result.confidence_tier,
             "use_restriction": result.use_restriction,
             "low_confidence_flags": result.low_confidence_flags,
+            "site_hazard_input_quality": result.site_hazard_input_quality.model_dump(),
+            "home_vulnerability_input_quality": result.home_vulnerability_input_quality.model_dump(),
+            "insurance_readiness_input_quality": result.insurance_readiness_input_quality.model_dump(),
         },
         mitigation_recommendations=result.mitigation_plan,
     )

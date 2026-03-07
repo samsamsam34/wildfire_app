@@ -1045,17 +1045,102 @@ class AssessmentStore:
         for layer in ["burn_probability", "hazard", "slope", "fuel", "canopy", "fire_history"]:
             payload["environmental_layer_status"].setdefault(layer, "missing")
         payload.setdefault("input_source_metadata", {})
+        if isinstance(payload.get("input_source_metadata"), dict):
+            normalized_meta = {}
+            for field_name, raw_meta in payload["input_source_metadata"].items():
+                if not isinstance(raw_meta, dict):
+                    raw_meta = {}
+                normalized_meta[field_name] = {
+                    "field_name": raw_meta.get("field_name", field_name),
+                    "source_type": raw_meta.get("source_type", "missing"),
+                    "source_name": raw_meta.get("source_name", "legacy_unknown"),
+                    "provider_status": raw_meta.get("provider_status", "missing"),
+                    "freshness_status": raw_meta.get("freshness_status", "unknown"),
+                    "used_in_scoring": raw_meta.get("used_in_scoring", True),
+                    "confidence_weight": raw_meta.get("confidence_weight", 0.0),
+                    "observed_at": raw_meta.get("observed_at"),
+                    "loaded_at": raw_meta.get("loaded_at"),
+                    "dataset_version": raw_meta.get("dataset_version"),
+                    "spatial_resolution_m": raw_meta.get("spatial_resolution_m"),
+                    "source_class": raw_meta.get("source_class"),
+                    "spatial_resolution": raw_meta.get("spatial_resolution"),
+                    "details": raw_meta.get("details"),
+                }
+            payload["input_source_metadata"] = normalized_meta
         payload.setdefault("direct_data_coverage_score", 0.0)
         payload.setdefault("inferred_data_coverage_score", 0.0)
         payload.setdefault("missing_data_share", 100.0)
         payload.setdefault(
             "data_provenance",
             {
+                "inputs": [],
+                "summary": {
+                    "direct_data_coverage_score": payload.get("direct_data_coverage_score", 0.0),
+                    "inferred_data_coverage_score": payload.get("inferred_data_coverage_score", 0.0),
+                    "missing_data_share": payload.get("missing_data_share", 100.0),
+                    "stale_data_share": 0.0,
+                    "heuristic_input_count": 0,
+                    "current_input_count": 0,
+                },
                 "environmental_inputs_used": {},
                 "property_inputs_used": {},
                 "inferred_inputs_used": [],
                 "missing_inputs": [],
                 "heuristic_inputs_used": [],
+            },
+        )
+        if isinstance(payload.get("data_provenance"), dict):
+            prov = payload["data_provenance"]
+            prov.setdefault("inputs", [])
+            if not prov.get("inputs") and isinstance(payload.get("input_source_metadata"), dict):
+                prov["inputs"] = list(payload["input_source_metadata"].values())
+            prov.setdefault(
+                "summary",
+                {
+                    "direct_data_coverage_score": payload.get("direct_data_coverage_score", 0.0),
+                    "inferred_data_coverage_score": payload.get("inferred_data_coverage_score", 0.0),
+                    "missing_data_share": payload.get("missing_data_share", 100.0),
+                    "stale_data_share": 0.0,
+                    "heuristic_input_count": len(prov.get("heuristic_inputs_used", [])),
+                    "current_input_count": 0,
+                },
+            )
+            summary = prov.get("summary") if isinstance(prov.get("summary"), dict) else {}
+            summary.setdefault("direct_data_coverage_score", payload.get("direct_data_coverage_score", 0.0))
+            summary.setdefault("inferred_data_coverage_score", payload.get("inferred_data_coverage_score", 0.0))
+            summary.setdefault("missing_data_share", payload.get("missing_data_share", 100.0))
+            summary.setdefault("stale_data_share", 0.0)
+            summary.setdefault("heuristic_input_count", len(prov.get("heuristic_inputs_used", [])))
+            summary.setdefault("current_input_count", 0)
+            prov["summary"] = summary
+        payload.setdefault(
+            "site_hazard_input_quality",
+            {
+                "direct_coverage": 0.0,
+                "inferred_coverage": 0.0,
+                "stale_share": 0.0,
+                "missing_share": 0.0,
+                "heuristic_count": 0,
+            },
+        )
+        payload.setdefault(
+            "home_vulnerability_input_quality",
+            {
+                "direct_coverage": 0.0,
+                "inferred_coverage": 0.0,
+                "stale_share": 0.0,
+                "missing_share": 0.0,
+                "heuristic_count": 0,
+            },
+        )
+        payload.setdefault(
+            "insurance_readiness_input_quality",
+            {
+                "direct_coverage": 0.0,
+                "inferred_coverage": 0.0,
+                "stale_share": 0.0,
+                "missing_share": 0.0,
+                "heuristic_count": 0,
             },
         )
         if isinstance(payload.get("property_level_context"), dict):

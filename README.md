@@ -202,7 +202,17 @@ Assessment/report payloads include:
 - environmental quality: `environmental_layer_status` (`ok|missing|error` per key layer) and `environmental_data_completeness_score`
 - data coverage/provenance:
   - `direct_data_coverage_score`, `inferred_data_coverage_score`, `missing_data_share`
-  - `input_source_metadata` and `data_provenance` (environmental/property/inferred/missing/heuristic input summaries)
+  - `input_source_metadata` and `data_provenance` (per-input metadata + machine-readable summary)
+  - freshness/source quality metadata per input:
+    - `provider_status`: `ok|missing|error`
+    - `freshness_status`: `current|aging|stale|unknown`
+    - `used_in_scoring`, `confidence_weight`, `dataset_version`, `observed_at`, `loaded_at`
+  - provenance summary metrics:
+    - `stale_data_share`, `heuristic_input_count`, `current_input_count`
+  - score-family input quality rollups:
+    - `site_hazard_input_quality`
+    - `home_vulnerability_input_quality`
+    - `insurance_readiness_input_quality`
 - property-level context: `property_level_context.footprint_used` and `property_level_context.ring_metrics`
   - includes `footprint_status` (`used`, `not_found`, `provider_unavailable`, `error`) and `fallback_mode` (`footprint`, `point_based`) for fallback transparency
   - includes `fallback_mode` (`footprint` or `point_based`) for clear interpretation context
@@ -212,6 +222,7 @@ Assessment/report payloads include:
 
 If address geocoding cannot be verified, `/risk/assess` returns an error (no synthetic coordinate scoring in default behavior).
 Missing environmental layers are surfaced explicitly and do not silently default to neutral point values in the data layer.
+If critical inputs are stale/unknown or provider errors occur, confidence tier and use restriction are downgraded deterministically.
 
 ## Setup
 
@@ -231,6 +242,24 @@ export WF_LAYER_CANOPY_TIF="/path/to/canopy_density.tif"
 export WF_LAYER_MOISTURE_TIF="/path/to/moisture_or_dryness.tif"
 export WF_LAYER_FIRE_PERIMETERS_GEOJSON="/path/to/fire_perimeters.geojson"
 export WF_LAYER_BUILDING_FOOTPRINTS_GEOJSON="/path/to/building_footprints.geojson"
+
+# Optional provenance/freshness metadata (recommended for trust gating)
+export WF_LAYER_BURN_PROB_VERSION="v2025.10"
+export WF_LAYER_BURN_PROB_DATE="2025-10-01"
+export WF_LAYER_HAZARD_SEVERITY_VERSION="v2025.08"
+export WF_LAYER_HAZARD_SEVERITY_DATE="2025-08-15"
+export WF_LAYER_SLOPE_DATE="2024-06-01"
+export WF_LAYER_FUEL_DATE="2025-07-01"
+export WF_LAYER_CANOPY_DATE="2025-07-01"
+export WF_LAYER_FIRE_PERIMETERS_DATE="2025-01-01"
+export WF_BUILDING_FOOTPRINT_VERSION="county_release_2025"
+export WF_BUILDING_FOOTPRINT_DATE="2025-09-01"
+
+# Optional freshness policy overrides (days)
+export WF_FRESHNESS_ENVIRONMENTAL_RASTER_CURRENT_DAYS=180
+export WF_FRESHNESS_ENVIRONMENTAL_RASTER_AGING_DAYS=365
+export WF_FRESHNESS_FIRE_HISTORY_LAYER_CURRENT_DAYS=365
+export WF_FRESHNESS_FIRE_HISTORY_LAYER_AGING_DAYS=730
 
 uvicorn backend.main:app --reload
 ```
