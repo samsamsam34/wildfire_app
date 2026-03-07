@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import io
 import json
 import zipfile
@@ -123,6 +124,38 @@ def test_cli_style_bbox_parser_accepts_four_values():
     assert bbox["max_lat"] == 38.1
     with pytest.raises(ValueError):
         _parse_bbox_args(["-122.0", "38.1", "-123.0", "37.5"])
+
+
+def test_cli_checksum_metadata_builder():
+    from scripts.prepare_region_layers import _build_source_metadata_from_args
+
+    args = argparse.Namespace(
+        dem_checksum="sha256:abc123",
+        slope_checksum=None,
+        fuel_checksum="sha256:def456",
+        canopy_checksum=None,
+        fire_perimeters_checksum=None,
+        building_footprints_checksum="sha256:7890",
+        burn_probability_checksum=None,
+        wildfire_hazard_checksum=None,
+        moisture_checksum=None,
+        aspect_checksum=None,
+    )
+    meta = _build_source_metadata_from_args(args)
+    assert meta["dem"]["checksum"] == "sha256:abc123"
+    assert meta["fuel"]["checksum"] == "sha256:def456"
+    assert meta["building_footprints"]["checksum"] == "sha256:7890"
+    assert "slope" not in meta
+
+
+def test_archive_member_selection_rejects_ambiguous_candidates(tmp_path):
+    archive = tmp_path / "ambiguous_dem.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("tile_a.tif", b"fake")
+        zf.writestr("tile_b.tif", b"fake")
+    with pytest.raises(ValueError) as exc:
+        prep_region._select_archive_member(archive, layer_key="dem", layer_type="raster")
+    assert "ambiguous" in str(exc.value).lower()
 
 
 def test_prepare_region_local_mode_derives_slope(tmp_path):

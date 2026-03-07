@@ -231,7 +231,31 @@ def _select_archive_member(archive_path: Path, layer_key: str, layer_type: str) 
     candidates = [m for m in members if Path(m).suffix.lower() in suffixes]
     if not candidates:
         raise ValueError(f"{layer_key} archive has no usable {layer_type} files")
-    return candidates[0]
+
+    # Deterministic selection:
+    # 1) exact expected output filename if present (e.g., "dem.tif")
+    # 2) unique filename that includes the layer key
+    # 3) only-candidate fallback
+    expected_name = STANDARD_LAYER_FILENAMES.get(layer_key, "").lower()
+    exact_matches = [m for m in candidates if Path(m).name.lower() == expected_name]
+    if len(exact_matches) == 1:
+        return exact_matches[0]
+    if len(exact_matches) > 1:
+        raise ValueError(f"{layer_key} archive selection is ambiguous; multiple exact matches found")
+
+    key_matches = [m for m in candidates if layer_key in Path(m).name.lower()]
+    if len(key_matches) == 1:
+        return key_matches[0]
+    if len(key_matches) > 1:
+        raise ValueError(f"{layer_key} archive selection is ambiguous; multiple layer-matching files found")
+
+    if len(candidates) == 1:
+        return candidates[0]
+
+    raise ValueError(
+        f"{layer_key} archive selection is ambiguous; multiple candidates found: "
+        + ", ".join(Path(c).name for c in candidates[:5])
+    )
 
 
 def _extract_archive_layer(

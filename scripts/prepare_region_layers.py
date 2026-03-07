@@ -15,6 +15,27 @@ def _parse_bbox_args(values: Sequence[str]) -> dict[str, float]:
     raise ValueError("--bbox expects either one comma-delimited value or four numbers")
 
 
+def _build_source_metadata_from_args(args: argparse.Namespace) -> dict[str, dict[str, str]]:
+    checksum_flags = {
+        "dem": "dem_checksum",
+        "slope": "slope_checksum",
+        "fuel": "fuel_checksum",
+        "canopy": "canopy_checksum",
+        "fire_perimeters": "fire_perimeters_checksum",
+        "building_footprints": "building_footprints_checksum",
+        "burn_probability": "burn_probability_checksum",
+        "wildfire_hazard": "wildfire_hazard_checksum",
+        "moisture": "moisture_checksum",
+        "aspect": "aspect_checksum",
+    }
+    source_metadata: dict[str, dict[str, str]] = {}
+    for layer_key, attr_name in checksum_flags.items():
+        checksum = getattr(args, attr_name, None)
+        if checksum:
+            source_metadata[layer_key] = {"checksum": checksum}
+    return source_metadata
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
@@ -92,9 +113,37 @@ def main() -> None:
     parser.add_argument("--aspect", default=None)
     parser.add_argument("--aspect-url", default=None)
 
+    parser.add_argument("--dem-checksum", default=None, help="Optional checksum (sha256:<hex>) for DEM source")
+    parser.add_argument("--slope-checksum", default=None, help="Optional checksum (sha256:<hex>) for slope source")
+    parser.add_argument("--fuel-checksum", default=None, help="Optional checksum (sha256:<hex>) for fuel source")
+    parser.add_argument("--canopy-checksum", default=None, help="Optional checksum (sha256:<hex>) for canopy source")
+    parser.add_argument(
+        "--fire-perimeters-checksum",
+        default=None,
+        help="Optional checksum (sha256:<hex>) for fire perimeter source",
+    )
+    parser.add_argument(
+        "--building-footprints-checksum",
+        default=None,
+        help="Optional checksum (sha256:<hex>) for building-footprints source",
+    )
+    parser.add_argument(
+        "--burn-probability-checksum",
+        default=None,
+        help="Optional checksum (sha256:<hex>) for burn-probability source",
+    )
+    parser.add_argument(
+        "--wildfire-hazard-checksum",
+        default=None,
+        help="Optional checksum (sha256:<hex>) for wildfire-hazard source",
+    )
+    parser.add_argument("--moisture-checksum", default=None, help="Optional checksum (sha256:<hex>) for moisture source")
+    parser.add_argument("--aspect-checksum", default=None, help="Optional checksum (sha256:<hex>) for aspect source")
+
     args = parser.parse_args()
     display_name = args.display_name or args.region_id.replace("_", " ").title()
     bbox = _parse_bbox_args(args.bbox)
+    source_metadata = _build_source_metadata_from_args(args)
 
     layer_sources = {
         "dem": args.dem,
@@ -138,6 +187,7 @@ def main() -> None:
         region_data_dir=args.region_data_dir,
         crs=args.crs,
         copy_files=args.copy,
+        source_metadata=source_metadata,
         force=args.force,
         skip_download=args.skip_download,
         allow_partial=args.allow_partial,

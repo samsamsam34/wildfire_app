@@ -338,6 +338,7 @@ Common hardening flags:
 - `--clean-download-cache`: remove staging folders after run
 - `--allow-partial`: write partial manifest with explicit failed/missing layers
 - `--no-auto-discovery`: disable dataset discovery adapters and require explicit sources
+- optional per-layer checksum flags (for example `--dem-checksum sha256:<hex>`, `--fuel-checksum sha256:<hex>`)
 
 Auto-discovery pilot flow:
 
@@ -351,8 +352,8 @@ In this mode, the prep pipeline attempts to resolve source assets using adapters
 
 Archive handling:
 - `.zip` inputs are supported for raster/vector layer sources.
-- The preparer extracts deterministic candidates (`.tif/.tiff` for rasters, `.geojson/.json` for vectors).
-- If no valid candidate exists, prep fails clearly.
+- The preparer uses deterministic selection rules and fails clearly on ambiguous archives.
+- If no valid candidate exists (or multiple candidates cannot be resolved safely), prep fails clearly.
 
 Prepared region layout:
 
