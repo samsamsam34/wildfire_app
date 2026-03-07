@@ -107,6 +107,7 @@ def _assert_core_contract(body: dict) -> None:
         "weighted_contributions",
         "submodel_explanations",
         "factor_breakdown",
+        "property_findings",
         "top_risk_drivers",
         "top_protective_factors",
         "explanation_summary",
@@ -137,6 +138,39 @@ def _assert_core_contract(body: dict) -> None:
         assert sm in body["factor_breakdown"]["submodels"]
         assert "score" in body["submodel_scores"][sm]
         assert "weighted_contribution" in body["submodel_scores"][sm]
+
+
+def test_property_findings_from_ring_metrics_surface_in_assessment(monkeypatch, tmp_path):
+    ring_metrics = {
+        "ring_0_5_ft": {"vegetation_density": 82.0},
+        "ring_5_30_ft": {"vegetation_density": 74.0},
+        "ring_30_100_ft": {"vegetation_density": 68.0},
+    }
+    _setup(monkeypatch, tmp_path, _ctx(env=58.0, wildland=62.0, historic=50.0, ring_metrics=ring_metrics))
+
+    assessed = _run(
+        _payload(
+            "310 Ring Insight Way",
+            {
+                "roof_type": "class a",
+                "vent_type": "ember-resistant",
+                "defensible_space_ft": 18,
+            },
+        )
+    )
+
+    assert len(assessed["property_findings"]) >= 1
+    assert any("within 5 feet" in f.lower() for f in assessed["property_findings"])
+    assert any("30 feet" in f.lower() for f in assessed["property_findings"])
+    assert any("dense vegetation close to the home" == d for d in assessed["top_risk_drivers"])
+
+
+def test_property_findings_fallback_empty_when_ring_data_missing(monkeypatch, tmp_path):
+    _setup(monkeypatch, tmp_path, _ctx(env=45.0, wildland=45.0, historic=40.0, ring_metrics={}))
+
+    assessed = _run(_payload("311 No Ring Data Ln", {"defensible_space_ft": 20}))
+    assert "property_findings" in assessed
+    assert assessed["property_findings"] == []
 
 
 def _run(payload: dict) -> dict:
@@ -783,6 +817,7 @@ def test_structure_ring_summary_pipeline(monkeypatch):
     metrics = context_blob["ring_metrics"]
 
     assert context_blob["footprint_used"] is True
+    assert context_blob["footprint_status"] == "used"
     assert set(metrics.keys()) == {"ring_0_5_ft", "ring_5_30_ft", "ring_30_100_ft"}
     assert metrics["ring_0_5_ft"]["vegetation_density"] == 60.0
     assert metrics["ring_5_30_ft"]["canopy_mean"] == 62.0
@@ -809,6 +844,7 @@ def test_context_collect_fallback_when_footprint_unavailable(monkeypatch):
     ctx = client.collect_context(39.7392, -104.9903)
     assert ctx is not None
     assert ctx.property_level_context.get("footprint_used") is False
+    assert ctx.property_level_context.get("footprint_status") in {"not_found", "source_unavailable"}
     assert "ring_metrics" in ctx.property_level_context
 
 

@@ -216,6 +216,8 @@
         <div class="card">
           <h2>4. Why This Home May Be at Risk</h2>
           <p>These are the biggest factors affecting this home.</p>
+          <h3 style="margin-top:0.8rem;">Around the Home</h3>
+          <ul id="propertyFindings"><li class="muted">No structure-specific findings yet.</li></ul>
           <ul id="drivers"><li class="muted">No factors yet.</li></ul>
           <h3 style="margin-top:0.8rem;">What Is Helping Lower Risk</h3>
           <ul id="protective"><li class="muted">No protective factors yet.</li></ul>
@@ -223,7 +225,7 @@
 
         <div class="card">
           <h2>5. Best Next Steps</h2>
-          <p>Focus on the top actions first.</p>
+          <p id="nextStepsText">Focus on the top actions first.</p>
           <ul id="mitigations"><li class="muted">Recommendations will appear after assessment.</li></ul>
         </div>
       </section>
@@ -477,6 +479,43 @@
         return { label: "Lower risk", cls: "good" };
       }
 
+      function toNumber(value) {
+        const n = Number(value);
+        return Number.isFinite(n) ? n : null;
+      }
+
+      function inferPropertyFindingsFromContext(ctx) {
+        const rings = ctx?.ring_metrics;
+        if (!rings || typeof rings !== "object") return [];
+
+        const ring05 = toNumber(rings?.ring_0_5_ft?.vegetation_density);
+        const ring530 = toNumber(rings?.ring_5_30_ft?.vegetation_density);
+        const ring30100 = toNumber(rings?.ring_30_100_ft?.vegetation_density);
+        const findings = [];
+
+        if (ring05 !== null && ring05 >= 60) {
+          findings.push("Vegetation is dense very close to the home.");
+        }
+        if (ring530 !== null && ring530 >= 60) {
+          findings.push("Tree and shrub cover is elevated within 30 feet.");
+        }
+        if (ring30100 !== null && ring30100 >= 65) {
+          findings.push("Vegetation and fuels are elevated within 100 feet.");
+        }
+        if (ring05 !== null && ring530 !== null && ring530 - ring05 >= 20) {
+          findings.push("Conditions appear clearer right next to the home than farther out.");
+        }
+
+        return findings.slice(0, 3);
+      }
+
+      function getPropertyFindings(data) {
+        if (Array.isArray(data.property_findings) && data.property_findings.length > 0) {
+          return data.property_findings.slice(0, 3);
+        }
+        return inferPropertyFindingsFromContext(data.property_level_context || {});
+      }
+
       function renderAssessment(data) {
         latestAssessment = data;
 
@@ -488,8 +527,17 @@
         document.getElementById("riskLabel").textContent = riskMeta.label;
 
         document.getElementById("summaryText").textContent = data.explanation_summary || "No summary available yet.";
+        const propertyFindings = getPropertyFindings(data);
+        document.getElementById("propertyFindings").innerHTML = propertyFindings
+          .map(v => `<li>${v}</li>`)
+          .join("") || "<li class='muted'>No structure-specific findings available for this assessment.</li>";
+
         document.getElementById("drivers").innerHTML = (data.top_risk_drivers || []).slice(0, 3).map(v => `<li>${v}</li>`).join("") || "<li class='muted'>No factors listed.</li>";
         document.getElementById("protective").innerHTML = (data.top_protective_factors || []).slice(0, 3).map(v => `<li>${v}</li>`).join("") || "<li class='muted'>No factors listed.</li>";
+
+        document.getElementById("nextStepsText").textContent = propertyFindings.length
+          ? "These actions are prioritized using what we found around the structure."
+          : "Focus on the top actions first.";
 
         document.getElementById("mitigations").innerHTML = (data.mitigation_plan || []).slice(0, 3)
           .map(m => `<li><strong>${m.title}</strong>: ${m.reason}</li>`)

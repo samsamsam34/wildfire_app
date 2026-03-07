@@ -4,7 +4,7 @@ import csv
 import io
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Dict, Iterable
+from typing import Any, Dict, Iterable
 from uuid import uuid4
 
 from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Query
@@ -339,6 +339,72 @@ def _build_top_risk_drivers(submodels: dict[str, SubmodelScore]) -> list[str]:
     return [labels.get(name, name) for name, _ in ordered[:3]]
 
 
+def _density_from_ring(metrics: dict[str, object] | None) -> float | None:
+    if not isinstance(metrics, dict):
+        return None
+    value = metrics.get("vegetation_density")
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _build_property_findings(property_level_context: dict[str, Any]) -> list[str]:
+    if not isinstance(property_level_context, dict):
+        return []
+
+    rings = property_level_context.get("ring_metrics")
+    if not isinstance(rings, dict) or not rings:
+        return []
+
+    ring_0_5 = _density_from_ring(rings.get("ring_0_5_ft"))
+    ring_5_30 = _density_from_ring(rings.get("ring_5_30_ft"))
+    ring_30_100 = _density_from_ring(rings.get("ring_30_100_ft"))
+    findings: list[str] = []
+
+    if ring_0_5 is not None and ring_0_5 >= 60:
+        findings.append("Vegetation appears dense within 5 feet of the home.")
+    elif ring_0_5 is not None and ring_0_5 <= 30:
+        findings.append("The immediate 0-5 foot zone appears relatively clear.")
+
+    if ring_5_30 is not None and ring_5_30 >= 60:
+        findings.append("Tree or shrub cover is elevated within 30 feet of the structure.")
+    elif ring_5_30 is not None and ring_5_30 <= 35:
+        findings.append("Vegetation conditions within 30 feet look more manageable.")
+
+    if ring_30_100 is not None and ring_30_100 >= 65:
+        findings.append("Vegetation and fuels are elevated in the 30-100 foot zone around the home.")
+
+    if ring_0_5 is not None and ring_5_30 is not None and (ring_5_30 - ring_0_5) >= 20:
+        findings.append("Defensible space appears stronger very close to the home than farther out.")
+
+    return findings[:3]
+
+
+def _merge_property_drivers(base_drivers: list[str], property_findings: list[str]) -> list[str]:
+    if not property_findings:
+        return base_drivers[:3]
+
+    mapped: list[str] = []
+    for finding in property_findings:
+        text = finding.lower()
+        if "within 5 feet" in text:
+            mapped.append("dense vegetation close to the home")
+        elif "within 30 feet" in text:
+            mapped.append("limited defensible space within 30 feet")
+        elif "30-100 foot" in text:
+            mapped.append("elevated vegetation and fuels within 100 feet")
+
+    merged = mapped + base_drivers
+    unique: list[str] = []
+    for driver in merged:
+        if driver not in unique:
+            unique.append(driver)
+    return unique[:3]
+
+
 def _build_factor_breakdown(submodels: dict[str, SubmodelScore], risk: RiskComputation) -> FactorBreakdown:
     canonical = {name: round(submodels[name].score, 1) for name in CANONICAL_SUBMODELS if name in submodels}
     environmental = {name: canonical[name] for name in ENVIRONMENTAL_SUBMODELS if name in canonical}
@@ -498,7 +564,8 @@ def _run_assessment(
     assumptions_block = _build_assumption_tracking(payload, all_assumptions, all_sources)
     confidence_block = _build_confidence(assumptions_block)
 
-    top_risk_drivers = _build_top_risk_drivers(submodel_scores)
+    property_findings = _build_property_findings(context.property_level_context)
+    top_risk_drivers = _merge_property_drivers(_build_top_risk_drivers(submodel_scores), property_findings)
     top_protective_factors = _build_top_protective_factors(payload, submodel_scores)
 
     scoring_notes = [
@@ -554,6 +621,7 @@ def _run_assessment(
         submodel_scores=submodel_scores,
         weighted_contributions=weighted_contributions,
         submodel_explanations=submodel_explanations,
+        property_findings=property_findings,
         top_risk_drivers=top_risk_drivers,
         top_protective_factors=top_protective_factors,
         explanation_summary=explanation_summary,
@@ -788,6 +856,7 @@ def _build_report_export(
         wildfire_risk_summary={
             "wildfire_risk_score": result.wildfire_risk_score,
             "factor_breakdown": result.factor_breakdown.model_dump(),
+            "property_findings": result.property_findings,
             "top_risk_drivers": result.top_risk_drivers,
             "top_protective_factors": result.top_protective_factors,
             "weighted_contributions": {k: v.model_dump() for k, v in result.weighted_contributions.items()},

@@ -992,6 +992,7 @@ class AssessmentStore:
 
         payload.setdefault("top_risk_drivers", [])
         payload.setdefault("top_protective_factors", [])
+        payload.setdefault("property_findings", [])
         payload.setdefault("explanation_summary", payload.get("explanation", ""))
 
         payload.setdefault("confirmed_inputs", payload.get("assumptions", {}).get("confirmed_inputs", {}))

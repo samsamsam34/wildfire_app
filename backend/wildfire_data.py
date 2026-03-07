@@ -185,14 +185,32 @@ class WildfireDataClient:
         assumptions: list[str] = []
         sources: list[str] = []
 
-        result = self.footprints.get_building_footprint(lat, lon)
-        assumptions.extend(result.assumptions)
-
-        if not result.found or result.footprint is None:
+        try:
+            result = self.footprints.get_building_footprint(lat, lon)
+        except Exception as exc:  # pragma: no cover - defensive guard for malformed sources
+            assumptions.append(f"Building footprint lookup failed: {exc}")
             assumptions.append("Building footprint analysis unavailable; using point-based vegetation context.")
             return {
                 "footprint_used": False,
                 "footprint_found": False,
+                "footprint_status": "error",
+                "footprint_source": None,
+                "footprint_confidence": 0.0,
+                "ring_metrics": {},
+            }, assumptions, sources
+
+        assumptions.extend(result.assumptions)
+
+        if not result.found or result.footprint is None:
+            assumptions.append("Building footprint analysis unavailable; using point-based vegetation context.")
+            status = "not_found"
+            assumptions_blob = " ".join(result.assumptions).lower()
+            if "not configured" in assumptions_blob or "missing" in assumptions_blob:
+                status = "source_unavailable"
+            return {
+                "footprint_used": False,
+                "footprint_found": False,
+                "footprint_status": status,
                 "footprint_source": result.source,
                 "footprint_confidence": result.confidence,
                 "ring_metrics": {},
@@ -244,6 +262,7 @@ class WildfireDataClient:
         return {
             "footprint_used": bool(ring_metrics),
             "footprint_found": result.found,
+            "footprint_status": "used" if ring_metrics else "error",
             "footprint_source": result.source,
             "footprint_confidence": result.confidence,
             "ring_metrics": ring_metrics,
@@ -401,6 +420,7 @@ class WildfireDataClient:
         property_level_context: dict[str, Any] = {
             "footprint_used": False,
             "footprint_found": False,
+            "footprint_status": "not_found",
             "ring_metrics": {},
         }
         structure_ring_metrics: dict[str, dict[str, float | None]] = {}

@@ -201,6 +201,7 @@ class AssessmentResult(BaseModel):
     submodel_scores: Dict[str, SubmodelScore] = Field(default_factory=dict)
     weighted_contributions: Dict[str, WeightedContribution] = Field(default_factory=dict)
     submodel_explanations: Dict[str, str] = Field(default_factory=dict)
+    property_findings: List[str] = Field(default_factory=list)
     top_risk_drivers: List[str]
     top_protective_factors: List[str]
     explanation_summary: str

@@ -188,7 +188,9 @@ Assessment/report payloads include:
 - assumptions: `confirmed_inputs`, `observed_inputs`, `inferred_inputs`, `missing_inputs`, `assumptions_used`
 - confidence: `confidence_score`, `low_confidence_flags`
 - explainability: `submodel_scores`, `weighted_contributions`, `factor_breakdown`, `top_risk_drivers`, `top_protective_factors`, `explanation_summary`
+- homeowner insights: `property_findings` (plain-language findings derived from structure-ring vegetation context)
 - property-level context: `property_level_context.footprint_used` and `property_level_context.ring_metrics`
+  - includes `footprint_status` (`used`, `not_found`, `source_unavailable`, `error`) for fallback transparency
 - readiness and mitigation linkage fields
 
 ## Setup
@@ -223,7 +225,7 @@ Frontend file: `frontend/public/index.html`.
 - Test: `pytest`, `httpx`
 
 Without geospatial packages and configured layer files, the app runs in deterministic fallback mode instead of true layer-backed mode.
-Without a configured building-footprint layer, the app still runs but `property_level_context.footprint_used` is `false` and ring metrics are omitted.
+Without a configured building-footprint layer, the app still runs but `property_level_context.footprint_used` is `false`, `footprint_status` is `source_unavailable`, and ring metrics are omitted.
 
 ## Persistence and Compatibility
 
