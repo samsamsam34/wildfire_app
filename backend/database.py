@@ -1044,6 +1044,20 @@ class AssessmentStore:
         )
         for layer in ["burn_probability", "hazard", "slope", "fuel", "canopy", "fire_history"]:
             payload["environmental_layer_status"].setdefault(layer, "missing")
+        payload.setdefault("input_source_metadata", {})
+        payload.setdefault("direct_data_coverage_score", 0.0)
+        payload.setdefault("inferred_data_coverage_score", 0.0)
+        payload.setdefault("missing_data_share", 100.0)
+        payload.setdefault(
+            "data_provenance",
+            {
+                "environmental_inputs_used": {},
+                "property_inputs_used": {},
+                "inferred_inputs_used": [],
+                "missing_inputs": [],
+                "heuristic_inputs_used": [],
+            },
+        )
         if isinstance(payload.get("property_level_context"), dict):
             plc = payload["property_level_context"]
             plc.setdefault("footprint_used", False)

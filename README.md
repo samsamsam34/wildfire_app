@@ -200,6 +200,9 @@ Assessment/report payloads include:
 - homeowner insights: `property_findings` (plain-language findings derived from structure-ring vegetation context)
 - confidence gating: `confidence_tier` (`high|moderate|low|preliminary`) and `use_restriction`
 - environmental quality: `environmental_layer_status` (`ok|missing|error` per key layer) and `environmental_data_completeness_score`
+- data coverage/provenance:
+  - `direct_data_coverage_score`, `inferred_data_coverage_score`, `missing_data_share`
+  - `input_source_metadata` and `data_provenance` (environmental/property/inferred/missing/heuristic input summaries)
 - property-level context: `property_level_context.footprint_used` and `property_level_context.ring_metrics`
   - includes `footprint_status` (`used`, `not_found`, `provider_unavailable`, `error`) and `fallback_mode` (`footprint`, `point_based`) for fallback transparency
   - includes `fallback_mode` (`footprint` or `point_based`) for clear interpretation context

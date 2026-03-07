@@ -72,11 +72,27 @@ class RiskEngine:
         ring_metrics = context.structure_ring_metrics or {}
         context_assumptions: List[str] = []
 
-        def ctx_metric(value: float | None, default: float, note: str) -> float:
+        def ctx_metric(value: float | None, note: str) -> float | None:
             if value is None:
                 context_assumptions.append(note)
-                return default
+                return None
             return float(value)
+
+        def weighted_score(components: List[tuple[float, float | None, str]], assumptions: List[str]) -> float:
+            available: List[tuple[float, float]] = []
+            for weight, value, note in components:
+                if value is None:
+                    if note:
+                        assumptions.append(note)
+                    continue
+                available.append((weight, float(value)))
+            if not available:
+                return 0.0
+            numerator = sum(weight * value for weight, value in available)
+            denominator = sum(weight for weight, _ in available)
+            if denominator <= 0:
+                return 0.0
+            return round(numerator / denominator, 1)
 
         def ring_density(ring_key: str) -> float | None:
             alias = ring_key.replace("ring_", "zone_")
@@ -105,69 +121,65 @@ class RiskEngine:
         )
         burn_probability_index = ctx_metric(
             context.burn_probability_index,
-            55.0,
             "Burn probability context missing; scoring used conservative fallback.",
         )
         hazard_severity_index = ctx_metric(
             context.hazard_severity_index,
-            55.0,
             "Hazard severity context missing; scoring used conservative fallback.",
         )
         fuel_index = ctx_metric(
             context.fuel_index,
-            50.0,
             "Fuel model context missing; scoring used conservative fallback.",
         )
         wildland_distance_index = ctx_metric(
             context.wildland_distance_index,
-            50.0,
             "Wildland distance context missing; scoring used conservative fallback.",
         )
         canopy_index = ctx_metric(
             context.canopy_index,
-            45.0,
             "Canopy context missing; scoring used conservative fallback.",
         )
         moisture_index = ctx_metric(
             context.moisture_index,
-            55.0,
             "Moisture context missing; scoring used conservative fallback.",
         )
         slope_index = ctx_metric(
             context.slope_index,
-            50.0,
             "Slope context missing; scoring used conservative fallback.",
         )
         aspect_index = ctx_metric(
             context.aspect_index,
-            50.0,
             "Aspect context missing; scoring used conservative fallback.",
         )
         historic_fire_index = ctx_metric(
             context.historic_fire_index,
-            40.0,
             "Historic fire context missing; scoring used conservative fallback.",
         )
 
-        roof_ignition = (
-            75.0 if roof in {"wood", "untreated wood shake"}
-            else 25.0 if roof in {"class a", "metal", "tile", "composite"}
-            else 50.0
-        )
-        vent_ignition = 20.0 if "ember" in vent else 65.0
+        roof_ignition = None
+        if roof in {"wood", "untreated wood shake"}:
+            roof_ignition = 75.0
+        elif roof in {"class a", "metal", "tile", "composite"}:
+            roof_ignition = 25.0
+
+        vent_ignition = None
+        if attrs.vent_type is not None:
+            vent_ignition = 20.0 if "ember" in vent else 65.0
 
         ember_assumptions: List[str] = []
         if attrs.roof_type is None:
-            ember_assumptions.append("Roof type missing; ember vulnerability assumed moderate.")
+            ember_assumptions.append("Roof type missing; ember model excludes roof material contribution.")
         if attrs.vent_type is None:
-            ember_assumptions.append("Vent type missing; ember entry vulnerability assumed moderate-high.")
+            ember_assumptions.append("Vent type missing; ember model excludes vent contribution.")
 
-        ember_score = round(
-            0.35 * burn_probability_index
-            + 0.25 * hazard_severity_index
-            + 0.20 * vent_ignition
-            + 0.20 * roof_ignition,
-            1,
+        ember_score = weighted_score(
+            [
+                (0.35, burn_probability_index, "Burn probability unavailable for ember model."),
+                (0.25, hazard_severity_index, "Hazard severity unavailable for ember model."),
+                (0.20, vent_ignition, "Vent type unavailable for ember model."),
+                (0.20, roof_ignition, "Roof type unavailable for ember model."),
+            ],
+            ember_assumptions,
         )
         submodels["ember_exposure_risk"] = SubmodelResult(
             score=max(0.0, min(100.0, ember_score)),
@@ -183,18 +195,33 @@ class RiskEngine:
 
         flame_assumptions: List[str] = []
         if attrs.defensible_space_ft is None:
-            flame_assumptions.append("Defensible space missing; assumed 15 ft for flame-contact model.")
+            flame_assumptions.append("Defensible space missing; flame-contact model excludes defensible-space contribution.")
         if ring_0_5_density is None or ring_5_30_density is None:
             flame_assumptions.append("Structure-ring vegetation metrics unavailable; flame-contact model used point-based vegetation context.")
 
         close_in_veg_pressure = ring_0_5_density if ring_0_5_density is not None else canopy_index
         zone1_veg_pressure = ring_5_30_density if ring_5_30_density is not None else fuel_index
-        flame_score = round(
-            0.30 * fuel_index
-            + 0.25 * wildland_distance_index
-            + 0.20 * max(0.0, min(100.0, 100.0 - defensible_ft * 2.2))
-            + 0.25 * (0.55 * close_in_veg_pressure + 0.45 * zone1_veg_pressure),
-            1,
+        defensible_component = (
+            max(0.0, min(100.0, 100.0 - defensible_ft * 2.2))
+            if attrs.defensible_space_ft is not None
+            else None
+        )
+        near_ring_component = None
+        if close_in_veg_pressure is not None and zone1_veg_pressure is not None:
+            near_ring_component = 0.55 * close_in_veg_pressure + 0.45 * zone1_veg_pressure
+        elif close_in_veg_pressure is not None:
+            near_ring_component = close_in_veg_pressure
+        elif zone1_veg_pressure is not None:
+            near_ring_component = zone1_veg_pressure
+
+        flame_score = weighted_score(
+            [
+                (0.30, fuel_index, "Fuel model unavailable for flame-contact model."),
+                (0.25, wildland_distance_index, "Wildland distance unavailable for flame-contact model."),
+                (0.20, defensible_component, "Defensible space unavailable for flame-contact model."),
+                (0.25, near_ring_component, "Near-structure vegetation unavailable for flame-contact model."),
+            ],
+            flame_assumptions,
         )
         submodels["flame_contact_risk"] = SubmodelResult(
             score=max(0.0, min(100.0, flame_score)),
@@ -209,12 +236,19 @@ class RiskEngine:
             assumptions=flame_assumptions + context_assumptions,
         )
 
-        slope_score = round(0.70 * slope_index + 0.30 * aspect_index, 1)
+        slope_assumptions: List[str] = []
+        slope_score = weighted_score(
+            [
+                (0.70, slope_index, "Slope input unavailable for topography model."),
+                (0.30, aspect_index, "Aspect input unavailable for topography model."),
+            ],
+            slope_assumptions,
+        )
         submodels["slope_topography_risk"] = SubmodelResult(
             score=max(0.0, min(100.0, slope_score)),
             explanation="Slope/topography risk captures terrain-driven spread amplification.",
             key_inputs={"slope_index": slope_index, "aspect_index": aspect_index},
-            assumptions=list(context_assumptions),
+            assumptions=slope_assumptions + list(context_assumptions),
         )
 
         fuel_proximity_assumptions: List[str] = []
@@ -224,7 +258,13 @@ class RiskEngine:
             )
 
         outer_ring_pressure = ring_30_100_density if ring_30_100_density is not None else canopy_index
-        fuel_proximity_score = round(0.75 * wildland_distance_index + 0.25 * outer_ring_pressure, 1)
+        fuel_proximity_score = weighted_score(
+            [
+                (0.75, wildland_distance_index, "Wildland distance unavailable for fuel proximity model."),
+                (0.25, outer_ring_pressure, "30-100 ft ring/cover unavailable for fuel proximity model."),
+            ],
+            fuel_proximity_assumptions,
+        )
         submodels["fuel_proximity_risk"] = SubmodelResult(
             score=max(0.0, min(100.0, fuel_proximity_score)),
             explanation="Fuel proximity risk reflects distance to contiguous wildland vegetation.",
@@ -241,12 +281,14 @@ class RiskEngine:
                 "Structure-ring vegetation metrics unavailable; vegetation intensity used 100m point-neighborhood context."
             )
         structure_ring_veg = ring_density_average if ring_density_average is not None else canopy_index
-        vegetation_score = round(
-            0.35 * fuel_index
-            + 0.20 * canopy_index
-            + 0.20 * moisture_index
-            + 0.25 * structure_ring_veg,
-            1,
+        vegetation_score = weighted_score(
+            [
+                (0.35, fuel_index, "Fuel model unavailable for vegetation intensity model."),
+                (0.20, canopy_index, "Canopy cover unavailable for vegetation intensity model."),
+                (0.20, moisture_index, "Moisture input unavailable for vegetation intensity model."),
+                (0.25, structure_ring_veg, "Ring vegetation unavailable for vegetation intensity model."),
+            ],
+            vegetation_assumptions,
         )
         submodels["vegetation_intensity_risk"] = SubmodelResult(
             score=max(0.0, min(100.0, vegetation_score)),
@@ -260,23 +302,35 @@ class RiskEngine:
             assumptions=vegetation_assumptions + context_assumptions,
         )
 
+        historic_assumptions: List[str] = []
+        if historic_fire_index is None:
+            historic_assumptions.append("Historic fire recurrence unavailable for this location.")
         submodels["historic_fire_risk"] = SubmodelResult(
-            score=max(0.0, min(100.0, round(historic_fire_index, 1))),
+            score=max(0.0, min(100.0, 0.0 if historic_fire_index is None else round(historic_fire_index, 1))),
             explanation="Historic fire risk reflects nearby fire recurrence and perimeter history.",
             key_inputs={"historic_fire_index": historic_fire_index},
-            assumptions=list(context_assumptions),
+            assumptions=historic_assumptions + list(context_assumptions),
         )
 
         structure_assumptions: List[str] = []
-        construction_risk = 55.0
+        construction_risk = None
         if attrs.construction_year is None:
-            structure_assumptions.append("Construction year missing; structure vulnerability baseline assumed pre-modern code profile.")
+            structure_assumptions.append("Construction year missing; structure vulnerability model excludes age contribution.")
         elif attrs.construction_year >= 2015:
             construction_risk = 30.0
         elif attrs.construction_year >= 2008:
             construction_risk = 42.0
+        else:
+            construction_risk = 55.0
 
-        structure_score = round(0.45 * roof_ignition + 0.35 * vent_ignition + 0.20 * construction_risk, 1)
+        structure_score = weighted_score(
+            [
+                (0.45, roof_ignition, "Roof type unavailable for structure vulnerability model."),
+                (0.35, vent_ignition, "Vent type unavailable for structure vulnerability model."),
+                (0.20, construction_risk, "Construction year unavailable for structure vulnerability model."),
+            ],
+            structure_assumptions,
+        )
         submodels["structure_vulnerability_risk"] = SubmodelResult(
             score=max(0.0, min(100.0, structure_score)),
             explanation="Structure vulnerability risk reflects hardening quality against ember and radiant heat intrusion.",
@@ -290,7 +344,7 @@ class RiskEngine:
 
         defensible_assumptions: List[str] = []
         if attrs.defensible_space_ft is None:
-            defensible_assumptions.append("Defensible space missing; assumed 15 ft for defensible-space model.")
+            defensible_assumptions.append("Defensible space missing; defensible-space model excludes clearance distance contribution.")
         if ring_0_5_density is None and ring_5_30_density is None:
             defensible_assumptions.append(
                 "Structure-ring vegetation metrics unavailable; defensible-space pressure used fuel index proxy."
@@ -302,11 +356,18 @@ class RiskEngine:
             if zone_pressure_values
             else fuel_index
         )
-        defensible_score = round(
-            max(0.0, min(100.0, 95.0 - defensible_ft * 2.6)) * 0.55
-            + 0.25 * fuel_index
-            + 0.20 * zone_pressure,
-            1,
+        defensible_clearance_component = (
+            max(0.0, min(100.0, 95.0 - defensible_ft * 2.6))
+            if attrs.defensible_space_ft is not None
+            else None
+        )
+        defensible_score = weighted_score(
+            [
+                (0.55, defensible_clearance_component, "Defensible space value unavailable for defensible-space model."),
+                (0.25, fuel_index, "Fuel model unavailable for defensible-space model."),
+                (0.20, zone_pressure, "Ring vegetation unavailable for defensible-space model."),
+            ],
+            defensible_assumptions,
         )
         submodels["defensible_space_risk"] = SubmodelResult(
             score=max(0.0, min(100.0, defensible_score)),
@@ -450,8 +511,18 @@ class RiskEngine:
             add_penalty("vent_quality", p["vent_fail"])
             blockers.append("Non-ember-resistant venting")
 
-        defensible_ft = attrs.defensible_space_ft if attrs.defensible_space_ft is not None else 15.0
-        if defensible_ft >= 30:
+        defensible_ft = attrs.defensible_space_ft
+        if defensible_ft is None:
+            factors.append(
+                {
+                    "name": "defensible_space",
+                    "status": "watch",
+                    "score_impact": -p["defensible_watch"],
+                    "detail": "Defensible space details missing; readiness cannot confirm 30 ft clearance.",
+                }
+            )
+            add_penalty("defensible_space", p["defensible_watch"])
+        elif defensible_ft >= 30:
             factors.append({"name": "defensible_space", "status": "pass", "score_impact": b["defensible_pass"], "detail": "Defensible space at/above 30 ft supports carrier criteria."})
             bonus += b["defensible_pass"]
         elif defensible_ft >= 5:
@@ -507,8 +578,13 @@ class RiskEngine:
             factors.append({"name": "severe_ember_exposure", "status": "watch", "score_impact": -5.0, "detail": "Elevated ember exposure should be mitigated."})
             add_penalty("severe_ember_exposure", 5.0)
 
-        hazard_severity = 55.0 if context.hazard_severity_index is None else float(context.hazard_severity_index)
-        severe_env = max(ember_score, risk.submodel_scores["historic_fire_risk"].score, hazard_severity)
+        severe_env_inputs = [
+            ember_score,
+            risk.submodel_scores["historic_fire_risk"].score,
+        ]
+        if context.hazard_severity_index is not None:
+            severe_env_inputs.append(float(context.hazard_severity_index))
+        severe_env = max(severe_env_inputs) if severe_env_inputs else 0.0
         if severe_env >= 85:
             factors.append({"name": "severe_environmental_hazard", "status": "fail", "score_impact": -p["severe_env_fail"], "detail": "Severe environmental hazard conditions reduce availability."})
             add_penalty("severe_environmental_hazard", p["severe_env_fail"])

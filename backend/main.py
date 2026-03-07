@@ -42,7 +42,9 @@ from backend.models import (
     CSVImportError,
     CSVImportRequest,
     CSVImportResponse,
+    DataProvenanceBlock,
     EnvironmentalFactors,
+    InputSourceMetadata,
     FactorBreakdown,
     Organization,
     OrganizationCreate,
@@ -374,6 +376,13 @@ def _build_confidence(
     else:
         confidence_tier = "high"
 
+    if confidence_tier == "high" and (
+        environmental_data_completeness < 90.0
+        or not property_level_context.get("footprint_used")
+        or provider_error_count > 0
+    ):
+        confidence_tier = "moderate"
+
     if confidence_tier == "high":
         use_restriction = "shareable"
     elif confidence_tier == "moderate":
@@ -499,6 +508,110 @@ def _normalize_property_level_context(raw_context: object) -> dict[str, Any]:
     else:
         normalized["ring_metrics"] = None
     return normalized
+
+
+def _build_data_provenance(
+    *,
+    payload: AddressRequest,
+    assumptions: AssumptionsBlock,
+    context: object,
+    property_level_context: dict[str, Any],
+) -> tuple[dict[str, InputSourceMetadata], DataProvenanceBlock, float, float, float]:
+    env_status = getattr(context, "environmental_layer_status", {}) or {}
+    env_sources: dict[str, InputSourceMetadata] = {}
+    env_specs = [
+        ("burn_probability", "Burn probability raster", "point"),
+        ("wildfire_hazard", "Wildfire hazard raster", "point"),
+        ("slope", "Slope raster/DEM", "point"),
+        ("fuel_model", "Fuel model raster", "100m neighborhood"),
+        ("canopy_cover", "Canopy raster", "100m neighborhood"),
+        ("historic_fire_distance", "Historical fire perimeters", "derived"),
+        ("wildland_distance", "Distance-to-wildland derivation", "derived"),
+    ]
+    for key, source_name, resolution in env_specs:
+        status_key = {
+            "wildfire_hazard": "hazard",
+            "fuel_model": "fuel",
+            "canopy_cover": "canopy",
+            "historic_fire_distance": "fire_history",
+        }.get(key, key)
+        layer_state = env_status.get(status_key, "missing")
+        env_sources[key] = InputSourceMetadata(
+            source_type="observed" if layer_state == "ok" else "missing",
+            source_name=source_name,
+            spatial_resolution=resolution,
+            details=f"layer_status={layer_state}",
+        )
+
+    property_sources: dict[str, InputSourceMetadata] = {}
+    for field in [
+        "roof_type",
+        "vent_type",
+        "siding_type",
+        "window_type",
+        "defensible_space_ft",
+        "construction_year",
+        "vegetation_condition",
+    ]:
+        value = getattr(payload.attributes, field, None)
+        if value is not None:
+            stype = "user_provided"
+            detail = "Provided by user at assessment time."
+        elif field in assumptions.inferred_inputs:
+            stype = "public_record_inferred" if field == "construction_year" else "heuristic"
+            detail = "Inferred due to missing user input."
+        else:
+            stype = "missing"
+            detail = "Not provided."
+        property_sources[field] = InputSourceMetadata(
+            source_type=stype,
+            source_name="property_facts_form",
+            details=detail,
+        )
+
+    rings = property_level_context.get("ring_metrics") if isinstance(property_level_context, dict) else None
+    for zone_key in ["zone_0_5_ft", "zone_5_30_ft", "zone_30_100_ft"]:
+        zone_data = rings.get(zone_key) if isinstance(rings, dict) else None
+        density = zone_data.get("vegetation_density") if isinstance(zone_data, dict) else None
+        if density is not None:
+            stype = "footprint_derived"
+            detail = "Measured from building-footprint buffer ring."
+        else:
+            stype = "missing"
+            detail = "Footprint/ring metric unavailable."
+        property_sources[zone_key] = InputSourceMetadata(
+            source_type=stype,
+            source_name="building_footprint_ring_analysis",
+            spatial_resolution=zone_key.replace("zone_", "").replace("_", " "),
+            details=detail,
+        )
+
+    merged = {**env_sources, **property_sources}
+    total = max(1, len(merged))
+    direct_count = sum(1 for meta in merged.values() if meta.source_type in {"observed", "footprint_derived"})
+    inferred_count = sum(
+        1
+        for meta in merged.values()
+        if meta.source_type in {"user_provided", "public_record_inferred"}
+    )
+    missing_count = sum(1 for meta in merged.values() if meta.source_type in {"missing", "heuristic"})
+
+    direct_score = round((direct_count / total) * 100.0, 1)
+    inferred_score = round((inferred_count / total) * 100.0, 1)
+    missing_share = round((missing_count / total) * 100.0, 1)
+
+    provenance = DataProvenanceBlock(
+        environmental_inputs_used=env_sources,
+        property_inputs_used=property_sources,
+        inferred_inputs_used=sorted(
+            key
+            for key, meta in merged.items()
+            if meta.source_type in {"user_provided", "public_record_inferred"}
+        ),
+        missing_inputs=sorted(key for key, meta in merged.items() if meta.source_type == "missing"),
+        heuristic_inputs_used=sorted(key for key, meta in merged.items() if meta.source_type == "heuristic"),
+    )
+    return merged, provenance, direct_score, inferred_score, missing_share
 
 
 def _merge_property_drivers(base_drivers: list[str], property_findings: list[str]) -> list[str]:
@@ -804,6 +917,14 @@ def _run_assessment(
         property_level_context=property_level_context,
         environmental_layer_status=context.environmental_layer_status,
     )
+    input_source_metadata, data_provenance, direct_data_coverage_score, inferred_data_coverage_score, missing_data_share = (
+        _build_data_provenance(
+            payload=payload,
+            assumptions=assumptions_block,
+            context=context,
+            property_level_context=property_level_context,
+        )
+    )
 
     property_findings = _build_property_findings(property_level_context)
     top_risk_drivers = _merge_property_drivers(_build_top_risk_drivers(submodel_scores), property_findings)
@@ -842,6 +963,10 @@ def _run_assessment(
             )
     if not property_level_context.get("footprint_used"):
         scoring_notes.append("Building footprint not found — vulnerability estimated using point context.")
+    if data_provenance.heuristic_inputs_used:
+        scoring_notes.append(
+            "Heuristic inputs used: " + ", ".join(data_provenance.heuristic_inputs_used[:6]) + "."
+        )
     if confidence_block.use_restriction == "not_for_underwriting_or_binding":
         scoring_notes.append("Current confidence gating: not for underwriting or binding decisions.")
 
@@ -922,6 +1047,11 @@ def _run_assessment(
         low_confidence_flags=confidence_block.low_confidence_flags,
         data_sources=all_sources,
         environmental_layer_status=context.environmental_layer_status,
+        input_source_metadata=input_source_metadata,
+        direct_data_coverage_score=direct_data_coverage_score,
+        inferred_data_coverage_score=inferred_data_coverage_score,
+        missing_data_share=missing_data_share,
+        data_provenance=data_provenance,
         property_level_context=property_level_context,
         mitigation_plan=mitigation_plan,
         readiness_factors=readiness_factors,
@@ -1000,6 +1130,12 @@ def _run_assessment(
             "confidence_tier": result.confidence_tier,
             "use_restriction": result.use_restriction,
         },
+        "coverage": {
+            "direct_data_coverage_score": result.direct_data_coverage_score,
+            "inferred_data_coverage_score": result.inferred_data_coverage_score,
+            "missing_data_share": result.missing_data_share,
+        },
+        "data_provenance": result.data_provenance.model_dump(),
         "assumptions_used": all_assumptions,
         "data_sources": all_sources,
         "tags": final_tags,
@@ -1161,6 +1297,7 @@ def _build_report_export(
             "longitude": result.longitude,
             "data_sources": result.data_sources,
             "environmental_layer_status": result.environmental_layer_status,
+            "data_provenance": result.data_provenance.model_dump(),
             "property_level_context": result.property_level_context,
         },
         wildfire_risk_summary={
@@ -1195,6 +1332,9 @@ def _build_report_export(
             "confidence_score": result.confidence_score,
             "data_completeness_score": result.data_completeness_score,
             "environmental_data_completeness_score": result.environmental_data_completeness_score,
+            "direct_data_coverage_score": result.direct_data_coverage_score,
+            "inferred_data_coverage_score": result.inferred_data_coverage_score,
+            "missing_data_share": result.missing_data_share,
             "confidence_tier": result.confidence_tier,
             "use_restriction": result.use_restriction,
             "low_confidence_flags": result.low_confidence_flags,

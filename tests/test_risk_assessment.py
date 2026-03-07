@@ -152,6 +152,11 @@ def _assert_core_contract(body: dict) -> None:
         "mitigation_plan",
         "data_sources",
         "environmental_layer_status",
+        "input_source_metadata",
+        "direct_data_coverage_score",
+        "inferred_data_coverage_score",
+        "missing_data_share",
+        "data_provenance",
         "property_level_context",
         "site_hazard_section",
         "home_ignition_vulnerability_section",
@@ -166,6 +171,14 @@ def _assert_core_contract(body: dict) -> None:
     assert 0.0 <= body["home_ignition_vulnerability_score"] <= 100.0
     assert 0.0 <= body["insurance_readiness_score"] <= 100.0
     assert 0.0 <= body["environmental_data_completeness_score"] <= 100.0
+    assert 0.0 <= body["direct_data_coverage_score"] <= 100.0
+    assert 0.0 <= body["inferred_data_coverage_score"] <= 100.0
+    assert 0.0 <= body["missing_data_share"] <= 100.0
+    coverage_total = round(
+        body["direct_data_coverage_score"] + body["inferred_data_coverage_score"] + body["missing_data_share"],
+        1,
+    )
+    assert abs(coverage_total - 100.0) <= 0.2
     assert body["risk_scores"]["site_hazard_score"] == body["site_hazard_score"]
     assert body["risk_scores"]["home_ignition_vulnerability_score"] == body["home_ignition_vulnerability_score"]
     assert body["risk_scores"]["wildfire_risk_score"] == body["wildfire_risk_score"]
@@ -202,6 +215,10 @@ def _assert_core_contract(body: dict) -> None:
     assert body["property_level_context"]["fallback_mode"] in {"footprint", "point_based"}
     for layer in ["burn_probability", "hazard", "slope", "fuel", "canopy", "fire_history"]:
         assert layer in body["environmental_layer_status"]
+    assert isinstance(body["input_source_metadata"], dict)
+    assert "environmental_inputs_used" in body["data_provenance"]
+    assert "property_inputs_used" in body["data_provenance"]
+    assert "missing_inputs" in body["data_provenance"]
 
 
 def test_property_findings_from_ring_metrics_surface_in_assessment(monkeypatch, tmp_path):
@@ -1459,3 +1476,69 @@ def test_scoring_notes_include_missing_layers_and_provisional_access(monkeypatch
     assert "fuel layer" in notes
     assert "building footprint not found" in notes
     assert "access risk is provisional" in notes
+
+
+def test_coverage_scores_and_provenance_reflect_missing_vs_user_inputs(monkeypatch, tmp_path):
+    degraded = _ctx(
+        env=58.0,
+        wildland=60.0,
+        historic=55.0,
+        environmental_layer_status={
+            "burn_probability": "missing",
+            "hazard": "missing",
+            "slope": "ok",
+            "fuel": "missing",
+            "canopy": "missing",
+            "fire_history": "ok",
+        },
+        ring_metrics={},
+    )
+    degraded.property_level_context = {
+        "footprint_used": False,
+        "footprint_status": "not_found",
+        "fallback_mode": "point_based",
+        "ring_metrics": None,
+    }
+    _setup(monkeypatch, tmp_path, degraded)
+
+    assessed = _run(
+        _payload(
+            "Coverage Check Ln",
+            {"roof_type": "class a", "vent_type": "ember-resistant"},
+            confirmed=["roof_type", "vent_type"],
+        )
+    )
+    assert assessed["missing_data_share"] > 0
+    assert assessed["direct_data_coverage_score"] < 100
+    assert assessed["inferred_data_coverage_score"] > 0
+    assert assessed["data_provenance"]["property_inputs_used"]["roof_type"]["source_type"] == "user_provided"
+    assert assessed["data_provenance"]["property_inputs_used"]["zone_0_5_ft"]["source_type"] == "missing"
+
+
+def test_confidence_reduces_when_ring_metrics_unavailable(monkeypatch, tmp_path):
+    attrs = {
+        "roof_type": "class a",
+        "vent_type": "ember-resistant",
+        "defensible_space_ft": 25,
+        "construction_year": 2018,
+    }
+    with_rings = _ctx(
+        env=45.0,
+        wildland=45.0,
+        historic=35.0,
+        ring_metrics={
+            "zone_0_5_ft": {"vegetation_density": 20.0},
+            "zone_5_30_ft": {"vegetation_density": 25.0},
+            "zone_30_100_ft": {"vegetation_density": 30.0},
+        },
+    )
+    no_rings = _ctx(env=45.0, wildland=45.0, historic=35.0, ring_metrics={})
+
+    _setup(monkeypatch, tmp_path, with_rings)
+    assessed_with = _run(_payload("With Ring Metrics", attrs))
+
+    _setup(monkeypatch, tmp_path, no_rings)
+    assessed_without = _run(_payload("Without Ring Metrics", attrs))
+
+    assert assessed_with["confidence_score"] >= assessed_without["confidence_score"]
+    assert assessed_without["property_level_context"]["fallback_mode"] == "point_based"

@@ -29,6 +29,14 @@ UseRestriction = Literal[
     "agent_or_inspector_review_recommended",
     "not_for_underwriting_or_binding",
 ]
+SourceType = Literal[
+    "observed",
+    "footprint_derived",
+    "user_provided",
+    "public_record_inferred",
+    "heuristic",
+    "missing",
+]
 
 
 class PropertyAttributes(BaseModel):
@@ -146,6 +154,23 @@ class ConfidenceBlock(BaseModel):
     requires_user_verification: bool
 
 
+class InputSourceMetadata(BaseModel):
+    source_type: SourceType
+    source_name: str
+    observed_at: Optional[str] = None
+    dataset_version: Optional[str] = None
+    spatial_resolution: Optional[str] = None
+    details: Optional[str] = None
+
+
+class DataProvenanceBlock(BaseModel):
+    environmental_inputs_used: Dict[str, InputSourceMetadata] = Field(default_factory=dict)
+    property_inputs_used: Dict[str, InputSourceMetadata] = Field(default_factory=dict)
+    inferred_inputs_used: List[str] = Field(default_factory=list)
+    missing_inputs: List[str] = Field(default_factory=list)
+    heuristic_inputs_used: List[str] = Field(default_factory=list)
+
+
 class ScoreSectionSummary(BaseModel):
     label: str = ""
     score: float = 0.0
@@ -259,6 +284,11 @@ class AssessmentResult(BaseModel):
     low_confidence_flags: List[str]
     data_sources: List[str]
     environmental_layer_status: Dict[str, str] = Field(default_factory=dict)
+    input_source_metadata: Dict[str, InputSourceMetadata] = Field(default_factory=dict)
+    direct_data_coverage_score: float = 0.0
+    inferred_data_coverage_score: float = 0.0
+    missing_data_share: float = 0.0
+    data_provenance: DataProvenanceBlock = Field(default_factory=DataProvenanceBlock)
     property_level_context: Dict[str, object] = Field(default_factory=dict)
     mitigation_plan: List[MitigationAction]
     readiness_factors: List[ReadinessFactor] = Field(default_factory=list)
