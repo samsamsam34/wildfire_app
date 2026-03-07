@@ -5,8 +5,9 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
+from uuid import uuid4
 
-from backend.models import AssessmentListItem, AssessmentResult
+from backend.models import AssessmentListItem, AssessmentResult, SimulationScenarioItem
 from backend.version import LEGACY_MODEL_VERSION
 
 
@@ -35,6 +36,18 @@ class AssessmentStore:
             if "model_version" not in cols:
                 conn.execute("ALTER TABLE assessments ADD COLUMN model_version TEXT NOT NULL DEFAULT '1.0.0'")
 
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS assessment_scenarios (
+                    scenario_id TEXT PRIMARY KEY,
+                    assessment_id TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    scenario_name TEXT NOT NULL,
+                    payload_json TEXT NOT NULL
+                )
+                """
+            )
+
     def save(self, result: AssessmentResult) -> None:
         with self._connect() as conn:
             conn.execute(
@@ -49,6 +62,24 @@ class AssessmentStore:
                     result.model_version,
                 ),
             )
+
+    def save_simulation(self, assessment_id: str, scenario_name: str, payload: dict[str, Any]) -> str:
+        scenario_id = str(uuid4())
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO assessment_scenarios (scenario_id, assessment_id, created_at, scenario_name, payload_json)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    scenario_id,
+                    assessment_id,
+                    datetime.now(tz=timezone.utc).isoformat(),
+                    scenario_name,
+                    json.dumps(payload, default=str),
+                ),
+            )
+        return scenario_id
 
     def _upgrade_mitigation_items(self, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
         upgraded = []
@@ -250,6 +281,36 @@ class AssessmentStore:
                     wildfire_risk_score=float(upgraded.get("wildfire_risk_score", 0.0)),
                     insurance_readiness_score=float(upgraded.get("insurance_readiness_score", 0.0)),
                     model_version=upgraded.get("model_version", LEGACY_MODEL_VERSION),
+                )
+            )
+
+        return items
+
+    def list_scenarios(self, assessment_id: str, limit: int = 20) -> list[SimulationScenarioItem]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT scenario_id, assessment_id, scenario_name, created_at, payload_json
+                FROM assessment_scenarios
+                WHERE assessment_id = ?
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                (assessment_id, limit),
+            ).fetchall()
+
+        items: list[SimulationScenarioItem] = []
+        for row in rows:
+            payload = json.loads(row["payload_json"])
+            delta = payload.get("delta", {}) if isinstance(payload, dict) else {}
+            items.append(
+                SimulationScenarioItem(
+                    scenario_id=row["scenario_id"],
+                    assessment_id=row["assessment_id"],
+                    scenario_name=row["scenario_name"],
+                    created_at=row["created_at"],
+                    wildfire_risk_score_delta=float(delta.get("wildfire_risk_score_delta", 0.0)),
+                    insurance_readiness_score_delta=float(delta.get("insurance_readiness_score_delta", 0.0)),
                 )
             )
 

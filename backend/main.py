@@ -30,6 +30,7 @@ from backend.models import (
     SimulationDelta,
     SimulationRequest,
     SimulationResult,
+    SimulationScenarioItem,
     SubmodelScore,
     WeightedContribution,
 )
@@ -595,8 +596,7 @@ def simulate_risk(payload: SimulationRequest) -> SimulationResult:
     for key in sorted(set(before.keys()) | set(after.keys())):
         if before.get(key) != after.get(key):
             changed_inputs[key] = {"before": before.get(key), "after": after.get(key)}
-
-    return SimulationResult(
+    sim_result = SimulationResult(
         scenario_name=payload.scenario_name,
         baseline=baseline,
         simulated=simulated,
@@ -609,6 +609,11 @@ def simulate_risk(payload: SimulationRequest) -> SimulationResult:
         changed_inputs=changed_inputs,
         next_best_actions=simulated.mitigation_plan,
     )
+
+    if payload.assessment_id:
+        store.save_simulation(payload.assessment_id, payload.scenario_name, sim_result.model_dump(mode="json"))
+
+    return sim_result
 
 
 @app.post("/risk/debug", dependencies=[Depends(require_api_key)])
@@ -644,3 +649,17 @@ def view_report(assessment_id: str) -> HTMLResponse:
 @app.get("/assessments", response_model=list[AssessmentListItem], dependencies=[Depends(require_api_key)])
 def list_assessments(limit: int = Query(default=20, ge=1, le=200)) -> list[AssessmentListItem]:
     return store.list_assessments(limit=limit)
+
+
+@app.get(
+    "/assessments/{assessment_id}/scenarios",
+    response_model=list[SimulationScenarioItem],
+    dependencies=[Depends(require_api_key)],
+)
+def list_assessment_scenarios(
+    assessment_id: str,
+    limit: int = Query(default=20, ge=1, le=200),
+) -> list[SimulationScenarioItem]:
+    if not store.get(assessment_id):
+        raise HTTPException(status_code=404, detail="Assessment not found")
+    return store.list_scenarios(assessment_id=assessment_id, limit=limit)

@@ -218,6 +218,15 @@ class AssessmentListItem(BaseModel):
     model_version: str
 
 
+class SimulationScenarioItem(BaseModel):
+    scenario_id: str
+    assessment_id: str
+    scenario_name: str
+    created_at: str
+    wildfire_risk_score_delta: float
+    insurance_readiness_score_delta: float
+
+
 class ReportExport(BaseModel):
     assessment_id: str
     generated_at: str

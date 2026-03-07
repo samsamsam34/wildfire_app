@@ -25,6 +25,7 @@ Current release: **Step 3 productization layer** on top of the factorized Step 2
 - `GET /report/{assessment_id}/view` (print-friendly HTML)
 - `GET /assessments`
 
+- `GET /assessments/{assessment_id}/scenarios`
 All non-health endpoints use API key auth (`X-API-Key`) when `WILDFIRE_API_KEYS` is configured.
 
 ## Setup
@@ -142,7 +143,7 @@ Simulation returns:
 ## B2B-Friendly Workflow Support
 
 - Reassessment endpoint for updated facts on an existing property.
-- Scenario simulation for before/after comparison.
+- Assessment history listing (`GET /assessments`) and scenario history (`GET /assessments/{assessment_id}/scenarios`) for agents/inspectors/insurers.
 - Assessment history listing (`GET /assessments`) for agents/inspectors/insurers.
 - `audience` tagging (`homeowner|agent|inspector|insurer`) on assessments.
 
@@ -186,3 +187,14 @@ They cover:
 - Access/egress scoring remains provisional and is not weighted into total wildfire risk.
 - No user-account/multi-tenant system yet; API key auth is shared-environment only.
 - No built-in PDF generator yet (HTML report view is provided for print/export pipeline integration).
+
+## Ready for Step 4
+
+Step 3 foundation is in place:
+- editable/confirmed property facts and reassessment flow
+- deterministic what-if simulation workflow with delta outputs
+- shareable report export + print-friendly view
+- saved assessment history and saved scenario history endpoints
+- compatibility-safe persistence and deterministic regression tests
+
+This repo is now ready to move into Step 4 experience and workflow expansion.

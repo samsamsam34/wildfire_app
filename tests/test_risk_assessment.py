@@ -234,6 +234,40 @@ def test_simulation_returns_deltas(monkeypatch, tmp_path):
     assert len(sim["next_best_actions"]) > 0
 
 
+
+
+def test_simulation_history_listing(monkeypatch, tmp_path):
+    _setup(monkeypatch, tmp_path, _ctx(env=65.0, wildland=70.0, historic=60.0))
+
+    baseline = _run(
+        _payload(
+            "500 Scenario Store Way",
+            {
+                "roof_type": "wood",
+                "vent_type": "standard",
+                "defensible_space_ft": 10,
+                "construction_year": 1995,
+            },
+        )
+    )
+
+    sim_res = client.post(
+        "/risk/simulate",
+        json={
+            "assessment_id": baseline["assessment_id"],
+            "scenario_name": "scenario_saved_test",
+            "scenario_overrides": {"roof_type": "class a", "vent_type": "ember-resistant"},
+            "scenario_confirmed_fields": ["roof_type", "vent_type"],
+        },
+    )
+    assert sim_res.status_code == 200
+
+    history = client.get(f"/assessments/{baseline['assessment_id']}/scenarios?limit=10")
+    assert history.status_code == 200
+    rows = history.json()
+    assert len(rows) >= 1
+    assert rows[0]["assessment_id"] == baseline["assessment_id"]
+    assert "wildfire_risk_score_delta" in rows[0]
 def test_reassess_from_existing_assessment(monkeypatch, tmp_path):
     _setup(monkeypatch, tmp_path, _ctx(env=60.0, wildland=60.0, historic=55.0))
 
