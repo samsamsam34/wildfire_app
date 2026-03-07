@@ -565,6 +565,7 @@ def _run_assessment(
         confidence_score=confidence_block.confidence_score,
         low_confidence_flags=confidence_block.low_confidence_flags,
         data_sources=all_sources,
+        property_level_context=context.property_level_context,
         mitigation_plan=mitigation_plan,
         readiness_factors=readiness_factors,
         readiness_blockers=readiness.readiness_blockers,
@@ -600,6 +601,7 @@ def _run_assessment(
             "wildland_distance_index": context.wildland_distance_index,
             "historic_fire_index": context.historic_fire_index,
         },
+        "property_level_context": context.property_level_context,
         "submodel_scores": {
             name: {
                 "score": sm.score,
@@ -777,7 +779,12 @@ def _build_report_export(
             "property_facts": result.property_facts,
             "confirmed_fields": result.confirmed_fields,
         },
-        location_summary={"latitude": result.latitude, "longitude": result.longitude, "data_sources": result.data_sources},
+        location_summary={
+            "latitude": result.latitude,
+            "longitude": result.longitude,
+            "data_sources": result.data_sources,
+            "property_level_context": result.property_level_context,
+        },
         wildfire_risk_summary={
             "wildfire_risk_score": result.wildfire_risk_score,
             "factor_breakdown": result.factor_breakdown.model_dump(),

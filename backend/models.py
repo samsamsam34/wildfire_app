@@ -212,6 +212,7 @@ class AssessmentResult(BaseModel):
     confidence_score: float
     low_confidence_flags: List[str]
     data_sources: List[str]
+    property_level_context: Dict[str, object] = Field(default_factory=dict)
     mitigation_plan: List[MitigationAction]
     readiness_factors: List[ReadinessFactor] = Field(default_factory=list)
     readiness_blockers: List[str] = Field(default_factory=list)

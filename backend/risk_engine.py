@@ -69,6 +69,32 @@ class RiskEngine:
         roof = (attrs.roof_type or "unknown").lower()
         vent = (attrs.vent_type or "unknown").lower()
         defensible_ft = attrs.defensible_space_ft if attrs.defensible_space_ft is not None else 15.0
+        ring_metrics = context.structure_ring_metrics or {}
+
+        def ring_density(ring_key: str) -> float | None:
+            metrics = ring_metrics.get(ring_key, {})
+            value = metrics.get("vegetation_density") if isinstance(metrics, dict) else None
+            if value is None:
+                return None
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                return None
+
+        ring_0_5_density = ring_density("ring_0_5_ft")
+        ring_5_30_density = ring_density("ring_5_30_ft")
+        ring_30_100_density = ring_density("ring_30_100_ft")
+
+        available_ring_densities = [
+            density
+            for density in [ring_0_5_density, ring_5_30_density, ring_30_100_density]
+            if density is not None
+        ]
+        ring_density_average = (
+            round(sum(available_ring_densities) / len(available_ring_densities), 1)
+            if available_ring_densities
+            else None
+        )
 
         roof_ignition = (
             75.0 if roof in {"wood", "untreated wood shake"}
@@ -105,10 +131,16 @@ class RiskEngine:
         flame_assumptions: List[str] = []
         if attrs.defensible_space_ft is None:
             flame_assumptions.append("Defensible space missing; assumed 15 ft for flame-contact model.")
+        if ring_0_5_density is None or ring_5_30_density is None:
+            flame_assumptions.append("Structure-ring vegetation metrics unavailable; flame-contact model used point-based vegetation context.")
+
+        close_in_veg_pressure = ring_0_5_density if ring_0_5_density is not None else context.canopy_index
+        zone1_veg_pressure = ring_5_30_density if ring_5_30_density is not None else context.fuel_index
         flame_score = round(
-            0.40 * context.fuel_index
-            + 0.35 * context.wildland_distance_index
-            + 0.25 * max(0.0, min(100.0, 100.0 - defensible_ft * 2.2)),
+            0.30 * context.fuel_index
+            + 0.25 * context.wildland_distance_index
+            + 0.20 * max(0.0, min(100.0, 100.0 - defensible_ft * 2.2))
+            + 0.25 * (0.55 * close_in_veg_pressure + 0.45 * zone1_veg_pressure),
             1,
         )
         submodels["flame_contact_risk"] = SubmodelResult(
@@ -118,6 +150,8 @@ class RiskEngine:
                 "fuel_index": context.fuel_index,
                 "wildland_distance_index": context.wildland_distance_index,
                 "defensible_space_ft": defensible_ft,
+                "ring_0_5_ft_vegetation_density": ring_0_5_density,
+                "ring_5_30_ft_vegetation_density": ring_5_30_density,
             },
             assumptions=flame_assumptions,
         )
@@ -129,13 +163,37 @@ class RiskEngine:
             key_inputs={"slope_index": context.slope_index, "aspect_index": context.aspect_index},
         )
 
+        fuel_proximity_assumptions: List[str] = []
+        if ring_30_100_density is None:
+            fuel_proximity_assumptions.append(
+                "Structure-ring 30-100 ft vegetation metrics unavailable; fuel proximity used point-based distance index."
+            )
+
+        outer_ring_pressure = ring_30_100_density if ring_30_100_density is not None else context.canopy_index
+        fuel_proximity_score = round(0.75 * context.wildland_distance_index + 0.25 * outer_ring_pressure, 1)
         submodels["fuel_proximity_risk"] = SubmodelResult(
-            score=max(0.0, min(100.0, round(context.wildland_distance_index, 1))),
+            score=max(0.0, min(100.0, fuel_proximity_score)),
             explanation="Fuel proximity risk reflects distance to contiguous wildland vegetation.",
-            key_inputs={"wildland_distance_index": context.wildland_distance_index},
+            key_inputs={
+                "wildland_distance_index": context.wildland_distance_index,
+                "ring_30_100_ft_vegetation_density": ring_30_100_density,
+            },
+            assumptions=fuel_proximity_assumptions,
         )
 
-        vegetation_score = round(0.45 * context.fuel_index + 0.30 * context.canopy_index + 0.25 * context.moisture_index, 1)
+        vegetation_assumptions: List[str] = []
+        if ring_density_average is None:
+            vegetation_assumptions.append(
+                "Structure-ring vegetation metrics unavailable; vegetation intensity used 100m point-neighborhood context."
+            )
+        structure_ring_veg = ring_density_average if ring_density_average is not None else context.canopy_index
+        vegetation_score = round(
+            0.35 * context.fuel_index
+            + 0.20 * context.canopy_index
+            + 0.20 * context.moisture_index
+            + 0.25 * structure_ring_veg,
+            1,
+        )
         submodels["vegetation_intensity_risk"] = SubmodelResult(
             score=max(0.0, min(100.0, vegetation_score)),
             explanation="Vegetation intensity risk captures fuel loading, canopy continuity, and dryness.",
@@ -143,7 +201,9 @@ class RiskEngine:
                 "fuel_index": context.fuel_index,
                 "canopy_index": context.canopy_index,
                 "moisture_index": context.moisture_index,
+                "ring_vegetation_density_avg": ring_density_average,
             },
+            assumptions=vegetation_assumptions,
         )
 
         submodels["historic_fire_risk"] = SubmodelResult(
@@ -176,11 +236,32 @@ class RiskEngine:
         defensible_assumptions: List[str] = []
         if attrs.defensible_space_ft is None:
             defensible_assumptions.append("Defensible space missing; assumed 15 ft for defensible-space model.")
-        defensible_score = round(max(0.0, min(100.0, 95.0 - defensible_ft * 2.6)) * 0.70 + 0.30 * context.fuel_index, 1)
+        if ring_0_5_density is None and ring_5_30_density is None:
+            defensible_assumptions.append(
+                "Structure-ring vegetation metrics unavailable; defensible-space pressure used fuel index proxy."
+            )
+
+        zone_pressure_values = [d for d in [ring_0_5_density, ring_5_30_density] if d is not None]
+        zone_pressure = (
+            round(sum(zone_pressure_values) / len(zone_pressure_values), 1)
+            if zone_pressure_values
+            else context.fuel_index
+        )
+        defensible_score = round(
+            max(0.0, min(100.0, 95.0 - defensible_ft * 2.6)) * 0.55
+            + 0.25 * context.fuel_index
+            + 0.20 * zone_pressure,
+            1,
+        )
         submodels["defensible_space_risk"] = SubmodelResult(
             score=max(0.0, min(100.0, defensible_score)),
             explanation="Defensible space risk reflects clearance sufficiency under local fuel pressure.",
-            key_inputs={"defensible_space_ft": defensible_ft, "fuel_index": context.fuel_index},
+            key_inputs={
+                "defensible_space_ft": defensible_ft,
+                "fuel_index": context.fuel_index,
+                "ring_0_5_ft_vegetation_density": ring_0_5_density,
+                "ring_5_30_ft_vegetation_density": ring_5_30_density,
+            },
             assumptions=defensible_assumptions,
         )
 

@@ -136,6 +136,15 @@ Role-aware behavior includes:
 
 Each submodel includes score, weighted contribution, deterministic explanation, key inputs, and assumptions.
 
+### Property-Level Structure Ring Context (Sprint 2)
+The data layer now attempts building-footprint-based vegetation analysis before scoring:
+- footprint lookup from local vector data (`WF_LAYER_BUILDING_FOOTPRINTS_GEOJSON`)
+- structure-relative rings: `ring_0_5_ft`, `ring_5_30_ft`, `ring_30_100_ft`
+- canopy/vegetation summaries by ring (`canopy_mean`, `canopy_max`, `coverage_pct`, `vegetation_density`, `fuel_presence_proxy`)
+
+These ring metrics are used as additional inputs for flame-contact, defensible-space, fuel-proximity, and vegetation-intensity submodels, and to sharpen mitigation recommendations.
+If footprint data is unavailable, the system falls back to point-based context and records an assumption.
+
 ### Separate Insurance Readiness
 Readiness is computed separately and returns:
 - `readiness_factors`
@@ -179,6 +188,7 @@ Assessment/report payloads include:
 - assumptions: `confirmed_inputs`, `observed_inputs`, `inferred_inputs`, `missing_inputs`, `assumptions_used`
 - confidence: `confidence_score`, `low_confidence_flags`
 - explainability: `submodel_scores`, `weighted_contributions`, `factor_breakdown`, `top_risk_drivers`, `top_protective_factors`, `explanation_summary`
+- property-level context: `property_level_context.footprint_used` and `property_level_context.ring_metrics`
 - readiness and mitigation linkage fields
 
 ## Setup
@@ -198,6 +208,7 @@ export WF_LAYER_FUEL_TIF="/path/to/fuel_model.tif"
 export WF_LAYER_CANOPY_TIF="/path/to/canopy_density.tif"
 export WF_LAYER_MOISTURE_TIF="/path/to/moisture_or_dryness.tif"
 export WF_LAYER_FIRE_PERIMETERS_GEOJSON="/path/to/fire_perimeters.geojson"
+export WF_LAYER_BUILDING_FOOTPRINTS_GEOJSON="/path/to/building_footprints.geojson"
 
 uvicorn backend.main:app --reload
 ```
@@ -212,6 +223,7 @@ Frontend file: `frontend/public/index.html`.
 - Test: `pytest`, `httpx`
 
 Without geospatial packages and configured layer files, the app runs in deterministic fallback mode instead of true layer-backed mode.
+Without a configured building-footprint layer, the app still runs but `property_level_context.footprint_used` is `false` and ring metrics are omitted.
 
 ## Persistence and Compatibility
 
@@ -252,6 +264,7 @@ Deterministic tests in `tests/test_risk_assessment.py` cover:
 
 - Scoring/readiness remain transparent MVP heuristics, not carrier-approved underwriting models.
 - Access/egress scoring is still provisional and excluded from weighted wildfire total.
+- Building footprint support currently expects a local GeoJSON footprint source; no external footprint API integration yet.
 - Portfolio jobs are SQLite/background-task based; no distributed queue yet.
 - API-key + role headers are lightweight controls, not full identity/access management.
 - Report export is JSON/HTML oriented; native PDF generation is not included.

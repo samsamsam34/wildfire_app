@@ -1006,6 +1006,7 @@ class AssessmentStore:
             payload["low_confidence_flags"] = payload.get("confidence", {}).get("low_confidence_flags", [])
 
         payload.setdefault("data_sources", [])
+        payload.setdefault("property_level_context", {"footprint_used": False, "ring_metrics": {}})
         payload.setdefault("mitigation_plan", payload.get("mitigation_recommendations", []))
         payload["mitigation_plan"] = self._upgrade_mitigation_items(payload.get("mitigation_plan", []))
 

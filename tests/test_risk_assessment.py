@@ -4,13 +4,22 @@ import json
 import sqlite3
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
+
+try:
+    from shapely.geometry import Polygon
+except Exception:  # pragma: no cover - optional in constrained test runners
+    Polygon = None
 
 import backend.auth as auth
 import backend.main as app_main
+from backend.building_footprints import BuildingFootprintClient, BuildingFootprintResult, compute_structure_rings
 from backend.database import AssessmentStore
+from backend.mitigation import build_mitigation_plan
+from backend.models import PropertyAttributes
 from backend.version import LEGACY_MODEL_VERSION, MODEL_VERSION
-from backend.wildfire_data import WildfireContext
+from backend.wildfire_data import WildfireContext, WildfireDataClient
 
 
 client = TestClient(app_main.app)
@@ -29,7 +38,18 @@ REQUIRED_SUBMODELS = [
 ]
 
 
-def _ctx(env: float, wildland: float, historic: float) -> WildfireContext:
+def _require_shapely() -> None:
+    if Polygon is None:
+        pytest.skip("shapely is not installed in this environment")
+
+
+def _ctx(
+    env: float,
+    wildland: float,
+    historic: float,
+    ring_metrics: dict[str, dict[str, float | None]] | None = None,
+) -> WildfireContext:
+    ring_metrics = ring_metrics or {}
     return WildfireContext(
         environmental_index=env,
         slope_index=env,
@@ -50,6 +70,11 @@ def _ctx(env: float, wildland: float, historic: float) -> WildfireContext:
             "Aspect raster",
         ],
         assumptions=[],
+        structure_ring_metrics=ring_metrics,
+        property_level_context={
+            "footprint_used": bool(ring_metrics),
+            "ring_metrics": ring_metrics,
+        },
     )
 
 
@@ -98,6 +123,7 @@ def _assert_core_contract(body: dict) -> None:
         "low_confidence_flags",
         "mitigation_plan",
         "data_sources",
+        "property_level_context",
         "review_status",
     ]
     for key in required:
@@ -645,6 +671,183 @@ def test_model_version_current(monkeypatch, tmp_path):
     _setup(monkeypatch, tmp_path, _ctx(env=45.0, wildland=45.0, historic=40.0))
     row = _run(_payload("Version Check Rd", {"defensible_space_ft": 20}))
     assert row["model_version"] == MODEL_VERSION
+
+
+def test_building_footprint_lookup_success(tmp_path):
+    _require_shapely()
+    footprint_geojson = {
+        "type": "FeatureCollection",
+        "features": [
+            {
+                "type": "Feature",
+                "properties": {},
+                "geometry": {
+                    "type": "Polygon",
+                    "coordinates": [
+                        [
+                            [-105.0002, 40.0002],
+                            [-104.9998, 40.0002],
+                            [-104.9998, 39.9998],
+                            [-105.0002, 39.9998],
+                            [-105.0002, 40.0002],
+                        ]
+                    ],
+                },
+            }
+        ],
+    }
+    path = tmp_path / "footprints.geojson"
+    path.write_text(json.dumps(footprint_geojson))
+
+    client = BuildingFootprintClient(path=str(path))
+    result = client.get_building_footprint(lat=40.0, lon=-105.0)
+
+    assert result.found is True
+    assert result.footprint is not None
+    assert result.centroid is not None
+    assert result.confidence >= 0.9
+
+
+def test_building_footprint_lookup_no_source_fallback(tmp_path):
+    _require_shapely()
+    missing_path = tmp_path / "missing.geojson"
+    client = BuildingFootprintClient(path=str(missing_path))
+    result = client.get_building_footprint(lat=40.0, lon=-105.0)
+
+    assert result.found is False
+    assert any("not configured or missing" in note for note in result.assumptions)
+
+
+def test_structure_ring_generation_correctness():
+    _require_shapely()
+    footprint = Polygon(
+        [
+            (-105.00005, 40.00005),
+            (-104.99995, 40.00005),
+            (-104.99995, 39.99995),
+            (-105.00005, 39.99995),
+            (-105.00005, 40.00005),
+        ]
+    )
+    rings, assumptions = compute_structure_rings(footprint)
+
+    assert set(rings.keys()) == {"ring_0_5_ft", "ring_5_30_ft", "ring_30_100_ft"}
+    assert not assumptions
+
+    area_0_5 = rings["ring_0_5_ft"].area
+    area_5_30 = rings["ring_5_30_ft"].area
+    area_30_100 = rings["ring_30_100_ft"].area
+    assert area_0_5 > 0
+    assert area_5_30 > area_0_5
+    assert area_30_100 > area_5_30
+
+
+def test_structure_ring_summary_pipeline(monkeypatch):
+    _require_shapely()
+    client = WildfireDataClient()
+    footprint = Polygon(
+        [
+            (-105.00004, 40.00004),
+            (-104.99996, 40.00004),
+            (-104.99996, 39.99996),
+            (-105.00004, 39.99996),
+            (-105.00004, 40.00004),
+        ]
+    )
+
+    monkeypatch.setattr(
+        client.footprints,
+        "get_building_footprint",
+        lambda _lat, _lon: BuildingFootprintResult(
+            found=True,
+            footprint=footprint,
+            centroid=(40.0, -105.0),
+            source="fixture",
+            confidence=0.9,
+            assumptions=[],
+        ),
+    )
+    monkeypatch.setattr(
+        client,
+        "_summarize_ring_canopy",
+        lambda _geom: {
+            "canopy_mean": 62.0,
+            "canopy_max": 81.0,
+            "coverage_pct": 58.0,
+            "vegetation_density": 70.0,
+        },
+    )
+    monkeypatch.setattr(client, "_summarize_ring_fuel_presence", lambda _geom: 50.0)
+
+    context_blob, assumptions, sources = client._compute_structure_ring_metrics(40.0, -105.0)
+    metrics = context_blob["ring_metrics"]
+
+    assert context_blob["footprint_used"] is True
+    assert set(metrics.keys()) == {"ring_0_5_ft", "ring_5_30_ft", "ring_30_100_ft"}
+    assert metrics["ring_0_5_ft"]["vegetation_density"] == 60.0
+    assert metrics["ring_5_30_ft"]["canopy_mean"] == 62.0
+    assert "Structure ring vegetation summaries" in sources
+    assert assumptions == []
+
+
+def test_context_collect_fallback_when_footprint_unavailable(monkeypatch):
+    client = WildfireDataClient()
+
+    monkeypatch.setattr(
+        client.footprints,
+        "get_building_footprint",
+        lambda _lat, _lon: BuildingFootprintResult(
+            found=False,
+            footprint=None,
+            centroid=None,
+            source="missing_fixture",
+            confidence=0.0,
+            assumptions=["No nearby building footprint found for this location."],
+        ),
+    )
+
+    ctx = client.collect_context(39.7392, -104.9903)
+    assert ctx is not None
+    assert ctx.property_level_context.get("footprint_used") is False
+    assert "ring_metrics" in ctx.property_level_context
+
+
+def test_ring_metrics_influence_risk_and_mitigation():
+    attrs = PropertyAttributes(
+        roof_type="class a",
+        vent_type="ember-resistant",
+        defensible_space_ft=20,
+        construction_year=2015,
+    )
+
+    low_ring = {
+        "ring_0_5_ft": {"vegetation_density": 15.0},
+        "ring_5_30_ft": {"vegetation_density": 25.0},
+        "ring_30_100_ft": {"vegetation_density": 35.0},
+    }
+    high_ring = {
+        "ring_0_5_ft": {"vegetation_density": 85.0},
+        "ring_5_30_ft": {"vegetation_density": 80.0},
+        "ring_30_100_ft": {"vegetation_density": 70.0},
+    }
+
+    low_ctx = _ctx(env=55.0, wildland=55.0, historic=50.0, ring_metrics=low_ring)
+    high_ctx = _ctx(env=55.0, wildland=55.0, historic=50.0, ring_metrics=high_ring)
+
+    low_risk = app_main.risk_engine.score(attrs, 39.7392, -104.9903, low_ctx)
+    high_risk = app_main.risk_engine.score(attrs, 39.7392, -104.9903, high_ctx)
+
+    assert high_risk.submodel_scores["flame_contact_risk"].score > low_risk.submodel_scores["flame_contact_risk"].score
+    assert high_risk.submodel_scores["defensible_space_risk"].score > low_risk.submodel_scores["defensible_space_risk"].score
+
+    high_plan = build_mitigation_plan(
+        attrs,
+        high_ctx,
+        {name: item.score for name, item in high_risk.submodel_scores.items()},
+        readiness_blockers=[],
+    )
+    titles = [rec.title.lower() for rec in high_plan]
+    assert any("0-5 ft zone" in title for title in titles)
 
 
 def _headers(role: str = "admin", org: str = "default_org", user: str = "test_user") -> dict:

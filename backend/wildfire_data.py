@@ -3,22 +3,27 @@ from __future__ import annotations
 import json
 import math
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Iterable, List
+from typing import Any, Dict, Iterable, List
+
+from backend.building_footprints import BuildingFootprintClient, compute_structure_rings
 
 try:
     import numpy as np
     import rasterio
     from pyproj import Transformer
-    from shapely.geometry import Point, shape
+    from shapely.geometry import Point, mapping, shape
+    from shapely.ops import transform as shapely_transform
 except Exception:  # pragma: no cover - graceful runtime fallback when geo deps are missing
     np = None
     rasterio = None
     Transformer = None
     Point = None
+    mapping = None
     shape = None
+    shapely_transform = None
 
 
 @dataclass
@@ -35,6 +40,8 @@ class WildfireContext:
     hazard_severity_index: float
     data_sources: List[str]
     assumptions: List[str]
+    structure_ring_metrics: Dict[str, Dict[str, float | None]] = field(default_factory=dict)
+    property_level_context: Dict[str, Any] = field(default_factory=dict)
 
 
 class WildfireDataClient:
@@ -64,6 +71,7 @@ class WildfireDataClient:
             "moisture": os.getenv("WF_LAYER_MOISTURE_TIF", ""),
             "perimeters": os.getenv("WF_LAYER_FIRE_PERIMETERS_GEOJSON", ""),
         }
+        self.footprints = BuildingFootprintClient()
 
     @staticmethod
     def _to_index(value: float, src_min: float, src_max: float) -> float:
@@ -107,6 +115,143 @@ class WildfireDataClient:
             return lon, lat
         transformer = Transformer.from_crs("EPSG:4326", ds.crs, always_xy=True)
         return transformer.transform(lon, lat)
+
+    def _to_geom_crs(self, geom: Any, ds) -> Any:
+        if ds.crs is None or str(ds.crs).upper() in {"EPSG:4326", "OGC:CRS84"}:
+            return geom
+        if not (Transformer and shapely_transform):
+            return geom
+        transformer = Transformer.from_crs("EPSG:4326", ds.crs, always_xy=True)
+        return shapely_transform(transformer.transform, geom)
+
+    def _polygon_raster_values(self, path: str, polygon: Any) -> list[float]:
+        if not (rasterio and np is not None and mapping and self._file_exists(path)):
+            return []
+
+        ds = self._open_raster(path)
+        try:
+            geom_ds = self._to_geom_crs(polygon, ds)
+            window = rasterio.features.geometry_window(ds, [mapping(geom_ds)])
+            arr = ds.read(1, window=window, masked=True)
+            inside_mask = rasterio.features.geometry_mask(
+                [mapping(geom_ds)],
+                transform=ds.window_transform(window),
+                out_shape=arr.shape,
+                invert=True,
+                all_touched=True,
+            )
+            vals = arr[inside_mask]
+            if hasattr(vals, "compressed"):
+                vals = vals.compressed()
+            return [float(v) for v in vals.tolist()]
+        except Exception:
+            return []
+
+    def _summarize_ring_canopy(self, ring_geometry: Any) -> dict[str, float] | None:
+        canopy_vals = self._polygon_raster_values(self.paths["canopy"], ring_geometry)
+        if not canopy_vals:
+            return None
+
+        canopy_mean = float(sum(canopy_vals) / len(canopy_vals))
+        canopy_max = float(max(canopy_vals))
+        coverage_pct = float(sum(1 for v in canopy_vals if v >= 20.0) / len(canopy_vals) * 100.0)
+        vegetation_density = float(self._to_index(canopy_mean, 0.0, 100.0))
+
+        return {
+            "canopy_mean": round(canopy_mean, 1),
+            "canopy_max": round(canopy_max, 1),
+            "coverage_pct": round(coverage_pct, 1),
+            "vegetation_density": round(vegetation_density, 1),
+        }
+
+    def _summarize_ring_fuel_presence(self, ring_geometry: Any) -> float | None:
+        fuel_vals = self._polygon_raster_values(self.paths["fuel"], ring_geometry)
+        if not fuel_vals:
+            return None
+
+        wildland_cells = 0
+        for raw in fuel_vals:
+            code = int(round(raw))
+            if (1 <= code <= 13) or (101 <= code <= 149):
+                wildland_cells += 1
+
+        return round((wildland_cells / len(fuel_vals)) * 100.0, 1)
+
+    def _compute_structure_ring_metrics(
+        self,
+        lat: float,
+        lon: float,
+    ) -> tuple[dict[str, Any], list[str], list[str]]:
+        assumptions: list[str] = []
+        sources: list[str] = []
+
+        result = self.footprints.get_building_footprint(lat, lon)
+        assumptions.extend(result.assumptions)
+
+        if not result.found or result.footprint is None:
+            assumptions.append("Building footprint analysis unavailable; using point-based vegetation context.")
+            return {
+                "footprint_used": False,
+                "footprint_found": False,
+                "footprint_source": result.source,
+                "footprint_confidence": result.confidence,
+                "ring_metrics": {},
+            }, assumptions, sources
+
+        sources.append("Building footprint source")
+        rings, ring_assumptions = compute_structure_rings(result.footprint)
+        assumptions.extend(ring_assumptions)
+
+        ring_metrics: dict[str, dict[str, float | None]] = {}
+        for ring_key in ("ring_0_5_ft", "ring_5_30_ft", "ring_30_100_ft"):
+            ring_geom = rings.get(ring_key)
+            if ring_geom is None:
+                ring_metrics[ring_key] = {
+                    "canopy_mean": None,
+                    "canopy_max": None,
+                    "vegetation_density": None,
+                    "coverage_pct": None,
+                    "fuel_presence_proxy": None,
+                }
+                continue
+
+            canopy_stats = self._summarize_ring_canopy(ring_geom)
+            fuel_presence = self._summarize_ring_fuel_presence(ring_geom)
+
+            if canopy_stats is None:
+                ring_metrics[ring_key] = {
+                    "canopy_mean": None,
+                    "canopy_max": None,
+                    "vegetation_density": fuel_presence,
+                    "coverage_pct": fuel_presence,
+                    "fuel_presence_proxy": fuel_presence,
+                }
+            else:
+                vegetation_density = canopy_stats["vegetation_density"]
+                if fuel_presence is not None:
+                    vegetation_density = round((vegetation_density + fuel_presence) / 2.0, 1)
+                ring_metrics[ring_key] = {
+                    "canopy_mean": canopy_stats["canopy_mean"],
+                    "canopy_max": canopy_stats["canopy_max"],
+                    "vegetation_density": vegetation_density,
+                    "coverage_pct": canopy_stats["coverage_pct"],
+                    "fuel_presence_proxy": fuel_presence,
+                }
+
+        if ring_metrics:
+            sources.append("Structure ring vegetation summaries")
+
+        return {
+            "footprint_used": bool(ring_metrics),
+            "footprint_found": result.found,
+            "footprint_source": result.source,
+            "footprint_confidence": result.confidence,
+            "ring_metrics": ring_metrics,
+            "footprint_centroid": {
+                "latitude": result.centroid[0] if result.centroid else None,
+                "longitude": result.centroid[1] if result.centroid else None,
+            },
+        }, assumptions, sources
 
     def _sample_raster_point(self, path: str, lat: float, lon: float) -> float | None:
         if not (rasterio and self._file_exists(path)):
@@ -253,6 +398,12 @@ class WildfireDataClient:
     def collect_context(self, lat: float, lon: float) -> WildfireContext:
         assumptions: List[str] = []
         sources: List[str] = []
+        property_level_context: dict[str, Any] = {
+            "footprint_used": False,
+            "footprint_found": False,
+            "ring_metrics": {},
+        }
+        structure_ring_metrics: dict[str, dict[str, float | None]] = {}
 
         if not (rasterio and np is not None and Transformer is not None):
             assumptions.append("Geospatial stack unavailable; install rasterio/numpy/pyproj/shapely.")
@@ -269,7 +420,15 @@ class WildfireDataClient:
                 hazard_severity_index=55.0,
                 data_sources=sources,
                 assumptions=assumptions,
+                structure_ring_metrics=structure_ring_metrics,
+                property_level_context=property_level_context,
             )
+
+        ring_context, ring_assumptions, ring_sources = self._compute_structure_ring_metrics(lat, lon)
+        property_level_context = ring_context
+        structure_ring_metrics = ring_context.get("ring_metrics", {})
+        assumptions.extend(ring_assumptions)
+        sources.extend(ring_sources)
 
         burn_prob = self._sample_raster_point(self.paths["burn_prob"], lat, lon)
         if burn_prob is None:
@@ -384,4 +543,6 @@ class WildfireDataClient:
             hazard_severity_index=round(hazard_severity_index, 1),
             data_sources=sorted(set(sources)),
             assumptions=assumptions,
+            structure_ring_metrics=structure_ring_metrics,
+            property_level_context=property_level_context,
         )

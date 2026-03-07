@@ -21,6 +21,21 @@ def build_mitigation_plan(
     readiness_blockers: List[str],
 ) -> List[MitigationAction]:
     recommendations: List[MitigationAction] = []
+    ring_metrics = context.structure_ring_metrics or {}
+
+    def ring_density(ring_key: str) -> float | None:
+        metrics = ring_metrics.get(ring_key, {})
+        value = metrics.get("vegetation_density") if isinstance(metrics, dict) else None
+        if value is None:
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    ring_0_5_density = ring_density("ring_0_5_ft")
+    ring_5_30_density = ring_density("ring_5_30_ft")
+    ring_30_100_density = ring_density("ring_30_100_ft")
 
     def add_rec(
         title: str,
@@ -95,6 +110,45 @@ def build_mitigation_plan(
             priority=1,
             insurer_relevance="required",
             related_factor="defensible_space_risk",
+        )
+
+    if ring_0_5_density is not None and ring_0_5_density >= 55:
+        add_rec(
+            title="Create a noncombustible 0-5 ft zone around the structure",
+            reason="Dense close-in vegetation in the immediate 0-5 ft ring materially increases direct ignition potential.",
+            impacted_submodels=["flame_contact_risk", "defensible_space_risk", "vegetation_intensity_risk"],
+            impacted_readiness_factors=["defensible_space", "vegetation_intensity"],
+            risk_band="high",
+            readiness_band="medium",
+            priority=1,
+            insurer_relevance="required",
+            related_factor="defensible_space_risk",
+        )
+
+    if ring_5_30_density is not None and ring_5_30_density >= 60:
+        add_rec(
+            title="Thin and prune vegetation in the 5-30 ft zone",
+            reason="Elevated vegetation density in the 5-30 ft ring can sustain flame spread toward the home.",
+            impacted_submodels=["defensible_space_risk", "flame_contact_risk", "vegetation_intensity_risk"],
+            impacted_readiness_factors=["defensible_space", "adjacent_fuel_pressure", "vegetation_intensity"],
+            risk_band="high" if ring_5_30_density >= 75 else "medium",
+            readiness_band="medium",
+            priority=2,
+            insurer_relevance="recommended",
+            related_factor="flame_contact_risk",
+        )
+
+    if ring_30_100_density is not None and ring_30_100_density >= 65:
+        add_rec(
+            title="Reduce fuels in the 30-100 ft zone",
+            reason="High vegetation loading in the 30-100 ft ring can intensify incoming fire pressure and ember production.",
+            impacted_submodels=["fuel_proximity_risk", "vegetation_intensity_risk", "flame_contact_risk"],
+            impacted_readiness_factors=["adjacent_fuel_pressure", "vegetation_intensity"],
+            risk_band="medium",
+            readiness_band="medium",
+            priority=3,
+            insurer_relevance="recommended",
+            related_factor="fuel_proximity_risk",
         )
 
     if (
