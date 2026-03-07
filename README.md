@@ -328,6 +328,20 @@ python scripts/prepare_region_layers.py \
 
 For local testing, `--skip-download` can be used with local file inputs.
 
+Common hardening flags:
+- `--dry-run`: validates config/sources and reports what would run, without writing outputs
+- `--download-timeout`: per-request timeout seconds
+- `--download-retries`: retry count
+- `--retry-backoff-seconds`: exponential backoff base
+- `--keep-temp-on-failure`: preserve `_downloads`/`_extracted` for debugging
+- `--clean-download-cache`: remove staging folders after run
+- `--allow-partial`: write partial manifest with explicit failed/missing layers
+
+Archive handling:
+- `.zip` inputs are supported for raster/vector layer sources.
+- The preparer extracts deterministic candidates (`.tif/.tiff` for rasters, `.geojson/.json` for vectors).
+- If no valid candidate exists, prep fails clearly.
+
 Prepared region layout:
 
 ```text
@@ -344,16 +358,30 @@ data/regions/<region_id>/
 `manifest.json` stores region metadata (bounds/CRS/status), per-layer source metadata, freshness timestamps, and file mappings.
 
 Manifest layer metadata includes fields such as:
-- `source_name`, `source_type`, `source_url`
-- `dataset_version`, `freshness_timestamp`, `downloaded_at`
+- `source_name`, `source_type`, `source_mode`, `source_url`
+- `dataset_version`, `freshness_timestamp`, `downloaded_at`, `download_status`
+- `bytes_downloaded`, `retry_count_used`, `timeout_seconds`
+- `extraction_performed`, `extracted_path`, `checksum_status`
 - `clipped_to_bbox`, `validation_status`
 - layer notes/warnings
+
+Optional checksum verification:
+- Add `checksum` in `source_metadata` (for example `sha256:<hex>`).
+- If provided, the preparer verifies checksum and fails on mismatch.
 
 ### Automation honesty (current state)
 
 - DEM, fire perimeters, building footprints, fuel, canopy: local-file and URL-based prep paths are implemented.
 - Full catalog/index automation (for example direct NIFC catalog sync, Microsoft building-footprint tile index orchestration, and LANDFIRE discovery/catalog downloads) is **not** fully automated in this pass.
 - This is intentional for a pilot-region ingestion workflow.
+
+URL behavior guidance:
+- Direct file URLs (or predictable archive URLs) work best.
+- Catalog scraping/discovery orchestration is intentionally deferred.
+
+Partial-mode caveat:
+- `--allow-partial` does **not** indicate full readiness.
+- Manifest status remains `partial`, with explicit `failed_layers` and warnings.
 
 Runtime behavior:
 - geocode address

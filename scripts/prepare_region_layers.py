@@ -20,6 +20,7 @@ def main() -> None:
     parser.add_argument("--crs", default="EPSG:4326")
     parser.add_argument("--copy", action="store_true", help="Copy files instead of symlinking")
     parser.add_argument("--force", action="store_true", help="Overwrite an existing region directory")
+    parser.add_argument("--dry-run", action="store_true", help="Validate setup and report plan without writing outputs.")
     parser.add_argument(
         "--skip-download",
         action="store_true",
@@ -29,6 +30,25 @@ def main() -> None:
         "--allow-partial",
         action="store_true",
         help="Write a partial manifest with warnings/errors instead of failing hard.",
+    )
+    parser.add_argument("--download-timeout", type=float, default=45.0, help="Per-request timeout in seconds.")
+    parser.add_argument("--download-retries", type=int, default=2, help="Retry count for URL downloads.")
+    parser.add_argument(
+        "--retry-backoff-seconds",
+        type=float,
+        default=1.5,
+        help="Base backoff in seconds; retries use exponential backoff.",
+    )
+    parser.add_argument(
+        "--keep-temp-on-failure",
+        action="store_true",
+        help="Keep temporary downloaded/extracted files when preparation fails.",
+    )
+    parser.add_argument(
+        "--clean-download-cache",
+        action="store_true",
+        default=False,
+        help="Remove _downloads/_extracted staging folders after completion (default: keep).",
     )
 
     parser.add_argument("--dem", default=None, help="Local DEM source path")
@@ -101,23 +121,34 @@ def main() -> None:
         force=args.force,
         skip_download=args.skip_download,
         allow_partial=args.allow_partial,
+        download_timeout=args.download_timeout,
+        download_retries=args.download_retries,
+        retry_backoff_seconds=args.retry_backoff_seconds,
+        dry_run=args.dry_run,
+        keep_temp_on_failure=args.keep_temp_on_failure,
+        clean_download_cache=args.clean_download_cache,
     )
 
-    prepared = [k for k, v in manifest.get("layers", {}).items() if v.get("validation_status") == "ok"]
-    skipped = [k for k, v in manifest.get("layers", {}).items() if v.get("validation_status") == "missing"]
-    failed = [k for k, v in manifest.get("layers", {}).items() if v.get("validation_status") == "error"]
+    prepared = manifest.get("prepared_layers", [])
+    skipped = manifest.get("skipped_layers", [])
+    failed = manifest.get("failed_layers", [])
+    out_root = args.region_data_dir or "data/regions"
+    manifest_path = None if args.dry_run else f"{out_root}/{args.region_id}/manifest.json"
     print(
         json.dumps(
             {
                 "region_id": manifest.get("region_id"),
+                "final_status": manifest.get("final_status"),
                 "preparation_status": manifest.get("preparation_status"),
                 "prepared_layers": prepared,
                 "skipped_layers": skipped,
                 "failed_layers": failed,
+                "slope_derived": manifest.get("slope_derived", False),
+                "archives_extracted": manifest.get("archives_extracted", False),
                 "warnings": manifest.get("warnings", []),
                 "errors": manifest.get("errors", []),
-                "output_dir": str((args.region_data_dir or "data/regions")),
-                "manifest_path": f"{(args.region_data_dir or 'data/regions')}/{args.region_id}/manifest.json",
+                "output_dir": str(out_root),
+                "manifest_path": manifest_path,
             },
             indent=2,
             sort_keys=True,
