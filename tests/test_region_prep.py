@@ -9,13 +9,31 @@ import pytest
 
 import backend.data_prep.prepare_region as prep_region
 from backend.data_prep.prepare_region import parse_bbox, prepare_region_layers
+from backend.data_prep.sources.adapters import (
+    LANDFIRECanopyAdapter,
+    LANDFIREFuelAdapter,
+    MicrosoftBuildingFootprintAdapter,
+    NIFCFirePerimeterAdapter,
+    SourceAsset,
+    USGS3DEPAdapter,
+)
 
-np = pytest.importorskip("numpy")
-rasterio = pytest.importorskip("rasterio")
-from rasterio.transform import from_origin
+try:
+    import numpy as np
+    import rasterio
+    from rasterio.transform import from_origin
+
+    HAS_RASTER_DEPS = True
+except Exception:  # pragma: no cover - optional deps in CI
+    np = None
+    rasterio = None
+    from_origin = None
+    HAS_RASTER_DEPS = False
 
 
 def _write_raster(path: Path, value: float = 10.0, width: int = 300, height: int = 300) -> None:
+    if not HAS_RASTER_DEPS:
+        pytest.skip("numpy/rasterio are required for raster prep tests")
     transform = from_origin(-1.0, 2.0, 0.01, 0.01)
     data = np.full((height, width), value, dtype=np.float32)
     with rasterio.open(
@@ -97,6 +115,16 @@ def test_parse_bbox_success_and_failure():
         parse_bbox("-122.0,38.0,-123.0,37.0")
 
 
+def test_cli_style_bbox_parser_accepts_four_values():
+    from scripts.prepare_region_layers import _parse_bbox_args
+
+    bbox = _parse_bbox_args(["-123.1", "37.5", "-122.0", "38.1"])
+    assert bbox["min_lon"] == -123.1
+    assert bbox["max_lat"] == 38.1
+    with pytest.raises(ValueError):
+        _parse_bbox_args(["-122.0", "38.1", "-123.0", "37.5"])
+
+
 def test_prepare_region_local_mode_derives_slope(tmp_path):
     manifest = prepare_region_layers(
         region_id="pilot_region",
@@ -104,6 +132,7 @@ def test_prepare_region_local_mode_derives_slope(tmp_path):
         bounds={"min_lon": 0.0, "min_lat": 0.0, "max_lon": 1.0, "max_lat": 1.0},
         layer_sources=_sources(tmp_path, include_slope=False),
         region_data_dir=tmp_path / "regions",
+        auto_discover=False,
     )
     region_dir = tmp_path / "regions" / "pilot_region"
     assert manifest["preparation_status"] == "prepared"
@@ -125,6 +154,7 @@ def test_prepare_region_clips_rasters_to_bbox(tmp_path):
         bounds={"min_lon": 0.0, "min_lat": 0.0, "max_lon": 0.3, "max_lat": 0.3},
         layer_sources=src,
         region_data_dir=tmp_path / "regions",
+        auto_discover=False,
     )
     out_dem = tmp_path / "regions" / "clip_region" / "dem.tif"
     with rasterio.open(out_dem) as ds:
@@ -158,6 +188,7 @@ def test_download_retry_timeout_and_metadata(monkeypatch, tmp_path):
         download_timeout=12.0,
         download_retries=3,
         retry_backoff_seconds=0.01,
+        auto_discover=False,
     )
     assert call_state["count"] == 3
     assert all(t == 12.0 for t in call_state["timeouts"])
@@ -178,6 +209,7 @@ def test_dry_run_does_not_write_outputs(tmp_path):
         layer_sources={"dem": _sources(tmp_path)["dem"]},
         region_data_dir=region_root,
         dry_run=True,
+        auto_discover=False,
     )
     assert manifest["preparation_status"] == "dry_run"
     assert not (region_root / "dry_run_region").exists()
@@ -197,6 +229,7 @@ def test_zip_archive_extraction_for_raster(tmp_path):
         bounds={"min_lon": 0.0, "min_lat": 0.0, "max_lon": 1.0, "max_lat": 1.0},
         layer_sources=src,
         region_data_dir=tmp_path / "regions",
+        auto_discover=False,
     )
     dem_meta = manifest["layers"]["dem"]
     assert dem_meta["extraction_performed"] is True
@@ -222,6 +255,7 @@ def test_bad_html_download_rejected(monkeypatch, tmp_path):
             layer_sources=sources,
             layer_urls={"dem": "https://example.test/dem.tif"},
             region_data_dir=tmp_path / "regions",
+            auto_discover=False,
         )
     assert "html" in str(exc.value).lower()
 
@@ -236,6 +270,7 @@ def test_checksum_verification_success_and_failure(tmp_path):
         layer_sources=src,
         source_metadata={"dem": {"checksum": f"sha256:{dem_checksum}"}},
         region_data_dir=tmp_path / "regions",
+        auto_discover=False,
     )
     assert ok_manifest["layers"]["dem"]["checksum_status"] == "verified"
 
@@ -247,6 +282,7 @@ def test_checksum_verification_success_and_failure(tmp_path):
             layer_sources=src,
             source_metadata={"dem": {"checksum": "sha256:deadbeef"}},
             region_data_dir=tmp_path / "regions",
+            auto_discover=False,
         )
 
 
@@ -266,9 +302,141 @@ def test_partial_mode_and_temp_cleanup_flags(monkeypatch, tmp_path):
         allow_partial=True,
         keep_temp_on_failure=True,
         clean_download_cache=True,
+        auto_discover=False,
     )
     assert partial["preparation_status"] == "partial"
     assert partial["final_status"] == "partial"
     assert "dem" in partial["failed_layers"]
     assert partial["warnings"]
     assert (tmp_path / "regions" / "partial_region" / "_downloads").exists()
+
+
+def test_usgs_dem_adapter_resolves_assets(monkeypatch):
+    adapter = USGS3DEPAdapter()
+
+    def fake_fetch_json(url: str, timeout: float = 30.0):
+        return {
+            "items": [
+                {"downloadURL": "https://example.test/dem_a.tif", "title": "Tile A", "sourceId": "A1"},
+                {"downloadURL": "https://example.test/dem_b.tif", "title": "Tile B", "sourceId": "B1"},
+            ]
+        }
+
+    import backend.data_prep.sources.adapters as src_adapters
+
+    monkeypatch.setattr(src_adapters, "_fetch_json", fake_fetch_json)
+    assets = adapter.resolve_sources({"min_lon": -123.0, "min_lat": 37.0, "max_lon": -122.0, "max_lat": 38.0})
+    assert len(assets) == 2
+    assert assets[0].layer_key == "dem"
+    assert assets[0].dataset_provider.startswith("USGS")
+
+
+def test_microsoft_buildings_adapter_bbox_resolution(monkeypatch):
+    csv_text = "QuadKey,Url\n0230102,https://example.test/q1.geojson\n0230103,https://example.test/q2.geojson\n"
+    import backend.data_prep.sources.adapters as src_adapters
+
+    monkeypatch.setenv("WF_MS_BUILDINGS_INDEX_URL", "https://example.test/index.csv")
+    monkeypatch.setattr(src_adapters, "_fetch_text", lambda url, timeout=30.0: csv_text)
+    adapter = MicrosoftBuildingFootprintAdapter()
+    assets = adapter.resolve_sources({"min_lon": -123.0, "min_lat": 37.0, "max_lon": -122.0, "max_lat": 38.0})
+    assert isinstance(assets, list)
+    for asset in assets:
+        assert asset.layer_key == "building_footprints"
+
+
+def test_nifc_adapter_uses_configured_url(monkeypatch):
+    monkeypatch.setenv("WF_NIFC_FIRE_PERIMETERS_URL", "https://example.test/nifc.geojson")
+    adapter = NIFCFirePerimeterAdapter()
+    assets = adapter.resolve_sources({"min_lon": -123.0, "min_lat": 37.0, "max_lon": -122.0, "max_lat": 38.0})
+    assert len(assets) == 1
+    assert assets[0].layer_key == "fire_perimeters"
+    assert assets[0].url == "https://example.test/nifc.geojson"
+
+
+def test_landfire_template_adapter_resolution(monkeypatch):
+    monkeypatch.setenv(
+        "WF_LANDFIRE_FUEL_URL_TEMPLATE",
+        "https://example.test/fuel?bbox={min_lon},{min_lat},{max_lon},{max_lat}",
+    )
+    monkeypatch.setenv(
+        "WF_LANDFIRE_CANOPY_URL_TEMPLATE",
+        "https://example.test/canopy?bbox={bbox}",
+    )
+    fuel_assets = LANDFIREFuelAdapter().resolve_sources(
+        {"min_lon": -123.0, "min_lat": 37.0, "max_lon": -122.0, "max_lat": 38.0}
+    )
+    canopy_assets = LANDFIRECanopyAdapter().resolve_sources(
+        {"min_lon": -123.0, "min_lat": 37.0, "max_lon": -122.0, "max_lat": 38.0}
+    )
+    assert len(fuel_assets) == 1
+    assert len(canopy_assets) == 1
+    assert "bbox=-123.0,37.0,-122.0,38.0" in canopy_assets[0].url
+    assert fuel_assets[0].layer_key == "fuel"
+    assert canopy_assets[0].layer_key == "canopy"
+
+
+def test_auto_discovery_prepares_region_from_bbox_only(monkeypatch, tmp_path):
+    src = _sources(tmp_path, include_slope=False)
+    assets = {
+        "dem": [SourceAsset(url=Path(src["dem"]).as_uri(), dataset_name="USGS", dataset_version="1", dataset_provider="USGS", layer_key="dem", layer_type="raster", expected_format="tif", tile_id="dem1")],
+        "fuel": [SourceAsset(url=Path(src["fuel"]).as_uri(), dataset_name="LANDFIRE Fuel", dataset_version="1", dataset_provider="LANDFIRE", layer_key="fuel", layer_type="raster", expected_format="tif", tile_id="f1")],
+        "canopy": [SourceAsset(url=Path(src["canopy"]).as_uri(), dataset_name="LANDFIRE Canopy", dataset_version="1", dataset_provider="LANDFIRE", layer_key="canopy", layer_type="raster", expected_format="tif", tile_id="c1")],
+        "fire_perimeters": [SourceAsset(url=Path(src["fire_perimeters"]).as_uri(), dataset_name="NIFC", dataset_version="1", dataset_provider="NIFC", layer_key="fire_perimeters", layer_type="vector", expected_format="geojson")],
+        "building_footprints": [SourceAsset(url=Path(src["building_footprints"]).as_uri(), dataset_name="MS Buildings", dataset_version="1", dataset_provider="Microsoft", layer_key="building_footprints", layer_type="vector", expected_format="geojson", tile_id="q1")],
+    }
+    monkeypatch.setattr(prep_region, "discover_wildfire_sources", lambda bbox: assets)
+
+    manifest = prepare_region_layers(
+        region_id="bbox_only_region",
+        display_name="BBox Only Region",
+        bounds={"min_lon": 0.0, "min_lat": 0.0, "max_lon": 1.0, "max_lat": 1.0},
+        region_data_dir=tmp_path / "regions",
+        auto_discover=True,
+    )
+    assert manifest["preparation_status"] == "prepared"
+    assert manifest["files"]["dem"] == "dem.tif"
+    assert manifest["layers"]["dem"]["discovered_source"] is True
+    assert manifest["layers"]["dem"]["dataset_provider"] == "USGS"
+    assert manifest["layers"]["dem"]["dataset_source"] == "USGS"
+    assert manifest["layers"]["building_footprints"]["tile_ids"] == ["q1"]
+    assert manifest["layers"]["dem"]["download_url"]
+
+
+def test_download_cache_reuse(monkeypatch, tmp_path):
+    src = _sources(tmp_path, include_slope=False)
+    dem_bytes = Path(src["dem"]).read_bytes()
+    call_count = {"n": 0}
+
+    def fake_urlopen(url, timeout=0):
+        call_count["n"] += 1
+        return _FakeHTTPResponse(dem_bytes)
+
+    monkeypatch.setattr(prep_region.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(prep_region.time, "sleep", lambda _s: None)
+
+    base_sources = _sources(tmp_path, include_slope=True)
+    base_sources.pop("dem")
+    common_cache = tmp_path / "cache"
+    manifest_a = prepare_region_layers(
+        region_id="cache_a",
+        display_name="Cache A",
+        bounds={"min_lon": 0.0, "min_lat": 0.0, "max_lon": 1.0, "max_lat": 1.0},
+        layer_sources=base_sources,
+        layer_urls={"dem": "https://example.test/cached_dem.tif"},
+        region_data_dir=tmp_path / "regions",
+        cache_dir=common_cache,
+        auto_discover=False,
+    )
+    manifest_b = prepare_region_layers(
+        region_id="cache_b",
+        display_name="Cache B",
+        bounds={"min_lon": 0.0, "min_lat": 0.0, "max_lon": 1.0, "max_lat": 1.0},
+        layer_sources=base_sources,
+        layer_urls={"dem": "https://example.test/cached_dem.tif"},
+        region_data_dir=tmp_path / "regions",
+        cache_dir=common_cache,
+        auto_discover=False,
+    )
+    assert call_count["n"] == 1
+    assert manifest_a["layers"]["dem"]["download_status"] == "ok"
+    assert manifest_b["layers"]["dem"]["download_status"] == "cache_hit"

@@ -32,6 +32,7 @@ except Exception:  # pragma: no cover - optional dependency in constrained envs
     shape = None
 
 from backend.region_registry import DEFAULT_REGION_DATA_DIR, REQUIRED_REGION_FILES
+from backend.data_prep.sources import SourceAsset, discover_wildfire_sources
 
 
 STANDARD_LAYER_FILENAMES = {
@@ -95,6 +96,7 @@ class PreparedLayerInput:
     checksum_status: str = "not_provided"
     retry_count_used: int = 0
     timeout_seconds: float = 0.0
+    cache_hit: bool = False
 
 
 def parse_bbox(value: str) -> dict[str, float]:
@@ -200,6 +202,28 @@ def _download_with_retry(
     ) from last_exc
 
 
+def _cache_path_for_url(source_url: str, cache_dir: Path) -> Path:
+    parsed = urllib.parse.urlparse(source_url)
+    suffix = Path(parsed.path).suffix.lower() or ".bin"
+    digest = hashlib.sha256(source_url.encode("utf-8")).hexdigest()
+    return cache_dir / f"{digest}{suffix}"
+
+
+def _download_with_cache(
+    source_url: str,
+    *,
+    cache_dir: Path,
+    config: DownloadConfig,
+) -> tuple[Path, int, int, bool]:
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    cache_path = _cache_path_for_url(source_url, cache_dir)
+    if cache_path.exists() and cache_path.stat().st_size > 0 and not _looks_like_html(cache_path):
+        return cache_path, int(cache_path.stat().st_size), 0, True
+
+    bytes_downloaded, retry_count_used = _download_with_retry(source_url, cache_path, config)
+    return cache_path, bytes_downloaded, retry_count_used, False
+
+
 def _select_archive_member(archive_path: Path, layer_key: str, layer_type: str) -> str:
     suffixes = (".tif", ".tiff") if layer_type == "raster" else (".geojson", ".json")
     with zipfile.ZipFile(archive_path, "r") as zf:
@@ -232,6 +256,7 @@ class LayerSourceAdapter:
         source_url: str | None,
         layer_type: str,
         download_dir: Path,
+        cache_dir: Path,
         extraction_dir: Path,
         skip_download: bool,
         dry_run: bool,
@@ -304,18 +329,20 @@ class LayerSourceAdapter:
                     download_status="dry_run",
                     timeout_seconds=timeout_seconds,
                 )
-            download_dir.mkdir(parents=True, exist_ok=True)
             parsed = urllib.parse.urlparse(source_url)
             filename = Path(parsed.path).name or f"{self.layer_key}.dat"
-            target = download_dir / filename
-            bytes_downloaded, retry_count_used = _download_with_retry(source_url, target, download_config)
-            _sanity_check_source_file(target, self.layer_key, layer_type)
+            cached_path, bytes_downloaded, retry_count_used, cache_hit = _download_with_cache(
+                source_url,
+                cache_dir=cache_dir,
+                config=download_config,
+            )
+            _sanity_check_source_file(cached_path, self.layer_key, layer_type)
 
-            final_path = target
+            final_path = cached_path
             extraction_performed = False
             extracted_path = None
-            if target.suffix.lower() == ".zip":
-                final_path = _extract_archive_layer(target, self.layer_key, layer_type, extraction_dir)
+            if cached_path.suffix.lower() == ".zip":
+                final_path = _extract_archive_layer(cached_path, self.layer_key, layer_type, extraction_dir)
                 extraction_performed = True
                 extracted_path = str(final_path)
                 _sanity_check_source_file(final_path, self.layer_key, layer_type)
@@ -332,12 +359,13 @@ class LayerSourceAdapter:
                 downloaded_at=_now(),
                 warnings=warnings,
                 bytes_downloaded=bytes_downloaded,
-                download_status="ok",
+                download_status="cache_hit" if cache_hit else "ok",
                 extraction_performed=extraction_performed,
                 extracted_path=extracted_path,
                 checksum_status=checksum_status,
                 retry_count_used=retry_count_used,
                 timeout_seconds=timeout_seconds,
+                cache_hit=cache_hit,
             )
 
         warnings.append(
@@ -576,11 +604,15 @@ def _validate_prepared_layer(path: Path, layer_type: str, bounds: dict[str, floa
 def _layer_source(
     layer_key: str,
     layer_sources: dict[str, str] | None,
-    layer_urls: dict[str, str] | None,
-) -> tuple[str | None, str | None]:
+    layer_urls: dict[str, str | list[str]] | None,
+) -> tuple[str | None, list[str]]:
     source_path = (layer_sources or {}).get(layer_key)
     source_url = (layer_urls or {}).get(layer_key)
-    return source_path, source_url
+    if isinstance(source_url, list):
+        return source_path, [str(u) for u in source_url if u]
+    if isinstance(source_url, str) and source_url:
+        return source_path, [source_url]
+    return source_path, []
 
 
 def _base_layer_meta(
@@ -588,14 +620,21 @@ def _base_layer_meta(
     layer_key: str,
     resolved: PreparedLayerInput,
     source_metadata: dict[str, dict[str, Any]],
+    asset_details: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     meta = source_metadata.get(layer_key, {}) or {}
+    details = asset_details or {}
     return {
         "source_name": resolved.source_name,
         "source_type": resolved.source_type,
         "source_mode": resolved.source_mode,
         "source_url": resolved.source_url,
+        "dataset_source": details.get("dataset_name") or meta.get("dataset_source"),
         "dataset_version": meta.get("dataset_version"),
+        "dataset_provider": details.get("dataset_provider") or meta.get("dataset_provider"),
+        "tile_ids": details.get("tile_ids", []),
+        "download_url": details.get("download_url", resolved.source_url),
+        "mosaic_performed": bool(details.get("mosaic_performed", False)),
         "freshness_timestamp": meta.get("freshness_timestamp"),
         "downloaded_at": resolved.downloaded_at,
         "download_status": resolved.download_status,
@@ -605,10 +644,151 @@ def _base_layer_meta(
         "checksum_status": resolved.checksum_status,
         "retry_count_used": int(resolved.retry_count_used or 0),
         "timeout_seconds": float(resolved.timeout_seconds or 0.0),
+        "cache_hit": bool(resolved.cache_hit),
+        "discovered_source": bool(details.get("discovered_source", False)),
         "clipped_to_bbox": False,
         "validation_status": "missing",
         "notes": AUTOMATION_NOTES.get(layer_key),
     }
+
+
+def _normalize_discovered_assets(
+    layer_key: str,
+    discovered_assets: dict[str, list[SourceAsset]] | None,
+) -> list[SourceAsset]:
+    if not discovered_assets:
+        return []
+    return list(discovered_assets.get(layer_key) or [])
+
+
+def _resolve_inputs_for_layer(
+    *,
+    layer_key: str,
+    layer_type: str,
+    source_path: str | None,
+    source_urls: list[str],
+    discovered_assets: list[SourceAsset],
+    adapter: LayerSourceAdapter,
+    download_dir: Path,
+    cache_dir: Path,
+    extraction_dir: Path,
+    skip_download: bool,
+    dry_run: bool,
+    download_config: DownloadConfig,
+    checksum: str | None,
+    notes: list[str],
+) -> tuple[list[PreparedLayerInput], dict[str, Any]]:
+    resolved_inputs: list[PreparedLayerInput] = []
+    asset_details: dict[str, Any] = {
+        "dataset_name": None,
+        "dataset_provider": None,
+        "tile_ids": [],
+        "download_url": None,
+        "mosaic_performed": False,
+        "discovered_source": False,
+    }
+
+    if source_path:
+        resolved = adapter.resolve(
+            source_path=source_path,
+            source_url=None,
+            layer_type=layer_type,
+            download_dir=download_dir,
+            cache_dir=cache_dir,
+            extraction_dir=extraction_dir,
+            skip_download=skip_download,
+            dry_run=dry_run,
+            download_config=download_config,
+            checksum=checksum,
+        )
+        resolved_inputs.append(resolved)
+        return resolved_inputs, asset_details
+
+    urls_to_fetch = list(source_urls)
+    source_assets = discovered_assets if not urls_to_fetch else []
+    if not urls_to_fetch and source_assets:
+        urls_to_fetch = [asset.url for asset in source_assets if asset.url]
+        if source_assets:
+            asset_details["dataset_name"] = source_assets[0].dataset_name
+            asset_details["dataset_provider"] = source_assets[0].dataset_provider
+            asset_details["tile_ids"] = [a.tile_id for a in source_assets if a.tile_id]
+            asset_details["download_url"] = urls_to_fetch[0] if urls_to_fetch else None
+            asset_details["discovered_source"] = True
+
+    if not urls_to_fetch:
+        resolved = adapter.resolve(
+            source_path=None,
+            source_url=None,
+            layer_type=layer_type,
+            download_dir=download_dir,
+            cache_dir=cache_dir,
+            extraction_dir=extraction_dir,
+            skip_download=skip_download,
+            dry_run=dry_run,
+            download_config=download_config,
+            checksum=checksum,
+        )
+        for warning in resolved.warnings or []:
+            notes.append(warning)
+        return [resolved], asset_details
+
+    for url in urls_to_fetch:
+        resolved = adapter.resolve(
+            source_path=None,
+            source_url=url,
+            layer_type=layer_type,
+            download_dir=download_dir,
+            cache_dir=cache_dir,
+            extraction_dir=extraction_dir,
+            skip_download=skip_download,
+            dry_run=dry_run,
+            download_config=download_config,
+            checksum=checksum,
+        )
+        for warning in resolved.warnings or []:
+            notes.append(warning)
+        resolved_inputs.append(resolved)
+
+    if len(resolved_inputs) > 1:
+        asset_details["mosaic_performed"] = True
+    return resolved_inputs, asset_details
+
+
+def _mosaic_rasters(paths: list[Path], output_path: Path) -> Path:
+    _ensure_raster_deps()
+    assert rasterio is not None
+    from rasterio.merge import merge
+
+    datasets = [rasterio.open(p) for p in paths]
+    try:
+        mosaic, transform = merge(datasets)
+        profile = datasets[0].profile.copy()
+        profile.update(
+            height=mosaic.shape[1],
+            width=mosaic.shape[2],
+            transform=transform,
+        )
+        with rasterio.open(output_path, "w", **profile) as dst:
+            dst.write(mosaic)
+    finally:
+        for ds in datasets:
+            ds.close()
+    return output_path
+
+
+def _merge_vectors(paths: list[Path], output_path: Path) -> Path:
+    merged_features: list[dict[str, Any]] = []
+    for path in paths:
+        with open(path, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+        features = payload.get("features", []) if isinstance(payload, dict) else []
+        if isinstance(features, list):
+            merged_features.extend([f for f in features if isinstance(f, dict)])
+    if not merged_features:
+        raise ValueError("Merged vector sources produced no features.")
+    with open(output_path, "w", encoding="utf-8") as f:
+        json.dump({"type": "FeatureCollection", "features": merged_features}, f)
+    return output_path
 
 
 def _prepare_one_layer(
@@ -617,9 +797,12 @@ def _prepare_one_layer(
     bounds: dict[str, float],
     region_dir: Path,
     download_dir: Path,
+    cache_dir: Path,
     extraction_dir: Path,
+    staging_dir: Path,
     layer_sources: dict[str, str] | None,
-    layer_urls: dict[str, str] | None,
+    layer_urls: dict[str, str | list[str]] | None,
+    discovered_assets: dict[str, list[SourceAsset]] | None,
     copy_files: bool,
     skip_download: bool,
     dry_run: bool,
@@ -629,41 +812,78 @@ def _prepare_one_layer(
 ) -> tuple[str | None, dict[str, Any]]:
     layer_type = LAYER_TYPES[layer_key]
     adapter = ADAPTERS.get(layer_key, GenericSourceAdapter(layer_key))
-    source_path, source_url = _layer_source(layer_key, layer_sources, layer_urls)
+    source_path, source_urls = _layer_source(layer_key, layer_sources, layer_urls)
+    discovered_for_layer = _normalize_discovered_assets(layer_key, discovered_assets)
     checksum = (source_metadata.get(layer_key, {}) or {}).get("checksum")
-    resolved = adapter.resolve(
-        source_path=source_path,
-        source_url=source_url,
+
+    resolved_inputs, asset_details = _resolve_inputs_for_layer(
+        layer_key=layer_key,
         layer_type=layer_type,
+        source_path=source_path,
+        source_urls=source_urls,
+        discovered_assets=discovered_for_layer,
+        adapter=adapter,
         download_dir=download_dir,
+        cache_dir=cache_dir,
         extraction_dir=extraction_dir,
         skip_download=skip_download,
         dry_run=dry_run,
         download_config=download_config,
         checksum=checksum,
+        notes=notes,
     )
-    for warning in resolved.warnings or []:
-        notes.append(warning)
-
-    layer_meta = _base_layer_meta(layer_key=layer_key, resolved=resolved, source_metadata=source_metadata)
+    if not resolved_inputs:
+        resolved_inputs = [
+            PreparedLayerInput(
+                path=None,
+                source_name=layer_key,
+                source_type="missing",
+                source_mode="missing",
+                download_status="missing",
+            )
+        ]
+    primary_resolved = resolved_inputs[0]
+    layer_meta = _base_layer_meta(
+        layer_key=layer_key,
+        resolved=primary_resolved,
+        source_metadata=source_metadata,
+        asset_details=asset_details,
+    )
     filename = STANDARD_LAYER_FILENAMES[layer_key]
     if dry_run:
-        if resolved.source_mode == "missing":
+        if all(r.source_mode == "missing" for r in resolved_inputs):
             layer_meta["validation_status"] = "missing"
             return None, layer_meta
         layer_meta["validation_status"] = "dry_run"
         layer_meta["clipped_to_bbox"] = True
+        layer_meta["bytes_downloaded"] = int(sum(r.bytes_downloaded for r in resolved_inputs))
+        layer_meta["cache_hit"] = bool(any(r.cache_hit for r in resolved_inputs))
+        layer_meta["retry_count_used"] = int(sum(r.retry_count_used for r in resolved_inputs))
+        layer_meta["extraction_performed"] = bool(any(r.extraction_performed for r in resolved_inputs))
         return filename, layer_meta
 
-    if resolved.path is None:
+    valid_inputs = [r for r in resolved_inputs if r.path is not None]
+    if not valid_inputs:
         return None, layer_meta
 
-    if copy_files and resolved.source_mode == "local_file":
-        staged = download_dir / resolved.path.name
-        _stage_file(resolved.path, staged, copy_files=True)
-        input_path = staged
+    input_paths: list[Path] = [Path(r.path) for r in valid_inputs if r.path is not None]
+    if copy_files:
+        staged_inputs: list[Path] = []
+        for idx, src_path in enumerate(input_paths):
+            staged = staging_dir / f"{layer_key}_{idx}_{src_path.name}"
+            _stage_file(src_path, staged, copy_files=True)
+            staged_inputs.append(staged)
+        input_paths = staged_inputs
+
+    if len(input_paths) == 1:
+        input_path = input_paths[0]
     else:
-        input_path = resolved.path
+        mosaic_path = staging_dir / f"{layer_key}_mosaic{'.tif' if layer_type == 'raster' else '.geojson'}"
+        if layer_type == "raster":
+            input_path = _mosaic_rasters(input_paths, mosaic_path)
+        else:
+            input_path = _merge_vectors(input_paths, mosaic_path)
+        layer_meta["mosaic_performed"] = True
 
     output_path = region_dir / filename
     if layer_type == "raster":
@@ -675,6 +895,25 @@ def _prepare_one_layer(
     layer_meta.update(clip_meta)
     layer_meta["clipped_to_bbox"] = True
     layer_meta["validation_status"] = "ok"
+    layer_meta["bytes_downloaded"] = int(sum(r.bytes_downloaded for r in valid_inputs))
+    layer_meta["cache_hit"] = bool(any(r.cache_hit for r in valid_inputs))
+    layer_meta["retry_count_used"] = int(sum(r.retry_count_used for r in valid_inputs))
+    layer_meta["extraction_performed"] = bool(any(r.extraction_performed for r in valid_inputs))
+    extracted_paths = [r.extracted_path for r in valid_inputs if r.extracted_path]
+    layer_meta["extracted_path"] = extracted_paths[0] if len(extracted_paths) == 1 else extracted_paths or None
+    layer_meta["download_status"] = (
+        "cache_hit"
+        if valid_inputs and all(r.download_status in {"cache_hit", "not_attempted"} for r in valid_inputs)
+        else "ok"
+    )
+    if discovered_for_layer:
+        layer_meta["dataset_source"] = discovered_for_layer[0].dataset_name
+        layer_meta["dataset_provider"] = discovered_for_layer[0].dataset_provider
+        if not layer_meta.get("dataset_version"):
+            layer_meta["dataset_version"] = discovered_for_layer[0].dataset_version
+        layer_meta["tile_ids"] = [a.tile_id for a in discovered_for_layer if a.tile_id]
+        layer_meta["download_url"] = [a.url for a in discovered_for_layer]
+        layer_meta["discovered_source"] = True
     return filename, layer_meta
 
 
@@ -682,6 +921,7 @@ def _cleanup_temp(
     *,
     download_dir: Path,
     extraction_dir: Path,
+    staging_dir: Path,
     clean_download_cache: bool,
     keep_temp_on_failure: bool,
     had_errors: bool,
@@ -692,6 +932,8 @@ def _cleanup_temp(
         shutil.rmtree(download_dir, ignore_errors=True)
     if clean_download_cache and extraction_dir.exists():
         shutil.rmtree(extraction_dir, ignore_errors=True)
+    if clean_download_cache and staging_dir.exists():
+        shutil.rmtree(staging_dir, ignore_errors=True)
 
 
 def prepare_region_layers(
@@ -700,14 +942,16 @@ def prepare_region_layers(
     display_name: str,
     bounds: dict[str, float],
     layer_sources: dict[str, str] | None = None,
-    layer_urls: dict[str, str] | None = None,
+    layer_urls: dict[str, str | list[str]] | None = None,
     region_data_dir: str | Path | None = None,
+    cache_dir: str | Path | None = None,
     crs: str = "EPSG:4326",
     copy_files: bool = False,
     source_metadata: dict[str, dict[str, Any]] | None = None,
     force: bool = False,
     skip_download: bool = False,
     allow_partial: bool = False,
+    auto_discover: bool = True,
     download_timeout: float = 45.0,
     download_retries: int = 2,
     retry_backoff_seconds: float = 1.5,
@@ -724,9 +968,15 @@ def prepare_region_layers(
             raise ValueError(f"bounds must include {key}")
 
     root = Path(region_data_dir or os.getenv("WF_REGION_DATA_DIR") or DEFAULT_REGION_DATA_DIR).expanduser()
+    cache_root = Path(cache_dir or os.getenv("WF_LAYER_DOWNLOAD_CACHE_DIR") or (Path("data") / "cache")).expanduser()
     region_dir = root / region_id
     download_dir = region_dir / "_downloads"
     extraction_dir = region_dir / "_extracted"
+    staging_dir = region_dir / "_staging"
+    if clean_download_cache and cache_root.exists() and not dry_run:
+        shutil.rmtree(cache_root, ignore_errors=True)
+    if not dry_run:
+        cache_root.mkdir(parents=True, exist_ok=True)
     if not dry_run:
         if region_dir.exists() and not force:
             raise ValueError(f"Region directory already exists: {region_dir} (use force=True to overwrite)")
@@ -735,6 +985,7 @@ def prepare_region_layers(
         region_dir.mkdir(parents=True, exist_ok=True)
         download_dir.mkdir(parents=True, exist_ok=True)
         extraction_dir.mkdir(parents=True, exist_ok=True)
+        staging_dir.mkdir(parents=True, exist_ok=True)
 
     files: dict[str, str] = {}
     layers_meta: dict[str, dict[str, Any]] = {}
@@ -743,6 +994,19 @@ def prepare_region_layers(
     errors: list[str] = []
     slope_derived = False
     archives_extracted = False
+    discovered_assets: dict[str, list[SourceAsset]] = {}
+    if auto_discover:
+        unresolved_keys = [
+            key
+            for key in (list(BASE_REQUIRED_KEYS) + list(OPTIONAL_LAYER_KEYS))
+            if not (layer_sources or {}).get(key) and not (layer_urls or {}).get(key)
+        ]
+        if unresolved_keys:
+            discovered_all = discover_wildfire_sources(bounds)
+            discovered_assets = {k: discovered_all.get(k, []) for k in unresolved_keys}
+            for key, assets in discovered_assets.items():
+                if assets:
+                    warnings.append(f"Auto-discovered {len(assets)} source asset(s) for {key}.")
     download_config = DownloadConfig(
         timeout_seconds=float(download_timeout),
         retries=max(0, int(download_retries)),
@@ -756,9 +1020,12 @@ def prepare_region_layers(
             bounds=bounds,
             region_dir=region_dir,
             download_dir=download_dir,
+            cache_dir=cache_root,
             extraction_dir=extraction_dir,
+            staging_dir=staging_dir,
             layer_sources=layer_sources,
             layer_urls=layer_urls,
+            discovered_assets=discovered_assets,
             copy_files=copy_files,
             skip_download=skip_download,
             dry_run=dry_run,
@@ -956,6 +1223,8 @@ def prepare_region_layers(
             "retries": download_config.retries,
             "retry_backoff_seconds": download_config.retry_backoff_seconds,
             "skip_download": bool(skip_download),
+            "auto_discover": bool(auto_discover),
+            "cache_dir": str(cache_root),
         },
         "slope_derived": slope_derived,
         "archives_extracted": archives_extracted,
@@ -971,6 +1240,7 @@ def prepare_region_layers(
         _cleanup_temp(
             download_dir=download_dir,
             extraction_dir=extraction_dir,
+            staging_dir=staging_dir,
             clean_download_cache=clean_download_cache,
             keep_temp_on_failure=keep_temp_on_failure,
             had_errors=bool(errors),

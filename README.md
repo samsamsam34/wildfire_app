@@ -296,6 +296,7 @@ Layer ingestion/prep runs **outside** the API app. Runtime scoring reads prepare
 `scripts/prepare_region_layers.py` now supports:
 - `local-source prepare mode` (existing local files)
 - `download-and-prepare mode` (URL provided per layer, then clipped/validated locally)
+- `auto-discovery mode` (resolve dataset URLs from bbox when explicit URLs/files are not provided)
 
 ### Local-source prepare mode (fully working)
 
@@ -318,7 +319,7 @@ python scripts/prepare_region_layers.py \
 ```bash
 python scripts/prepare_region_layers.py \
   --region-id pilot_demo \
-  --bbox -122.6,37.8,-122.2,38.1 \
+  --bbox -122.6 37.8 -122.2 38.1 \
   --dem-url https://example.org/dem.tif \
   --fuel-url https://example.org/fuel.tif \
   --canopy-url https://example.org/canopy.tif \
@@ -336,6 +337,17 @@ Common hardening flags:
 - `--keep-temp-on-failure`: preserve `_downloads`/`_extracted` for debugging
 - `--clean-download-cache`: remove staging folders after run
 - `--allow-partial`: write partial manifest with explicit failed/missing layers
+- `--no-auto-discovery`: disable dataset discovery adapters and require explicit sources
+
+Auto-discovery pilot flow:
+
+```bash
+python scripts/prepare_region_layers.py \
+  --region-id marin_ca \
+  --bbox -123.1 37.8 -122.2 38.3
+```
+
+In this mode, the prep pipeline attempts to resolve source assets using adapters, then downloads/caches/clips/validates outputs.
 
 Archive handling:
 - `.zip` inputs are supported for raster/vector layer sources.
@@ -362,7 +374,8 @@ Manifest layer metadata includes fields such as:
 - `dataset_version`, `freshness_timestamp`, `downloaded_at`, `download_status`
 - `bytes_downloaded`, `retry_count_used`, `timeout_seconds`
 - `extraction_performed`, `extracted_path`, `checksum_status`
-- `clipped_to_bbox`, `validation_status`
+- `dataset_source`, `dataset_provider`, `tile_ids`, `download_url`, `mosaic_performed`
+- `cache_hit`, `clipped_to_bbox`, `validation_status`
 - layer notes/warnings
 
 Optional checksum verification:
@@ -371,13 +384,22 @@ Optional checksum verification:
 
 ### Automation honesty (current state)
 
-- DEM, fire perimeters, building footprints, fuel, canopy: local-file and URL-based prep paths are implemented.
-- Full catalog/index automation (for example direct NIFC catalog sync, Microsoft building-footprint tile index orchestration, and LANDFIRE discovery/catalog downloads) is **not** fully automated in this pass.
+- Fully automated adapters in this pass:
+  - USGS 3DEP discovery path for DEM assets (API-driven discovery + download/caching/clip)
+  - NIFC fire perimeter adapter when `WF_NIFC_FIRE_PERIMETERS_URL` is configured
+  - Microsoft building-footprint tile-index adapter when `WF_MS_BUILDINGS_INDEX_URL` is configured
+- Partially automated adapters in this pass:
+  - LANDFIRE fuel/canopy adapters are template/URL driven and may require explicit URL templates
+- Full end-to-end provider orchestration (catalog crawling, authed provider variants, advanced mosaicking strategies) is still deferred.
 - This is intentional for a pilot-region ingestion workflow.
 
 URL behavior guidance:
 - Direct file URLs (or predictable archive URLs) work best.
 - Catalog scraping/discovery orchestration is intentionally deferred.
+
+Caching:
+- Download cache is stored in `data/cache/` by default.
+- Reused cached assets are tracked per layer (`cache_hit` in manifest metadata).
 
 Partial-mode caveat:
 - `--allow-partial` does **not** indicate full readiness.

@@ -2,8 +2,17 @@ from __future__ import annotations
 
 import argparse
 import json
+from typing import Sequence
 
 from backend.data_prep.prepare_region import parse_bbox, prepare_region_layers
+
+
+def _parse_bbox_args(values: Sequence[str]) -> dict[str, float]:
+    if len(values) == 1:
+        return parse_bbox(values[0])
+    if len(values) == 4:
+        return parse_bbox(",".join(values))
+    raise ValueError("--bbox expects either one comma-delimited value or four numbers")
 
 
 def main() -> None:
@@ -15,7 +24,12 @@ def main() -> None:
     )
     parser.add_argument("--region-id", required=True)
     parser.add_argument("--display-name", default=None)
-    parser.add_argument("--bbox", required=True, type=parse_bbox, help="min_lon,min_lat,max_lon,max_lat")
+    parser.add_argument(
+        "--bbox",
+        nargs="+",
+        required=True,
+        help="Either 'min_lon,min_lat,max_lon,max_lat' or four values: min_lon min_lat max_lon max_lat",
+    )
     parser.add_argument("--out-dir", dest="region_data_dir", default=None)
     parser.add_argument("--crs", default="EPSG:4326")
     parser.add_argument("--copy", action="store_true", help="Copy files instead of symlinking")
@@ -30,6 +44,11 @@ def main() -> None:
         "--allow-partial",
         action="store_true",
         help="Write a partial manifest with warnings/errors instead of failing hard.",
+    )
+    parser.add_argument(
+        "--no-auto-discovery",
+        action="store_true",
+        help="Disable automatic dataset discovery and require manual source paths/URLs.",
     )
     parser.add_argument("--download-timeout", type=float, default=45.0, help="Per-request timeout in seconds.")
     parser.add_argument("--download-retries", type=int, default=2, help="Retry count for URL downloads.")
@@ -48,7 +67,7 @@ def main() -> None:
         "--clean-download-cache",
         action="store_true",
         default=False,
-        help="Remove _downloads/_extracted staging folders after completion (default: keep).",
+        help="Clear cached downloads for this run and remove staging folders after completion.",
     )
 
     parser.add_argument("--dem", default=None, help="Local DEM source path")
@@ -75,6 +94,7 @@ def main() -> None:
 
     args = parser.parse_args()
     display_name = args.display_name or args.region_id.replace("_", " ").title()
+    bbox = _parse_bbox_args(args.bbox)
 
     layer_sources = {
         "dem": args.dem,
@@ -112,7 +132,7 @@ def main() -> None:
     manifest = prepare_region_layers(
         region_id=args.region_id,
         display_name=display_name,
-        bounds=args.bbox,
+        bounds=bbox,
         layer_sources=layer_sources,
         layer_urls=layer_urls,
         region_data_dir=args.region_data_dir,
@@ -121,6 +141,7 @@ def main() -> None:
         force=args.force,
         skip_download=args.skip_download,
         allow_partial=args.allow_partial,
+        auto_discover=not args.no_auto_discovery,
         download_timeout=args.download_timeout,
         download_retries=args.download_retries,
         retry_backoff_seconds=args.retry_backoff_seconds,
@@ -145,6 +166,8 @@ def main() -> None:
                 "failed_layers": failed,
                 "slope_derived": manifest.get("slope_derived", False),
                 "archives_extracted": manifest.get("archives_extracted", False),
+                "auto_discovery_used": manifest.get("download_config", {}).get("auto_discover", False),
+                "cache_dir": manifest.get("download_config", {}).get("cache_dir"),
                 "warnings": manifest.get("warnings", []),
                 "errors": manifest.get("errors", []),
                 "output_dir": str(out_root),
