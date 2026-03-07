@@ -142,6 +142,7 @@ class ScoreSectionSummary(BaseModel):
     score: float = 0.0
     summary: str = ""
     explanation: str = ""
+    top_drivers: List[str] = Field(default_factory=list)
     key_drivers: List[str] = Field(default_factory=list)
     protective_factors: List[str] = Field(default_factory=list)
     top_next_actions: List[str] = Field(default_factory=list)

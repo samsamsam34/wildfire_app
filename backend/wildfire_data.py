@@ -196,7 +196,8 @@ class WildfireDataClient:
                 "footprint_status": "error",
                 "footprint_source": None,
                 "footprint_confidence": 0.0,
-                "ring_metrics": {},
+                "fallback_mode": "point_based",
+                "ring_metrics": None,
             }, assumptions, sources
 
         assumptions.extend(result.assumptions)
@@ -213,7 +214,8 @@ class WildfireDataClient:
                 "footprint_status": status,
                 "footprint_source": result.source,
                 "footprint_confidence": result.confidence,
-                "ring_metrics": {},
+                "fallback_mode": "point_based",
+                "ring_metrics": None,
             }, assumptions, sources
 
         sources.append("Building footprint source")
@@ -265,6 +267,7 @@ class WildfireDataClient:
             "footprint_status": "used" if ring_metrics else "error",
             "footprint_source": result.source,
             "footprint_confidence": result.confidence,
+            "fallback_mode": "footprint" if ring_metrics else "point_based",
             "ring_metrics": ring_metrics,
             "footprint_centroid": {
                 "latitude": result.centroid[0] if result.centroid else None,
@@ -421,7 +424,8 @@ class WildfireDataClient:
             "footprint_used": False,
             "footprint_found": False,
             "footprint_status": "not_found",
-            "ring_metrics": {},
+            "fallback_mode": "point_based",
+            "ring_metrics": None,
         }
         structure_ring_metrics: dict[str, dict[str, float | None]] = {}
 
@@ -446,7 +450,7 @@ class WildfireDataClient:
 
         ring_context, ring_assumptions, ring_sources = self._compute_structure_ring_metrics(lat, lon)
         property_level_context = ring_context
-        structure_ring_metrics = ring_context.get("ring_metrics", {})
+        structure_ring_metrics = ring_context.get("ring_metrics", {}) or {}
         assumptions.extend(ring_assumptions)
         sources.extend(ring_sources)
 

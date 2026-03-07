@@ -73,6 +73,8 @@ def _ctx(
         structure_ring_metrics=ring_metrics,
         property_level_context={
             "footprint_used": bool(ring_metrics),
+            "footprint_status": "used" if ring_metrics else "not_found",
+            "fallback_mode": "footprint" if ring_metrics else "point_based",
             "ring_metrics": ring_metrics,
         },
     )
@@ -153,6 +155,15 @@ def _assert_core_contract(body: dict) -> None:
         "home_ignition_vulnerability",
         "insurance_readiness",
     }
+    for section in body["score_summaries"].values():
+        assert "label" in section
+        assert "score" in section
+        assert "explanation" in section
+        assert "top_drivers" in section
+        assert "protective_factors" in section
+        assert "next_actions" in section
+        assert 0.0 <= float(section["score"]) <= 100.0
+
     assert body["confidence_tier"] in {"high", "moderate", "low", "preliminary"}
     assert body["use_restriction"] in {
         "shareable",
@@ -166,6 +177,9 @@ def _assert_core_contract(body: dict) -> None:
         assert sm in body["factor_breakdown"]["submodels"]
         assert "score" in body["submodel_scores"][sm]
         assert "weighted_contribution" in body["submodel_scores"][sm]
+
+    assert "fallback_mode" in body["property_level_context"]
+    assert body["property_level_context"]["fallback_mode"] in {"footprint", "point_based"}
 
 
 def test_property_findings_from_ring_metrics_surface_in_assessment(monkeypatch, tmp_path):
@@ -191,6 +205,9 @@ def test_property_findings_from_ring_metrics_surface_in_assessment(monkeypatch, 
     assert any("within 5 feet" in f.lower() for f in assessed["property_findings"])
     assert any("30 feet" in f.lower() for f in assessed["property_findings"])
     assert any("dense vegetation close to the home" == d for d in assessed["top_risk_drivers"])
+    assert assessed["property_level_context"]["footprint_used"] is True
+    assert assessed["property_level_context"]["fallback_mode"] == "footprint"
+    assert isinstance(assessed["property_level_context"]["ring_metrics"], dict)
 
 
 def test_property_findings_fallback_empty_when_ring_data_missing(monkeypatch, tmp_path):
@@ -199,6 +216,9 @@ def test_property_findings_fallback_empty_when_ring_data_missing(monkeypatch, tm
     assessed = _run(_payload("311 No Ring Data Ln", {"defensible_space_ft": 20}))
     assert "property_findings" in assessed
     assert assessed["property_findings"] == []
+    assert assessed["property_level_context"]["footprint_used"] is False
+    assert assessed["property_level_context"]["fallback_mode"] == "point_based"
+    assert assessed["property_level_context"]["ring_metrics"] in (None, {})
 
 
 def test_score_decomposition_and_blended_wildfire_score(monkeypatch, tmp_path):

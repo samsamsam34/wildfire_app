@@ -1017,7 +1017,21 @@ class AssessmentStore:
             payload["low_confidence_flags"] = payload.get("confidence", {}).get("low_confidence_flags", [])
 
         payload.setdefault("data_sources", [])
-        payload.setdefault("property_level_context", {"footprint_used": False, "ring_metrics": {}})
+        payload.setdefault(
+            "property_level_context",
+            {
+                "footprint_used": False,
+                "footprint_status": "not_found",
+                "fallback_mode": "point_based",
+                "ring_metrics": None,
+            },
+        )
+        if isinstance(payload.get("property_level_context"), dict):
+            plc = payload["property_level_context"]
+            plc.setdefault("footprint_used", False)
+            plc.setdefault("footprint_status", "not_found")
+            plc.setdefault("fallback_mode", "footprint" if plc.get("footprint_used") else "point_based")
+            plc.setdefault("ring_metrics", None)
         payload.setdefault("mitigation_plan", payload.get("mitigation_recommendations", []))
         payload["mitigation_plan"] = self._upgrade_mitigation_items(payload.get("mitigation_plan", []))
 
@@ -1032,6 +1046,7 @@ class AssessmentStore:
                 "score": payload.get("site_hazard_score", 0.0),
                 "summary": "",
                 "explanation": "What the landscape is doing around your property.",
+                "top_drivers": payload.get("top_risk_drivers", [])[:3],
                 "key_drivers": payload.get("top_risk_drivers", [])[:3],
                 "protective_factors": payload.get("top_protective_factors", [])[:3],
                 "top_next_actions": [m.get("title", "") for m in payload.get("mitigation_plan", [])[:3]],
@@ -1045,6 +1060,7 @@ class AssessmentStore:
                 "score": payload.get("home_ignition_vulnerability_score", 0.0),
                 "summary": "",
                 "explanation": "What the home and immediate surroundings are contributing.",
+                "top_drivers": payload.get("property_findings", [])[:3] or payload.get("top_risk_drivers", [])[:3],
                 "key_drivers": payload.get("property_findings", [])[:3] or payload.get("top_risk_drivers", [])[:3],
                 "protective_factors": payload.get("top_protective_factors", [])[:3],
                 "top_next_actions": [m.get("title", "") for m in payload.get("mitigation_plan", [])[:3]],
@@ -1058,11 +1074,21 @@ class AssessmentStore:
                 "score": payload.get("insurance_readiness_score", 0.0),
                 "summary": payload.get("readiness_summary", ""),
                 "explanation": "What an insurer is likely to care about next.",
+                "top_drivers": payload.get("readiness_blockers", [])[:3],
                 "key_drivers": payload.get("readiness_blockers", [])[:3],
                 "protective_factors": payload.get("top_protective_factors", [])[:3],
                 "top_next_actions": [m.get("title", "") for m in payload.get("mitigation_plan", [])[:3]],
                 "next_actions": [m.get("title", "") for m in payload.get("mitigation_plan", [])[:3]],
             },
+        )
+        payload["site_hazard_section"].setdefault("top_drivers", payload["site_hazard_section"].get("key_drivers", []))
+        payload["home_ignition_vulnerability_section"].setdefault(
+            "top_drivers",
+            payload["home_ignition_vulnerability_section"].get("key_drivers", []),
+        )
+        payload["insurance_readiness_section"].setdefault(
+            "top_drivers",
+            payload["insurance_readiness_section"].get("key_drivers", []),
         )
         payload.setdefault(
             "score_summaries",

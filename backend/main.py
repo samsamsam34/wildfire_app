@@ -415,6 +415,24 @@ def _build_property_findings(property_level_context: dict[str, Any]) -> list[str
     return findings[:3]
 
 
+def _normalize_property_level_context(raw_context: object) -> dict[str, Any]:
+    if not isinstance(raw_context, dict):
+        return {
+            "footprint_used": False,
+            "footprint_status": "not_found",
+            "fallback_mode": "point_based",
+            "ring_metrics": None,
+        }
+
+    normalized = dict(raw_context)
+    footprint_used = bool(normalized.get("footprint_used"))
+    normalized["footprint_used"] = footprint_used
+    normalized.setdefault("footprint_status", "used" if footprint_used else "not_found")
+    normalized.setdefault("fallback_mode", "footprint" if footprint_used else "point_based")
+    normalized.setdefault("ring_metrics", None)
+    return normalized
+
+
 def _merge_property_drivers(base_drivers: list[str], property_findings: list[str]) -> list[str]:
     if not property_findings:
         return base_drivers[:3]
@@ -482,6 +500,7 @@ def _build_score_sections(
             f"Site Hazard {site_hazard_score:.1f}/100 reflects landscape fuel, slope, and nearby fire pressure around the home."
         ),
         explanation="What the landscape is doing around your property.",
+        top_drivers=top_risk_drivers[:3],
         key_drivers=top_risk_drivers[:3],
         protective_factors=top_protective_factors[:3],
         top_next_actions=site_actions,
@@ -495,6 +514,7 @@ def _build_score_sections(
             f"Home Ignition Vulnerability {home_ignition_vulnerability_score:.1f}/100 reflects structure hardening and near-home ignition pathways."
         ),
         explanation="What the home and immediate surroundings are contributing.",
+        top_drivers=(property_findings[:3] or top_risk_drivers[:3]),
         key_drivers=(property_findings[:3] or top_risk_drivers[:3]),
         protective_factors=top_protective_factors[:3],
         top_next_actions=home_actions,
@@ -509,6 +529,7 @@ def _build_score_sections(
             f"Insurance Readiness {insurance_readiness_score:.1f}/100 is a heuristic advisory score and not carrier-approved underwriting."
         ),
         explanation="What an insurer is likely to care about next.",
+        top_drivers=(readiness_blockers[:3] or ["No major readiness blockers detected"]),
         key_drivers=(readiness_blockers[:3] or ["No major readiness blockers detected"]),
         protective_factors=top_protective_factors[:3],
         top_next_actions=readiness_actions,
@@ -694,7 +715,8 @@ def _run_assessment(
     assumptions_block = _build_assumption_tracking(payload, all_assumptions, all_sources)
     confidence_block = _build_confidence(assumptions_block)
 
-    property_findings = _build_property_findings(context.property_level_context)
+    property_level_context = _normalize_property_level_context(context.property_level_context)
+    property_findings = _build_property_findings(property_level_context)
     top_risk_drivers = _merge_property_drivers(_build_top_risk_drivers(submodel_scores), property_findings)
     top_protective_factors = _build_top_protective_factors(payload, submodel_scores)
 
@@ -802,7 +824,7 @@ def _run_assessment(
         use_restriction=confidence_block.use_restriction,
         low_confidence_flags=confidence_block.low_confidence_flags,
         data_sources=all_sources,
-        property_level_context=context.property_level_context,
+        property_level_context=property_level_context,
         mitigation_plan=mitigation_plan,
         readiness_factors=readiness_factors,
         readiness_blockers=readiness.readiness_blockers,
@@ -842,7 +864,7 @@ def _run_assessment(
             "wildland_distance_index": context.wildland_distance_index,
             "historic_fire_index": context.historic_fire_index,
         },
-        "property_level_context": context.property_level_context,
+        "property_level_context": property_level_context,
         "submodel_scores": {
             name: {
                 "score": sm.score,

@@ -201,7 +201,12 @@ Assessment/report payloads include:
 - confidence gating: `confidence_tier` (`high|moderate|low|preliminary`) and `use_restriction`
 - property-level context: `property_level_context.footprint_used` and `property_level_context.ring_metrics`
   - includes `footprint_status` (`used`, `not_found`, `source_unavailable`, `error`) for fallback transparency
+  - includes `fallback_mode` (`footprint` or `point_based`) for clear interpretation context
 - readiness and mitigation linkage fields
+
+`score_summaries` is included with three sections (`site_hazard`, `home_ignition_vulnerability`, `insurance_readiness`), each containing label, score, explanation, top drivers, protective factors, and next actions.
+
+If address geocoding cannot be verified, `/risk/assess` returns an error (no synthetic coordinate scoring in default behavior).
 
 ## Setup
 
