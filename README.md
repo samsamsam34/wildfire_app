@@ -388,6 +388,71 @@ When `--update-manifest` is used, manifest fields are updated:
 - `runtime_compatibility_status`
 - `validation_notes`
 
+### Portable LANDFIRE Workflow: Local Now, VM Later
+
+The LANDFIRE prep workflow is intentionally batch-style and path/config driven so the same commands work on:
+- local laptop development today
+- VM/remote batch compute later
+
+Runtime `/risk/assess` still consumes prepared region assets only; it does not perform heavy downloads/extraction.
+
+#### A) Stage LANDFIRE assets once
+
+```bash
+python scripts/stage_landfire_assets.py \
+  --fuel-url <LANDFIRE_FUEL_URL> \
+  --canopy-url <LANDFIRE_CANOPY_URL>
+```
+
+What this does:
+- resumable downloads with retries/backoff (`.part` files)
+- archive cache reuse
+- LANDFIRE archive indexing cache
+- selective extraction of fuel/canopy rasters
+- machine-readable staging metadata in cache
+
+#### B) Build a pilot region from staged cache
+
+```bash
+python scripts/build_landfire_region.py \
+  --region-id bozeman_pilot \
+  --display-name "Bozeman Pilot" \
+  --bbox -111.2 45.5 -110.9 45.8
+```
+
+What this does:
+- prefers staged extracted rasters by default
+- clips to bbox early
+- writes compressed/tiled outputs for `fuel`/`canopy`
+- reuses cached clipped subset when source+bbox match
+- applies local safety guardrail (`--max-expected-cells`)
+
+#### C) Validate prepared outputs
+
+```bash
+python scripts/validate_prepared_region.py \
+  --region-id bozeman_pilot \
+  --sample-lat 45.67 \
+  --sample-lon -111.04 \
+  --update-manifest
+```
+
+#### D) Optional integration with full prep command
+
+`scripts/prepare_region_layers.py` supports:
+- `--cache-root` for portable path overrides
+- `--cache-only-landfire` to fail fast unless staged LANDFIRE cache is available
+- `--stage-landfire-first` to run staging before prep
+
+#### E) Portability configuration
+
+Optional env vars:
+- `WILDFIRE_APP_CACHE_ROOT`
+- `WILDFIRE_APP_DATA_ROOT`
+- `WILDFIRE_APP_TMP_ROOT`
+
+If unset, repo-local defaults are used (`data/cache`, `data/regions`, `tmp`).
+
 Archive handling:
 - `.zip` inputs are supported for raster/vector layer sources.
 - The preparer uses deterministic selection rules and fails clearly on ambiguous archives.

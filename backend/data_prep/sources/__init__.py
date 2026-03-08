@@ -11,8 +11,16 @@ from backend.data_prep.sources.adapters import (
 from backend.data_prep.sources.landfire import (
     LANDFIRE_HANDLER_VERSION,
     LandfireArchiveResolution,
+    default_cache_root,
+    default_data_root,
+    default_tmp_root,
+    download_with_resume,
+    latest_staged_metadata_path,
+    load_latest_staged_assets,
     resolve_landfire_raster,
+    stage_landfire_assets,
     subset_cache_path,
+    verify_checksum,
 )
 
 __all__ = [
@@ -26,6 +34,14 @@ __all__ = [
     "discover_wildfire_sources",
     "LANDFIRE_HANDLER_VERSION",
     "LandfireArchiveResolution",
+    "default_cache_root",
+    "default_data_root",
+    "default_tmp_root",
+    "download_with_resume",
+    "latest_staged_metadata_path",
+    "load_latest_staged_assets",
     "resolve_landfire_raster",
+    "stage_landfire_assets",
     "subset_cache_path",
+    "verify_checksum",
 ]

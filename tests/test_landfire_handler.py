@@ -72,7 +72,7 @@ def test_landfire_subset_cache_reuse_in_prepare_pipeline(monkeypatch, tmp_path):
     _write_landfire_archive(archive)
     calls = {"clip": 0}
 
-    def fake_clip(src: Path, dest: Path, bounds: dict[str, float]):
+    def fake_clip(src: Path, dest: Path, bounds: dict[str, float], **kwargs):
         calls["clip"] += 1
         shutil.copy2(src, dest)
         return {"crs": "EPSG:4326", "resolution": [30.0, 30.0], "bounds": [0.0, 0.0, 1.0, 1.0]}
@@ -108,7 +108,7 @@ def test_landfire_manifest_metadata_fields_present(monkeypatch, tmp_path):
     monkeypatch.setattr(
         prep_region,
         "_clip_raster_to_bbox",
-        lambda src, dest, bounds: (
+        lambda src, dest, bounds, **kwargs: (
             shutil.copy2(src, dest),
             {"crs": "EPSG:4326", "resolution": [30.0, 30.0], "bounds": [0.0, 0.0, 1.0, 1.0]},
         )[1],

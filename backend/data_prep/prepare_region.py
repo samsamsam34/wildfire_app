@@ -472,7 +472,15 @@ def _stage_file(src: Path, dest: Path, *, copy_files: bool) -> None:
         shutil.copy2(src, dest)
 
 
-def _clip_raster_to_bbox(src: Path, dest: Path, bounds: dict[str, float]) -> dict[str, Any]:
+def _clip_raster_to_bbox(
+    src: Path,
+    dest: Path,
+    bounds: dict[str, float],
+    *,
+    compression: str | None = None,
+    tile_size: int = 512,
+    max_expected_cells: int | None = None,
+) -> dict[str, Any]:
     _ensure_raster_deps()
     assert rasterio is not None and np is not None and from_bounds is not None and transform_bounds is not None
     with rasterio.open(src) as ds:
@@ -493,6 +501,12 @@ def _clip_raster_to_bbox(src: Path, dest: Path, bounds: dict[str, float]) -> dic
         window = window.intersection(rasterio.windows.Window(0, 0, ds.width, ds.height))
         if window.width <= 0 or window.height <= 0:
             raise ValueError(f"Raster clip window is empty: {src}")
+        expected_cells = int(window.width * window.height)
+        if max_expected_cells and expected_cells > max_expected_cells:
+            raise ValueError(
+                f"Requested bbox is too large for local processing ({expected_cells} cells > limit {max_expected_cells}). "
+                "Use a smaller pilot bbox or provide a pre-clipped regional raster source."
+            )
 
         arr = ds.read(window=window)
         if arr.size == 0:
@@ -511,6 +525,18 @@ def _clip_raster_to_bbox(src: Path, dest: Path, bounds: dict[str, float]) -> dic
             height=int(window.height),
             transform=ds.window_transform(window),
         )
+        if compression:
+            profile.update(compress=str(compression))
+        normalized_tile = max(0, int(tile_size))
+        if normalized_tile and int(window.width) >= 16 and int(window.height) >= 16:
+            block_size = min(int(window.width), int(window.height), normalized_tile)
+            block_size = max(16, (block_size // 16) * 16)
+            if block_size >= 16:
+                profile.update(
+                    tiled=True,
+                    blockxsize=block_size,
+                    blockysize=block_size,
+                )
         with rasterio.open(dest, "w", **profile) as out:
             out.write(arr)
 
@@ -519,6 +545,7 @@ def _clip_raster_to_bbox(src: Path, dest: Path, bounds: dict[str, float]) -> dic
             "crs": str(out_ds.crs),
             "resolution": [abs(out_ds.transform.a), abs(out_ds.transform.e)],
             "bounds": list(out_ds.bounds),
+            "expected_cells": expected_cells,
         }
 
 
@@ -854,6 +881,9 @@ def _prepare_one_layer(
     source_metadata: dict[str, dict[str, Any]],
     notes: list[str],
     progress_log: list[str],
+    raster_compression: str | None,
+    tile_size: int,
+    max_expected_cells: int | None,
 ) -> tuple[str | None, dict[str, Any]]:
     layer_type = LAYER_TYPES[layer_key]
     adapter = ADAPTERS.get(layer_key, GenericSourceAdapter(layer_key))
@@ -961,7 +991,14 @@ def _prepare_one_layer(
         clip_meta = _raster_file_metadata(output_path)
     elif layer_type == "raster":
         progress_log.append(f"LANDFIRE: clipping raster to bbox for {layer_key}" if layer_key in {"fuel", "canopy"} else f"Clipping raster to bbox for {layer_key}")
-        clip_meta = _clip_raster_to_bbox(input_path, output_path, bounds)
+        clip_meta = _clip_raster_to_bbox(
+            input_path,
+            output_path,
+            bounds,
+            compression=raster_compression,
+            tile_size=tile_size,
+            max_expected_cells=max_expected_cells,
+        )
         if layer_key in {"fuel", "canopy"} and landfire_resolutions:
             subset_target_raw = landfire_resolutions[0].subset_cache_path
             if subset_target_raw:
@@ -1011,6 +1048,7 @@ def _prepare_one_layer(
                 "extracted_raster_path": first.extracted_raster_path,
                 "subset_cache_path": str(landfire_subset_path) if landfire_subset_path else first.subset_cache_path,
                 "subset_reused": bool(landfire_subset_reused),
+                "cache_hit_subset": bool(landfire_subset_reused),
                 "clipping_bbox": {
                     "min_lon": float(bounds["min_lon"]),
                     "min_lat": float(bounds["min_lat"]),
@@ -1066,6 +1104,9 @@ def prepare_region_layers(
     keep_temp_on_failure: bool = False,
     clean_download_cache: bool = False,
     landfire_only: bool = False,
+    raster_compression: str | None = "DEFLATE",
+    tile_size: int = 512,
+    max_expected_cells: int | None = None,
 ) -> dict[str, Any]:
     if not region_id.strip():
         raise ValueError("region_id is required")
@@ -1148,6 +1189,9 @@ def prepare_region_layers(
             source_metadata=metadata,
             notes=warnings,
             progress_log=progress_log,
+            raster_compression=raster_compression,
+            tile_size=tile_size,
+            max_expected_cells=max_expected_cells,
         )
         if filename:
             files[layer_key] = filename
@@ -1418,6 +1462,9 @@ def prepare_region_layers(
             "auto_discover": bool(auto_discover),
             "cache_dir": str(cache_root),
             "landfire_only": bool(landfire_only),
+            "raster_compression": raster_compression,
+            "tile_size": int(tile_size),
+            "max_expected_cells": int(max_expected_cells) if max_expected_cells else None,
         },
         "slope_derived": slope_derived,
         "archives_extracted": archives_extracted,

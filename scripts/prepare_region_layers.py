@@ -2,9 +2,16 @@ from __future__ import annotations
 
 import argparse
 import json
+from pathlib import Path
 from typing import Sequence
 
 from backend.data_prep.prepare_region import parse_bbox, prepare_region_layers
+from backend.data_prep.sources import (
+    default_cache_root,
+    default_data_root,
+    load_latest_staged_assets,
+    stage_landfire_assets,
+)
 
 
 def _parse_bbox_args(values: Sequence[str]) -> dict[str, float]:
@@ -36,6 +43,79 @@ def _build_source_metadata_from_args(args: argparse.Namespace) -> dict[str, dict
     return source_metadata
 
 
+def _staged_layer_path(staged_meta: dict[str, object] | None, layer_key: str) -> str | None:
+    if not isinstance(staged_meta, dict):
+        return None
+    layers = staged_meta.get("layers")
+    if not isinstance(layers, dict):
+        return None
+    meta = layers.get(layer_key)
+    if not isinstance(meta, dict):
+        return None
+    extracted = meta.get("extracted_path")
+    if isinstance(extracted, str) and extracted and Path(extracted).exists():
+        return extracted
+    archive = meta.get("source_archive_path")
+    if isinstance(archive, str) and archive and Path(archive).exists():
+        return archive
+    return None
+
+
+def _apply_landfire_cache_policy(
+    *,
+    layer_sources: dict[str, str],
+    layer_urls: dict[str, str],
+    cache_root: Path,
+    cache_only_landfire: bool,
+    stage_landfire_first: bool,
+    timeout: float,
+    retries: int,
+    backoff: float,
+    fuel_checksum: str | None,
+    canopy_checksum: str | None,
+) -> tuple[dict[str, str], dict[str, str], dict[str, object] | None]:
+    staged: dict[str, object] | None = load_latest_staged_assets(cache_root)
+    stage_result: dict[str, object] | None = None
+
+    if stage_landfire_first:
+        fuel_url = layer_urls.get("fuel")
+        canopy_url = layer_urls.get("canopy")
+        if not fuel_url and not canopy_url:
+            # If URLs are not provided, use previously staged assets when available.
+            if not staged:
+                raise ValueError(
+                    "--stage-landfire-first requested but no fuel/canopy URL provided and no staged metadata exists."
+                )
+        else:
+            if not fuel_url:
+                raise ValueError("--stage-landfire-first currently requires --fuel-url for LANDFIRE staging.")
+            stage_result = stage_landfire_assets(
+                fuel_url=fuel_url,
+                canopy_url=canopy_url,
+                cache_root=cache_root,
+                timeout_seconds=timeout,
+                retries=retries,
+                retry_backoff_seconds=backoff,
+                checksums={"fuel": fuel_checksum, "canopy": canopy_checksum},
+            )
+            staged = stage_result
+
+    for key in ("fuel", "canopy"):
+        if layer_sources.get(key):
+            continue
+        staged_path = _staged_layer_path(staged, key)
+        if staged_path:
+            layer_sources[key] = staged_path
+            layer_urls.pop(key, None)
+        elif cache_only_landfire:
+            raise ValueError(
+                f"--cache-only-landfire set but no staged cached {key} asset is available. "
+                "Run scripts/stage_landfire_assets.py first."
+            )
+
+    return layer_sources, layer_urls, stage_result
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
@@ -52,6 +132,7 @@ def main() -> None:
         help="Either 'min_lon,min_lat,max_lon,max_lat' or four values: min_lon min_lat max_lon max_lat",
     )
     parser.add_argument("--out-dir", dest="region_data_dir", default=None)
+    parser.add_argument("--cache-root", default=None)
     parser.add_argument("--crs", default="EPSG:4326")
     parser.add_argument("--copy", action="store_true", help="Copy files instead of symlinking")
     parser.add_argument("--force", action="store_true", help="Overwrite an existing region directory")
@@ -75,6 +156,16 @@ def main() -> None:
         "--no-auto-discovery",
         action="store_true",
         help="Disable automatic dataset discovery and require manual source paths/URLs.",
+    )
+    parser.add_argument(
+        "--cache-only-landfire",
+        action="store_true",
+        help="Use only staged LANDFIRE cache assets for fuel/canopy; fail instead of downloading when unavailable.",
+    )
+    parser.add_argument(
+        "--stage-landfire-first",
+        action="store_true",
+        help="Run LANDFIRE staging workflow before region prep when fuel/canopy URLs are provided.",
     )
     parser.add_argument("--download-timeout", type=float, default=45.0, help="Per-request timeout in seconds.")
     parser.add_argument("--download-retries", type=int, default=2, help="Retry count for URL downloads.")
@@ -182,6 +273,21 @@ def main() -> None:
     }
     layer_sources = {k: v for k, v in layer_sources.items() if v}
     layer_urls = {k: v for k, v in layer_urls.items() if v}
+    cache_root = Path(args.cache_root).expanduser() if args.cache_root else default_cache_root()
+    region_data_dir = Path(args.region_data_dir).expanduser() if args.region_data_dir else (default_data_root() / "regions")
+
+    layer_sources, layer_urls, stage_result = _apply_landfire_cache_policy(
+        layer_sources=layer_sources,
+        layer_urls=layer_urls,
+        cache_root=cache_root,
+        cache_only_landfire=bool(args.cache_only_landfire),
+        stage_landfire_first=bool(args.stage_landfire_first),
+        timeout=float(args.download_timeout),
+        retries=max(0, int(args.download_retries)),
+        backoff=max(0.0, float(args.retry_backoff_seconds)),
+        fuel_checksum=args.fuel_checksum,
+        canopy_checksum=args.canopy_checksum,
+    )
 
     manifest = prepare_region_layers(
         region_id=args.region_id,
@@ -189,7 +295,8 @@ def main() -> None:
         bounds=bbox,
         layer_sources=layer_sources,
         layer_urls=layer_urls,
-        region_data_dir=args.region_data_dir,
+        region_data_dir=region_data_dir,
+        cache_dir=cache_root,
         crs=args.crs,
         copy_files=args.copy,
         source_metadata=source_metadata,
@@ -213,7 +320,7 @@ def main() -> None:
     unsupported = manifest.get("unsupported_auto_discovery_layers", [])
     required_blockers = manifest.get("required_blockers", [])
     failed = manifest.get("failed_layers", [])
-    out_root = args.region_data_dir or "data/regions"
+    out_root = str(region_data_dir)
     manifest_path = None if args.dry_run else f"{out_root}/{args.region_id}/manifest.json"
     print(
         json.dumps(
@@ -236,6 +343,7 @@ def main() -> None:
                 "warnings": manifest.get("warnings", []),
                 "errors": manifest.get("errors", []),
                 "progress_log": manifest.get("progress_log", []),
+                "landfire_stage": stage_result,
                 "output_dir": str(out_root),
                 "manifest_path": manifest_path,
             },
