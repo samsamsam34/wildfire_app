@@ -722,6 +722,22 @@ def test_feature_service_geojson_fallback_to_json(monkeypatch, tmp_path):
     assert len(payload.get("features", [])) == 1
 
 
+def test_acquisition_url_sanitize_preserves_valid_https_url():
+    url = "https://example.test/FeatureServer/0/query?where=1%3D1&f=json"
+    assert source_acq._sanitize_url(url) == url
+
+
+def test_acquisition_url_sanitize_strips_accidental_trailing_punctuation():
+    url = "https://example.test/FeatureServer/0/query?where=1%3D1&f=json:  "
+    assert source_acq._sanitize_url(url) == "https://example.test/FeatureServer/0/query?where=1%3D1&f=json"
+
+
+def test_acquisition_validate_request_url_rejects_malformed_url():
+    with pytest.raises(ValueError) as exc:
+        source_acq._validate_request_url("endpoint https://example.test/FeatureServer/0")
+    assert "invalid_request_url=" in str(exc.value)
+
+
 def test_skip_optional_layers_flag(tmp_path):
     src = _sources(tmp_path, include_slope=False)
     optional = tmp_path / "burn_probability_source.tif"

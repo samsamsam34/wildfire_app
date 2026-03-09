@@ -224,8 +224,15 @@ def _layer_config(layer_key: str, source_config: dict[str, Any]) -> dict[str, An
     return _normalize_layer_config(candidate)
 
 
+def _sanitize_url(url: str | None) -> str:
+    text = str(url or "").strip().strip("'\"")
+    while text and text[-1] in {":", ";", ","}:
+        text = text[:-1].rstrip()
+    return text
+
+
 def _is_probably_url(value: str) -> bool:
-    parsed = urllib.parse.urlparse(value)
+    parsed = urllib.parse.urlparse(_sanitize_url(value))
     return parsed.scheme in {"http", "https", "file"} and bool(parsed.netloc or parsed.path)
 
 
@@ -612,7 +619,7 @@ def _extract_provider_error_context(error: str) -> dict[str, Any]:
     # First prefer explicit query URLs when present.
     url_matches = re.findall(r"https?://[^\s)]+", error)
     if url_matches:
-        cleaned_urls = [u.strip(".,;'\"[]") for u in url_matches]
+        cleaned_urls = [_sanitize_url(u.strip(".,;'\"[]")) for u in url_matches]
         query_urls = [u for u in cleaned_urls if _is_probably_url(u) and "/query?" in u.lower()]
         if query_urls:
             request_url = query_urls[-1]
@@ -624,7 +631,7 @@ def _extract_provider_error_context(error: str) -> dict[str, Any]:
         # Fallback to explicit invalid_request_url marker.
         m_invalid = re.search(r"invalid_request_url=([^\s;)]+)", error, flags=re.IGNORECASE)
         if m_invalid:
-            candidate = m_invalid.group(1).strip()
+            candidate = _sanitize_url(m_invalid.group(1).strip())
             if _is_probably_url(candidate):
                 request_url = candidate
 

@@ -107,6 +107,13 @@ def _stable_bbox(bounds: dict[str, float] | None) -> str | None:
     )
 
 
+def _sanitize_url(url: str | None) -> str:
+    text = str(url or "").strip().strip("'\"")
+    while text and text[-1] in {":", ";", ","}:
+        text = text[:-1].rstrip()
+    return text
+
+
 def _is_probably_http_url(value: str) -> bool:
     parsed = urllib.parse.urlparse(value)
     return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
@@ -402,6 +409,8 @@ def _resolve_ingest_input(
     backoff_seconds: float,
 ) -> tuple[Path, dict[str, Any]]:
     warnings: list[str] = []
+    source_url = _sanitize_url(source_url)
+    source_endpoint = _sanitize_url(source_endpoint)
     if source_path:
         p = Path(source_path).expanduser()
         if not p.exists():
@@ -462,7 +471,7 @@ def _resolve_ingest_input(
                 "request_url": result.source_url,
             }
         if result and result.source_url:
-            source_url = result.source_url
+            source_url = _sanitize_url(result.source_url)
             warnings.extend(result.warnings)
             provider_type = result.provider_type
             acquisition_method = result.acquisition_method

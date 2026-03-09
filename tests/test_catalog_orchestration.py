@@ -890,6 +890,19 @@ def test_extract_provider_context_uses_actual_query_url_not_diagnostic_summary()
     assert not str(context["request_url"]).startswith("endpoint ")
 
 
+def test_extract_provider_context_strips_trailing_colon_from_query_url():
+    err = (
+        "Failed json request after retries for "
+        "https://example.test/FeatureServer/0/query?where=1%3D1&f=json&resultOffset=0&resultRecordCount=2000: "
+        "HTTP Error 400: Bad Request"
+    )
+    context = prep_orch._extract_provider_error_context(err)
+    assert context["request_url"] == (
+        "https://example.test/FeatureServer/0/query?where=1%3D1&f=json&resultOffset=0&resultRecordCount=2000"
+    )
+    assert not str(context["request_url"]).endswith(":")
+
+
 def test_execution_diagnostics_flags_coverage_recording_failure(monkeypatch, tmp_path):
     required = required_core_layers()
     call_state = {"count": 0}

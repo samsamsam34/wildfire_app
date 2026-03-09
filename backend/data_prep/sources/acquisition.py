@@ -92,9 +92,20 @@ def _is_probably_http_url(value: str) -> bool:
     return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
 
 
+def _sanitize_url(url: str | None) -> str:
+    text = str(url or "").strip().strip("'\"")
+    while text and text[-1] in {":", ";", ","}:
+        # Keep scheme-only sentinel intact (e.g. "https:") for validation to reject.
+        if re.fullmatch(r"[a-zA-Z][a-zA-Z0-9+.-]*:", text):
+            break
+        text = text[:-1].rstrip()
+    return text
+
+
 def _validate_request_url(url: str) -> None:
-    if not _is_probably_http_url(url):
-        raise ValueError(f"invalid_request_url={url}")
+    cleaned = _sanitize_url(url)
+    if not _is_probably_http_url(cleaned):
+        raise ValueError(f"invalid_request_url={cleaned}")
 
 
 def _looks_like_html(path: Path) -> bool:
@@ -141,6 +152,7 @@ def _download_with_retry(
     retries: int,
     backoff_seconds: float,
 ) -> dict[str, Any]:
+    url = _sanitize_url(url)
     _validate_request_url(url)
     last_exc: Exception | None = None
     last_status: int | None = None
@@ -200,6 +212,7 @@ def _download_json_with_retry(
     retries: int,
     backoff_seconds: float,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
+    url = _sanitize_url(url)
     _validate_request_url(url)
     last_exc: Exception | None = None
     last_status: int | None = None
@@ -268,8 +281,8 @@ class ArcGISImageServiceProvider:
     )
 
     def __init__(self, endpoint: str, full_download_url: str | None = None):
-        self.endpoint = endpoint.rstrip("/")
-        self.full_download_url = full_download_url
+        self.endpoint = _sanitize_url(endpoint).rstrip("/")
+        self.full_download_url = _sanitize_url(full_download_url) or None
 
     def _export_endpoint(self) -> str:
         if self.endpoint.endswith("/exportImage"):
@@ -410,8 +423,8 @@ class ArcGISFeatureServiceProvider:
         require_return_geometry: bool = True,
         preferred_response_format: str | None = None,
     ):
-        self.endpoint = endpoint.rstrip("/")
-        self.full_download_url = full_download_url
+        self.endpoint = _sanitize_url(endpoint).rstrip("/")
+        self.full_download_url = _sanitize_url(full_download_url) or None
         self.supports_geojson_direct = supports_geojson_direct
         self.require_return_geometry = require_return_geometry
         self.preferred_response_format = (preferred_response_format or "").strip().lower()
@@ -684,8 +697,8 @@ def acquire_layer_from_config(
     if not provider_type:
         return None
 
-    source_endpoint = str(layer_config.get("source_endpoint") or layer_config.get("source_url") or "").strip()
-    full_download_url = str(layer_config.get("full_download_url") or layer_config.get("source_url") or "").strip() or None
+    source_endpoint = _sanitize_url(layer_config.get("source_endpoint") or layer_config.get("source_url") or "")
+    full_download_url = _sanitize_url(layer_config.get("full_download_url") or layer_config.get("source_url") or "") or None
     local_path = str(layer_config.get("local_path") or "").strip() or None
     supports_bbox_export = _boolish(layer_config.get("supports_bbox_export"), provider_type.startswith("arcgis_"))
     supports_geojson_direct = _boolish(layer_config.get("supports_geojson_direct"), True)
