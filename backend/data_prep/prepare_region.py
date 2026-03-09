@@ -35,6 +35,7 @@ from backend.region_registry import DEFAULT_REGION_DATA_DIR, REQUIRED_REGION_FIL
 from backend.data_prep.sources import (
     LANDFIRE_HANDLER_VERSION,
     SourceAsset,
+    acquire_layer_from_config,
     discover_wildfire_sources,
     resolve_landfire_raster,
 )
@@ -717,6 +718,12 @@ def _base_layer_meta(
         "timeout_seconds": float(resolved.timeout_seconds or 0.0),
         "cache_hit": bool(resolved.cache_hit),
         "discovered_source": bool(details.get("discovered_source", False)),
+        "provider_type": meta.get("provider_type"),
+        "source_endpoint": meta.get("source_endpoint"),
+        "acquisition_method": meta.get("acquisition_method"),
+        "bbox_used": meta.get("bbox_used"),
+        "output_resolution": meta.get("output_resolution"),
+        "bbox_cache_hit": bool(meta.get("bbox_cache_hit", False)),
         "clipped_to_bbox": False,
         "validation_status": "missing",
         "notes": AUTOMATION_NOTES.get(layer_key),
@@ -730,6 +737,86 @@ def _normalize_discovered_assets(
     if not discovered_assets:
         return []
     return list(discovered_assets.get(layer_key) or [])
+
+
+def _normalize_source_config(source_config: dict[str, Any] | None) -> dict[str, Any]:
+    if not source_config:
+        return {}
+    if isinstance(source_config.get("layers"), dict):
+        return source_config["layers"]
+    return source_config
+
+
+def _apply_source_config_acquisition(
+    *,
+    bounds: dict[str, float],
+    layer_sources: dict[str, str],
+    layer_urls: dict[str, str | list[str]],
+    source_metadata: dict[str, dict[str, Any]],
+    source_config: dict[str, Any] | None,
+    cache_root: Path,
+    prefer_bbox_downloads: bool,
+    allow_full_download_fallback: bool,
+    target_resolution: float | None,
+    download_config: DownloadConfig,
+    notes: list[str],
+    progress_log: list[str],
+    skip_optional_layers: bool,
+) -> None:
+    configured_layers = _normalize_source_config(source_config)
+    if not configured_layers:
+        return
+    for layer_key, layer_type in LAYER_TYPES.items():
+        if skip_optional_layers and layer_key in OPTIONAL_LAYER_KEYS:
+            continue
+        if layer_sources.get(layer_key) or layer_urls.get(layer_key):
+            continue
+        layer_cfg = configured_layers.get(layer_key)
+        if not isinstance(layer_cfg, dict):
+            continue
+        try:
+            acquired = acquire_layer_from_config(
+                layer_key=layer_key,
+                layer_type=layer_type,
+                layer_config=layer_cfg,
+                bounds=bounds,
+                cache_root=cache_root,
+                prefer_bbox_downloads=prefer_bbox_downloads,
+                allow_full_download_fallback=allow_full_download_fallback,
+                target_resolution=target_resolution,
+                timeout_seconds=download_config.timeout_seconds,
+                retries=download_config.retries,
+                backoff_seconds=download_config.retry_backoff_seconds,
+            )
+        except Exception as exc:
+            notes.append(f"{layer_key} source-config acquisition failed: {exc}")
+            progress_log.append(f"Source config acquisition failed for {layer_key}: {exc}")
+            continue
+        if acquired is None:
+            continue
+
+        if acquired.local_path:
+            layer_sources[layer_key] = acquired.local_path
+        elif acquired.source_url:
+            layer_urls[layer_key] = acquired.source_url
+
+        source_metadata.setdefault(layer_key, {})
+        source_metadata[layer_key].update(
+            {
+                "provider_type": acquired.provider_type,
+                "source_endpoint": acquired.source_endpoint,
+                "acquisition_method": acquired.acquisition_method,
+                "bbox_used": acquired.bbox_used,
+                "output_resolution": acquired.output_resolution,
+                "bbox_cache_hit": acquired.cache_hit,
+            }
+        )
+        for warning in acquired.warnings:
+            notes.append(warning)
+        progress_log.append(
+            f"Source-config acquired {layer_key} via {acquired.acquisition_method}"
+            + (" (cache hit)" if acquired.cache_hit else "")
+        )
 
 
 def _resolve_inputs_for_layer(
@@ -927,8 +1014,14 @@ def _prepare_one_layer(
     filename = STANDARD_LAYER_FILENAMES[layer_key]
     if dry_run:
         if all(r.source_mode == "missing" for r in resolved_inputs):
+            layer_meta.setdefault("acquisition_method", "unavailable")
             layer_meta["validation_status"] = "missing"
             return None, layer_meta
+        layer_meta.setdefault(
+            "acquisition_method",
+            "bbox_export" if layer_meta.get("source_mode") == "local_file" and layer_meta.get("bbox_used") else
+            ("full_download_clip" if layer_meta.get("source_mode") == "remote_url" else "local_existing"),
+        )
         layer_meta["validation_status"] = "dry_run"
         layer_meta["clipped_to_bbox"] = True
         layer_meta["bytes_downloaded"] = int(sum(r.bytes_downloaded for r in resolved_inputs))
@@ -1013,6 +1106,10 @@ def _prepare_one_layer(
 
     _validate_prepared_layer(output_path, layer_type, bounds)
     layer_meta.update(clip_meta)
+    layer_meta.setdefault(
+        "acquisition_method",
+        "full_download_clip" if layer_meta.get("source_mode") == "remote_url" else "local_existing",
+    )
     layer_meta["clipped_to_bbox"] = True
     layer_meta["validation_status"] = "ok"
     layer_meta["bytes_downloaded"] = int(sum(r.bytes_downloaded for r in valid_inputs))
@@ -1107,6 +1204,12 @@ def prepare_region_layers(
     raster_compression: str | None = "DEFLATE",
     tile_size: int = 512,
     max_expected_cells: int | None = None,
+    source_config: dict[str, Any] | None = None,
+    prefer_bbox_downloads: bool = False,
+    allow_full_download_fallback: bool = True,
+    require_core_layers: bool = True,
+    skip_optional_layers: bool = False,
+    target_resolution: float | None = None,
 ) -> dict[str, Any]:
     if not region_id.strip():
         raise ValueError("region_id is required")
@@ -1118,6 +1221,8 @@ def prepare_region_layers(
 
     root = Path(region_data_dir or os.getenv("WF_REGION_DATA_DIR") or DEFAULT_REGION_DATA_DIR).expanduser()
     cache_root = Path(cache_dir or os.getenv("WF_LAYER_DOWNLOAD_CACHE_DIR") or (Path("data") / "cache")).expanduser()
+    layer_sources = dict(layer_sources or {})
+    layer_urls = dict(layer_urls or {})
     region_dir = root / region_id
     download_dir = region_dir / "_downloads"
     extraction_dir = region_dir / "_extracted"
@@ -1138,12 +1243,34 @@ def prepare_region_layers(
 
     files: dict[str, str] = {}
     layers_meta: dict[str, dict[str, Any]] = {}
-    metadata = source_metadata or {}
+    metadata = dict(source_metadata or {})
     warnings: list[str] = []
     errors: list[str] = []
     progress_log: list[str] = []
     slope_derived = False
     archives_extracted = False
+    download_config = DownloadConfig(
+        timeout_seconds=float(download_timeout),
+        retries=max(0, int(download_retries)),
+        retry_backoff_seconds=max(0.0, float(retry_backoff_seconds)),
+    )
+
+    _apply_source_config_acquisition(
+        bounds=bounds,
+        layer_sources=layer_sources,
+        layer_urls=layer_urls,
+        source_metadata=metadata,
+        source_config=source_config,
+        cache_root=cache_root,
+        prefer_bbox_downloads=bool(prefer_bbox_downloads),
+        allow_full_download_fallback=bool(allow_full_download_fallback),
+        target_resolution=target_resolution,
+        download_config=download_config,
+        notes=warnings,
+        progress_log=progress_log,
+        skip_optional_layers=bool(skip_optional_layers),
+    )
+
     discovered_assets: dict[str, list[SourceAsset]] = {}
     if auto_discover:
         unresolved_keys = [
@@ -1152,7 +1279,7 @@ def prepare_region_layers(
                 (["fuel", "canopy"] if landfire_only else list(BASE_REQUIRED_KEYS))
                 + list(OPTIONAL_LAYER_KEYS)
             )
-            if not (layer_sources or {}).get(key) and not (layer_urls or {}).get(key)
+            if not layer_sources.get(key) and not layer_urls.get(key)
         ]
         if unresolved_keys:
             discovered_all = discover_wildfire_sources(bounds)
@@ -1161,11 +1288,6 @@ def prepare_region_layers(
                 if assets:
                     warnings.append(f"Auto-discovered {len(assets)} source asset(s) for {key}.")
                     progress_log.append(f"Auto-discovery resolved {len(assets)} source asset(s) for {key}.")
-    download_config = DownloadConfig(
-        timeout_seconds=float(download_timeout),
-        retries=max(0, int(download_retries)),
-        retry_backoff_seconds=max(0.0, float(retry_backoff_seconds)),
-    )
 
     base_required_keys = ("fuel", "canopy") if landfire_only else BASE_REQUIRED_KEYS
 
@@ -1212,6 +1334,12 @@ def prepare_region_layers(
                 "source_mode": "missing",
                 "source_url": (layer_urls or {}).get(layer_key),
                 "dataset_version": (metadata.get(layer_key, {}) or {}).get("dataset_version"),
+                "provider_type": (metadata.get(layer_key, {}) or {}).get("provider_type"),
+                "source_endpoint": (metadata.get(layer_key, {}) or {}).get("source_endpoint"),
+                "acquisition_method": (metadata.get(layer_key, {}) or {}).get("acquisition_method", "unavailable"),
+                "bbox_used": (metadata.get(layer_key, {}) or {}).get("bbox_used"),
+                "output_resolution": (metadata.get(layer_key, {}) or {}).get("output_resolution"),
+                "bbox_cache_hit": bool((metadata.get(layer_key, {}) or {}).get("bbox_cache_hit", False)),
                 "freshness_timestamp": (metadata.get(layer_key, {}) or {}).get("freshness_timestamp"),
                 "downloaded_at": None,
                 "download_status": "error",
@@ -1254,6 +1382,7 @@ def prepare_region_layers(
                             "timeout_seconds": float(download_timeout),
                             "clipped_to_bbox": True,
                             "validation_status": "dry_run",
+                            "acquisition_method": "derived",
                             "notes": "Slope will be derived from dem.tif because no slope source was provided.",
                         }
                     else:
@@ -1274,6 +1403,7 @@ def prepare_region_layers(
                             "timeout_seconds": float(download_timeout),
                             "clipped_to_bbox": False,
                             "validation_status": "missing",
+                            "acquisition_method": "unavailable",
                             "notes": "Slope cannot be derived in dry-run because dem is unavailable.",
                         }
                         warnings.append("Slope dry-run skipped because dem was not available for derivation.")
@@ -1302,6 +1432,7 @@ def prepare_region_layers(
                         "timeout_seconds": float(download_timeout),
                         "clipped_to_bbox": True,
                         "validation_status": "ok",
+                        "acquisition_method": "derived",
                         "notes": "Slope derived from prepared DEM because no slope source was provided.",
                         **slope_meta,
                     }
@@ -1325,39 +1456,51 @@ def prepare_region_layers(
                 "timeout_seconds": float(download_timeout),
                 "clipped_to_bbox": False,
                 "validation_status": "error",
+                "acquisition_method": "unavailable",
                 "notes": str(exc),
             }
 
-    for optional_layer in OPTIONAL_LAYER_KEYS:
-        source_path, source_url = _layer_source(optional_layer, layer_sources, layer_urls)
-        if not source_path and not source_url:
-            continue
-        try:
-            _prepare_layer(optional_layer)
-        except Exception as exc:
-            errors.append(f"{optional_layer} optional layer preparation failed: {exc}")
-            warnings.append(f"{optional_layer} optional layer preparation failed: {exc}")
-            layers_meta[optional_layer] = {
-                "source_name": optional_layer,
-                "source_type": "missing",
-                "source_mode": "missing",
-                "source_url": source_url,
-                "dataset_version": (metadata.get(optional_layer, {}) or {}).get("dataset_version"),
-                "freshness_timestamp": (metadata.get(optional_layer, {}) or {}).get("freshness_timestamp"),
-                "downloaded_at": None,
-                "download_status": "error",
-                "bytes_downloaded": 0,
-                "extraction_performed": False,
-                "extracted_path": None,
-                "checksum_status": "not_provided",
-                "retry_count_used": 0,
-                "timeout_seconds": float(download_timeout),
-                "clipped_to_bbox": False,
-                "validation_status": "error",
-                "notes": str(exc),
-            }
+    if not skip_optional_layers:
+        for optional_layer in OPTIONAL_LAYER_KEYS:
+            source_path, source_url = _layer_source(optional_layer, layer_sources, layer_urls)
+            if not source_path and not source_url:
+                continue
+            try:
+                _prepare_layer(optional_layer)
+            except Exception as exc:
+                errors.append(f"{optional_layer} optional layer preparation failed: {exc}")
+                warnings.append(f"{optional_layer} optional layer preparation failed: {exc}")
+                layers_meta[optional_layer] = {
+                    "source_name": optional_layer,
+                    "source_type": "missing",
+                    "source_mode": "missing",
+                    "source_url": source_url,
+                    "dataset_version": (metadata.get(optional_layer, {}) or {}).get("dataset_version"),
+                    "provider_type": (metadata.get(optional_layer, {}) or {}).get("provider_type"),
+                    "source_endpoint": (metadata.get(optional_layer, {}) or {}).get("source_endpoint"),
+                    "acquisition_method": (metadata.get(optional_layer, {}) or {}).get(
+                        "acquisition_method", "unavailable"
+                    ),
+                    "bbox_used": (metadata.get(optional_layer, {}) or {}).get("bbox_used"),
+                    "output_resolution": (metadata.get(optional_layer, {}) or {}).get("output_resolution"),
+                    "bbox_cache_hit": bool((metadata.get(optional_layer, {}) or {}).get("bbox_cache_hit", False)),
+                    "freshness_timestamp": (metadata.get(optional_layer, {}) or {}).get("freshness_timestamp"),
+                    "downloaded_at": None,
+                    "download_status": "error",
+                    "bytes_downloaded": 0,
+                    "extraction_performed": False,
+                    "extracted_path": None,
+                    "checksum_status": "not_provided",
+                    "retry_count_used": 0,
+                    "timeout_seconds": float(download_timeout),
+                    "clipped_to_bbox": False,
+                    "validation_status": "error",
+                    "notes": str(exc),
+                }
+    else:
+        warnings.append("Optional layers skipped by configuration (--skip-optional-layers).")
 
-    requested_layers = set((layer_sources or {}).keys()) | set((layer_urls or {}).keys())
+    requested_layers = set(layer_sources.keys()) | set(layer_urls.keys())
     prepared_layers = sorted([k for k, v in layers_meta.items() if v.get("validation_status") == "ok"])
     skipped_layers = sorted([k for k, v in layers_meta.items() if v.get("validation_status") == "missing"])
     failed_layers = sorted([k for k, v in layers_meta.items() if v.get("validation_status") == "error"])
@@ -1385,7 +1528,7 @@ def prepare_region_layers(
         run_required_layers = explicit_landfire if explicit_landfire else ["fuel", "canopy"]
         minimum_required_layers = explicit_landfire if explicit_landfire else ["fuel"]
     else:
-        run_required_layers = list(REQUIRED_REGION_FILES)
+        run_required_layers = list(REQUIRED_REGION_FILES) if require_core_layers else list(MINIMUM_REQUIRED_KEYS)
         minimum_required_layers = list(MINIMUM_REQUIRED_KEYS)
 
     full_required_missing = [k for k in run_required_layers if k not in files]
@@ -1460,6 +1603,12 @@ def prepare_region_layers(
             "retry_backoff_seconds": download_config.retry_backoff_seconds,
             "skip_download": bool(skip_download),
             "auto_discover": bool(auto_discover),
+            "prefer_bbox_downloads": bool(prefer_bbox_downloads),
+            "allow_full_download_fallback": bool(allow_full_download_fallback),
+            "require_core_layers": bool(require_core_layers),
+            "skip_optional_layers": bool(skip_optional_layers),
+            "target_resolution": float(target_resolution) if target_resolution is not None else None,
+            "source_config_used": bool(source_config),
             "cache_dir": str(cache_root),
             "landfire_only": bool(landfire_only),
             "raster_compression": raster_compression,

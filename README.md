@@ -137,11 +137,50 @@ Offline prep/validation scripts:
 - `scripts/build_landfire_region.py`
 - `scripts/validate_prepared_region.py`
 
+BBox-first region prep:
+- Region prep remains offline/admin-only; runtime API still uses prepared local files.
+- `prepare_region_layers.py` now supports provider-aware acquisition with bbox-first behavior.
+- For supported providers (for example ArcGIS ImageServer/FeatureServer), prep requests only the region bbox first.
+- If bbox export/query is unsupported or fails, prep can fall back to full-download + local clip.
+- Manifest layer metadata records acquisition details (`acquisition_method`, `provider_type`, `source_endpoint`, `bbox_used`, cache hits, fallbacks).
+
 Example pilot prep flow:
 
 ```bash
-python scripts/prepare_region_layers.py --region-id test_region --bbox -111.2 45.5 -110.9 45.8
+python scripts/prepare_region_layers.py \
+  --region-id test_region \
+  --bbox -111.2 45.5 -110.9 45.8 \
+  --prefer-bbox-downloads \
+  --allow-full-download-fallback \
+  --source-config path/to/source_config.json
 python scripts/validate_prepared_region.py --region-id test_region --sample-lat 45.67 --sample-lon -111.04
+```
+
+Useful prep flags:
+- `--prefer-bbox-downloads`
+- `--allow-full-download-fallback` / `--no-allow-full-download-fallback`
+- `--require-core-layers` / `--no-require-core-layers`
+- `--skip-optional-layers`
+- `--target-resolution`
+- `--source-config`
+- `--cache-root`
+
+Minimal `source_config.json` example:
+
+```json
+{
+  "layers": {
+    "fuel": {
+      "provider_type": "arcgis_image_service",
+      "source_endpoint": "https://.../ImageServer",
+      "full_download_url": "https://.../fuel_full.zip"
+    },
+    "building_footprints": {
+      "provider_type": "arcgis_feature_service",
+      "source_endpoint": "https://.../FeatureServer/0"
+    }
+  }
+}
 ```
 
 Key point: runtime endpoints do not download large GIS datasets.

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 from typing import Sequence
 
@@ -20,6 +21,20 @@ def _parse_bbox_args(values: Sequence[str]) -> dict[str, float]:
     if len(values) == 4:
         return parse_bbox(",".join(values))
     raise ValueError("--bbox expects either one comma-delimited value or four numbers")
+
+
+def _load_source_config(path_or_none: str | None) -> dict[str, object] | None:
+    candidate = (path_or_none or os.getenv("WF_REGION_PREP_SOURCE_CONFIG", "")).strip()
+    if not candidate:
+        return None
+    cfg_path = Path(candidate).expanduser()
+    if not cfg_path.exists():
+        raise ValueError(f"Source config not found: {cfg_path}")
+    with open(cfg_path, "r", encoding="utf-8") as f:
+        payload = json.load(f)
+    if not isinstance(payload, dict):
+        raise ValueError("Source config must be a JSON object.")
+    return payload
 
 
 def _build_source_metadata_from_args(args: argparse.Namespace) -> dict[str, dict[str, str]]:
@@ -133,6 +148,7 @@ def main() -> None:
     )
     parser.add_argument("--out-dir", dest="region_data_dir", default=None)
     parser.add_argument("--cache-root", default=None)
+    parser.add_argument("--source-config", default=None, help="Optional JSON source config with provider definitions.")
     parser.add_argument("--crs", default="EPSG:4326")
     parser.add_argument("--copy", action="store_true", help="Copy files instead of symlinking")
     parser.add_argument("--force", action="store_true", help="Overwrite an existing region directory")
@@ -156,6 +172,34 @@ def main() -> None:
         "--no-auto-discovery",
         action="store_true",
         help="Disable automatic dataset discovery and require manual source paths/URLs.",
+    )
+    parser.add_argument(
+        "--prefer-bbox-downloads",
+        action="store_true",
+        help="Prefer provider bbox export/query flows where supported.",
+    )
+    parser.add_argument(
+        "--allow-full-download-fallback",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Allow fallback to full download + local clip when bbox export is unavailable or fails.",
+    )
+    parser.add_argument(
+        "--require-core-layers",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Require full core layer set for success (dem/slope/fuel/canopy/fire_perimeters/building_footprints).",
+    )
+    parser.add_argument(
+        "--skip-optional-layers",
+        action="store_true",
+        help="Skip optional enrichment layers even when URLs/config entries are provided.",
+    )
+    parser.add_argument(
+        "--target-resolution",
+        type=float,
+        default=None,
+        help="Target output resolution (meters) for provider bbox exports when supported.",
     )
     parser.add_argument(
         "--cache-only-landfire",
@@ -240,6 +284,7 @@ def main() -> None:
     display_name = args.display_name or args.region_id.replace("_", " ").title()
     bbox = _parse_bbox_args(args.bbox)
     source_metadata = _build_source_metadata_from_args(args)
+    source_config = _load_source_config(args.source_config)
 
     layer_sources = {
         "dem": args.dem,
@@ -311,6 +356,12 @@ def main() -> None:
         keep_temp_on_failure=args.keep_temp_on_failure,
         clean_download_cache=args.clean_download_cache,
         landfire_only=args.landfire_only,
+        source_config=source_config,
+        prefer_bbox_downloads=bool(args.prefer_bbox_downloads),
+        allow_full_download_fallback=bool(args.allow_full_download_fallback),
+        require_core_layers=bool(args.require_core_layers),
+        skip_optional_layers=bool(args.skip_optional_layers),
+        target_resolution=args.target_resolution,
     )
 
     prepared = manifest.get("prepared_layers", [])

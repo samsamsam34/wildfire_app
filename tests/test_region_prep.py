@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 import backend.data_prep.prepare_region as prep_region
+import backend.data_prep.sources.acquisition as source_acq
 from backend.data_prep.prepare_region import parse_bbox, prepare_region_layers
 from backend.data_prep.sources.adapters import (
     LANDFIRECanopyAdapter,
@@ -146,6 +147,16 @@ def test_cli_checksum_metadata_builder():
     assert meta["fuel"]["checksum"] == "sha256:def456"
     assert meta["building_footprints"]["checksum"] == "sha256:7890"
     assert "slope" not in meta
+
+
+def test_cli_source_config_loader(tmp_path):
+    from scripts.prepare_region_layers import _load_source_config
+
+    cfg = {"layers": {"fuel": {"provider_type": "arcgis_image_service", "source_endpoint": "https://example.test/fuel/ImageServer"}}}
+    cfg_path = tmp_path / "sources.json"
+    cfg_path.write_text(json.dumps(cfg), encoding="utf-8")
+    loaded = _load_source_config(str(cfg_path))
+    assert loaded == cfg
 
 
 def test_archive_member_selection_rejects_ambiguous_candidates(tmp_path):
@@ -513,3 +524,211 @@ def test_download_cache_reuse(monkeypatch, tmp_path):
     assert call_count["n"] == 1
     assert manifest_a["layers"]["dem"]["download_status"] == "ok"
     assert manifest_b["layers"]["dem"]["download_status"] == "cache_hit"
+
+
+def test_arcgis_bbox_export_url_and_request(monkeypatch, tmp_path):
+    captured = {"url": None}
+    dem_bytes = _raster_bytes(tmp_path, "bbox_dem.tif")
+
+    def fake_urlopen(url, timeout=0):
+        captured["url"] = url
+        return _FakeHTTPResponse(dem_bytes)
+
+    monkeypatch.setattr(source_acq.urllib.request, "urlopen", fake_urlopen)
+    result = source_acq.acquire_layer_from_config(
+        layer_key="fuel",
+        layer_type="raster",
+        layer_config={
+            "provider_type": "arcgis_image_service",
+            "source_endpoint": "https://example.test/arcgis/rest/services/LANDFIRE_Fuel/ImageServer",
+        },
+        bounds={"min_lon": -111.2, "min_lat": 45.5, "max_lon": -110.9, "max_lat": 45.8},
+        cache_root=tmp_path / "cache",
+        prefer_bbox_downloads=True,
+        allow_full_download_fallback=True,
+        target_resolution=30.0,
+        timeout_seconds=20.0,
+        retries=1,
+        backoff_seconds=0.01,
+    )
+    assert result is not None
+    assert result.acquisition_method == "bbox_export"
+    assert result.local_path and Path(result.local_path).exists()
+    assert captured["url"] is not None
+    assert "exportImage" in str(captured["url"])
+    assert "bbox=" in str(captured["url"])
+    assert "format=tiff" in str(captured["url"])
+
+
+def test_arcgis_bbox_export_cache_reuse(monkeypatch, tmp_path):
+    call_count = {"n": 0}
+    dem_bytes = _raster_bytes(tmp_path, "bbox_cached_dem.tif")
+
+    def fake_urlopen(url, timeout=0):
+        call_count["n"] += 1
+        return _FakeHTTPResponse(dem_bytes)
+
+    monkeypatch.setattr(source_acq.urllib.request, "urlopen", fake_urlopen)
+    kwargs = dict(
+        layer_key="canopy",
+        layer_type="raster",
+        layer_config={
+            "provider_type": "arcgis_image_service",
+            "source_endpoint": "https://example.test/arcgis/rest/services/LANDFIRE_Canopy/ImageServer",
+        },
+        bounds={"min_lon": -111.2, "min_lat": 45.5, "max_lon": -110.9, "max_lat": 45.8},
+        cache_root=tmp_path / "cache",
+        prefer_bbox_downloads=True,
+        allow_full_download_fallback=True,
+        target_resolution=30.0,
+        timeout_seconds=20.0,
+        retries=1,
+        backoff_seconds=0.01,
+    )
+    first = source_acq.acquire_layer_from_config(**kwargs)
+    second = source_acq.acquire_layer_from_config(**kwargs)
+    assert first is not None and second is not None
+    assert call_count["n"] == 1
+    assert first.acquisition_method == "bbox_export"
+    assert second.acquisition_method == "cached_bbox_export"
+    assert second.cache_hit is True
+
+
+def test_bbox_export_fallbacks_to_full_download_clip(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        source_acq.urllib.request,
+        "urlopen",
+        lambda *_a, **_k: (_ for _ in ()).throw(TimeoutError("bbox export failed")),
+    )
+    result = source_acq.acquire_layer_from_config(
+        layer_key="fuel",
+        layer_type="raster",
+        layer_config={
+            "provider_type": "arcgis_image_service",
+            "source_endpoint": "https://example.test/arcgis/rest/services/LANDFIRE_Fuel/ImageServer",
+            "full_download_url": "https://example.test/fuel_full.zip",
+        },
+        bounds={"min_lon": -111.2, "min_lat": 45.5, "max_lon": -110.9, "max_lat": 45.8},
+        cache_root=tmp_path / "cache",
+        prefer_bbox_downloads=True,
+        allow_full_download_fallback=True,
+        target_resolution=30.0,
+        timeout_seconds=1.0,
+        retries=0,
+        backoff_seconds=0.0,
+    )
+    assert result is not None
+    assert result.acquisition_method == "full_download_clip"
+    assert result.source_url == "https://example.test/fuel_full.zip"
+    assert result.warnings
+
+
+def test_manifest_records_bbox_acquisition_method(monkeypatch, tmp_path):
+    src = _sources(tmp_path, include_slope=False)
+    dem_bytes = Path(src["dem"]).read_bytes()
+    src.pop("dem")
+
+    def fake_urlopen(url, timeout=0):
+        return _FakeHTTPResponse(dem_bytes)
+
+    monkeypatch.setattr(source_acq.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(prep_region.urllib.request, "urlopen", fake_urlopen)
+
+    manifest = prepare_region_layers(
+        region_id="bbox_manifest_region",
+        display_name="BBox Manifest Region",
+        bounds={"min_lon": 0.0, "min_lat": 0.0, "max_lon": 1.0, "max_lat": 1.0},
+        layer_sources=src,
+        region_data_dir=tmp_path / "regions",
+        auto_discover=False,
+        source_config={
+            "layers": {
+                "dem": {
+                    "provider_type": "arcgis_image_service",
+                    "source_endpoint": "https://example.test/arcgis/rest/services/DEM/ImageServer",
+                }
+            }
+        },
+        prefer_bbox_downloads=True,
+        allow_full_download_fallback=True,
+        target_resolution=30.0,
+    )
+    dem_meta = manifest["layers"]["dem"]
+    assert dem_meta["acquisition_method"] in {"bbox_export", "cached_bbox_export"}
+    assert dem_meta["provider_type"] == "arcgis_image_service"
+    assert dem_meta["source_endpoint"] == "https://example.test/arcgis/rest/services/DEM/ImageServer"
+    assert dem_meta["bbox_used"]
+
+
+def test_skip_optional_layers_flag(tmp_path):
+    src = _sources(tmp_path, include_slope=False)
+    optional = tmp_path / "burn_probability_source.tif"
+    _write_raster(optional, value=60.0)
+    src["burn_probability"] = str(optional)
+
+    manifest = prepare_region_layers(
+        region_id="skip_optional_region",
+        display_name="Skip Optional Region",
+        bounds={"min_lon": 0.0, "min_lat": 0.0, "max_lon": 1.0, "max_lat": 1.0},
+        layer_sources=src,
+        region_data_dir=tmp_path / "regions",
+        auto_discover=False,
+        skip_optional_layers=True,
+    )
+    assert manifest["final_status"] == "success"
+    assert "burn_probability" not in manifest["files"]
+    assert any("skip-optional-layers" in w for w in manifest["warnings"])
+
+
+def test_prepare_pipeline_falls_back_from_bbox_to_full_download(monkeypatch, tmp_path):
+    src = _sources(tmp_path, include_slope=False)
+    dem_local = src.pop("dem")
+
+    monkeypatch.setattr(
+        source_acq.urllib.request,
+        "urlopen",
+        lambda *_a, **_k: (_ for _ in ()).throw(TimeoutError("bbox export failed")),
+    )
+
+    manifest = prepare_region_layers(
+        region_id="bbox_fallback_region",
+        display_name="BBox Fallback Region",
+        bounds={"min_lon": 0.0, "min_lat": 0.0, "max_lon": 1.0, "max_lat": 1.0},
+        layer_sources=src,
+        region_data_dir=tmp_path / "regions",
+        auto_discover=False,
+        source_config={
+            "layers": {
+                "dem": {
+                    "provider_type": "arcgis_image_service",
+                    "source_endpoint": "https://example.test/arcgis/rest/services/DEM/ImageServer",
+                    "full_download_url": Path(dem_local).as_uri(),
+                }
+            }
+        },
+        prefer_bbox_downloads=True,
+        allow_full_download_fallback=True,
+    )
+    dem_meta = manifest["layers"]["dem"]
+    assert dem_meta["acquisition_method"] == "full_download_clip"
+    assert any("bbox export failed" in w for w in manifest["warnings"])
+
+
+def test_require_core_layers_flag_controls_blockers(tmp_path):
+    src = _sources(tmp_path, include_slope=False)
+    src.pop("fuel")
+    src.pop("canopy")
+    src.pop("fire_perimeters")
+    src.pop("building_footprints")
+    manifest = prepare_region_layers(
+        region_id="minimum_only_region",
+        display_name="Minimum Only Region",
+        bounds={"min_lon": 0.0, "min_lat": 0.0, "max_lon": 1.0, "max_lat": 1.0},
+        layer_sources=src,
+        region_data_dir=tmp_path / "regions",
+        auto_discover=False,
+        require_core_layers=False,
+    )
+    assert manifest["final_status"] == "success"
+    assert manifest["required_blockers"] == []
+    assert manifest["minimum_required_missing"] == []

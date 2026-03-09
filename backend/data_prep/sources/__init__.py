@@ -8,6 +8,14 @@ from backend.data_prep.sources.adapters import (
     USGS3DEPAdapter,
     discover_wildfire_sources,
 )
+from backend.data_prep.sources.acquisition import (
+    AcquisitionResult,
+    ArcGISFeatureServiceProvider,
+    ArcGISImageServiceProvider,
+    SourceProviderCapabilities,
+    acquire_layer_from_config,
+    default_source_config,
+)
 from backend.data_prep.sources.landfire import (
     LANDFIRE_HANDLER_VERSION,
     LandfireArchiveResolution,
@@ -32,6 +40,12 @@ __all__ = [
     "LANDFIREFuelAdapter",
     "LANDFIRECanopyAdapter",
     "discover_wildfire_sources",
+    "SourceProviderCapabilities",
+    "AcquisitionResult",
+    "ArcGISImageServiceProvider",
+    "ArcGISFeatureServiceProvider",
+    "acquire_layer_from_config",
+    "default_source_config",
     "LANDFIRE_HANDLER_VERSION",
     "LandfireArchiveResolution",
     "default_cache_root",
