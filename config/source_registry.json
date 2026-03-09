@@ -15,23 +15,23 @@
     },
     "fuel": {
       "provider_type": "arcgis_image_service",
-      "source_endpoint": "${WF_DEFAULT_FUEL_ENDPOINT:-https://landfire.gov/arcgis/rest/services/LF2022/LF2022_FBFM40/ImageServer}",
+      "source_endpoint": "${WF_DEFAULT_FUEL_ENDPOINT:-https://lfps.usgs.gov/arcgis/rest/services/Landfire_LF240/US_240FBFM40/ImageServer}",
       "full_download_url": "${WF_DEFAULT_FUEL_FULL_URL:-}",
       "supports_bbox_export": true,
       "allow_full_download_fallback": true,
       "target_resolution": 30.0,
       "expected_output_format": "tif",
-      "notes": "LANDFIRE fuel image-service default. Override when using alternate LANDFIRE snapshots."
+      "notes": "LANDFIRE LF240 fuel model image service (USGS LFPS). Override WF_DEFAULT_FUEL_ENDPOINT for alternate snapshots."
     },
     "canopy": {
       "provider_type": "arcgis_image_service",
-      "source_endpoint": "${WF_DEFAULT_CANOPY_ENDPOINT:-https://landfire.gov/arcgis/rest/services/LF2022/LF2022_CC/ImageServer}",
+      "source_endpoint": "${WF_DEFAULT_CANOPY_ENDPOINT:-https://lfps.usgs.gov/arcgis/rest/services/Landfire_LF240/US_240CC/ImageServer}",
       "full_download_url": "${WF_DEFAULT_CANOPY_FULL_URL:-}",
       "supports_bbox_export": true,
       "allow_full_download_fallback": true,
       "target_resolution": 30.0,
       "expected_output_format": "tif",
-      "notes": "LANDFIRE canopy image-service default. Override when using alternate LANDFIRE snapshots."
+      "notes": "LANDFIRE LF240 canopy cover image service (USGS LFPS). Override WF_DEFAULT_CANOPY_ENDPOINT for alternate snapshots."
     },
     "fire_perimeters": {
       "provider_type": "arcgis_feature_service",
@@ -39,6 +39,9 @@
       "full_download_url": "${WF_DEFAULT_FIRE_PERIMETERS_FULL_URL:-}",
       "supports_bbox_export": true,
       "allow_full_download_fallback": true,
+      "query_format": "json",
+      "supports_geojson_direct": false,
+      "require_return_geometry": true,
       "expected_output_format": "geojson",
       "notes": "NIFC perimeter feature-service default. Override with WF_DEFAULT_FIRE_PERIMETERS_ENDPOINT if needed."
     },
@@ -48,6 +51,9 @@
       "full_download_url": "${WF_DEFAULT_BUILDING_FOOTPRINTS_FULL_URL:-}",
       "supports_bbox_export": true,
       "allow_full_download_fallback": true,
+      "query_format": "json",
+      "supports_geojson_direct": false,
+      "require_return_geometry": true,
       "expected_output_format": "geojson",
       "notes": "Public USA structures feature-service default (fallback for building-footprint context)."
     },

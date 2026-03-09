@@ -735,6 +735,57 @@ def test_execution_diagnostics_classifies_invalid_raster_payload(monkeypatch, tm
     assert "provider returned an error payload" in canopy["actionable_error"].lower()
 
 
+def test_execution_diagnostics_classifies_endpoint_not_found(monkeypatch, tmp_path):
+    required = required_core_layers()
+
+    def fake_coverage_plan(*args, **kwargs):
+        return _coverage_plan_for_required(required, "none")
+
+    def fake_ingest(*args, **kwargs):
+        if kwargs["layer_key"] == "fuel":
+            raise ValueError(
+                "Failed download after retries for https://lfps.usgs.gov/arcgis/rest/services/Landfire_LF240/US_240FBFM40/ImageServer/exportImage?x=1: "
+                "HTTP Error 404: Not Found (http_status=404, content_type=application/json, body_snippet={\"error\":{\"message\":\"service not found\"}})"
+            )
+        return {
+            "item_id": f"{kwargs['layer_key']}-item",
+            "catalog_path": str(tmp_path / f"{kwargs['layer_key']}.tif"),
+            "provider_type": "arcgis_image_service",
+            "acquisition_method": "bbox_export",
+            "source_url": "https://example.test/layer",
+            "source_endpoint": "https://example.test/layer/ImageServer",
+            "bbox_used": "0,0,1,1",
+            "cache_hit": False,
+            "ingest_diagnostics": {
+                "fetch_attempted": True,
+                "fetch_succeeded": True,
+                "catalog_ingest_succeeded": True,
+                "temp_input_path": str(tmp_path / "tmp.tif"),
+            },
+        }
+
+    monkeypatch.setattr(prep_orch, "build_catalog_coverage_plan", fake_coverage_plan)
+    monkeypatch.setattr(prep_orch, "_ingest_layer_for_bbox", fake_ingest)
+
+    with pytest.raises(RegionPrepExecutionError) as exc:
+        prepare_region_from_catalog_or_sources(
+            region_id="diag_404",
+            display_name="Diag 404",
+            bounds={"min_lon": 0.0, "min_lat": 0.0, "max_lon": 1.0, "max_lat": 1.0},
+            catalog_root=tmp_path / "catalog",
+            regions_root=tmp_path / "regions",
+            source_config=_valid_required_source_config(),
+            skip_optional_layers=True,
+            overwrite=True,
+        )
+    details = exc.value.details
+    fuel = details["per_layer_execution_diagnostics"]["fuel"]
+    assert fuel["failure_reason"] == "endpoint_not_found"
+    assert fuel["response_status_code"] == 404
+    assert "lfps.usgs.gov" in str(fuel["request_url"])
+    assert "service not found" in str(fuel["provider_error_snippet"]).lower()
+
+
 def test_execution_diagnostics_classifies_empty_vector_result(monkeypatch, tmp_path):
     required = required_core_layers()
 

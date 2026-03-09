@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import time
 import urllib.error
 import urllib.parse
@@ -139,16 +140,79 @@ def _download_with_retry(
             }
         except Exception as exc:  # pragma: no cover - runtime network behavior
             last_exc = exc
+            body_snippet = None
             if isinstance(exc, urllib.error.HTTPError):
                 last_status = int(exc.code)
                 last_content_type = exc.headers.get("Content-Type") if exc.headers else None
+                try:
+                    body = exc.read(512)
+                    if body:
+                        body_snippet = re.sub(r"\s+", " ", body.decode("utf-8", errors="replace")).strip()
+                except Exception:
+                    body_snippet = None
             last_bytes_downloaded = out_path.stat().st_size if out_path.exists() else None
             if attempt >= max(0, retries):
                 break
             time.sleep(max(0.0, backoff_seconds) * (2**attempt))
+    body_suffix = f", body_snippet={body_snippet}" if body_snippet else ""
     raise ValueError(
         f"Failed download after retries for {url}: {last_exc} "
-        f"(http_status={last_status}, content_type={last_content_type}, bytes_downloaded={last_bytes_downloaded})"
+        f"(http_status={last_status}, content_type={last_content_type}, bytes_downloaded={last_bytes_downloaded}{body_suffix})"
+    ) from last_exc
+
+
+def _download_json_with_retry(
+    *,
+    url: str,
+    timeout_seconds: float,
+    retries: int,
+    backoff_seconds: float,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    last_exc: Exception | None = None
+    last_status: int | None = None
+    last_content_type: str | None = None
+    last_body_snippet: str | None = None
+    for attempt in range(max(0, retries) + 1):
+        try:
+            with urllib.request.urlopen(url, timeout=timeout_seconds) as response:
+                status = getattr(response, "status", None)
+                content_type = response.headers.get("Content-Type") if getattr(response, "headers", None) else None
+                raw = response.read()
+            if not raw:
+                raise ValueError("download returned empty json payload")
+            payload = json.loads(raw.decode("utf-8"))
+            if not isinstance(payload, dict):
+                raise ValueError("download returned non-object json payload")
+            if isinstance(payload.get("error"), dict):
+                err = payload["error"]
+                message = str(err.get("message") or "unknown provider error")
+                details = err.get("details") or []
+                if isinstance(details, list) and details:
+                    message = f"{message}: {'; '.join(str(d) for d in details)}"
+                raise ValueError(f"provider_error={message}")
+            return payload, {
+                "http_status": int(status) if status is not None else None,
+                "response_content_type": content_type,
+                "bytes_downloaded": len(raw),
+            }
+        except Exception as exc:
+            last_exc = exc
+            if isinstance(exc, urllib.error.HTTPError):
+                last_status = int(exc.code)
+                last_content_type = exc.headers.get("Content-Type") if exc.headers else None
+                try:
+                    body = exc.read(512)
+                    if body:
+                        last_body_snippet = re.sub(r"\s+", " ", body.decode("utf-8", errors="replace")).strip()
+                except Exception:
+                    last_body_snippet = None
+            if attempt >= max(0, retries):
+                break
+            time.sleep(max(0.0, backoff_seconds) * (2**attempt))
+    body_suffix = f", body_snippet={last_body_snippet}" if last_body_snippet else ""
+    raise ValueError(
+        f"Failed json request after retries for {url}: {last_exc} "
+        f"(http_status={last_status}, content_type={last_content_type}{body_suffix})"
     ) from last_exc
 
 
@@ -304,16 +368,35 @@ class ArcGISFeatureServiceProvider:
         preferred_output_format="geojson",
     )
 
-    def __init__(self, endpoint: str, full_download_url: str | None = None):
+    def __init__(
+        self,
+        endpoint: str,
+        full_download_url: str | None = None,
+        *,
+        supports_geojson_direct: bool = True,
+        require_return_geometry: bool = True,
+        preferred_response_format: str | None = None,
+    ):
         self.endpoint = endpoint.rstrip("/")
         self.full_download_url = full_download_url
+        self.supports_geojson_direct = supports_geojson_direct
+        self.require_return_geometry = require_return_geometry
+        self.preferred_response_format = (preferred_response_format or "").strip().lower()
 
     def _query_endpoint(self) -> str:
         if self.endpoint.endswith("/query"):
             return self.endpoint
         return f"{self.endpoint}/query"
 
-    def _build_query_url(self, *, bounds: BoundingBox) -> str:
+    def _build_query_url(
+        self,
+        *,
+        bounds: BoundingBox,
+        response_format: str = "geojson",
+        return_geometry: bool = True,
+        result_offset: int | None = None,
+        result_record_count: int | None = None,
+    ) -> str:
         bbox = _stable_bbox(bounds)
         params = {
             "where": "1=1",
@@ -323,9 +406,63 @@ class ArcGISFeatureServiceProvider:
             "spatialRel": "esriSpatialRelIntersects",
             "outFields": "*",
             "outSR": "4326",
-            "f": "geojson",
+            "returnGeometry": "true" if return_geometry else "false",
+            "f": response_format,
         }
+        if result_offset is not None:
+            params["resultOffset"] = str(max(0, result_offset))
+        if result_record_count is not None:
+            params["resultRecordCount"] = str(max(1, result_record_count))
         return f"{self._query_endpoint()}?{urllib.parse.urlencode(params)}"
+
+    @staticmethod
+    def _esri_geometry_to_geojson(geom: dict[str, Any] | None) -> dict[str, Any] | None:
+        if not isinstance(geom, dict):
+            return None
+        if "x" in geom and "y" in geom:
+            return {"type": "Point", "coordinates": [geom["x"], geom["y"]]}
+        if isinstance(geom.get("points"), list):
+            return {"type": "MultiPoint", "coordinates": geom["points"]}
+        if isinstance(geom.get("paths"), list):
+            paths = geom["paths"]
+            if len(paths) == 1:
+                return {"type": "LineString", "coordinates": paths[0]}
+            return {"type": "MultiLineString", "coordinates": paths}
+        if isinstance(geom.get("rings"), list):
+            return {"type": "Polygon", "coordinates": geom["rings"]}
+        return None
+
+    def _write_geojson_from_esri_json(
+        self,
+        *,
+        payload: dict[str, Any],
+        out_path: Path,
+    ) -> int:
+        features = payload.get("features")
+        if not isinstance(features, list):
+            raise ValueError("provider json response missing features array")
+        out_features: list[dict[str, Any]] = []
+        for feature in features:
+            if not isinstance(feature, dict):
+                continue
+            properties = feature.get("attributes") if isinstance(feature.get("attributes"), dict) else {}
+            geometry = self._esri_geometry_to_geojson(feature.get("geometry"))
+            if geometry is None:
+                continue
+            out_features.append(
+                {
+                    "type": "Feature",
+                    "properties": properties,
+                    "geometry": geometry,
+                }
+            )
+        if not out_features:
+            raise ValueError("provider json response returned empty feature set")
+        out_path.write_text(
+            json.dumps({"type": "FeatureCollection", "features": out_features}),
+            encoding="utf-8",
+        )
+        return len(out_features)
 
     def fetch_bbox(
         self,
@@ -356,35 +493,90 @@ class ArcGISFeatureServiceProvider:
                 provider_type="arcgis_feature_service",
                 acquisition_method="cached_bbox_export",
                 source_endpoint=self.endpoint,
-                source_url=self._build_query_url(bounds=bounds),
+                source_url=self._build_query_url(bounds=bounds, response_format="geojson"),
                 local_path=str(out_path),
                 bbox_used=bbox,
                 output_resolution=target_resolution,
                 cache_hit=True,
                 warnings=[],
             )
-        url = self._build_query_url(bounds=bounds)
-        download_meta = _download_with_retry(
-            url=url,
-            out_path=out_path,
-            timeout_seconds=timeout_seconds,
-            retries=retries,
-            backoff_seconds=backoff_seconds,
-        )
+        warnings: list[str] = []
+        format_order: list[str] = []
+        if self.preferred_response_format in {"geojson", "json"}:
+            format_order.append(self.preferred_response_format)
+        if self.supports_geojson_direct and "geojson" not in format_order:
+            format_order.append("geojson")
+        if "json" not in format_order:
+            format_order.append("json")
+
+        request_url: str | None = None
+        acquisition_method = "bbox_export"
+        meta: dict[str, Any] | None = None
+        last_exc: Exception | None = None
+
+        for fmt in format_order:
+            try:
+                if fmt == "geojson":
+                    geojson_url = self._build_query_url(
+                        bounds=bounds,
+                        response_format="geojson",
+                        return_geometry=self.require_return_geometry,
+                    )
+                    download_meta = _download_with_retry(
+                        url=geojson_url,
+                        out_path=out_path,
+                        timeout_seconds=timeout_seconds,
+                        retries=retries,
+                        backoff_seconds=backoff_seconds,
+                    )
+                    request_url = geojson_url
+                    acquisition_method = "bbox_export"
+                    meta = download_meta
+                    break
+
+                json_url = self._build_query_url(
+                    bounds=bounds,
+                    response_format="json",
+                    return_geometry=self.require_return_geometry,
+                    result_offset=0,
+                    result_record_count=2000,
+                )
+                payload, json_meta = _download_json_with_retry(
+                    url=json_url,
+                    timeout_seconds=timeout_seconds,
+                    retries=retries,
+                    backoff_seconds=backoff_seconds,
+                )
+                self._write_geojson_from_esri_json(payload=payload, out_path=out_path)
+                request_url = json_url
+                acquisition_method = "bbox_export_json_fallback"
+                meta = json_meta
+                break
+            except Exception as exc:
+                last_exc = exc
+                warnings.append(f"{fmt}_query_failed={exc}")
+                continue
+
+        if meta is None or request_url is None:
+            raise ValueError(
+                f"ArcGIS feature bbox query failed for endpoint {self.endpoint}; "
+                f"attempted formats={format_order}; last_error={last_exc}"
+            ) from last_exc
+
         return AcquisitionResult(
             layer_key=layer_key,
             provider_type="arcgis_feature_service",
-            acquisition_method="bbox_export",
+            acquisition_method=acquisition_method,
             source_endpoint=self.endpoint,
-            source_url=url,
+            source_url=request_url,
             local_path=str(out_path),
             bbox_used=bbox,
             output_resolution=target_resolution,
             cache_hit=False,
-            warnings=[],
-            http_status=download_meta.get("http_status"),
-            response_content_type=download_meta.get("response_content_type"),
-            bytes_downloaded=download_meta.get("bytes_downloaded"),
+            warnings=warnings,
+            http_status=meta.get("http_status"),
+            response_content_type=meta.get("response_content_type"),
+            bytes_downloaded=meta.get("bytes_downloaded"),
         )
 
     def fetch_full(self, *, layer_key: str, source_url: str) -> AcquisitionResult:
@@ -446,6 +638,9 @@ def acquire_layer_from_config(
     full_download_url = str(layer_config.get("full_download_url") or layer_config.get("source_url") or "").strip() or None
     local_path = str(layer_config.get("local_path") or "").strip() or None
     supports_bbox_export = _boolish(layer_config.get("supports_bbox_export"), provider_type.startswith("arcgis_"))
+    supports_geojson_direct = _boolish(layer_config.get("supports_geojson_direct"), True)
+    require_return_geometry = _boolish(layer_config.get("require_return_geometry"), True)
+    preferred_response_format = str(layer_config.get("query_format") or "").strip().lower() or None
 
     if local_path:
         return AcquisitionResult(
@@ -464,7 +659,13 @@ def acquire_layer_from_config(
     if provider_type == "arcgis_image_service":
         provider = ArcGISImageServiceProvider(endpoint=source_endpoint, full_download_url=full_download_url)
     elif provider_type == "arcgis_feature_service":
-        provider = ArcGISFeatureServiceProvider(endpoint=source_endpoint, full_download_url=full_download_url)
+        provider = ArcGISFeatureServiceProvider(
+            endpoint=source_endpoint,
+            full_download_url=full_download_url,
+            supports_geojson_direct=supports_geojson_direct,
+            require_return_geometry=require_return_geometry,
+            preferred_response_format=preferred_response_format,
+        )
     elif provider_type in {"file_download", "vector_service"}:
         if not full_download_url:
             return None

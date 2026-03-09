@@ -413,6 +413,7 @@ def _resolve_ingest_input(
             "http_status": None,
             "response_content_type": None,
             "bytes_downloaded": None,
+            "request_url": None,
         }
 
     if not source_url and not source_endpoint:
@@ -453,6 +454,7 @@ def _resolve_ingest_input(
                 "http_status": result.http_status,
                 "response_content_type": result.response_content_type,
                 "bytes_downloaded": result.bytes_downloaded,
+                "request_url": result.source_url,
             }
         if result and result.source_url:
             source_url = result.source_url
@@ -490,6 +492,7 @@ def _resolve_ingest_input(
         "http_status": None if cache_hit else (download_meta or {}).get("http_status"),
         "response_content_type": None if cache_hit else (download_meta or {}).get("response_content_type"),
         "bytes_downloaded": None if cache_hit else (download_meta or {}).get("bytes_downloaded"),
+        "request_url": source_url,
     }
 
 
@@ -571,6 +574,7 @@ def ingest_catalog_raster(
                 "http_status": acquisition_meta.get("http_status"),
                 "response_content_type": acquisition_meta.get("response_content_type"),
                 "bytes_downloaded": acquisition_meta.get("bytes_downloaded"),
+                "request_url": acquisition_meta.get("request_url"),
                 "temp_input_path": str(ingest_path),
                 "catalog_ingest_attempted": True,
                 "catalog_ingest_succeeded": True,
@@ -607,6 +611,7 @@ def ingest_catalog_raster(
                 "http_status": acquisition_meta.get("http_status"),
                 "response_content_type": acquisition_meta.get("response_content_type"),
                 "bytes_downloaded": acquisition_meta.get("bytes_downloaded"),
+                "request_url": acquisition_meta.get("request_url"),
                 "temp_input_path": str(ingest_path),
                 "catalog_ingest_attempted": True,
                 "catalog_ingest_succeeded": True,
@@ -687,6 +692,7 @@ def ingest_catalog_vector(
                 "http_status": acquisition_meta.get("http_status"),
                 "response_content_type": acquisition_meta.get("response_content_type"),
                 "bytes_downloaded": acquisition_meta.get("bytes_downloaded"),
+                "request_url": acquisition_meta.get("request_url"),
                 "temp_input_path": str(ingest_path),
                 "catalog_ingest_attempted": True,
                 "catalog_ingest_succeeded": True,
@@ -724,6 +730,7 @@ def ingest_catalog_vector(
                 "http_status": acquisition_meta.get("http_status"),
                 "response_content_type": acquisition_meta.get("response_content_type"),
                 "bytes_downloaded": acquisition_meta.get("bytes_downloaded"),
+                "request_url": acquisition_meta.get("request_url"),
                 "temp_input_path": str(ingest_path),
                 "catalog_ingest_attempted": True,
                 "catalog_ingest_succeeded": True,

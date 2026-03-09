@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import io
 import json
+import urllib.error
 import zipfile
 from pathlib import Path
 
@@ -96,12 +97,22 @@ def _raster_bytes(tmp_path: Path, name: str = "bytes_raster.tif") -> bytes:
 
 
 class _FakeHTTPResponse(io.BytesIO):
+    status = 200
+    headers: dict[str, str] = {}
+
     def __enter__(self):
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.close()
         return False
+
+
+class _FakeHTTPResponseWithHeaders(_FakeHTTPResponse):
+    def __init__(self, payload: bytes, *, status: int = 200, content_type: str = "application/octet-stream"):
+        super().__init__(payload)
+        self.status = status
+        self.headers = {"Content-Type": content_type}
 
 
 def test_parse_bbox_success_and_failure():
@@ -658,6 +669,57 @@ def test_manifest_records_bbox_acquisition_method(monkeypatch, tmp_path):
     assert dem_meta["provider_type"] == "arcgis_image_service"
     assert dem_meta["source_endpoint"] == "https://example.test/arcgis/rest/services/DEM/ImageServer"
     assert dem_meta["bbox_used"]
+
+
+def test_feature_service_geojson_fallback_to_json(monkeypatch, tmp_path):
+    esri_json = {
+        "features": [
+            {
+                "attributes": {"id": 1, "name": "a"},
+                "geometry": {"rings": [[[-111.0, 45.6], [-110.9, 45.6], [-110.9, 45.7], [-111.0, 45.7], [-111.0, 45.6]]]},
+            }
+        ]
+    }
+
+    def fake_urlopen(url, timeout=0):
+        if "f=geojson" in str(url):
+            body = io.BytesIO(b'{"error":{"message":"Format geojson not supported"}}')
+            raise urllib.error.HTTPError(str(url), 400, "Bad Request", {"Content-Type": "application/json"}, body)
+        if "f=json" in str(url):
+            return _FakeHTTPResponseWithHeaders(
+                json.dumps(esri_json).encode("utf-8"),
+                status=200,
+                content_type="application/json",
+            )
+        raise AssertionError(f"unexpected url: {url}")
+
+    monkeypatch.setattr(source_acq.urllib.request, "urlopen", fake_urlopen)
+    result = source_acq.acquire_layer_from_config(
+        layer_key="fire_perimeters",
+        layer_type="vector",
+        layer_config={
+            "provider_type": "arcgis_feature_service",
+            "source_endpoint": "https://example.test/FeatureServer/0",
+            "supports_geojson_direct": True,
+            "query_format": "geojson",
+        },
+        bounds={"min_lon": -111.2, "min_lat": 45.5, "max_lon": -110.9, "max_lat": 45.8},
+        cache_root=tmp_path / "cache",
+        prefer_bbox_downloads=True,
+        allow_full_download_fallback=True,
+        target_resolution=None,
+        timeout_seconds=10.0,
+        retries=0,
+        backoff_seconds=0.0,
+    )
+    assert result is not None
+    assert result.acquisition_method == "bbox_export_json_fallback"
+    assert any("geojson_query_failed" in w for w in result.warnings)
+    out = Path(str(result.local_path))
+    assert out.exists()
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    assert payload.get("type") == "FeatureCollection"
+    assert len(payload.get("features", [])) == 1
 
 
 def test_skip_optional_layers_flag(tmp_path):

@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import urllib.parse
 from pathlib import Path
@@ -555,6 +556,12 @@ def _classify_execution_failure(error: str) -> tuple[str, str]:
     msg = error.lower()
     if "source configuration" in msg or "missing source details" in msg:
         return "config_validation_failed", "Layer source configuration is invalid or incomplete."
+    if "http error 404" in msg or "http_status=404" in msg:
+        return "endpoint_not_found", "Configured provider endpoint was not found (HTTP 404)."
+    if "http error 400" in msg or "http_status=400" in msg:
+        if "f=geojson" in msg:
+            return "unsupported_output_format", "Provider rejected GeoJSON output format; use JSON/esri-json fallback."
+        return "invalid_query", "Provider rejected request parameters (HTTP 400)."
     if "failed download after retries" in msg or "urlopen error" in msg or "http error" in msg:
         return "remote_provider_error", "Provider request failed. Check endpoint connectivity/auth and retry."
     if "html/error payload" in msg or "json/error payload" in msg or "json/error content" in msg:
@@ -571,7 +578,47 @@ def _classify_execution_failure(error: str) -> tuple[str, str]:
         return "outside_extent", "Fetched data does not intersect the requested bbox."
     if "required for catalog raster operations" in msg or "required for catalog vector operations" in msg:
         return "runtime_dependency_missing", "Missing local geospatial runtime dependency during ingest."
-    return "ingest_or_registration_failed", "Catalog ingest failed. Check payload validity and catalog write path."
+    return "ingest_failure", "Catalog ingest failed. Check payload validity and catalog write path."
+
+
+def _extract_provider_error_context(error: str) -> dict[str, Any]:
+    status_code: int | None = None
+    request_url: str | None = None
+    response_content_type: str | None = None
+    provider_error_snippet: str | None = None
+
+    m_http = re.search(r"HTTP Error\s+(\d+)", error, flags=re.IGNORECASE)
+    if m_http:
+        status_code = int(m_http.group(1))
+    else:
+        m_status = re.search(r"http_status=(\d+)", error, flags=re.IGNORECASE)
+        if m_status:
+            status_code = int(m_status.group(1))
+
+    if "for http" in error:
+        try:
+            after_for = error.split("for ", 1)[1]
+            request_url = after_for.split(": ", 1)[0].strip()
+        except Exception:
+            request_url = None
+
+    m_ct = re.search(r"content_type=([^,)]+)", error, flags=re.IGNORECASE)
+    if m_ct:
+        response_content_type = m_ct.group(1).strip()
+
+    m_body = re.search(r"body_snippet=([^)]+)\)", error, flags=re.IGNORECASE)
+    if m_body:
+        provider_error_snippet = m_body.group(1).strip()
+    elif ":" in error:
+        # Keep short and readable for top-level diagnostics.
+        provider_error_snippet = error.split(":")[-1].strip()[:240]
+
+    return {
+        "response_status_code": status_code,
+        "request_url": request_url,
+        "response_content_type": response_content_type,
+        "provider_error_snippet": provider_error_snippet,
+    }
 
 
 def _annotate_manifest_with_orchestration(
@@ -889,10 +936,12 @@ def prepare_region_from_catalog_or_sources(
             "source_url": source_url,
             "request_mode": request_mode,
             "bbox_used": dict(bounds),
+            "request_url": None,
             "fetch_attempted": False,
             "fetch_succeeded": False,
-            "http_status": None,
+            "response_status_code": None,
             "response_content_type": None,
+            "provider_error_snippet": None,
             "output_temp_path": None,
             "catalog_ingest_attempted": False,
             "catalog_ingest_succeeded": False,
@@ -944,7 +993,8 @@ def prepare_region_from_catalog_or_sources(
                 ingest_diag = {}
             layer_execution["fetch_attempted"] = bool(ingest_diag.get("fetch_attempted", False))
             layer_execution["fetch_succeeded"] = bool(ingest_diag.get("fetch_succeeded", True))
-            layer_execution["http_status"] = ingest_diag.get("http_status")
+            layer_execution["request_url"] = ingest_diag.get("request_url") or metadata.get("source_url")
+            layer_execution["response_status_code"] = ingest_diag.get("http_status")
             layer_execution["response_content_type"] = ingest_diag.get("response_content_type")
             layer_execution["output_temp_path"] = ingest_diag.get("temp_input_path")
             layer_execution["catalog_ingest_succeeded"] = bool(ingest_diag.get("catalog_ingest_succeeded", True))
@@ -965,18 +1015,27 @@ def prepare_region_from_catalog_or_sources(
         except Exception as exc:
             error_text = str(exc)
             reason_code, actionable = _classify_execution_failure(error_text)
+            context = _extract_provider_error_context(error_text)
             layer_execution["failure_reason"] = reason_code
             layer_execution["actionable_error"] = actionable
             layer_execution["catalog_ingest_succeeded"] = False
             layer_execution["fetch_succeeded"] = False
             if "failed download after retries" in error_text.lower():
                 layer_execution["fetch_attempted"] = True
+            layer_execution["request_url"] = context.get("request_url")
+            layer_execution["response_status_code"] = context.get("response_status_code")
+            layer_execution["response_content_type"] = context.get("response_content_type")
+            layer_execution["provider_error_snippet"] = context.get("provider_error_snippet")
             item = {
                 "layer_key": layer_key,
                 "failure_type": "acquisition_or_ingest_failed",
                 "error": error_text,
                 "failure_reason": reason_code,
                 "actionable_error": actionable,
+                "request_url": context.get("request_url"),
+                "response_status_code": context.get("response_status_code"),
+                "response_content_type": context.get("response_content_type"),
+                "provider_error_snippet": context.get("provider_error_snippet"),
                 "provider_type": provider_type,
                 "source_endpoint": source_endpoint,
                 "source_url": source_url,
@@ -1075,7 +1134,16 @@ def prepare_region_from_catalog_or_sources(
                     layer
                     for layer, diag in per_layer_execution_diagnostics.items()
                     if diag.get("failure_reason")
-                    in {"remote_provider_error", "invalid_provider_payload", "provider_query_error", "provider_empty_result", "request_construction_failure"}
+                    in {
+                        "remote_provider_error",
+                        "endpoint_not_found",
+                        "unsupported_output_format",
+                        "invalid_query",
+                        "invalid_provider_payload",
+                        "provider_query_error",
+                        "provider_empty_result",
+                        "request_construction_failure",
+                    }
                 }
             ),
             "ingest": sorted(
@@ -1083,7 +1151,7 @@ def prepare_region_from_catalog_or_sources(
                     layer
                     for layer, diag in per_layer_execution_diagnostics.items()
                     if diag.get("failure_reason")
-                    in {"invalid_raster_crs", "outside_extent", "runtime_dependency_missing", "ingest_or_registration_failed"}
+                    in {"invalid_raster_crs", "outside_extent", "runtime_dependency_missing", "ingest_failure"}
                 }
             ),
             "coverage_recheck": sorted(set(required_missing_after)),
