@@ -200,9 +200,10 @@
         </div>
 
         <div class="actions">
-          <button id="assessBtn">Run Assessment</button>
-          <button id="reassessBtn" class="secondary">Update Last Assessment</button>
+          <button id="assessBtn" type="button">Run Assessment</button>
+          <button id="reassessBtn" type="button" class="secondary">Update Last Assessment</button>
         </div>
+        <p id="requestStatus" class="muted" style="margin-top:0.5rem;">Idle.</p>
       </section>
 
       <section class="results">
@@ -322,7 +323,7 @@
         </div>
 
         <div class="actions">
-          <button id="simulateBtn">Run Simulation</button>
+          <button id="simulateBtn" type="button">Run Simulation</button>
         </div>
         <div id="simResult" class="sim-box muted">No simulation run yet.</div>
       </section>
@@ -331,8 +332,8 @@
         <h2>7. Report</h2>
         <p class="muted">Optional: open a printable report or exported JSON.</p>
         <div class="actions">
-          <button id="openReportBtn" class="secondary">Open Printable Report</button>
-          <button id="exportReportBtn" class="secondary">Open Export JSON</button>
+          <button id="openReportBtn" type="button" class="secondary">Open Printable Report</button>
+          <button id="exportReportBtn" type="button" class="secondary">Open Export JSON</button>
         </div>
       </section>
 
@@ -369,7 +370,13 @@
     <script>
       const apiBase = (window.WILDFIRE_API_BASE || "http://127.0.0.1:8000").replace(/\/$/, "");
       const apiKeyInput = document.getElementById("apiKey");
-      apiKeyInput.value = localStorage.getItem("wildfire_api_key") || "dev-key-1";
+      let storedApiKey = "dev-key-1";
+      try {
+        storedApiKey = localStorage.getItem("wildfire_api_key") || "dev-key-1";
+      } catch (_err) {
+        // Some browser contexts (for example file:// or privacy-restricted modes) block localStorage.
+      }
+      apiKeyInput.value = storedApiKey;
 
       let latestAssessment = null;
 
@@ -457,7 +464,11 @@
 
       async function api(path, body = null, method = "GET") {
         const key = apiKeyInput.value.trim();
-        localStorage.setItem("wildfire_api_key", key);
+        try {
+          localStorage.setItem("wildfire_api_key", key);
+        } catch (_err) {
+          // Non-fatal: continue request even when localStorage is unavailable.
+        }
 
         const opts = {
           method,
@@ -634,13 +645,33 @@
         };
       }
 
+      function setRequestStatus(message, tone = "muted") {
+        const el = document.getElementById("requestStatus");
+        if (!el) return;
+        el.textContent = message;
+        if (tone === "error") {
+          el.style.color = "var(--bad)";
+        } else if (tone === "success") {
+          el.style.color = "var(--good)";
+        } else {
+          el.style.color = "var(--muted)";
+        }
+      }
+
       async function runAssessment(reassess = false) {
+        const assessBtn = document.getElementById("assessBtn");
+        const reassessBtn = document.getElementById("reassessBtn");
         try {
           const payload = buildAssessmentPayload();
           if (!payload.address?.trim()) {
             alert("Please enter an address.");
+            setRequestStatus("Assessment not started: address is required.", "error");
             return;
           }
+
+          setRequestStatus(reassess ? "Updating assessment..." : "Running assessment...");
+          if (assessBtn) assessBtn.disabled = true;
+          if (reassessBtn) reassessBtn.disabled = true;
 
           const data = (reassess && latestAssessment)
             ? await api(`/risk/reassess/${latestAssessment.assessment_id}`, {
@@ -651,8 +682,14 @@
             : await api("/risk/assess", payload, "POST");
 
           renderAssessment(data);
+          setRequestStatus(`Assessment complete (ID: ${data.assessment_id || "unknown"}).`, "success");
         } catch (err) {
+          console.error("Assessment request failed:", err);
+          setRequestStatus(`Assessment failed: ${err.message}`, "error");
           alert(err.message);
+        } finally {
+          if (assessBtn) assessBtn.disabled = false;
+          if (reassessBtn) reassessBtn.disabled = false;
         }
       }
 
