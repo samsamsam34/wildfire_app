@@ -48,6 +48,7 @@ Core assessment:
 - `POST /risk/simulate`
 - `POST /risk/debug`
 - `POST /risk/layer-diagnostics`
+- `POST /regions/prepare`, `GET /regions/prepare/{job_id}` (queue/poll offline region-prep jobs)
 
 Reports:
 - `GET /report/{assessment_id}`
@@ -151,6 +152,10 @@ Common runtime settings:
 - `WILDFIRE_APP_CATALOG_ROOT` (canonical catalog root, default `data/catalog`)
 - `WF_USE_PREPARED_REGIONS` (default true)
 - `WF_ALLOW_LEGACY_LAYER_FALLBACK` (optional direct-layer fallback mode)
+- `WF_AUTO_QUEUE_REGION_PREP_ON_MISS` (when true, `/risk/assess` queues a prep job and returns `region_not_ready` for uncovered addresses)
+- `WF_AUTO_REGION_PREP_TILE_DEG` (bbox tile size used for auto-queued region prep, default `0.25`)
+- `WF_REGION_PREP_SOURCE_CONFIG` (optional source config path for queued prep jobs)
+- `WF_REGION_PREP_VALIDATE`, `WF_REGION_PREP_REQUIRE_CORE_LAYERS`, `WF_REGION_PREP_SKIP_OPTIONAL_LAYERS` (queued prep behavior)
 - Optional open-data runtime sources:
   - `WF_LAYER_WHP_TIF`
   - `WF_LAYER_MTBS_SEVERITY_TIF`
@@ -199,6 +204,16 @@ Offline prep/validation scripts:
 - `scripts/catalog_ingest_vector.py`
 - `scripts/build_region_from_catalog.py`
 - `scripts/prepare_region_from_catalog_or_sources.py`
+- `scripts/run_region_prep_worker.py`
+
+Queued uncovered-region workflow:
+- If `WF_AUTO_QUEUE_REGION_PREP_ON_MISS=true`, `POST /risk/assess` does a fast geocode + coverage lookup only.
+- If coverage is missing, it enqueues/reuses a region-prep job and returns a structured `region_not_ready` response with `prep_job_id`.
+- Run offline prep jobs locally with:
+
+```bash
+python scripts/run_region_prep_worker.py --once
+```
 
 BBox-first region prep:
 - Region prep remains offline/admin-only; runtime API still uses prepared local files.

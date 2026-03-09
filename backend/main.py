@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import io
+import math
 import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -17,6 +18,9 @@ from backend.benchmarking import (
     build_benchmark_hints_for_assessment,
 )
 from backend.database import AssessmentStore, DEFAULT_ORG_ID
+from backend.data_prep.region_lookup import (
+    find_region_for_point as lookup_region_for_point,
+)
 from backend.geocoding import Geocoder
 from backend.layer_diagnostics import LAYER_SPECS
 from backend.mitigation import build_mitigation_plan
@@ -68,6 +72,9 @@ from backend.models import (
     PortfolioResponse,
     PropertyAttributes,
     ReadinessFactor,
+    RegionBoundingBox,
+    RegionPrepareRequest,
+    RegionPrepJobStatus,
     ReassessmentRequest,
     ReportExport,
     RiskScores,
@@ -3305,6 +3312,144 @@ def _to_job_status(record: dict) -> PortfolioJobStatus:
     )
 
 
+def _env_flag(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _region_data_root() -> str:
+    return os.getenv("WF_REGION_DATA_DIR", str(wildfire_data.region_data_dir))
+
+
+def _derive_region_bbox_from_point(lat: float, lon: float) -> dict[str, float]:
+    tile_deg_raw = os.getenv("WF_AUTO_REGION_PREP_TILE_DEG", "0.25")
+    try:
+        tile_deg = max(0.05, min(5.0, float(tile_deg_raw)))
+    except ValueError:
+        tile_deg = 0.25
+
+    min_lon = math.floor(lon / tile_deg) * tile_deg
+    min_lat = math.floor(lat / tile_deg) * tile_deg
+    max_lon = min_lon + tile_deg
+    max_lat = min_lat + tile_deg
+    return {
+        "min_lon": round(max(-180.0, min_lon), 6),
+        "min_lat": round(max(-90.0, min_lat), 6),
+        "max_lon": round(min(180.0, max_lon), 6),
+        "max_lat": round(min(90.0, max_lat), 6),
+    }
+
+
+def _auto_region_id_for_bbox(bbox: dict[str, float]) -> str:
+    digest = AssessmentStore.build_region_prep_dedupe_key("auto", bbox)
+    return f"auto_{digest[:12]}"
+
+
+def _to_region_job_status(job: dict[str, Any]) -> RegionPrepJobStatus:
+    requested_bbox = job.get("requested_bbox") or {}
+    bbox = RegionBoundingBox(
+        min_lon=float(requested_bbox.get("min_lon", 0.0)),
+        min_lat=float(requested_bbox.get("min_lat", 0.0)),
+        max_lon=float(requested_bbox.get("max_lon", 0.0)),
+        max_lat=float(requested_bbox.get("max_lat", 0.0)),
+    )
+    return RegionPrepJobStatus(
+        job_id=str(job.get("job_id") or ""),
+        region_id=str(job.get("region_id") or ""),
+        display_name=str(job.get("display_name") or ""),
+        requested_bbox=bbox,
+        requested_address=job.get("requested_address"),
+        point_lat=job.get("point_lat"),
+        point_lon=job.get("point_lon"),
+        status=str(job.get("status") or "queued"),  # type: ignore[arg-type]
+        created_at=str(job.get("created_at") or ""),
+        updated_at=str(job.get("updated_at") or ""),
+        error_message=job.get("error_message"),
+        manifest_path=job.get("manifest_path"),
+        dedupe_key=str(job.get("dedupe_key") or ""),
+        reused_existing_job=bool(job.get("reused_existing_job", False)),
+        result=job.get("result"),
+    )
+
+
+def _build_region_prepare_request_payload(
+    *,
+    region_id: str,
+    display_name: str,
+    bbox: dict[str, float],
+    source_config_path: str | None = None,
+    validate: bool | None = None,
+    overwrite: bool | None = None,
+    allow_partial_coverage_fill: bool | None = None,
+    skip_optional_layers: bool | None = None,
+    prefer_bbox_downloads: bool | None = None,
+    allow_full_download_fallback: bool | None = None,
+    require_core_layers: bool | None = None,
+    target_resolution: float | None = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "region_id": region_id,
+        "display_name": display_name,
+        "bbox": bbox,
+        "source_config_path": source_config_path
+        if source_config_path is not None
+        else os.getenv("WF_REGION_PREP_SOURCE_CONFIG") or None,
+        "validate": validate if validate is not None else _env_flag("WF_REGION_PREP_VALIDATE", True),
+        "overwrite": overwrite if overwrite is not None else _env_flag("WF_REGION_PREP_OVERWRITE", False),
+        "allow_partial_coverage_fill": (
+            allow_partial_coverage_fill
+            if allow_partial_coverage_fill is not None
+            else _env_flag("WF_REGION_PREP_ALLOW_PARTIAL_COVERAGE_FILL", True)
+        ),
+        "skip_optional_layers": (
+            skip_optional_layers
+            if skip_optional_layers is not None
+            else _env_flag("WF_REGION_PREP_SKIP_OPTIONAL_LAYERS", False)
+        ),
+        "prefer_bbox_downloads": (
+            prefer_bbox_downloads
+            if prefer_bbox_downloads is not None
+            else _env_flag("WF_REGION_PREP_PREFER_BBOX_DOWNLOADS", True)
+        ),
+        "allow_full_download_fallback": (
+            allow_full_download_fallback
+            if allow_full_download_fallback is not None
+            else _env_flag("WF_REGION_PREP_ALLOW_FULL_DOWNLOAD_FALLBACK", True)
+        ),
+        "require_core_layers": (
+            require_core_layers
+            if require_core_layers is not None
+            else _env_flag("WF_REGION_PREP_REQUIRE_CORE_LAYERS", True)
+        ),
+        "target_resolution": target_resolution,
+    }
+    return payload
+
+
+def _enqueue_region_prep_job(
+    *,
+    region_id: str,
+    display_name: str,
+    bbox: dict[str, float],
+    requested_address: str | None = None,
+    point_lat: float | None = None,
+    point_lon: float | None = None,
+    request_payload: dict[str, Any],
+) -> RegionPrepJobStatus:
+    job, _ = store.create_or_get_region_prep_job(
+        region_id=region_id,
+        display_name=display_name,
+        requested_bbox=bbox,
+        requested_address=requested_address,
+        point_lat=point_lat,
+        point_lon=point_lon,
+        request_payload=request_payload,
+    )
+    return _to_region_job_status(job)
+
+
 def _run_batch(
     payload: BatchAssessmentRequest,
     *,
@@ -3554,6 +3699,59 @@ def create_ruleset(
     return created
 
 
+@app.post("/regions/prepare", response_model=RegionPrepJobStatus, dependencies=[Depends(require_api_key)])
+def create_region_prepare_job(
+    payload: RegionPrepareRequest,
+    ctx: ActorContext = Depends(get_actor_context),
+) -> RegionPrepJobStatus:
+    _require_role(ctx, WRITE_ROLES, "Viewer role cannot create region preparation jobs")
+
+    bbox = payload.bbox.model_dump(mode="json")
+    request_payload = _build_region_prepare_request_payload(
+        region_id=payload.region_id,
+        display_name=payload.display_name or payload.region_id.replace("_", " ").title(),
+        bbox=bbox,
+        source_config_path=payload.source_config_path,
+        validate=payload.run_validation,
+        overwrite=payload.overwrite,
+        allow_partial_coverage_fill=payload.allow_partial_coverage_fill,
+        skip_optional_layers=payload.skip_optional_layers,
+        prefer_bbox_downloads=payload.prefer_bbox_downloads,
+        allow_full_download_fallback=payload.allow_full_download_fallback,
+        require_core_layers=payload.require_core_layers,
+        target_resolution=payload.target_resolution,
+    )
+
+    status = _enqueue_region_prep_job(
+        region_id=request_payload["region_id"],
+        display_name=request_payload["display_name"],
+        bbox=bbox,
+        request_payload=request_payload,
+    )
+    _log_audit(
+        ctx=ctx,
+        entity_type="region_prep_job",
+        entity_id=status.job_id,
+        action="region_prep_job_queued",
+        organization_id=ctx.organization_id,
+        metadata={
+            "region_id": status.region_id,
+            "status": status.status,
+            "reused_existing_job": status.reused_existing_job,
+            "requested_bbox": bbox,
+        },
+    )
+    return status
+
+
+@app.get("/regions/prepare/{job_id}", response_model=RegionPrepJobStatus, dependencies=[Depends(require_api_key)])
+def get_region_prepare_job(job_id: str, _: ActorContext = Depends(get_actor_context)) -> RegionPrepJobStatus:
+    job = store.get_region_prep_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Region prep job not found")
+    return _to_region_job_status(job)
+
+
 @app.post("/risk/assess", response_model=AssessmentResult, dependencies=[Depends(require_api_key)])
 def assess_risk(
     payload: AddressRequest,
@@ -3565,6 +3763,66 @@ def assess_risk(
     _enforce_org_scope(ctx, organization_id)
 
     ruleset = _get_ruleset_or_default(payload.ruleset_id)
+
+    auto_queue_on_uncovered = _env_flag("WF_AUTO_QUEUE_REGION_PREP_ON_MISS", False)
+    if auto_queue_on_uncovered:
+        try:
+            lat, lon, _ = geocoder.geocode(payload.address)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "Geocoding lookup failed; a trusted location match is required for this assessment. "
+                    "Please verify the address and try again."
+                ),
+            ) from exc
+
+        coverage = lookup_region_for_point(lat=lat, lon=lon, regions_root=_region_data_root())
+        if not coverage.get("covered"):
+            requested_bbox = _derive_region_bbox_from_point(lat=lat, lon=lon)
+            region_id = _auto_region_id_for_bbox(requested_bbox)
+            display_name = f"Auto Prepared Region {region_id.replace('auto_', '').upper()}"
+            request_payload = _build_region_prepare_request_payload(
+                region_id=region_id,
+                display_name=display_name,
+                bbox=requested_bbox,
+            )
+            status = _enqueue_region_prep_job(
+                region_id=region_id,
+                display_name=display_name,
+                bbox=requested_bbox,
+                requested_address=payload.address,
+                point_lat=lat,
+                point_lon=lon,
+                request_payload=request_payload,
+            )
+            _log_audit(
+                ctx=ctx,
+                entity_type="region_prep_job",
+                entity_id=status.job_id,
+                action="region_prep_job_auto_enqueued",
+                organization_id=organization_id,
+                metadata={
+                    "address": payload.address,
+                    "region_id": region_id,
+                    "requested_bbox": requested_bbox,
+                    "reused_existing_job": status.reused_existing_job,
+                },
+            )
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "region_not_ready": True,
+                    "prep_job_id": status.job_id,
+                    "prep_job_status": status.status,
+                    "requested_bbox": requested_bbox,
+                    "message": (
+                        "No prepared region currently covers this address. A region prep job has been queued; "
+                        "retry assessment after the job completes."
+                    ),
+                    "diagnostics": coverage.get("diagnostics", []),
+                },
+            )
 
     result = _compute_assessment(
         payload,

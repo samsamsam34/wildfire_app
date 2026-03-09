@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 Audience = Literal["homeowner", "agent", "inspector", "insurer"]
 AnnotationRole = Literal["homeowner", "agent", "broker", "inspector", "insurer"]
@@ -106,6 +106,48 @@ class SimulationRequest(BaseModel):
 class Coordinates(BaseModel):
     latitude: float
     longitude: float
+
+
+class RegionBoundingBox(BaseModel):
+    min_lon: float
+    min_lat: float
+    max_lon: float
+    max_lat: float
+
+
+class RegionPrepareRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    region_id: str = Field(..., min_length=2)
+    display_name: Optional[str] = None
+    bbox: RegionBoundingBox
+    source_config_path: Optional[str] = None
+    run_validation: bool = Field(default=True, alias="validate")
+    overwrite: bool = False
+    allow_partial_coverage_fill: bool = False
+    skip_optional_layers: bool = False
+    prefer_bbox_downloads: bool = True
+    allow_full_download_fallback: bool = True
+    require_core_layers: bool = True
+    target_resolution: Optional[float] = None
+
+
+class RegionPrepJobStatus(BaseModel):
+    job_id: str
+    region_id: str
+    display_name: str
+    requested_bbox: RegionBoundingBox
+    requested_address: Optional[str] = None
+    point_lat: Optional[float] = None
+    point_lon: Optional[float] = None
+    status: Literal["queued", "running", "completed", "failed"]
+    created_at: str
+    updated_at: str
+    error_message: Optional[str] = None
+    manifest_path: Optional[str] = None
+    dedupe_key: str
+    reused_existing_job: bool = False
+    result: Optional[Dict[str, Any]] = None
 
 
 class RiskScores(BaseModel):

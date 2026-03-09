@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 from datetime import datetime, timedelta, timezone
@@ -217,6 +218,47 @@ class AssessmentStore:
                 )
                 """
             )
+
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS region_prep_jobs (
+                    job_id TEXT PRIMARY KEY,
+                    region_id TEXT NOT NULL,
+                    display_name TEXT NOT NULL,
+                    requested_bbox_json TEXT NOT NULL,
+                    requested_address TEXT,
+                    point_lat REAL,
+                    point_lon REAL,
+                    status TEXT NOT NULL,
+                    dedupe_key TEXT NOT NULL UNIQUE,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    error_message TEXT,
+                    manifest_path TEXT,
+                    request_json TEXT NOT NULL,
+                    result_json TEXT
+                )
+                """
+            )
+            region_job_cols = {
+                row["name"] for row in conn.execute("PRAGMA table_info(region_prep_jobs)").fetchall()
+            }
+            if "requested_address" not in region_job_cols:
+                conn.execute("ALTER TABLE region_prep_jobs ADD COLUMN requested_address TEXT")
+            if "point_lat" not in region_job_cols:
+                conn.execute("ALTER TABLE region_prep_jobs ADD COLUMN point_lat REAL")
+            if "point_lon" not in region_job_cols:
+                conn.execute("ALTER TABLE region_prep_jobs ADD COLUMN point_lon REAL")
+            if "dedupe_key" not in region_job_cols:
+                conn.execute("ALTER TABLE region_prep_jobs ADD COLUMN dedupe_key TEXT")
+            if "error_message" not in region_job_cols:
+                conn.execute("ALTER TABLE region_prep_jobs ADD COLUMN error_message TEXT")
+            if "manifest_path" not in region_job_cols:
+                conn.execute("ALTER TABLE region_prep_jobs ADD COLUMN manifest_path TEXT")
+            if "request_json" not in region_job_cols:
+                conn.execute("ALTER TABLE region_prep_jobs ADD COLUMN request_json TEXT NOT NULL DEFAULT '{}'")
+            if "result_json" not in region_job_cols:
+                conn.execute("ALTER TABLE region_prep_jobs ADD COLUMN result_json TEXT")
 
             conn.execute(
                 """
@@ -793,6 +835,199 @@ class AssessmentStore:
             partial_count=partial,
             failure_rate=failure_rate,
         )
+
+    @staticmethod
+    def build_region_prep_dedupe_key(region_id: str, requested_bbox: dict[str, float]) -> str:
+        payload = {
+            "region_id": str(region_id).strip().lower(),
+            "bbox": {
+                "min_lon": round(float(requested_bbox["min_lon"]), 5),
+                "min_lat": round(float(requested_bbox["min_lat"]), 5),
+                "max_lon": round(float(requested_bbox["max_lon"]), 5),
+                "max_lat": round(float(requested_bbox["max_lat"]), 5),
+            },
+        }
+        raw = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:24]
+
+    def create_or_get_region_prep_job(
+        self,
+        *,
+        region_id: str,
+        display_name: str,
+        requested_bbox: dict[str, float],
+        requested_address: str | None = None,
+        point_lat: float | None = None,
+        point_lon: float | None = None,
+        request_payload: dict[str, Any] | None = None,
+    ) -> tuple[dict[str, Any], bool]:
+        dedupe_key = self.build_region_prep_dedupe_key(region_id, requested_bbox)
+        with self._connect() as conn:
+            existing = conn.execute(
+                """
+                SELECT job_id, region_id, display_name, requested_bbox_json, requested_address, point_lat, point_lon,
+                       status, dedupe_key, created_at, updated_at, error_message, manifest_path, request_json, result_json
+                FROM region_prep_jobs
+                WHERE dedupe_key = ? AND status IN ('queued', 'running', 'completed')
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                (dedupe_key,),
+            ).fetchone()
+            if existing:
+                return self._row_to_region_prep_job(existing, reused_existing_job=True), True
+
+            job_id = str(uuid4())
+            now = self._now()
+            payload = request_payload or {}
+            conn.execute(
+                """
+                INSERT INTO region_prep_jobs (
+                    job_id, region_id, display_name, requested_bbox_json, requested_address, point_lat, point_lon,
+                    status, dedupe_key, created_at, updated_at, error_message, manifest_path, request_json, result_json
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, NULL, NULL, ?, NULL)
+                """,
+                (
+                    job_id,
+                    region_id,
+                    display_name,
+                    json.dumps(requested_bbox, sort_keys=True),
+                    requested_address,
+                    point_lat,
+                    point_lon,
+                    dedupe_key,
+                    now,
+                    now,
+                    json.dumps(payload, default=str),
+                ),
+            )
+
+        created = self.get_region_prep_job(job_id)
+        if not created:
+            raise ValueError("Region prep job creation failed unexpectedly.")
+        return created, False
+
+    def _row_to_region_prep_job(self, row: sqlite3.Row, *, reused_existing_job: bool = False) -> dict[str, Any]:
+        try:
+            requested_bbox = json.loads(row["requested_bbox_json"]) if row["requested_bbox_json"] else {}
+        except Exception:
+            requested_bbox = {}
+        try:
+            request_payload = json.loads(row["request_json"]) if row["request_json"] else {}
+        except Exception:
+            request_payload = {}
+        try:
+            result_payload = json.loads(row["result_json"]) if row["result_json"] else None
+        except Exception:
+            result_payload = None
+        return {
+            "job_id": row["job_id"],
+            "region_id": row["region_id"],
+            "display_name": row["display_name"],
+            "requested_bbox": requested_bbox,
+            "requested_address": row["requested_address"],
+            "point_lat": row["point_lat"],
+            "point_lon": row["point_lon"],
+            "status": row["status"],
+            "dedupe_key": row["dedupe_key"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+            "error_message": row["error_message"],
+            "manifest_path": row["manifest_path"],
+            "reused_existing_job": reused_existing_job,
+            "request": request_payload,
+            "result": result_payload,
+        }
+
+    def get_region_prep_job(self, job_id: str) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT job_id, region_id, display_name, requested_bbox_json, requested_address, point_lat, point_lon,
+                       status, dedupe_key, created_at, updated_at, error_message, manifest_path, request_json, result_json
+                FROM region_prep_jobs
+                WHERE job_id = ?
+                """,
+                (job_id,),
+            ).fetchone()
+        if not row:
+            return None
+        return self._row_to_region_prep_job(row, reused_existing_job=False)
+
+    def list_region_prep_jobs(
+        self,
+        *,
+        statuses: list[str] | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        sql = (
+            "SELECT job_id, region_id, display_name, requested_bbox_json, requested_address, point_lat, point_lon, "
+            "status, dedupe_key, created_at, updated_at, error_message, manifest_path, request_json, result_json "
+            "FROM region_prep_jobs"
+        )
+        params: list[Any] = []
+        if statuses:
+            placeholders = ",".join("?" for _ in statuses)
+            sql += f" WHERE status IN ({placeholders})"
+            params.extend(statuses)
+        sql += " ORDER BY created_at ASC LIMIT ?"
+        params.append(limit)
+        with self._connect() as conn:
+            rows = conn.execute(sql, tuple(params)).fetchall()
+        return [self._row_to_region_prep_job(row) for row in rows]
+
+    def claim_next_region_prep_job(self) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT job_id
+                FROM region_prep_jobs
+                WHERE status = 'queued'
+                ORDER BY created_at ASC
+                LIMIT 1
+                """
+            ).fetchone()
+            if not row:
+                return None
+            job_id = str(row["job_id"])
+            updated = conn.execute(
+                """
+                UPDATE region_prep_jobs
+                SET status = 'running', updated_at = ?
+                WHERE job_id = ? AND status = 'queued'
+                """,
+                (self._now(), job_id),
+            )
+            if updated.rowcount == 0:
+                return None
+        return self.get_region_prep_job(job_id)
+
+    def update_region_prep_job(
+        self,
+        job_id: str,
+        *,
+        status: str,
+        error_message: str | None = None,
+        manifest_path: str | None = None,
+        result: dict[str, Any] | None = None,
+    ) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE region_prep_jobs
+                SET status = ?, updated_at = ?, error_message = ?, manifest_path = ?, result_json = ?
+                WHERE job_id = ?
+                """,
+                (
+                    status,
+                    self._now(),
+                    error_message,
+                    manifest_path,
+                    json.dumps(result, default=str) if result is not None else None,
+                    job_id,
+                ),
+            )
 
     def log_event(
         self,
