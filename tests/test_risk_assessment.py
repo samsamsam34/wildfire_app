@@ -203,6 +203,10 @@ def _assert_core_contract(body: dict) -> None:
         "home_ignition_vulnerability_section",
         "insurance_readiness_section",
         "review_status",
+        "scoring_model_version",
+        "factor_schema_version",
+        "benchmark_pack_version",
+        "region_data_version",
     ]
     for key in required:
         assert key in body
@@ -1158,13 +1162,15 @@ def test_report_export_and_view_with_audience(monkeypatch, tmp_path):
     assert report["report_audience"] == "inspector"
     assert len(report["audience_highlights"]) > 0
 
-    export_res = client.get(f"/report/{assessed['assessment_id']}/export?audience=insurer")
+    export_res = client.get(f"/report/{assessed['assessment_id']}/export?audience=insurer&include_benchmark_hints=true")
     assert export_res.status_code == 200
     exported = export_res.json()
     assert exported["audience_mode"] == "insurer"
     assert "audience_focus" in exported
     assert "score_evidence_ledger" in exported
     assert "evidence_quality_summary" in exported
+    assert "governance_metadata" in exported
+    assert "benchmark_hints" in exported["assumptions_confidence"]
     assert exported["evidence_quality_summary"]["use_restriction"] in {
         "consumer_estimate",
         "screening_only",
@@ -1201,6 +1207,31 @@ def test_debug_endpoint_includes_evidence_ledger_and_summary(monkeypatch, tmp_pa
     assert "layer_coverage_audit" in payload
     assert "coverage_summary" in payload
     assert payload["evidence_quality_summary"]["observed_factor_count"] >= 0
+
+
+def test_debug_endpoint_optional_benchmark_hints(monkeypatch, tmp_path):
+    _setup(monkeypatch, tmp_path, _ctx(env=47.0, wildland=44.0, historic=39.0))
+    res = client.post(
+        "/risk/debug?include_benchmark_hints=true",
+        json={
+            "address": "Debug Benchmark Hints Ln",
+            "attributes": {
+                "roof_type": "class a",
+                "vent_type": "ember-resistant",
+                "defensible_space_ft": 26,
+            },
+            "confirmed_fields": ["roof_type", "vent_type", "defensible_space_ft"],
+            "audience": "insurer",
+            "tags": [],
+        },
+    )
+    assert res.status_code == 200
+    payload = res.json()
+    assert "benchmark_hints" in payload
+    hints = payload["benchmark_hints"]
+    assert "benchmark_pack_version" in hints
+    assert "benchmark_style_sanity_checks" in hints
+    assert "all_sanity_checks_passed" in hints
 
 
 def test_layer_diagnostics_endpoint_returns_layer_audit(monkeypatch, tmp_path):

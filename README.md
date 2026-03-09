@@ -302,6 +302,36 @@ Main coverage areas:
 - roles, org scoping, review/workflow, audit summaries
 - region prep, LANDFIRE handling, and prepared-region validation
 
+## Benchmark Suite
+
+The repo includes a versioned benchmark scenario pack for calibration discipline and drift checks:
+- `benchmark/scenario_pack_v1.json`
+- runner: `scripts/run_benchmark_suite.py`
+
+Run the suite:
+
+```bash
+python scripts/run_benchmark_suite.py
+```
+
+Compare against a previous artifact:
+
+```bash
+python scripts/run_benchmark_suite.py \
+  --compare-to benchmark/results/benchmark_run_YYYYMMDDTHHMMSSZ.json \
+  --fail-on-drift
+```
+
+What it checks:
+- scenario expectations (risk band, confidence tier/restriction, fallback behavior, warnings)
+- relative ordering assertions
+- monotonic sanity assertions (for mitigation and insurer-facing directional logic)
+- release drift summary (score deltas, confidence deltas, warnings/blockers, factor contribution shifts)
+
+Benchmark artifacts include governance metadata (`scoring_model_version`, `ruleset_version`, `factor_schema_version`, `benchmark_pack_version`, `region_data_version` when available).
+
+Use `POST /risk/debug?include_benchmark_hints=true` or `GET /report/{assessment_id}/export?include_benchmark_hints=true` to include lightweight benchmark resemblance and sanity-check hints in diagnostics/export output.
+
 ## Limitations
 
 - Scoring and readiness are deterministic heuristics; this is not a carrier-approved underwriting model.

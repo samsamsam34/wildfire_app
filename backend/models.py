@@ -461,6 +461,10 @@ class AssessmentResult(BaseModel):
     home_ignition_vulnerability_section: ScoreSectionSummary = Field(default_factory=ScoreSectionSummary)
     insurance_readiness_section: ScoreSectionSummary = Field(default_factory=ScoreSectionSummary)
     model_version: str
+    scoring_model_version: str = ""
+    factor_schema_version: str = "1.0.0"
+    benchmark_pack_version: Optional[str] = None
+    region_data_version: Optional[str] = None
     generated_at: datetime
     scoring_notes: List[str] = Field(default_factory=list)
 
@@ -536,6 +540,7 @@ class ReportExport(BaseModel):
     audience_mode: Audience = "homeowner"
     audience_highlights: List[str] = Field(default_factory=list)
     audience_focus: Dict[str, object] = Field(default_factory=dict)
+    governance_metadata: Dict[str, object] = Field(default_factory=dict)
     ruleset: Dict[str, object] = Field(default_factory=dict)
     property_summary: Dict[str, object]
     location_summary: Dict[str, object]

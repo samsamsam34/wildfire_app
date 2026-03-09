@@ -1,0 +1,491 @@
+{
+  "benchmark_pack_version": "1.0.0",
+  "factor_schema_version": "1.0.0",
+  "description": "Canonical benchmark scenarios for deterministic wildfire scoring calibration and drift checks.",
+  "scenarios": [
+    {
+      "scenario_id": "low_suburban_hardened_observed",
+      "description": "Low-risk suburban profile with hardened structure and strong observed context.",
+      "profile_tags": ["low_risk", "observed_evidence", "hardened_home"],
+      "input_payload": {
+        "address": "101 Benchmark Lane, Suburbia, CO",
+        "attributes": {
+          "roof_type": "class a",
+          "vent_type": "ember-resistant",
+          "defensible_space_ft": 40,
+          "construction_year": 2018
+        },
+        "confirmed_fields": ["roof_type", "vent_type", "defensible_space_ft", "construction_year"],
+        "audience": "insurer",
+        "tags": ["benchmark"]
+      },
+      "location": {"lat": 39.7392, "lon": -104.9903, "geocode_source": "benchmark-pack"},
+      "context": {
+        "burn_probability_index": 24.0,
+        "hazard_severity_index": 28.0,
+        "slope_index": 22.0,
+        "fuel_index": 30.0,
+        "moisture_index": 35.0,
+        "canopy_index": 26.0,
+        "wildland_distance_index": 30.0,
+        "historic_fire_index": 20.0,
+        "structure_ring_metrics": {
+          "ring_0_5_ft": {"vegetation_density": 15.0},
+          "ring_5_30_ft": {"vegetation_density": 24.0},
+          "ring_30_100_ft": {"vegetation_density": 32.0}
+        },
+        "property_level_context": {
+          "footprint_used": true,
+          "footprint_status": "used",
+          "fallback_mode": "footprint"
+        }
+      },
+      "expected": {
+        "risk_band": "low",
+        "confidence_tiers": ["moderate", "high"],
+        "use_restrictions": ["shareable", "homeowner_review_recommended"],
+        "assessment_status_in": ["fully_scored", "partially_scored"],
+        "fallback_mode": "footprint"
+      },
+      "notes": "Anchor low-risk observed case for release-over-release stability checks."
+    },
+    {
+      "scenario_id": "moderate_wui_average",
+      "description": "Moderate-risk WUI profile with average hardening and moderate fuels.",
+      "profile_tags": ["moderate_risk", "wui", "average_hardening"],
+      "input_payload": {
+        "address": "202 Benchmark Ridge, WUI, CO",
+        "attributes": {
+          "roof_type": "composite",
+          "vent_type": "standard",
+          "defensible_space_ft": 18,
+          "construction_year": 2005
+        },
+        "confirmed_fields": ["roof_type", "vent_type", "defensible_space_ft"],
+        "audience": "insurer",
+        "tags": ["benchmark"]
+      },
+      "location": {"lat": 39.735, "lon": -105.01, "geocode_source": "benchmark-pack"},
+      "context": {
+        "burn_probability_index": 48.0,
+        "hazard_severity_index": 52.0,
+        "slope_index": 44.0,
+        "fuel_index": 54.0,
+        "moisture_index": 50.0,
+        "canopy_index": 49.0,
+        "wildland_distance_index": 58.0,
+        "historic_fire_index": 40.0,
+        "structure_ring_metrics": {
+          "ring_0_5_ft": {"vegetation_density": 46.0},
+          "ring_5_30_ft": {"vegetation_density": 58.0},
+          "ring_30_100_ft": {"vegetation_density": 62.0}
+        }
+      },
+      "expected": {
+        "risk_band": "moderate",
+        "confidence_tiers": ["moderate", "high"],
+        "assessment_status_in": ["fully_scored", "partially_scored"]
+      },
+      "notes": "Represents common in-force moderate WUI risk and partial structure hardening."
+    },
+    {
+      "scenario_id": "high_slope_vegetated_history",
+      "description": "High-risk slope + vegetation profile with elevated nearby historical fire pressure.",
+      "profile_tags": ["high_risk", "slope", "historical_fire"],
+      "input_payload": {
+        "address": "303 Benchmark Canyon, HighRisk, CO",
+        "attributes": {
+          "roof_type": "wood",
+          "vent_type": "standard",
+          "defensible_space_ft": 10,
+          "construction_year": 1998
+        },
+        "confirmed_fields": ["roof_type", "vent_type", "defensible_space_ft"],
+        "audience": "insurer",
+        "tags": ["benchmark"]
+      },
+      "location": {"lat": 39.71, "lon": -105.08, "geocode_source": "benchmark-pack"},
+      "context": {
+        "burn_probability_index": 70.0,
+        "hazard_severity_index": 74.0,
+        "slope_index": 79.0,
+        "fuel_index": 72.0,
+        "moisture_index": 66.0,
+        "canopy_index": 76.0,
+        "wildland_distance_index": 77.0,
+        "historic_fire_index": 83.0,
+        "structure_ring_metrics": {
+          "ring_0_5_ft": {"vegetation_density": 74.0},
+          "ring_5_30_ft": {"vegetation_density": 80.0},
+          "ring_30_100_ft": {"vegetation_density": 84.0}
+        }
+      },
+      "expected": {
+        "risk_band": "severe",
+        "confidence_tiers": ["moderate", "high"],
+        "assessment_status_in": ["fully_scored", "partially_scored"]
+      },
+      "notes": "Anchor high-risk environmental + structure stress case."
+    },
+    {
+      "scenario_id": "severe_poor_structure_space",
+      "description": "Severe-risk profile with poor defensible space and weak structure inputs.",
+      "profile_tags": ["severe_risk", "poor_structure", "insurer_blockers"],
+      "input_payload": {
+        "address": "404 Benchmark Ember Way, Severe, CO",
+        "attributes": {
+          "roof_type": "untreated wood shake",
+          "vent_type": "standard",
+          "defensible_space_ft": 2,
+          "construction_year": 1985
+        },
+        "confirmed_fields": ["roof_type", "vent_type", "defensible_space_ft"],
+        "audience": "insurer",
+        "tags": ["benchmark"]
+      },
+      "location": {"lat": 39.69, "lon": -105.12, "geocode_source": "benchmark-pack"},
+      "context": {
+        "burn_probability_index": 86.0,
+        "hazard_severity_index": 90.0,
+        "slope_index": 82.0,
+        "fuel_index": 88.0,
+        "moisture_index": 80.0,
+        "canopy_index": 87.0,
+        "wildland_distance_index": 91.0,
+        "historic_fire_index": 89.0,
+        "structure_ring_metrics": {
+          "ring_0_5_ft": {"vegetation_density": 92.0},
+          "ring_5_30_ft": {"vegetation_density": 90.0},
+          "ring_30_100_ft": {"vegetation_density": 88.0}
+        }
+      },
+      "expected": {
+        "risk_band": "severe",
+        "confidence_tiers": ["moderate", "high"],
+        "assessment_status_in": ["fully_scored", "partially_scored"]
+      },
+      "notes": "Anchor severe-risk profile to ensure tail behavior remains conservative."
+    },
+    {
+      "scenario_id": "mitigation_before",
+      "description": "Before-mitigation variant for mitigation monotonic checks.",
+      "profile_tags": ["mitigation_pair", "before"],
+      "input_payload": {
+        "address": "505 Benchmark Mitigation Rd, Before, CO",
+        "attributes": {
+          "roof_type": "wood_shake",
+          "vent_type": "standard",
+          "defensible_space_ft": 5,
+          "construction_year": 1990
+        },
+        "confirmed_fields": ["roof_type", "vent_type", "defensible_space_ft"],
+        "audience": "homeowner",
+        "tags": ["benchmark", "before"]
+      },
+      "location": {"lat": 39.72, "lon": -105.06, "geocode_source": "benchmark-pack"},
+      "context": {
+        "burn_probability_index": 62.0,
+        "hazard_severity_index": 66.0,
+        "slope_index": 55.0,
+        "fuel_index": 68.0,
+        "moisture_index": 61.0,
+        "canopy_index": 70.0,
+        "wildland_distance_index": 72.0,
+        "historic_fire_index": 60.0,
+        "structure_ring_metrics": {
+          "ring_0_5_ft": {"vegetation_density": 80.0},
+          "ring_5_30_ft": {"vegetation_density": 78.0},
+          "ring_30_100_ft": {"vegetation_density": 76.0}
+        }
+      },
+      "expected": {
+        "risk_band": "high",
+        "assessment_status_in": ["fully_scored", "partially_scored"]
+      },
+      "notes": "Used with mitigation_after to verify directional improvements."
+    },
+    {
+      "scenario_id": "mitigation_after",
+      "description": "After-mitigation variant for mitigation monotonic checks.",
+      "profile_tags": ["mitigation_pair", "after"],
+      "input_payload": {
+        "address": "505 Benchmark Mitigation Rd, After, CO",
+        "attributes": {
+          "roof_type": "class_a_asphalt_composition",
+          "vent_type": "ember-resistant",
+          "defensible_space_ft": 35,
+          "construction_year": 2016
+        },
+        "confirmed_fields": ["roof_type", "vent_type", "defensible_space_ft", "construction_year"],
+        "audience": "homeowner",
+        "tags": ["benchmark", "after"]
+      },
+      "location": {"lat": 39.72, "lon": -105.06, "geocode_source": "benchmark-pack"},
+      "context": {
+        "burn_probability_index": 62.0,
+        "hazard_severity_index": 66.0,
+        "slope_index": 55.0,
+        "fuel_index": 68.0,
+        "moisture_index": 61.0,
+        "canopy_index": 70.0,
+        "wildland_distance_index": 72.0,
+        "historic_fire_index": 60.0,
+        "structure_ring_metrics": {
+          "ring_0_5_ft": {"vegetation_density": 30.0},
+          "ring_5_30_ft": {"vegetation_density": 45.0},
+          "ring_30_100_ft": {"vegetation_density": 55.0}
+        }
+      },
+      "expected": {
+        "risk_band": "moderate",
+        "assessment_status_in": ["fully_scored", "partially_scored"]
+      },
+      "notes": "Mitigation improvements should reduce vulnerability/risk and improve readiness."
+    },
+    {
+      "scenario_id": "fallback_inferred_only",
+      "description": "Fallback-heavy profile with many missing environmental and structure observations.",
+      "profile_tags": ["fallback_heavy", "inferred_evidence"],
+      "input_payload": {
+        "address": "606 Benchmark Sparse Data Ct, CO",
+        "attributes": {
+          "roof_type": null,
+          "vent_type": null,
+          "defensible_space_ft": null
+        },
+        "confirmed_fields": [],
+        "audience": "insurer",
+        "tags": ["benchmark"]
+      },
+      "location": {"lat": 39.68, "lon": -105.14, "geocode_source": "benchmark-pack"},
+      "context": {
+        "burn_probability_index": null,
+        "hazard_severity_index": null,
+        "slope_index": null,
+        "fuel_index": null,
+        "moisture_index": null,
+        "canopy_index": null,
+        "wildland_distance_index": null,
+        "historic_fire_index": null,
+        "access_exposure_index": null,
+        "environmental_layer_status": {
+          "burn_probability": "missing",
+          "hazard": "missing",
+          "slope": "missing",
+          "fuel": "missing",
+          "canopy": "missing",
+          "fire_history": "missing"
+        },
+        "assumptions": [
+          "Burn probability context missing; scoring used conservative fallback.",
+          "Hazard severity context missing; scoring used conservative fallback.",
+          "Structure-ring vegetation metrics unavailable; point-based proxies used."
+        ],
+        "structure_ring_metrics": {},
+        "property_level_context": {
+          "footprint_used": false,
+          "footprint_status": "not_found",
+          "fallback_mode": "point_based",
+          "ring_metrics": null,
+          "region_status": "legacy_fallback"
+        }
+      },
+      "expected": {
+        "confidence_tiers": ["preliminary", "low"],
+        "use_restrictions": ["agent_or_inspector_review_recommended", "not_for_underwriting_or_binding"],
+        "assessment_status_in": ["insufficient_data", "partially_scored"],
+        "fallback_mode": "point_based",
+        "warning_keywords": ["fallback", "missing"]
+      },
+      "notes": "Used to verify fallback-heavy runs are gated and clearly labeled."
+    },
+    {
+      "scenario_id": "observed_evidence_strong",
+      "description": "Same broad risk class as sparse case but with strong observed evidence available.",
+      "profile_tags": ["observed_evidence", "confidence_reference"],
+      "input_payload": {
+        "address": "707 Benchmark Observed Data Ct, CO",
+        "attributes": {
+          "roof_type": "class a",
+          "vent_type": "ember-resistant",
+          "defensible_space_ft": 28
+        },
+        "confirmed_fields": ["roof_type", "vent_type", "defensible_space_ft"],
+        "audience": "insurer",
+        "tags": ["benchmark"]
+      },
+      "location": {"lat": 39.68, "lon": -105.14, "geocode_source": "benchmark-pack"},
+      "context": {
+        "burn_probability_index": 55.0,
+        "hazard_severity_index": 58.0,
+        "slope_index": 49.0,
+        "fuel_index": 57.0,
+        "moisture_index": 54.0,
+        "canopy_index": 56.0,
+        "wildland_distance_index": 60.0,
+        "historic_fire_index": 47.0,
+        "structure_ring_metrics": {
+          "ring_0_5_ft": {"vegetation_density": 42.0},
+          "ring_5_30_ft": {"vegetation_density": 50.0},
+          "ring_30_100_ft": {"vegetation_density": 58.0}
+        },
+        "property_level_context": {
+          "footprint_used": true,
+          "footprint_status": "used",
+          "fallback_mode": "footprint"
+        }
+      },
+      "expected": {
+        "confidence_tiers": ["moderate", "high"],
+        "assessment_status_in": ["fully_scored", "partially_scored"],
+        "fallback_mode": "footprint"
+      },
+      "notes": "Compared against fallback_inferred_only to validate confidence uplift with observed evidence."
+    },
+    {
+      "scenario_id": "footprint_missing_point_fallback",
+      "description": "Profile with otherwise good layers but no usable building footprint, forcing point fallback.",
+      "profile_tags": ["footprint_missing", "point_fallback"],
+      "input_payload": {
+        "address": "808 Benchmark Footprint Gap Ave, CO",
+        "attributes": {
+          "roof_type": "class a",
+          "vent_type": "ember-resistant",
+          "defensible_space_ft": 22
+        },
+        "confirmed_fields": ["roof_type", "vent_type", "defensible_space_ft"],
+        "audience": "insurer",
+        "tags": ["benchmark"]
+      },
+      "location": {"lat": 39.74, "lon": -105.0, "geocode_source": "benchmark-pack"},
+      "context": {
+        "burn_probability_index": 52.0,
+        "hazard_severity_index": 54.0,
+        "slope_index": 48.0,
+        "fuel_index": 58.0,
+        "moisture_index": 51.0,
+        "canopy_index": 55.0,
+        "wildland_distance_index": 59.0,
+        "historic_fire_index": 46.0,
+        "structure_ring_metrics": {},
+        "property_level_context": {
+          "footprint_used": false,
+          "footprint_status": "not_found",
+          "fallback_mode": "point_based",
+          "ring_metrics": null
+        }
+      },
+      "expected": {
+        "confidence_tiers": ["low", "moderate"],
+        "assessment_status_in": ["partially_scored", "fully_scored"],
+        "fallback_mode": "point_based",
+        "warning_keywords": ["point-based"]
+      },
+      "notes": "Ensures footprint gap is explicit and confidence is capped vs full footprint context."
+    },
+    {
+      "scenario_id": "outside_prepared_region_edge",
+      "description": "Property outside prepared-region coverage edge with incomplete stack.",
+      "profile_tags": ["region_edge", "insufficient_data"],
+      "input_payload": {
+        "address": "909 Benchmark Coverage Edge Blvd, CO",
+        "attributes": {},
+        "confirmed_fields": [],
+        "audience": "insurer",
+        "tags": ["benchmark"]
+      },
+      "location": {"lat": 39.81, "lon": -105.24, "geocode_source": "benchmark-pack"},
+      "context": {
+        "burn_probability_index": null,
+        "hazard_severity_index": null,
+        "slope_index": null,
+        "fuel_index": null,
+        "moisture_index": null,
+        "canopy_index": null,
+        "wildland_distance_index": null,
+        "historic_fire_index": null,
+        "access_exposure_index": null,
+        "environmental_layer_status": {
+          "burn_probability": "missing",
+          "hazard": "missing",
+          "slope": "missing",
+          "fuel": "missing",
+          "canopy": "missing",
+          "fire_history": "missing"
+        },
+        "structure_ring_metrics": {},
+        "property_level_context": {
+          "footprint_used": false,
+          "footprint_status": "not_found",
+          "fallback_mode": "point_based",
+          "ring_metrics": null,
+          "region_status": "region_not_prepared"
+        },
+        "assumptions": [
+          "Region not prepared for this location — initialize regional layers before high-confidence scoring."
+        ]
+      },
+      "expected": {
+        "confidence_tiers": ["preliminary", "low"],
+        "use_restrictions": ["not_for_underwriting_or_binding"],
+        "assessment_status_in": ["insufficient_data"],
+        "fallback_mode": "point_based",
+        "warning_keywords": ["region not prepared"]
+      },
+      "notes": "Ensures edge/outside coverage behavior remains explicit and restricted."
+    }
+  ],
+  "relative_assertions": [
+    {
+      "assertion_id": "severe_gt_low_wildfire_risk",
+      "left": "severe_poor_structure_space",
+      "metric": "scores.wildfire_risk_score",
+      "op": ">",
+      "right": "low_suburban_hardened_observed"
+    },
+    {
+      "assertion_id": "high_gt_moderate_wildfire_risk",
+      "left": "high_slope_vegetated_history",
+      "metric": "scores.wildfire_risk_score",
+      "op": ">",
+      "right": "moderate_wui_average"
+    },
+    {
+      "assertion_id": "observed_confidence_gt_fallback_confidence",
+      "left": "observed_evidence_strong",
+      "metric": "confidence.confidence_score",
+      "op": ">",
+      "right": "fallback_inferred_only"
+    },
+    {
+      "assertion_id": "fallback_more_restricted_than_observed",
+      "left": "fallback_inferred_only",
+      "metric": "confidence.use_restriction",
+      "op": "!=",
+      "right": "observed_evidence_strong"
+    }
+  ],
+  "monotonic_assertions": [
+    {
+      "assertion_id": "mitigation_reduces_wildfire_risk",
+      "left": "mitigation_before",
+      "metric": "scores.wildfire_risk_score",
+      "op": ">",
+      "right": "mitigation_after"
+    },
+    {
+      "assertion_id": "mitigation_improves_readiness",
+      "left": "mitigation_before",
+      "metric": "scores.insurance_readiness_score",
+      "op": "<",
+      "right": "mitigation_after"
+    },
+    {
+      "assertion_id": "mitigation_reduces_home_vulnerability",
+      "left": "mitigation_before",
+      "metric": "scores.home_ignition_vulnerability_score",
+      "op": ">",
+      "right": "mitigation_after"
+    }
+  ]
+}

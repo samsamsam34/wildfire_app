@@ -13,6 +13,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, PlainTextResponse
 
 from backend.auth import require_api_key
+from backend.benchmarking import (
+    FACTOR_SCHEMA_VERSION,
+    build_benchmark_hints_for_assessment,
+)
 from backend.database import AssessmentStore, DEFAULT_ORG_ID
 from backend.geocoding import Geocoder
 from backend.layer_diagnostics import LAYER_SPECS
@@ -2676,6 +2680,10 @@ def _run_assessment(
         home_ignition_vulnerability_section=home_ignition_section,
         insurance_readiness_section=insurance_readiness_section,
         model_version=MODEL_VERSION,
+        scoring_model_version=MODEL_VERSION,
+        factor_schema_version=FACTOR_SCHEMA_VERSION,
+        benchmark_pack_version=None,
+        region_data_version=str(property_level_context.get("region_manifest_path") or "") or None,
         generated_at=datetime.now(tz=timezone.utc),
         scoring_notes=scoring_notes,
         coordinates=coordinates,
@@ -2783,6 +2791,13 @@ def _run_assessment(
             "readiness_penalties": scoring_config.readiness_penalties,
             "readiness_bonuses": scoring_config.readiness_bonuses,
             "ruleset": ruleset.model_dump(),
+        },
+        "governance": {
+            "scoring_model_version": result.scoring_model_version,
+            "ruleset_version": result.ruleset_version,
+            "factor_schema_version": result.factor_schema_version,
+            "benchmark_pack_version": result.benchmark_pack_version,
+            "region_data_version": result.region_data_version,
         },
     }
 
@@ -2901,8 +2916,41 @@ def _build_report_export(
     actor: ActorContext,
     audience: Audience | None = None,
     audience_mode: Audience | None = None,
+    include_benchmark_hints: bool = False,
 ) -> ReportExport:
     mode = _resolve_audience(result, actor, audience, audience_mode)
+    benchmark_hints = build_benchmark_hints_for_assessment(result) if include_benchmark_hints else None
+    assumptions_confidence = {
+        "confirmed_inputs": result.confirmed_inputs,
+        "inferred_inputs": result.inferred_inputs,
+        "missing_inputs": result.missing_inputs,
+        "assumptions_used": result.assumptions_used,
+        "confidence_score": result.confidence_score,
+        "data_completeness_score": result.data_completeness_score,
+        "environmental_data_completeness_score": result.environmental_data_completeness_score,
+        "direct_data_coverage_score": result.direct_data_coverage_score,
+        "inferred_data_coverage_score": result.inferred_data_coverage_score,
+        "missing_data_share": result.missing_data_share,
+        "stale_data_share": result.data_provenance.summary.stale_data_share,
+        "heuristic_input_count": result.data_provenance.summary.heuristic_input_count,
+        "current_input_count": result.data_provenance.summary.current_input_count,
+        "wildfire_risk_score_available": result.wildfire_risk_score_available,
+        "site_hazard_score_available": result.site_hazard_score_available,
+        "home_ignition_vulnerability_score_available": result.home_ignition_vulnerability_score_available,
+        "insurance_readiness_score_available": result.insurance_readiness_score_available,
+        "confidence_tier": result.confidence_tier,
+        "use_restriction": result.use_restriction,
+        "low_confidence_flags": result.low_confidence_flags,
+        "assessment_status": result.assessment_status,
+        "assessment_blockers": result.assessment_blockers,
+        "site_hazard_input_quality": result.site_hazard_input_quality.model_dump(),
+        "home_vulnerability_input_quality": result.home_vulnerability_input_quality.model_dump(),
+        "insurance_readiness_input_quality": result.insurance_readiness_input_quality.model_dump(),
+        "evidence_quality_summary": result.evidence_quality_summary.model_dump(),
+    }
+    if benchmark_hints is not None:
+        assumptions_confidence["benchmark_hints"] = benchmark_hints
+
     return ReportExport(
         assessment_id=result.assessment_id,
         generated_at=result.generated_at.isoformat(),
@@ -2911,6 +2959,13 @@ def _build_report_export(
         audience_mode=mode,
         audience_highlights=_audience_highlights(result, mode),
         audience_focus=_audience_focus(result, mode),
+        governance_metadata={
+            "scoring_model_version": result.scoring_model_version,
+            "ruleset_version": result.ruleset_version,
+            "factor_schema_version": result.factor_schema_version,
+            "benchmark_pack_version": result.benchmark_pack_version,
+            "region_data_version": result.region_data_version,
+        },
         ruleset={
             "ruleset_id": result.ruleset_id,
             "ruleset_name": result.ruleset_name,
@@ -2940,6 +2995,7 @@ def _build_report_export(
             "assessment_diagnostics": result.assessment_diagnostics.model_dump(),
             "layer_coverage_audit": [row.model_dump() for row in result.layer_coverage_audit],
             "coverage_summary": result.coverage_summary.model_dump(),
+            "benchmark_hints": benchmark_hints,
         },
         wildfire_risk_summary={
             "wildfire_risk_score": result.wildfire_risk_score,
@@ -2974,34 +3030,7 @@ def _build_report_export(
         },
         top_risk_drivers=result.top_risk_drivers,
         top_protective_factors=result.top_protective_factors,
-        assumptions_confidence={
-            "confirmed_inputs": result.confirmed_inputs,
-            "inferred_inputs": result.inferred_inputs,
-            "missing_inputs": result.missing_inputs,
-            "assumptions_used": result.assumptions_used,
-            "confidence_score": result.confidence_score,
-            "data_completeness_score": result.data_completeness_score,
-            "environmental_data_completeness_score": result.environmental_data_completeness_score,
-            "direct_data_coverage_score": result.direct_data_coverage_score,
-            "inferred_data_coverage_score": result.inferred_data_coverage_score,
-            "missing_data_share": result.missing_data_share,
-            "stale_data_share": result.data_provenance.summary.stale_data_share,
-            "heuristic_input_count": result.data_provenance.summary.heuristic_input_count,
-            "current_input_count": result.data_provenance.summary.current_input_count,
-            "wildfire_risk_score_available": result.wildfire_risk_score_available,
-            "site_hazard_score_available": result.site_hazard_score_available,
-            "home_ignition_vulnerability_score_available": result.home_ignition_vulnerability_score_available,
-            "insurance_readiness_score_available": result.insurance_readiness_score_available,
-            "confidence_tier": result.confidence_tier,
-            "use_restriction": result.use_restriction,
-            "low_confidence_flags": result.low_confidence_flags,
-            "assessment_status": result.assessment_status,
-            "assessment_blockers": result.assessment_blockers,
-            "site_hazard_input_quality": result.site_hazard_input_quality.model_dump(),
-            "home_vulnerability_input_quality": result.home_vulnerability_input_quality.model_dump(),
-            "insurance_readiness_input_quality": result.insurance_readiness_input_quality.model_dump(),
-            "evidence_quality_summary": result.evidence_quality_summary.model_dump(),
-        },
+        assumptions_confidence=assumptions_confidence,
         score_evidence_ledger=result.score_evidence_ledger,
         evidence_quality_summary=result.evidence_quality_summary,
         layer_coverage_audit=result.layer_coverage_audit,
@@ -3678,11 +3707,17 @@ def simulate_risk(
 
 
 @app.post("/risk/debug", dependencies=[Depends(require_api_key)])
-def debug_risk(payload: AddressRequest, ctx: ActorContext = Depends(get_actor_context)) -> dict:
+def debug_risk(
+    payload: AddressRequest,
+    include_benchmark_hints: bool = Query(default=False),
+    ctx: ActorContext = Depends(get_actor_context),
+) -> dict:
     organization_id = _resolve_org_id(payload.organization_id, ctx)
     _enforce_org_scope(ctx, organization_id)
     ruleset = _get_ruleset_or_default(payload.ruleset_id)
-    _, debug_payload = _run_assessment(payload, organization_id=organization_id, ruleset=ruleset)
+    result, debug_payload = _run_assessment(payload, organization_id=organization_id, ruleset=ruleset)
+    if include_benchmark_hints:
+        debug_payload["benchmark_hints"] = build_benchmark_hints_for_assessment(result)
     return debug_payload
 
 
@@ -4025,13 +4060,20 @@ def export_report(
     assessment_id: str,
     audience: Audience | None = Query(default=None),
     audience_mode: Audience | None = Query(default=None),
+    include_benchmark_hints: bool = Query(default=False),
     ctx: ActorContext = Depends(get_actor_context),
 ) -> ReportExport:
     result = store.get(assessment_id)
     if not result:
         raise HTTPException(status_code=404, detail="Assessment not found")
     _enforce_org_scope(ctx, result.organization_id)
-    export = _build_report_export(result, actor=ctx, audience=audience, audience_mode=audience_mode)
+    export = _build_report_export(
+        result,
+        actor=ctx,
+        audience=audience,
+        audience_mode=audience_mode,
+        include_benchmark_hints=include_benchmark_hints,
+    )
     _log_audit(
         ctx=ctx,
         entity_type="report",
