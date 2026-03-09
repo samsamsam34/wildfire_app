@@ -28,7 +28,15 @@ from backend.open_data_adapters import (
     WHPObservation,
 )
 from backend.region_registry import find_region_for_point, list_prepared_regions, load_region_manifest
-from backend.version import LEGACY_MODEL_VERSION, MODEL_VERSION
+from backend.version import (
+    API_VERSION,
+    CALIBRATION_VERSION,
+    FACTOR_SCHEMA_VERSION,
+    LEGACY_MODEL_VERSION,
+    MODEL_VERSION,
+    PRODUCT_VERSION,
+    RULESET_LOGIC_VERSION,
+)
 from backend.wildfire_data import WildfireContext, WildfireDataClient, compute_environmental_data_completeness
 
 
@@ -203,10 +211,16 @@ def _assert_core_contract(body: dict) -> None:
         "home_ignition_vulnerability_section",
         "insurance_readiness_section",
         "review_status",
+        "product_version",
+        "api_version",
         "scoring_model_version",
+        "rules_logic_version",
         "factor_schema_version",
         "benchmark_pack_version",
+        "calibration_version",
         "region_data_version",
+        "data_bundle_version",
+        "model_governance",
     ]
     for key in required:
         assert key in body
@@ -251,6 +265,13 @@ def _assert_core_contract(body: dict) -> None:
         "home_ignition_vulnerability",
         "insurance_readiness",
     }
+    assert body["model_governance"]["product_version"] == body["product_version"]
+    assert body["model_governance"]["api_version"] == body["api_version"]
+    assert body["model_governance"]["scoring_model_version"] == body["scoring_model_version"]
+    assert body["model_governance"]["ruleset_version"] == body["ruleset_version"]
+    assert body["model_governance"]["rules_logic_version"] == body["rules_logic_version"]
+    assert body["model_governance"]["factor_schema_version"] == body["factor_schema_version"]
+    assert body["model_governance"]["calibration_version"] == body["calibration_version"]
     for section in body["score_summaries"].values():
         assert "label" in section
         assert "score" in section
@@ -1170,6 +1191,8 @@ def test_report_export_and_view_with_audience(monkeypatch, tmp_path):
     assert "score_evidence_ledger" in exported
     assert "evidence_quality_summary" in exported
     assert "governance_metadata" in exported
+    assert "model_governance" in exported
+    assert exported["governance_metadata"] == exported["model_governance"]
     assert "benchmark_hints" in exported["assumptions_confidence"]
     assert exported["evidence_quality_summary"]["use_restriction"] in {
         "consumer_estimate",
@@ -1530,6 +1553,8 @@ def test_compare_endpoints(monkeypatch, tmp_path):
     assert "driver_differences" in p
     assert "blocker_differences" in p
     assert "mitigation_differences" in p
+    assert "version_comparison" in p
+    assert "directly_comparable" in p["version_comparison"]
 
     multi = client.get(f"/assessments/compare?ids={a['assessment_id']},{b['assessment_id']}")
     assert multi.status_code == 200
@@ -1596,6 +1621,28 @@ def test_model_version_current(monkeypatch, tmp_path):
     _setup(monkeypatch, tmp_path, _ctx(env=45.0, wildland=45.0, historic=40.0))
     row = _run(_payload("Version Check Rd", {"defensible_space_ft": 20}))
     assert row["model_version"] == MODEL_VERSION
+    assert row["product_version"] == PRODUCT_VERSION
+    assert row["api_version"] == API_VERSION
+    assert row["rules_logic_version"] == RULESET_LOGIC_VERSION
+    assert row["factor_schema_version"] == FACTOR_SCHEMA_VERSION
+    assert row["calibration_version"] == CALIBRATION_VERSION
+    assert row["model_governance"]["scoring_model_version"] == MODEL_VERSION
+    loaded = app_main.store.get(row["assessment_id"])
+    assert loaded is not None
+    assert loaded.model_governance.scoring_model_version == MODEL_VERSION
+    assert loaded.model_governance.product_version == PRODUCT_VERSION
+
+
+def test_health_includes_model_governance():
+    auth.API_KEYS = set()
+    res = client.get("/health")
+    assert res.status_code == 200
+    body = res.json()
+    assert body["status"] == "ok"
+    assert body["product_version"] == PRODUCT_VERSION
+    assert body["api_version"] == API_VERSION
+    assert body["model_governance"]["product_version"] == PRODUCT_VERSION
+    assert body["model_governance"]["api_version"] == API_VERSION
 
 
 def test_building_footprint_lookup_success(tmp_path):

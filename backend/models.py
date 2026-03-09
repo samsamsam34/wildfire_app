@@ -271,6 +271,19 @@ class EvidenceQualitySummary(BaseModel):
     use_restriction: EvidenceUseRestriction = "screening_only"
 
 
+class ModelGovernanceInfo(BaseModel):
+    product_version: str = ""
+    api_version: str = ""
+    scoring_model_version: str = ""
+    ruleset_version: str = ""
+    rules_logic_version: str = ""
+    factor_schema_version: str = ""
+    benchmark_pack_version: Optional[str] = None
+    calibration_version: str = ""
+    region_data_version: Optional[str] = None
+    data_bundle_version: Optional[str] = None
+
+
 class LayerCoverageAuditItem(BaseModel):
     layer_key: str
     display_name: str
@@ -461,10 +474,16 @@ class AssessmentResult(BaseModel):
     home_ignition_vulnerability_section: ScoreSectionSummary = Field(default_factory=ScoreSectionSummary)
     insurance_readiness_section: ScoreSectionSummary = Field(default_factory=ScoreSectionSummary)
     model_version: str
+    product_version: str = ""
+    api_version: str = ""
     scoring_model_version: str = ""
+    rules_logic_version: str = ""
     factor_schema_version: str = "1.0.0"
     benchmark_pack_version: Optional[str] = None
+    calibration_version: str = ""
     region_data_version: Optional[str] = None
+    data_bundle_version: Optional[str] = None
+    model_governance: ModelGovernanceInfo = Field(default_factory=ModelGovernanceInfo)
     generated_at: datetime
     scoring_notes: List[str] = Field(default_factory=list)
 
@@ -541,6 +560,7 @@ class ReportExport(BaseModel):
     audience_highlights: List[str] = Field(default_factory=list)
     audience_focus: Dict[str, object] = Field(default_factory=dict)
     governance_metadata: Dict[str, object] = Field(default_factory=dict)
+    model_governance: ModelGovernanceInfo = Field(default_factory=ModelGovernanceInfo)
     ruleset: Dict[str, object] = Field(default_factory=dict)
     property_summary: Dict[str, object]
     location_summary: Dict[str, object]
@@ -696,6 +716,7 @@ class AssessmentComparisonResult(BaseModel):
     driver_differences: Dict[str, List[str]]
     blocker_differences: Dict[str, List[str]]
     mitigation_differences: Dict[str, List[str]]
+    version_comparison: Dict[str, object] = Field(default_factory=dict)
 
 
 class AssessmentComparisonResponse(BaseModel):

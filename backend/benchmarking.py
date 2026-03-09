@@ -9,10 +9,13 @@ from typing import Any
 
 from backend.models import AddressRequest, AssessmentResult, UnderwritingRuleset
 from backend.wildfire_data import WildfireContext
-from backend.version import MODEL_VERSION
+from backend.version import (
+    BENCHMARK_PACK_VERSION,
+    FACTOR_SCHEMA_VERSION,
+    MODEL_VERSION,
+    build_model_governance,
+)
 
-BENCHMARK_PACK_VERSION = "1.0.0"
-FACTOR_SCHEMA_VERSION = "1.0.0"
 DEFAULT_PACK_PATH = Path("benchmark") / "scenario_pack_v1.json"
 DEFAULT_RESULTS_DIR = Path("benchmark") / "results"
 
@@ -241,13 +244,15 @@ def _scenario_snapshot(
             ]
         )
     ]
-    governance = {
-        "scoring_model_version": result.model_version,
-        "ruleset_version": result.ruleset_version,
-        "factor_schema_version": FACTOR_SCHEMA_VERSION,
-        "benchmark_pack_version": BENCHMARK_PACK_VERSION,
-        "region_data_version": (result.property_level_context or {}).get("region_manifest_path"),
-    }
+    governance = (
+        result.model_governance.model_dump()
+        if result.model_governance
+        else build_model_governance(
+            ruleset_version=result.ruleset_version,
+            benchmark_pack_version=BENCHMARK_PACK_VERSION,
+            region_data_version=(result.property_level_context or {}).get("region_manifest_path"),
+        )
+    )
     return {
         "scenario_id": scenario["scenario_id"],
         "description": scenario.get("description", ""),
@@ -449,6 +454,18 @@ def run_benchmark_suite(
         if not bool(r.get("passed", False))
     ]
 
+    product_versions = sorted(
+        {
+            str((r.get("snapshot") or {}).get("governance", {}).get("product_version") or "unknown")
+            for r in scenario_results
+        }
+    )
+    api_versions = sorted(
+        {
+            str((r.get("snapshot") or {}).get("governance", {}).get("api_version") or "unknown")
+            for r in scenario_results
+        }
+    )
     model_versions = sorted(
         {
             str((r.get("snapshot") or {}).get("governance", {}).get("scoring_model_version") or MODEL_VERSION)
@@ -458,6 +475,18 @@ def run_benchmark_suite(
     ruleset_versions = sorted(
         {
             str((r.get("snapshot") or {}).get("governance", {}).get("ruleset_version") or "unknown")
+            for r in scenario_results
+        }
+    )
+    rules_logic_versions = sorted(
+        {
+            str((r.get("snapshot") or {}).get("governance", {}).get("rules_logic_version") or "unknown")
+            for r in scenario_results
+        }
+    )
+    calibration_versions = sorted(
+        {
+            str((r.get("snapshot") or {}).get("governance", {}).get("calibration_version") or "unknown")
             for r in scenario_results
         }
     )
@@ -472,11 +501,20 @@ def run_benchmark_suite(
         "generated_at": _now_iso(),
         "benchmark_pack_version": str(pack.get("benchmark_pack_version") or BENCHMARK_PACK_VERSION),
         "factor_schema_version": str(pack.get("factor_schema_version") or FACTOR_SCHEMA_VERSION),
+        "model_governance": build_model_governance(
+            ruleset_version=(ruleset_versions[0] if len(ruleset_versions) == 1 else "mixed"),
+            benchmark_pack_version=str(pack.get("benchmark_pack_version") or BENCHMARK_PACK_VERSION),
+            region_data_version=(region_versions[0] if len(region_versions) == 1 else None),
+        ),
         "governance": {
+            "product_versions": product_versions,
+            "api_versions": api_versions,
             "scoring_model_versions": model_versions,
             "ruleset_versions": ruleset_versions,
+            "rules_logic_versions": rules_logic_versions,
             "factor_schema_version": str(pack.get("factor_schema_version") or FACTOR_SCHEMA_VERSION),
             "benchmark_pack_version": str(pack.get("benchmark_pack_version") or BENCHMARK_PACK_VERSION),
+            "calibration_versions": calibration_versions,
             "region_data_versions": region_versions,
         },
         "scenario_results": scenario_results,
@@ -686,9 +724,15 @@ def build_benchmark_hints_for_assessment(result: AssessmentResult, pack_path: st
     matched = matched[:3]
 
     sanity_checks = _single_assessment_sanity_checks(result)
+    governance = (
+        result.model_governance.model_dump()
+        if result.model_governance
+        else build_model_governance(ruleset_version=result.ruleset_version)
+    )
     return {
         "benchmark_pack_version": str(pack.get("benchmark_pack_version") or BENCHMARK_PACK_VERSION),
         "scoring_model_version": result.model_version,
+        "model_governance": governance,
         "resembles_scenarios": matched,
         "benchmark_style_sanity_checks": sanity_checks,
         "all_sanity_checks_passed": all(c.get("passed", False) for c in sanity_checks) if sanity_checks else True,

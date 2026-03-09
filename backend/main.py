@@ -14,7 +14,6 @@ from fastapi.responses import HTMLResponse, PlainTextResponse
 
 from backend.auth import require_api_key
 from backend.benchmarking import (
-    FACTOR_SCHEMA_VERSION,
     build_benchmark_hints_for_assessment,
 )
 from backend.database import AssessmentStore, DEFAULT_ORG_ID
@@ -58,6 +57,7 @@ from backend.models import (
     EnvironmentalFactors,
     FreshnessStatus,
     InputSourceMetadata,
+    ModelGovernanceInfo,
     FactorBreakdown,
     Organization,
     OrganizationCreate,
@@ -95,13 +95,23 @@ from backend.models import (
 from backend.normalization import normalize_property_attributes, normalized_attribute_changes
 from backend.risk_engine import RiskComputation, RiskEngine
 from backend.scoring_config import load_scoring_config
-from backend.version import MODEL_VERSION
+from backend.version import (
+    API_VERSION,
+    BENCHMARK_PACK_VERSION,
+    CALIBRATION_VERSION,
+    FACTOR_SCHEMA_VERSION,
+    MODEL_VERSION,
+    PRODUCT_VERSION,
+    RULESET_LOGIC_VERSION,
+    build_model_governance,
+    compare_model_governance,
+)
 from backend.wildfire_data import (
     WildfireDataClient,
     compute_environmental_data_completeness,
 )
 
-app = FastAPI(title="WildfireRisk Advisor API", version="0.9.0")
+app = FastAPI(title="WildfireRisk Advisor API", version=PRODUCT_VERSION)
 
 app.add_middleware(
     CORSMiddleware,
@@ -307,6 +317,43 @@ def _log_audit(
 
 def _attributes_to_dict(attrs: PropertyAttributes) -> Dict[str, object]:
     return {k: v for k, v in attrs.model_dump().items() if v is not None}
+
+
+def _build_result_governance(
+    *,
+    ruleset_version: str,
+    region_data_version: str | None,
+    benchmark_pack_version: str | None = None,
+    data_bundle_version: str | None = None,
+) -> dict[str, str | None]:
+    return build_model_governance(
+        ruleset_version=ruleset_version,
+        benchmark_pack_version=benchmark_pack_version or BENCHMARK_PACK_VERSION,
+        region_data_version=region_data_version,
+        data_bundle_version=data_bundle_version,
+    )
+
+
+def _refresh_result_governance(result: AssessmentResult) -> AssessmentResult:
+    governance = _build_result_governance(
+        ruleset_version=result.ruleset_version,
+        benchmark_pack_version=result.benchmark_pack_version or BENCHMARK_PACK_VERSION,
+        region_data_version=result.region_data_version,
+        data_bundle_version=result.data_bundle_version,
+    )
+    result.model_governance = ModelGovernanceInfo.model_validate(governance)
+    result.model_version = str(governance["scoring_model_version"] or MODEL_VERSION)
+    result.product_version = str(governance["product_version"] or PRODUCT_VERSION)
+    result.api_version = str(governance["api_version"] or API_VERSION)
+    result.scoring_model_version = str(governance["scoring_model_version"] or MODEL_VERSION)
+    result.ruleset_version = str(governance["ruleset_version"] or result.ruleset_version)
+    result.rules_logic_version = str(governance["rules_logic_version"] or RULESET_LOGIC_VERSION)
+    result.factor_schema_version = str(governance["factor_schema_version"] or FACTOR_SCHEMA_VERSION)
+    result.benchmark_pack_version = governance.get("benchmark_pack_version")
+    result.calibration_version = str(governance["calibration_version"] or CALIBRATION_VERSION)
+    result.region_data_version = governance.get("region_data_version")
+    result.data_bundle_version = governance.get("data_bundle_version")
+    return result
 
 
 def _merge_attributes(base: PropertyAttributes, overrides: PropertyAttributes) -> PropertyAttributes:
@@ -2259,7 +2306,7 @@ def _apply_ruleset_to_result(result: AssessmentResult, ruleset: UnderwritingRule
             confidence=result.confidence,
             assessment_status=result.assessment_status,
         )
-    return result
+    return _refresh_result_governance(result)
 
 
 def _run_assessment(
@@ -2599,6 +2646,13 @@ def _run_assessment(
     fact_map = _attributes_to_dict(payload.attributes)
     final_tags = sorted(set((payload.tags or []) + (tags or [])))
 
+    region_data_version = str(property_level_context.get("region_manifest_path") or "") or None
+    governance = _build_result_governance(
+        ruleset_version=ruleset.ruleset_version,
+        region_data_version=region_data_version,
+        benchmark_pack_version=BENCHMARK_PACK_VERSION,
+    )
+
     result = AssessmentResult(
         assessment_id=assessment_id or str(uuid4()),
         address=payload.address,
@@ -2679,11 +2733,17 @@ def _run_assessment(
         site_hazard_section=site_hazard_section,
         home_ignition_vulnerability_section=home_ignition_section,
         insurance_readiness_section=insurance_readiness_section,
-        model_version=MODEL_VERSION,
-        scoring_model_version=MODEL_VERSION,
-        factor_schema_version=FACTOR_SCHEMA_VERSION,
-        benchmark_pack_version=None,
-        region_data_version=str(property_level_context.get("region_manifest_path") or "") or None,
+        model_version=str(governance["scoring_model_version"] or MODEL_VERSION),
+        product_version=str(governance["product_version"] or PRODUCT_VERSION),
+        api_version=str(governance["api_version"] or API_VERSION),
+        scoring_model_version=str(governance["scoring_model_version"] or MODEL_VERSION),
+        rules_logic_version=str(governance["rules_logic_version"] or RULESET_LOGIC_VERSION),
+        factor_schema_version=str(governance["factor_schema_version"] or FACTOR_SCHEMA_VERSION),
+        benchmark_pack_version=governance.get("benchmark_pack_version"),
+        calibration_version=str(governance["calibration_version"] or CALIBRATION_VERSION),
+        region_data_version=governance.get("region_data_version"),
+        data_bundle_version=governance.get("data_bundle_version"),
+        model_governance=ModelGovernanceInfo.model_validate(governance),
         generated_at=datetime.now(tz=timezone.utc),
         scoring_notes=scoring_notes,
         coordinates=coordinates,
@@ -2792,13 +2852,8 @@ def _run_assessment(
             "readiness_bonuses": scoring_config.readiness_bonuses,
             "ruleset": ruleset.model_dump(),
         },
-        "governance": {
-            "scoring_model_version": result.scoring_model_version,
-            "ruleset_version": result.ruleset_version,
-            "factor_schema_version": result.factor_schema_version,
-            "benchmark_pack_version": result.benchmark_pack_version,
-            "region_data_version": result.region_data_version,
-        },
+        "governance": result.model_governance.model_dump(),
+        "model_governance": result.model_governance.model_dump(),
     }
 
     return result, debug_payload
@@ -2919,6 +2974,7 @@ def _build_report_export(
     include_benchmark_hints: bool = False,
 ) -> ReportExport:
     mode = _resolve_audience(result, actor, audience, audience_mode)
+    result = _refresh_result_governance(result)
     benchmark_hints = build_benchmark_hints_for_assessment(result) if include_benchmark_hints else None
     assumptions_confidence = {
         "confirmed_inputs": result.confirmed_inputs,
@@ -2959,13 +3015,8 @@ def _build_report_export(
         audience_mode=mode,
         audience_highlights=_audience_highlights(result, mode),
         audience_focus=_audience_focus(result, mode),
-        governance_metadata={
-            "scoring_model_version": result.scoring_model_version,
-            "ruleset_version": result.ruleset_version,
-            "factor_schema_version": result.factor_schema_version,
-            "benchmark_pack_version": result.benchmark_pack_version,
-            "region_data_version": result.region_data_version,
-        },
+        governance_metadata=result.model_governance.model_dump(),
+        model_governance=result.model_governance,
         ruleset={
             "ruleset_id": result.ruleset_id,
             "ruleset_name": result.ruleset_name,
@@ -3119,6 +3170,10 @@ def _compare_results(base: AssessmentResult, other: AssessmentResult) -> Assessm
     other_blockers = set(other.readiness_blockers)
     base_mitigations = {m.title for m in base.mitigation_plan}
     other_mitigations = {m.title for m in other.mitigation_plan}
+    version_comparison = compare_model_governance(
+        base.model_governance.model_dump() if base.model_governance else {},
+        other.model_governance.model_dump() if other.model_governance else {},
+    )
 
     return AssessmentComparisonResult(
         base=_to_comparison_item(base),
@@ -3137,6 +3192,7 @@ def _compare_results(base: AssessmentResult, other: AssessmentResult) -> Assessm
             "added": sorted(other_mitigations - base_mitigations),
             "removed": sorted(base_mitigations - other_mitigations),
         },
+        version_comparison=version_comparison,
     )
 
 
@@ -3413,7 +3469,12 @@ def _execute_portfolio_job(
 
 @app.get("/health")
 def health() -> dict:
-    return {"status": "ok"}
+    return {
+        "status": "ok",
+        "product_version": PRODUCT_VERSION,
+        "api_version": API_VERSION,
+        "model_governance": _build_result_governance(ruleset_version="1.0.0", region_data_version=None),
+    }
 
 
 @app.get("/organizations", response_model=list[Organization], dependencies=[Depends(require_api_key)])

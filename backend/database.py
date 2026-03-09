@@ -25,7 +25,19 @@ from backend.models import (
     UnderwritingRulesetCreate,
     WorkflowState,
 )
-from backend.version import LEGACY_MODEL_VERSION
+from backend.version import (
+    API_VERSION,
+    BENCHMARK_PACK_VERSION,
+    CALIBRATION_VERSION,
+    DATA_BUNDLE_VERSION,
+    FACTOR_SCHEMA_VERSION,
+    LEGACY_MODEL_VERSION,
+    MODEL_VERSION,
+    PRODUCT_VERSION,
+    RULESET_LOGIC_VERSION,
+    build_model_governance,
+    normalize_model_governance,
+)
 
 DEFAULT_ORG_ID = "default_org"
 DEFAULT_ORG_NAME = "Default Demo Organization"
@@ -1274,6 +1286,45 @@ class AssessmentStore:
                 "insurance_readiness": payload.get("insurance_readiness_section", {}),
             },
         )
+
+        payload.setdefault("product_version", PRODUCT_VERSION)
+        payload.setdefault("api_version", API_VERSION)
+        payload.setdefault("scoring_model_version", payload.get("model_version", MODEL_VERSION))
+        payload.setdefault("rules_logic_version", RULESET_LOGIC_VERSION)
+        payload.setdefault("factor_schema_version", FACTOR_SCHEMA_VERSION)
+        payload.setdefault("benchmark_pack_version", BENCHMARK_PACK_VERSION)
+        payload.setdefault("calibration_version", CALIBRATION_VERSION)
+        payload.setdefault("region_data_version", payload.get("region_data_version"))
+        payload.setdefault("data_bundle_version", DATA_BUNDLE_VERSION)
+        payload.setdefault(
+            "model_governance",
+            build_model_governance(
+                ruleset_version=str(payload.get("ruleset_version") or "1.0.0"),
+                benchmark_pack_version=str(payload.get("benchmark_pack_version") or BENCHMARK_PACK_VERSION),
+                region_data_version=(
+                    str(payload.get("region_data_version")) if payload.get("region_data_version") is not None else None
+                ),
+                data_bundle_version=str(payload.get("data_bundle_version") or DATA_BUNDLE_VERSION),
+                product_version=str(payload.get("product_version") or PRODUCT_VERSION),
+                api_version=str(payload.get("api_version") or API_VERSION),
+                scoring_model_version=str(payload.get("scoring_model_version") or payload.get("model_version") or MODEL_VERSION),
+                rules_logic_version=str(payload.get("rules_logic_version") or RULESET_LOGIC_VERSION),
+                factor_schema_version=str(payload.get("factor_schema_version") or FACTOR_SCHEMA_VERSION),
+                calibration_version=str(payload.get("calibration_version") or CALIBRATION_VERSION),
+            ),
+        )
+        payload["model_governance"] = normalize_model_governance(payload.get("model_governance"))
+        payload["product_version"] = payload["model_governance"]["product_version"]
+        payload["api_version"] = payload["model_governance"]["api_version"]
+        payload["scoring_model_version"] = payload["model_governance"]["scoring_model_version"]
+        payload["ruleset_version"] = payload["model_governance"]["ruleset_version"]
+        payload["rules_logic_version"] = payload["model_governance"]["rules_logic_version"]
+        payload["factor_schema_version"] = payload["model_governance"]["factor_schema_version"]
+        payload["benchmark_pack_version"] = payload["model_governance"]["benchmark_pack_version"]
+        payload["calibration_version"] = payload["model_governance"]["calibration_version"]
+        payload["region_data_version"] = payload["model_governance"]["region_data_version"]
+        payload["data_bundle_version"] = payload["model_governance"]["data_bundle_version"]
+        payload["model_version"] = payload["model_governance"]["scoring_model_version"] or payload.get("model_version", MODEL_VERSION)
 
         payload.setdefault("generated_at", created_at or self._now())
         payload.setdefault("scoring_notes", ["Access risk is provisional and not included in total scoring."])

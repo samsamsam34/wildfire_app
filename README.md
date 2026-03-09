@@ -65,6 +65,45 @@ Review and operations:
 - organizations and underwriting rulesets
 - audit and summary endpoints (`/audit/events`, `/admin/summary`)
 
+## Model Governance / Versioning
+
+Version metadata is centralized in `backend/version.py` and returned as `model_governance` in:
+- `GET /health`
+- assessment responses (`POST /risk/assess`, reassess/simulate mirrors, debug payloads)
+- report export payloads (`GET /report/{assessment_id}/export`)
+- benchmark artifacts (`scripts/run_benchmark_suite.py`)
+
+Tracked dimensions:
+- `product_version`
+- `api_version`
+- `scoring_model_version`
+- `ruleset_version` and `rules_logic_version`
+- `factor_schema_version`
+- `benchmark_pack_version`
+- `calibration_version`
+- `region_data_version` / `data_bundle_version`
+
+Version utilities:
+
+```bash
+python scripts/print_model_versions.py
+python scripts/check_version_consistency.py
+```
+
+Bump guidance:
+- `product_version` / `api_version`:
+  - patch: internal bug fix without meaningful schema/output impact
+  - minor: backward-compatible field additions or behavior changes
+  - major: breaking contract or materially incompatible semantics
+- `scoring_model_version`: scoring formulas/weights/submodel math changed
+- `rules_logic_version` or `ruleset_version`: readiness/blocker logic changed
+- `factor_schema_version`: factor/evidence ledger field meaning changed
+- `benchmark_pack_version`: canonical benchmark scenarios/expectations changed
+- `calibration_version`: empirical calibration method/dataset policy changed
+- `region_data_version` / `data_bundle_version`: prepared layer snapshot changed materially
+
+For cross-assessment comparisons, `/assessments/.../compare/...` includes a `version_comparison` block and compatibility label.
+
 ## Layer Diagnostics / Coverage Audit
 
 Use `POST /risk/layer-diagnostics` (or `POST /risk/debug`) to inspect runtime data coverage before tuning scores.
@@ -328,7 +367,7 @@ What it checks:
 - monotonic sanity assertions (for mitigation and insurer-facing directional logic)
 - release drift summary (score deltas, confidence deltas, warnings/blockers, factor contribution shifts)
 
-Benchmark artifacts include governance metadata (`scoring_model_version`, `ruleset_version`, `factor_schema_version`, `benchmark_pack_version`, `region_data_version` when available).
+Benchmark artifacts include aggregated governance metadata plus a `model_governance` block.
 
 Use `POST /risk/debug?include_benchmark_hints=true` or `GET /report/{assessment_id}/export?include_benchmark_hints=true` to include lightweight benchmark resemblance and sanity-check hints in diagnostics/export output.
 
@@ -337,3 +376,11 @@ Use `POST /risk/debug?include_benchmark_hints=true` or `GET /report/{assessment_
 - Scoring and readiness are deterministic heuristics; this is not a carrier-approved underwriting model.
 - Report export is JSON/HTML oriented (no built-in PDF generator).
 - Open-data enrichment depends on local prepared layers and configured sources; missing datasets still trigger partial/fallback paths.
+
+## Release Notes
+
+Use `CHANGELOG.md` for structured release notes. Each release should record:
+- versions bumped
+- reason for bump
+- expected output impact
+- interpretation/comparability notes
