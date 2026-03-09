@@ -532,6 +532,9 @@ class AssessmentResult(BaseModel):
     layer_coverage_audit: List[LayerCoverageAuditItem] = Field(default_factory=list)
     coverage_summary: LayerCoverageSummary = Field(default_factory=LayerCoverageSummary)
     region_resolution: RegionResolution = Field(default_factory=RegionResolution)
+    # Convenience mirrors for routing observability without parsing nested objects.
+    coverage_available: bool = False
+    resolved_region_id: Optional[str] = None
     site_hazard_eligibility: ScoreEligibility = Field(default_factory=ScoreEligibility)
     home_vulnerability_eligibility: ScoreEligibility = Field(default_factory=ScoreEligibility)
     insurance_readiness_eligibility: ScoreEligibility = Field(default_factory=ScoreEligibility)

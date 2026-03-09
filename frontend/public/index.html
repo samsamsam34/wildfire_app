@@ -363,13 +363,14 @@
 
           <h3 style="margin-top:0.9rem;">Property-Level Context</h3>
           <p id="propertyContextText" class="muted">No property-level context available yet.</p>
-          <p id="regionResolutionText" class="muted">Region resolution details unavailable.</p>
+          <p id="regionResolutionText" class="muted" style="display:none;">Region resolution details unavailable.</p>
         </details>
       </section>
     </div>
 
     <script>
       const apiBase = (window.WILDFIRE_API_BASE || "http://127.0.0.1:8000").replace(/\/$/, "");
+      const isDebugMode = !!window.WILDFIRE_DEBUG_MODE;
       const apiKeyInput = document.getElementById("apiKey");
       let storedApiKey = "dev-key-1";
       try {
@@ -674,9 +675,17 @@
           document.getElementById("readinessText").textContent = "Insurance readiness score: not computed (insufficient evidence)";
         }
         document.getElementById("propertyContextText").textContent = buildPropertyContextSummary(data, propertyFindings);
-        const resolvedRegionId = resolution?.resolved_region_id || data?.property_level_context?.region_id || "unresolved";
-        document.getElementById("regionResolutionText").textContent =
-          `Resolved prepared region: ${resolvedRegionId} (${resolution?.reason || "unknown"}).`;
+        const regionResolutionEl = document.getElementById("regionResolutionText");
+        if (regionResolutionEl) {
+          if (isDebugMode) {
+            const resolvedRegionId = resolution?.resolved_region_id || data?.property_level_context?.region_id || "unresolved";
+            regionResolutionEl.style.display = "block";
+            regionResolutionEl.textContent =
+              `Resolved prepared region: ${resolvedRegionId} (${resolution?.reason || "unknown"}, covered=${resolution?.coverage_available === true}).`;
+          } else {
+            regionResolutionEl.style.display = "none";
+          }
+        }
       }
 
       function renderUncoveredLocationState(detail) {
@@ -705,8 +714,16 @@
         document.getElementById("submodels").innerHTML = "<tr><td colspan='3' class='muted'>No factor data until region coverage is prepared.</td></tr>";
         document.getElementById("readinessText").textContent = "Insurance readiness score: not computed (location outside prepared coverage)";
         document.getElementById("propertyContextText").textContent = recommendation;
-        document.getElementById("regionResolutionText").textContent =
-          `Resolved prepared region: none (${reasonText}).`;
+        const regionResolutionEl = document.getElementById("regionResolutionText");
+        if (regionResolutionEl) {
+          if (isDebugMode) {
+            regionResolutionEl.style.display = "block";
+            regionResolutionEl.textContent =
+              `Resolved prepared region: none (${reasonText}, covered=false).`;
+          } else {
+            regionResolutionEl.style.display = "none";
+          }
+        }
       }
 
       async function fetchCoverageForAddress(address) {

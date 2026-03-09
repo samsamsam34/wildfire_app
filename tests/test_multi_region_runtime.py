@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 
 import pytest
@@ -205,6 +206,10 @@ def test_assess_auto_resolves_missoula_and_bozeman_without_cross_region_routing(
     assert bozeman_body["region_resolution"]["coverage_available"] is True
     assert missoula_body["region_resolution"]["resolved_region_id"] == missoula_id
     assert bozeman_body["region_resolution"]["resolved_region_id"] == bozeman_id
+    assert missoula_body["coverage_available"] is True
+    assert bozeman_body["coverage_available"] is True
+    assert missoula_body["resolved_region_id"] == missoula_id
+    assert bozeman_body["resolved_region_id"] == bozeman_id
 
     assert missoula_body["property_level_context"]["region_id"] == missoula_id
     assert bozeman_body["property_level_context"]["region_id"] == bozeman_id
@@ -251,7 +256,11 @@ def test_uncovered_address_returns_graceful_uncovered_location_response(monkeypa
     assert body["region_resolution"]["resolved_region_id"] is None
     assert body["region_resolution"]["reason"] == "no_prepared_region_for_location"
     assert body["region_resolution"]["recommended_action"]
+    assert body["coverage_available"] is False
+    assert body["resolved_region_id"] is None
     assert body["assessment_status"] == "insufficient_data"
+    assert body["property_level_context"].get("region_id") is None
+    assert body["property_level_context"].get("region_status") in {"region_not_prepared", "legacy_fallback", "invalid_manifest"}
 
 
 def test_regions_coverage_check_returns_resolved_region_id_for_debugging(monkeypatch, tmp_path: Path):
@@ -282,3 +291,31 @@ def test_regions_coverage_check_returns_resolved_region_id_for_debugging(monkeyp
     assert bozeman_body["coverage_available"] is True
     assert missoula_body["resolved_region_id"] == missoula_id
     assert bozeman_body["resolved_region_id"] == bozeman_id
+
+
+def test_assessment_emits_structured_region_resolution_log(monkeypatch, tmp_path: Path, caplog):
+    _require_region_prep_deps()
+    _require_geo_runtime_deps()
+
+    region_root = tmp_path / "regions"
+    sources = _make_region_sources(tmp_path)
+    missoula_id, _ = _prepare_missoula_and_bozeman(region_root, sources)
+    _configure_runtime(monkeypatch, tmp_path, region_root)
+    monkeypatch.setattr(app_main.geocoder, "geocode", lambda _address: (46.8721, -113.9940, "test-geocoder"))
+
+    with caplog.at_level(logging.INFO, logger="wildfire_app.assessment"):
+        response = client.post(
+            "/risk/assess",
+            json={
+                "address": "201 W Front St, Missoula, MT 59802",
+                "attributes": {"roof_type": "class a"},
+                "confirmed_fields": ["roof_type"],
+                "audience": "homeowner",
+            },
+            headers=_headers(),
+        )
+    assert response.status_code == 200
+    messages = [record.getMessage() for record in caplog.records if "assessment_region_resolution" in record.getMessage()]
+    assert messages, "Expected assessment_region_resolution log event."
+    assert any(f'\"resolved_region_id\": \"{missoula_id}\"' in message for message in messages)
+    assert any('\"coverage_available\": true' in message for message in messages)

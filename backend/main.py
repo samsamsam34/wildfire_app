@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import csv
 import io
+import json
+import logging
 import math
 import os
 from dataclasses import dataclass
@@ -123,6 +125,7 @@ from backend.wildfire_data import (
 )
 
 app = FastAPI(title="WildfireRisk Advisor API", version=PRODUCT_VERSION)
+LOGGER = logging.getLogger("wildfire_app.assessment")
 
 app.add_middleware(
     CORSMiddleware,
@@ -2754,6 +2757,8 @@ def _run_assessment(
         layer_coverage_audit=layer_coverage_audit,
         coverage_summary=coverage_summary,
         region_resolution=region_resolution,
+        coverage_available=bool(region_resolution.coverage_available),
+        resolved_region_id=region_resolution.resolved_region_id,
         site_hazard_eligibility=site_hazard_eligibility,
         home_vulnerability_eligibility=home_vulnerability_eligibility,
         insurance_readiness_eligibility=insurance_readiness_eligibility,
@@ -2790,6 +2795,14 @@ def _run_assessment(
         mitigation_recommendations=mitigation_plan,
         environmental_factors=factors,
         explanation=explanation_summary,
+    )
+
+    _log_region_resolution_event(
+        address=payload.address,
+        latitude=lat,
+        longitude=lon,
+        region_resolution=region_resolution,
+        manifest_path=str(property_level_context.get("region_manifest_path") or "") or None,
     )
 
     result = _apply_ruleset_to_result(result, ruleset)
@@ -3396,6 +3409,33 @@ def _region_coverage_for_coordinates(lat: float, lon: float) -> dict[str, Any]:
     }
 
 
+def _log_region_resolution_event(
+    *,
+    address: str,
+    latitude: float,
+    longitude: float,
+    region_resolution: RegionResolution | dict[str, Any],
+    manifest_path: str | None = None,
+) -> None:
+    resolution = (
+        region_resolution.model_dump()
+        if isinstance(region_resolution, RegionResolution)
+        else dict(region_resolution or {})
+    )
+    payload = {
+        "event": "assessment_region_resolution",
+        "address": address,
+        "latitude": round(float(latitude), 6),
+        "longitude": round(float(longitude), 6),
+        "coverage_available": bool(resolution.get("coverage_available", False)),
+        "resolved_region_id": resolution.get("resolved_region_id"),
+        "reason": resolution.get("reason"),
+        "manifest_path": manifest_path,
+        "diagnostics": list(resolution.get("diagnostics") or []),
+    }
+    LOGGER.info("assessment_region_resolution %s", json.dumps(payload, sort_keys=True))
+
+
 def _build_region_resolution(
     *,
     property_level_context: dict[str, Any],
@@ -3963,6 +4003,18 @@ def assess_risk(
                         "reused_existing_job": status.reused_existing_job,
                     },
                 )
+                _log_region_resolution_event(
+                    address=payload.address,
+                    latitude=lat,
+                    longitude=lon,
+                    region_resolution={
+                        "coverage_available": False,
+                        "resolved_region_id": None,
+                        "reason": "no_prepared_region_for_location",
+                        "diagnostics": coverage.get("diagnostics", []),
+                    },
+                    manifest_path=None,
+                )
                 raise HTTPException(
                     status_code=409,
                     detail={
@@ -3981,6 +4033,18 @@ def assess_risk(
                         "diagnostics": coverage.get("diagnostics", []),
                     },
                 )
+            _log_region_resolution_event(
+                address=payload.address,
+                latitude=lat,
+                longitude=lon,
+                region_resolution={
+                    "coverage_available": False,
+                    "resolved_region_id": None,
+                    "reason": "no_prepared_region_for_location",
+                    "diagnostics": coverage.get("diagnostics", []),
+                },
+                manifest_path=None,
+            )
             raise HTTPException(
                 status_code=409,
                 detail={

@@ -30,3 +30,10 @@ def test_frontend_does_not_require_manual_region_selection() -> None:
     assert "resolved_region_id" in html
     assert 'id="region_id"' not in html
     assert "outside the currently prepared region set" in html
+
+
+def test_frontend_region_debug_metadata_is_dev_mode_only() -> None:
+    html = _frontend_html()
+    assert "window.WILDFIRE_DEBUG_MODE" in html
+    assert 'id="regionResolutionText"' in html
+    assert 'style="display:none;"' in html

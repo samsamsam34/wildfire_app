@@ -203,6 +203,8 @@ def _assert_core_contract(body: dict) -> None:
         "site_hazard_eligibility",
         "home_vulnerability_eligibility",
         "insurance_readiness_eligibility",
+        "coverage_available",
+        "resolved_region_id",
         "assessment_status",
         "assessment_blockers",
         "assessment_diagnostics",
