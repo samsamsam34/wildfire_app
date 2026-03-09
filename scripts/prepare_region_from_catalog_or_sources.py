@@ -363,6 +363,59 @@ def _build_compact_summary(
     }
 
 
+def _build_cli_error_payload(
+    *,
+    exc: Exception,
+    region_id: str,
+    display_name: str,
+    requested_bbox: dict[str, float],
+    mode: str,
+) -> dict[str, Any]:
+    error_type = type(exc).__name__
+    failure_stage = "unknown"
+    issue_type = "execution_error"
+    actionable_message = (
+        "Check source config, provider connectivity, and required-layer coverage diagnostics."
+    )
+
+    if isinstance(exc, NameError):
+        issue_type = "internal_code_error"
+        failure_stage = "internal_layer_definition_reference"
+        actionable_message = (
+            "Internal layer-definition reference failed. Verify shared layer constants/imports "
+            "before rerunning."
+        )
+    elif "failure_stage=coverage_incomplete_after_ingest" in str(exc):
+        failure_stage = "coverage_incomplete_after_ingest"
+        issue_type = "required_layer_coverage_blocker"
+    elif "Source config not found" in str(exc):
+        failure_stage = "source_config_load"
+        issue_type = "source_config_missing"
+        actionable_message = "Provide a valid --source-config path or configure the default source registry."
+    elif "Required layer" in str(exc) and "source configuration" in str(exc):
+        failure_stage = "required_source_configuration"
+        issue_type = "required_layer_config_missing"
+        actionable_message = (
+            "Add source_path/source_url/source_endpoint for each missing required core layer."
+        )
+
+    payload = {
+        "mode": mode,
+        "final_status": "failed",
+        "region_id": region_id,
+        "display_name": display_name,
+        "requested_bbox": requested_bbox,
+        "failure_stage": failure_stage,
+        "issue_type": issue_type,
+        "error_type": error_type,
+        "error": str(exc),
+        "actionable_message": actionable_message,
+    }
+    if isinstance(exc, NameError):
+        payload["missing_constant"] = str(exc).replace("name ", "").replace(" is not defined", "").strip("'")
+    return payload
+
+
 def _annotate_manifest_with_orchestration(
     *,
     manifest: dict[str, Any],
@@ -966,20 +1019,13 @@ def main() -> None:
         )
         print(json.dumps(result, indent=2, sort_keys=True))
     except Exception as exc:
-        error_payload = {
-            "mode": "executed" if not args.plan_only else "plan_only",
-            "final_status": "failed",
-            "region_id": args.region_id,
-            "display_name": args.display_name or args.region_id.replace("_", " ").title(),
-            "requested_bbox": requested_bbox,
-            "error": str(exc),
-            "failure_stage": (
-                "coverage_incomplete_after_ingest"
-                if "failure_stage=coverage_incomplete_after_ingest" in str(exc)
-                else "unknown"
-            ),
-            "suggestion": "Check source config, provider connectivity, and required-layer coverage diagnostics.",
-        }
+        error_payload = _build_cli_error_payload(
+            exc=exc,
+            region_id=args.region_id,
+            display_name=args.display_name or args.region_id.replace("_", " ").title(),
+            requested_bbox=requested_bbox,
+            mode=("executed" if not args.plan_only else "plan_only"),
+        )
         print(json.dumps(error_payload, indent=2, sort_keys=True))
         raise SystemExit(1) from exc
 

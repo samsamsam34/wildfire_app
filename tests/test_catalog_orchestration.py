@@ -7,7 +7,10 @@ import pytest
 
 from backend.data_prep.catalog import ingest_catalog_raster, ingest_catalog_vector
 from scripts.catalog_coverage import build_catalog_coverage_plan, required_core_layers
-from scripts.prepare_region_from_catalog_or_sources import prepare_region_from_catalog_or_sources
+from scripts.prepare_region_from_catalog_or_sources import (
+    _build_cli_error_payload,
+    prepare_region_from_catalog_or_sources,
+)
 
 try:
     import numpy as np
@@ -156,6 +159,28 @@ def test_catalog_coverage_plan_full_partial_none(tmp_path):
     assert none_plan["layers"]["fuel"]["coverage_status"] == "none"
 
 
+def test_prepare_any_region_plan_only_no_name_error_and_policy_structure(tmp_path):
+    catalog_root = tmp_path / "catalog"
+    regions_root = tmp_path / "regions"
+    bbox = {"min_lon": -114.2, "min_lat": 46.75, "max_lon": -113.8, "max_lat": 47.0}
+
+    result = prepare_region_from_catalog_or_sources(
+        region_id="missoula_plan_only",
+        display_name="Missoula Plan Only",
+        bounds=bbox,
+        catalog_root=catalog_root,
+        regions_root=regions_root,
+        source_config={},
+        plan_only=True,
+    )
+    assert result["mode"] == "plan_only"
+    assert "required_layer_policy" in result
+    policy = result["required_layer_policy"]
+    assert "slope" in policy["derived_core_layers"]
+    assert "slope" not in policy["required_core_layers"]
+    assert "dem" in policy["required_core_layers"]
+
+
 def test_prepare_any_region_full_catalog_coverage_no_acquisition(tmp_path):
     sources = _seed_sources(tmp_path)
     catalog_root = tmp_path / "catalog"
@@ -264,7 +289,10 @@ def test_prepare_any_region_required_layer_failure_raises(tmp_path):
             overwrite=True,
             require_core_layers=True,
         )
-    assert "required core layer blockers" in str(exc.value).lower()
+    msg = str(exc.value)
+    assert "required core layer blockers" in msg.lower()
+    assert "failure_stage=coverage_incomplete_after_ingest" in msg
+    assert "nameerror" not in msg.lower()
 
 
 def test_prepare_any_region_optional_layer_omission_recorded(tmp_path):
@@ -502,3 +530,16 @@ def test_prepare_any_region_second_region_missoula_smoke(monkeypatch, tmp_path):
     assert validation.get("validation_status") in {"passed", "failed"}
     if validation.get("validation_status") == "failed":
         assert validation.get("blockers"), "Validation failure should include structured blockers."
+
+
+def test_cli_error_payload_flags_internal_missing_constant():
+    payload = _build_cli_error_payload(
+        exc=NameError("name 'CATALOG_DERIVED_RASTER_LAYERS' is not defined"),
+        region_id="x",
+        display_name="X",
+        requested_bbox={"min_lon": 0, "min_lat": 0, "max_lon": 1, "max_lat": 1},
+        mode="plan_only",
+    )
+    assert payload["issue_type"] == "internal_code_error"
+    assert payload["failure_stage"] == "internal_layer_definition_reference"
+    assert payload["missing_constant"] == "CATALOG_DERIVED_RASTER_LAYERS"

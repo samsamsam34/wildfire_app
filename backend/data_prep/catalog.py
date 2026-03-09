@@ -28,13 +28,20 @@ except Exception:  # pragma: no cover - optional in constrained envs
     shape = None
 
 from backend.data_prep.prepare_region import prepare_region_layers
+from backend.data_prep.layer_definitions import (
+    DERIVED_RASTER_LAYERS,
+    OPTIONAL_LAYERS,
+    REQUIRED_CORE_RASTER_LAYERS,
+    REQUIRED_CORE_VECTOR_LAYERS,
+)
 from backend.data_prep.sources import acquire_layer_from_config, resolve_landfire_raster
 
 
-CATALOG_CORE_RASTER_LAYERS = ("dem", "fuel", "canopy")
-CATALOG_DERIVED_RASTER_LAYERS = ("slope",)
-CATALOG_CORE_VECTOR_LAYERS = ("fire_perimeters", "building_footprints")
-CATALOG_OPTIONAL_LAYERS = ("roads", "whp", "mtbs_severity", "gridmet_dryness")
+# Backward-compatible aliases used by existing scripts/tests.
+CATALOG_CORE_RASTER_LAYERS = REQUIRED_CORE_RASTER_LAYERS
+CATALOG_DERIVED_RASTER_LAYERS = DERIVED_RASTER_LAYERS
+CATALOG_CORE_VECTOR_LAYERS = REQUIRED_CORE_VECTOR_LAYERS
+CATALOG_OPTIONAL_LAYERS = OPTIONAL_LAYERS
 
 LAYER_TYPES: dict[str, str] = {
     "dem": "raster",
@@ -744,4 +751,3 @@ def build_region_from_catalog(
         manifest["catalog"]["validation"] = validation
 
     return manifest
-

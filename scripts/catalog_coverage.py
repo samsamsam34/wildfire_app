@@ -4,12 +4,12 @@ import json
 from pathlib import Path
 from typing import Any, Sequence
 
-from backend.data_prep.catalog import (
-    CATALOG_CORE_RASTER_LAYERS,
-    CATALOG_CORE_VECTOR_LAYERS,
-    CATALOG_OPTIONAL_LAYERS,
-    default_catalog_root,
-    load_catalog_index,
+from backend.data_prep.catalog import default_catalog_root, load_catalog_index
+from backend.data_prep.layer_definitions import (
+    DERIVED_RASTER_LAYERS,
+    OPTIONAL_LAYERS,
+    REQUIRED_CORE_RASTER_LAYERS,
+    REQUIRED_CORE_VECTOR_LAYERS,
 )
 
 try:
@@ -26,17 +26,17 @@ except Exception:  # pragma: no cover - optional dependency
 
 
 def required_core_layers() -> list[str]:
-    return list(CATALOG_CORE_RASTER_LAYERS) + list(CATALOG_CORE_VECTOR_LAYERS)
+    return list(REQUIRED_CORE_RASTER_LAYERS) + list(REQUIRED_CORE_VECTOR_LAYERS)
 
 
 def optional_layers() -> list[str]:
-    return list(CATALOG_OPTIONAL_LAYERS)
+    return list(OPTIONAL_LAYERS)
 
 
 def required_layer_policy() -> dict[str, list[str]]:
     return {
         "required_core_layers": required_core_layers(),
-        "derived_core_layers": list(CATALOG_DERIVED_RASTER_LAYERS),
+        "derived_core_layers": list(DERIVED_RASTER_LAYERS),
         "optional_layers": optional_layers(),
     }
 
