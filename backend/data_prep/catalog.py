@@ -107,6 +107,11 @@ def _stable_bbox(bounds: dict[str, float] | None) -> str | None:
     )
 
 
+def _is_probably_http_url(value: str) -> bool:
+    parsed = urllib.parse.urlparse(value)
+    return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+
+
 def _hash_payload(payload: dict[str, Any]) -> str:
     raw = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
@@ -471,6 +476,8 @@ def _resolve_ingest_input(
             f"No download URL resolved for layer '{layer_name}'. "
             "Provide source_url/full_download_url or enable bbox-capable source_endpoint."
         )
+    if not _is_probably_http_url(source_url) and not source_url.startswith("file://"):
+        raise ValueError(f"invalid_request_url={source_url}")
     cache_dir = cache_root / "catalog_downloads"
     cache_dir.mkdir(parents=True, exist_ok=True)
     suffix = Path(urllib.parse.urlparse(source_url).path).suffix or (".tif" if layer_type == "raster" else ".geojson")

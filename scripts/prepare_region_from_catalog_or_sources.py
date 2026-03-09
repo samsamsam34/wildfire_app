@@ -554,6 +554,8 @@ def _build_cli_error_payload(
 
 def _classify_execution_failure(error: str) -> tuple[str, str]:
     msg = error.lower()
+    if "invalid_request_url=" in msg or "unknown url type" in msg or "invalid url" in msg:
+        return "invalid_request_url", "Request URL is invalid. Check source_endpoint/source_url configuration."
     if "source configuration" in msg or "missing source details" in msg:
         return "config_validation_failed", "Layer source configuration is invalid or incomplete."
     if "http error 404" in msg or "http_status=404" in msg:
@@ -562,14 +564,26 @@ def _classify_execution_failure(error: str) -> tuple[str, str]:
         if "f=geojson" in msg:
             return "unsupported_output_format", "Provider rejected GeoJSON output format; use JSON/esri-json fallback."
         return "invalid_query", "Provider rejected request parameters (HTTP 400)."
+    if "provider_http_error" in msg:
+        return "provider_http_error", "Provider request failed. Check endpoint and query parameters."
+    if "provider_payload_error" in msg:
+        return "provider_payload_error", "Provider returned an error payload."
+    if "esri_json_parse_error" in msg:
+        return "esri_json_parse_error", "Provider JSON response could not be parsed into valid features."
+    if "empty_result" in msg or "empty feature set" in msg:
+        return "empty_result", "Provider query returned no features for this bbox."
+    if "output_write_failure" in msg:
+        return "output_write_failure", "Fetched features could not be written to local vector output."
+    if "catalog registration failed" in msg:
+        return "catalog_registration_failure", "Catalog index/registration update failed after ingest."
+    if "bounds metadata failure" in msg:
+        return "bounds_metadata_failure", "Catalog bounds metadata could not be computed or persisted."
     if "failed download after retries" in msg or "urlopen error" in msg or "http error" in msg:
         return "remote_provider_error", "Provider request failed. Check endpoint connectivity/auth and retry."
     if "html/error payload" in msg or "json/error payload" in msg or "json/error content" in msg:
         return "invalid_provider_payload", "Provider returned an error payload instead of layer data."
     if "no download url resolved" in msg:
         return "request_construction_failure", "Source configuration could not resolve a valid request URL."
-    if "empty feature set" in msg:
-        return "provider_empty_result", "Provider query returned no features for this bbox."
     if "provider error" in msg and "vector source" in msg:
         return "provider_query_error", "Provider returned a vector query error payload."
     if "raster has no crs" in msg:
@@ -595,12 +609,24 @@ def _extract_provider_error_context(error: str) -> dict[str, Any]:
         if m_status:
             status_code = int(m_status.group(1))
 
-    if "for http" in error:
-        try:
-            after_for = error.split("for ", 1)[1]
-            request_url = after_for.split(": ", 1)[0].strip()
-        except Exception:
-            request_url = None
+    # First prefer explicit query URLs when present.
+    url_matches = re.findall(r"https?://[^\s)]+", error)
+    if url_matches:
+        cleaned_urls = [u.strip(".,;'\"[]") for u in url_matches]
+        query_urls = [u for u in cleaned_urls if _is_probably_url(u) and "/query?" in u.lower()]
+        if query_urls:
+            request_url = query_urls[-1]
+        else:
+            generic_urls = [u for u in cleaned_urls if _is_probably_url(u)]
+            if generic_urls:
+                request_url = generic_urls[-1]
+    if request_url is None:
+        # Fallback to explicit invalid_request_url marker.
+        m_invalid = re.search(r"invalid_request_url=([^\s;)]+)", error, flags=re.IGNORECASE)
+        if m_invalid:
+            candidate = m_invalid.group(1).strip()
+            if _is_probably_url(candidate):
+                request_url = candidate
 
     m_ct = re.search(r"content_type=([^,)]+)", error, flags=re.IGNORECASE)
     if m_ct:
@@ -937,6 +963,7 @@ def prepare_region_from_catalog_or_sources(
             "request_mode": request_mode,
             "bbox_used": dict(bounds),
             "request_url": None,
+            "diagnostic_summary": None,
             "fetch_attempted": False,
             "fetch_succeeded": False,
             "response_status_code": None,
@@ -1000,6 +1027,8 @@ def prepare_region_from_catalog_or_sources(
             layer_execution["catalog_ingest_succeeded"] = bool(ingest_diag.get("catalog_ingest_succeeded", True))
             layer_execution["catalog_entry_path"] = metadata.get("catalog_path")
             layer_execution["catalog_entry_id"] = metadata.get("item_id")
+            if isinstance(metadata.get("warnings"), list) and metadata.get("warnings"):
+                layer_execution["diagnostic_summary"] = "; ".join(str(w) for w in metadata.get("warnings", [])[:3])
             acquired_layers.append(
                 {
                     "layer_key": layer_key,
@@ -1020,12 +1049,13 @@ def prepare_region_from_catalog_or_sources(
             layer_execution["actionable_error"] = actionable
             layer_execution["catalog_ingest_succeeded"] = False
             layer_execution["fetch_succeeded"] = False
-            if "failed download after retries" in error_text.lower():
-                layer_execution["fetch_attempted"] = True
+            # If ingest was attempted for a remote layer, count fetch as attempted even on provider/query failures.
+            layer_execution["fetch_attempted"] = bool(source_endpoint or source_url)
             layer_execution["request_url"] = context.get("request_url")
             layer_execution["response_status_code"] = context.get("response_status_code")
             layer_execution["response_content_type"] = context.get("response_content_type")
             layer_execution["provider_error_snippet"] = context.get("provider_error_snippet")
+            layer_execution["diagnostic_summary"] = error_text[:400]
             item = {
                 "layer_key": layer_key,
                 "failure_type": "acquisition_or_ingest_failed",
@@ -1136,12 +1166,16 @@ def prepare_region_from_catalog_or_sources(
                     if diag.get("failure_reason")
                     in {
                         "remote_provider_error",
+                        "provider_http_error",
+                        "provider_payload_error",
                         "endpoint_not_found",
                         "unsupported_output_format",
                         "invalid_query",
+                        "invalid_request_url",
+                        "esri_json_parse_error",
+                        "empty_result",
                         "invalid_provider_payload",
                         "provider_query_error",
-                        "provider_empty_result",
                         "request_construction_failure",
                     }
                 }
@@ -1151,7 +1185,15 @@ def prepare_region_from_catalog_or_sources(
                     layer
                     for layer, diag in per_layer_execution_diagnostics.items()
                     if diag.get("failure_reason")
-                    in {"invalid_raster_crs", "outside_extent", "runtime_dependency_missing", "ingest_failure"}
+                    in {
+                        "invalid_raster_crs",
+                        "outside_extent",
+                        "runtime_dependency_missing",
+                        "output_write_failure",
+                        "catalog_registration_failure",
+                        "bounds_metadata_failure",
+                        "ingest_failure",
+                    }
                 }
             ),
             "coverage_recheck": sorted(set(required_missing_after)),

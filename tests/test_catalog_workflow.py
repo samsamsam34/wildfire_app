@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import io
 import json
+import urllib.error
 from pathlib import Path
 
 import pytest
@@ -12,8 +14,10 @@ from backend.data_prep.catalog import (
     load_catalog_index,
 )
 from backend.data_prep import catalog as catalog_mod
+import backend.data_prep.sources.acquisition as source_acq
 from backend.data_prep.sources.acquisition import AcquisitionResult
 from backend.data_prep.prepare_region import prepare_region_layers
+from scripts.catalog_coverage import build_catalog_coverage_plan
 
 try:
     import numpy as np
@@ -68,6 +72,20 @@ def _write_geojson(path: Path) -> None:
 def _write_empty_geojson(path: Path) -> None:
     payload = {"type": "FeatureCollection", "features": []}
     path.write_text(json.dumps(payload), encoding="utf-8")
+
+
+class _FakeHTTPResponse(io.BytesIO):
+    def __init__(self, payload: bytes, *, status: int = 200, content_type: str = "application/json"):
+        super().__init__(payload)
+        self.status = status
+        self.headers = {"Content-Type": content_type}
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
+        return False
 
 
 def _seed_catalog_sources(tmp_path: Path) -> dict[str, Path]:
@@ -146,6 +164,95 @@ def test_catalog_vector_ingest_empty_feature_set_fails_clearly(tmp_path):
             bounds={"min_lon": 0.0, "min_lat": 0.0, "max_lon": 0.8, "max_lat": 0.8},
         )
     assert "empty feature set" in str(exc.value).lower()
+
+
+def test_arcgis_feature_service_json_query_ingest_writes_catalog_and_bounds(monkeypatch, tmp_path):
+    if catalog_mod.shape is None:
+        pytest.skip("shapely is required for vector ingest tests")
+    esri_json = {
+        "features": [
+            {
+                "attributes": {"id": 1, "name": "perimeter"},
+                "geometry": {
+                    "rings": [[[-111.0, 45.6], [-110.9, 45.6], [-110.9, 45.7], [-111.0, 45.7], [-111.0, 45.6]]]
+                },
+            }
+        ]
+    }
+
+    def fake_urlopen(url, timeout=0):
+        text = str(url)
+        assert "/query?" in text
+        assert "f=json" in text
+        return _FakeHTTPResponse(json.dumps(esri_json).encode("utf-8"))
+
+    monkeypatch.setattr(source_acq.urllib.request, "urlopen", fake_urlopen)
+    bbox = {"min_lon": -111.2, "min_lat": 45.5, "max_lon": -110.8, "max_lat": 45.9}
+    catalog_root = tmp_path / "catalog"
+    meta = ingest_catalog_vector(
+        layer_name="fire_perimeters",
+        source_endpoint="https://example.test/FeatureServer/0",
+        provider_type="arcgis_feature_service",
+        bounds=bbox,
+        catalog_root=catalog_root,
+        cache_root=tmp_path / "cache",
+        prefer_bbox_downloads=True,
+        allow_full_download_fallback=False,
+    )
+    assert Path(meta["catalog_path"]).exists()
+    assert meta["bounds"] is not None
+    assert meta["feature_count"] == 1
+    request_url = str(meta.get("ingest_diagnostics", {}).get("request_url") or "")
+    assert request_url.startswith("https://example.test/FeatureServer/0/query?")
+    assert "endpoint " not in request_url.lower()
+    coverage = build_catalog_coverage_plan(
+        bounds=bbox,
+        required_layers=["fire_perimeters"],
+        optional_layer_keys=[],
+        catalog_root=catalog_root,
+    )
+    assert coverage["layers"]["fire_perimeters"]["coverage_status"] == "full"
+
+
+def test_arcgis_feature_service_geojson_fallback_to_json_ingest(monkeypatch, tmp_path):
+    if catalog_mod.shape is None:
+        pytest.skip("shapely is required for vector ingest tests")
+    esri_json = {
+        "features": [
+            {
+                "attributes": {"id": 1},
+                "geometry": {
+                    "rings": [[[-111.0, 45.6], [-110.9, 45.6], [-110.9, 45.7], [-111.0, 45.7], [-111.0, 45.6]]]
+                },
+            }
+        ]
+    }
+
+    def fake_urlopen(url, timeout=0):
+        text = str(url)
+        if "f=geojson" in text:
+            body = io.BytesIO(b'{"error":{"message":"Format geojson not supported"}}')
+            raise urllib.error.HTTPError(text, 400, "Bad Request", {"Content-Type": "application/json"}, body)
+        if "f=json" in text:
+            return _FakeHTTPResponse(json.dumps(esri_json).encode("utf-8"))
+        raise AssertionError(f"Unexpected URL: {text}")
+
+    monkeypatch.setattr(source_acq.urllib.request, "urlopen", fake_urlopen)
+    bbox = {"min_lon": -111.2, "min_lat": 45.5, "max_lon": -110.8, "max_lat": 45.9}
+    meta = ingest_catalog_vector(
+        layer_name="building_footprints",
+        source_endpoint="https://example.test/Buildings/FeatureServer/0",
+        provider_type="arcgis_feature_service",
+        bounds=bbox,
+        catalog_root=tmp_path / "catalog",
+        cache_root=tmp_path / "cache",
+        prefer_bbox_downloads=True,
+        allow_full_download_fallback=False,
+    )
+    assert meta["acquisition_method"] == "bbox_export_json_fallback"
+    assert any("geojson_query_failed" in w for w in meta.get("warnings", []))
+    request_url = str(meta.get("ingest_diagnostics", {}).get("request_url") or "")
+    assert "f=json" in request_url
 
 
 def test_resolve_ingest_input_prefers_bbox_for_endpoint_only_sources(monkeypatch, tmp_path):

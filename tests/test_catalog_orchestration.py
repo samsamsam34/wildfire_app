@@ -828,7 +828,66 @@ def test_execution_diagnostics_classifies_empty_vector_result(monkeypatch, tmp_p
         )
     details = exc.value.details
     fire = details["per_layer_execution_diagnostics"]["fire_perimeters"]
-    assert fire["failure_reason"] == "provider_empty_result"
+    assert fire["failure_reason"] == "empty_result"
+
+
+def test_execution_diagnostics_classifies_invalid_request_url(monkeypatch, tmp_path):
+    required = required_core_layers()
+
+    def fake_coverage_plan(*args, **kwargs):
+        return _coverage_plan_for_required(required, "none")
+
+    def fake_ingest(*args, **kwargs):
+        if kwargs["layer_key"] == "building_footprints":
+            raise ValueError("invalid_request_url=endpoint https://example.test/FeatureServer/0")
+        return {
+            "item_id": f"{kwargs['layer_key']}-item",
+            "catalog_path": str(tmp_path / f"{kwargs['layer_key']}.tif"),
+            "provider_type": "arcgis_image_service",
+            "acquisition_method": "bbox_export",
+            "source_url": "https://example.test/layer",
+            "source_endpoint": "https://example.test/layer/ImageServer",
+            "bbox_used": "0,0,1,1",
+            "cache_hit": False,
+            "ingest_diagnostics": {
+                "fetch_attempted": True,
+                "fetch_succeeded": True,
+                "catalog_ingest_succeeded": True,
+                "temp_input_path": str(tmp_path / "tmp.any"),
+            },
+        }
+
+    monkeypatch.setattr(prep_orch, "build_catalog_coverage_plan", fake_coverage_plan)
+    monkeypatch.setattr(prep_orch, "_ingest_layer_for_bbox", fake_ingest)
+
+    with pytest.raises(RegionPrepExecutionError) as exc:
+        prepare_region_from_catalog_or_sources(
+            region_id="diag_invalid_request_url",
+            display_name="Diag Invalid Request URL",
+            bounds={"min_lon": 0.0, "min_lat": 0.0, "max_lon": 1.0, "max_lat": 1.0},
+            catalog_root=tmp_path / "catalog",
+            regions_root=tmp_path / "regions",
+            source_config=_valid_required_source_config(),
+            skip_optional_layers=True,
+            overwrite=True,
+        )
+    details = exc.value.details
+    row = details["per_layer_execution_diagnostics"]["building_footprints"]
+    assert row["failure_reason"] == "invalid_request_url"
+
+
+def test_extract_provider_context_uses_actual_query_url_not_diagnostic_summary():
+    err = (
+        "provider_http_error: ArcGIS feature bbox query failed "
+        "(endpoint=https://example.test/FeatureServer/0, "
+        "attempted_formats=['geojson', 'json'], "
+        "attempted_urls=['https://example.test/FeatureServer/0/query?f=geojson', "
+        "'https://example.test/FeatureServer/0/query?f=json'], "
+        "last_error=json_query_failed=invalid_request_url=endpoint https://example.test/FeatureServer/0; attempted formats=['geojson','json'])"
+    )
+    context = prep_orch._extract_provider_error_context(err)
+    assert context["request_url"] == "https://example.test/FeatureServer/0/query?f=json"
+    assert not str(context["request_url"]).startswith("endpoint ")
 
 
 def test_execution_diagnostics_flags_coverage_recording_failure(monkeypatch, tmp_path):

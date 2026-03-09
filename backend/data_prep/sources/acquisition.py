@@ -41,6 +41,27 @@ class AcquisitionResult:
     bytes_downloaded: int | None = None
 
 
+class ArcGISFeatureQueryError(ValueError):
+    def __init__(
+        self,
+        *,
+        endpoint: str,
+        attempted_formats: list[str],
+        attempted_urls: list[str],
+        errors: list[str],
+    ) -> None:
+        self.endpoint = endpoint
+        self.attempted_formats = attempted_formats
+        self.attempted_urls = attempted_urls
+        self.errors = errors
+        summary = "; ".join(errors[-2:]) if errors else "no provider error details"
+        super().__init__(
+            "provider_http_error: ArcGIS feature bbox query failed "
+            f"(endpoint={endpoint}, attempted_formats={attempted_formats}, "
+            f"attempted_urls={attempted_urls}, last_error={summary})"
+        )
+
+
 class SourceProvider(Protocol):
     capabilities: SourceProviderCapabilities
 
@@ -64,6 +85,16 @@ def _stable_bbox(bounds: BoundingBox) -> str:
         f"{bounds['min_lon']:.6f},{bounds['min_lat']:.6f},"
         f"{bounds['max_lon']:.6f},{bounds['max_lat']:.6f}"
     )
+
+
+def _is_probably_http_url(value: str) -> bool:
+    parsed = urllib.parse.urlparse(value)
+    return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+
+
+def _validate_request_url(url: str) -> None:
+    if not _is_probably_http_url(url):
+        raise ValueError(f"invalid_request_url={url}")
 
 
 def _looks_like_html(path: Path) -> bool:
@@ -110,6 +141,7 @@ def _download_with_retry(
     retries: int,
     backoff_seconds: float,
 ) -> dict[str, Any]:
+    _validate_request_url(url)
     last_exc: Exception | None = None
     last_status: int | None = None
     last_content_type: str | None = None
@@ -168,6 +200,7 @@ def _download_json_with_retry(
     retries: int,
     backoff_seconds: float,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
+    _validate_request_url(url)
     last_exc: Exception | None = None
     last_status: int | None = None
     last_content_type: str | None = None
@@ -438,9 +471,16 @@ class ArcGISFeatureServiceProvider:
         payload: dict[str, Any],
         out_path: Path,
     ) -> int:
+        if isinstance(payload.get("error"), dict):
+            err = payload["error"]
+            message = str(err.get("message") or "unknown provider error")
+            details = err.get("details") or []
+            if isinstance(details, list) and details:
+                message = f"{message}: {'; '.join(str(d) for d in details)}"
+            raise ValueError(f"provider_payload_error={message}")
         features = payload.get("features")
         if not isinstance(features, list):
-            raise ValueError("provider json response missing features array")
+            raise ValueError("esri_json_parse_error: provider json response missing features array")
         out_features: list[dict[str, Any]] = []
         for feature in features:
             if not isinstance(feature, dict):
@@ -457,11 +497,14 @@ class ArcGISFeatureServiceProvider:
                 }
             )
         if not out_features:
-            raise ValueError("provider json response returned empty feature set")
-        out_path.write_text(
-            json.dumps({"type": "FeatureCollection", "features": out_features}),
-            encoding="utf-8",
-        )
+            raise ValueError("empty_result: provider json response returned empty feature set")
+        try:
+            out_path.write_text(
+                json.dumps({"type": "FeatureCollection", "features": out_features}),
+                encoding="utf-8",
+            )
+        except Exception as exc:
+            raise ValueError(f"output_write_failure: unable to write converted GeoJSON: {exc}") from exc
         return len(out_features)
 
     def fetch_bbox(
@@ -513,6 +556,8 @@ class ArcGISFeatureServiceProvider:
         acquisition_method = "bbox_export"
         meta: dict[str, Any] | None = None
         last_exc: Exception | None = None
+        attempted_urls: list[str] = []
+        attempt_errors: list[str] = []
 
         for fmt in format_order:
             try:
@@ -522,6 +567,7 @@ class ArcGISFeatureServiceProvider:
                         response_format="geojson",
                         return_geometry=self.require_return_geometry,
                     )
+                    attempted_urls.append(geojson_url)
                     download_meta = _download_with_retry(
                         url=geojson_url,
                         out_path=out_path,
@@ -541,6 +587,7 @@ class ArcGISFeatureServiceProvider:
                     result_offset=0,
                     result_record_count=2000,
                 )
+                attempted_urls.append(json_url)
                 payload, json_meta = _download_json_with_retry(
                     url=json_url,
                     timeout_seconds=timeout_seconds,
@@ -555,12 +602,15 @@ class ArcGISFeatureServiceProvider:
             except Exception as exc:
                 last_exc = exc
                 warnings.append(f"{fmt}_query_failed={exc}")
+                attempt_errors.append(f"{fmt}_query_failed={exc}")
                 continue
 
         if meta is None or request_url is None:
-            raise ValueError(
-                f"ArcGIS feature bbox query failed for endpoint {self.endpoint}; "
-                f"attempted formats={format_order}; last_error={last_exc}"
+            raise ArcGISFeatureQueryError(
+                endpoint=self.endpoint,
+                attempted_formats=format_order,
+                attempted_urls=attempted_urls,
+                errors=attempt_errors or ([str(last_exc)] if last_exc else []),
             ) from last_exc
 
         return AcquisitionResult(
