@@ -299,6 +299,19 @@ def _assert_core_contract(body: dict) -> None:
     ]:
         assert key in diagnostics
 
+    assert "confidence" in body and isinstance(body["confidence"], dict)
+    for key in [
+        "environmental_data_present",
+        "property_context_present",
+        "confirmed_fields_count",
+        "inferred_fields_count",
+        "missing_critical_fields",
+        "confidence_drivers",
+        "confidence_limiters",
+    ]:
+        assert key in body["confidence"]
+    assert body["confidence"]["confidence_score"] == body["confidence_score"]
+
 
 def test_property_findings_from_ring_metrics_surface_in_assessment(monkeypatch, tmp_path):
     ring_metrics = {
@@ -469,8 +482,8 @@ def test_low_confidence_restriction_when_key_layers_missing(monkeypatch, tmp_pat
             [],
             ["roof_type", "vent_type", "defensible_space_ft"],
             {"construction_year": "pre_2008_proxy", "roof_type": "composition", "vent_type": "standard", "defensible_space_ft": 15},
-            "low",
-            "agent_or_inspector_review_recommended",
+            "moderate",
+            "homeowner_review_recommended",
         ),
         ([], ["roof_type", "vent_type", "defensible_space_ft", "construction_year"], {}, "preliminary", "not_for_underwriting_or_binding"),
     ],
@@ -646,8 +659,11 @@ def test_assessment_with_confirmed_property_facts(monkeypatch, tmp_path):
     )
 
     _assert_core_contract(confirmed)
+    assert unconfirmed["confidence_score"] > 0.0
     assert confirmed["confirmed_inputs"]["roof_type"] == "class a"
     assert confirmed["confidence_score"] > unconfirmed["confidence_score"]
+    assert confirmed["confidence"]["confirmed_fields_count"] >= unconfirmed["confidence"]["confirmed_fields_count"]
+    assert confirmed["confidence"]["environmental_data_present"] is True
 
 
 def test_simulation_returns_deltas(monkeypatch, tmp_path):
@@ -685,6 +701,24 @@ def test_simulation_returns_deltas(monkeypatch, tmp_path):
     assert sim["delta"]["wildfire_risk_score_delta"] <= 0
     assert sim["delta"]["insurance_readiness_score_delta"] >= 0
     assert "roof_type" in sim["changed_inputs"]
+
+
+def test_baseline_confidence_non_zero_with_geospatial_context_and_no_optional_home_facts(monkeypatch, tmp_path):
+    _setup(monkeypatch, tmp_path, _ctx(env=52.0, wildland=57.0, historic=46.0, ring_metrics={}))
+
+    assessed = _run(_payload("777 Baseline Confidence Ln", {}, confirmed=[]))
+    assert assessed["confidence_score"] > 0.0
+    assert assessed["confidence"]["environmental_data_present"] is True
+    assert assessed["confidence"]["property_context_present"] is True
+    assert assessed["confidence"]["inferred_fields_count"] >= 1
+    assert "missing_critical_fields" in assessed["confidence"]
+
+
+def test_frontend_confidence_rendering_does_not_coerce_to_zero():
+    ui_path = Path(__file__).resolve().parents[1] / "frontend" / "public" / "index.html"
+    html = ui_path.read_text(encoding="utf-8")
+    assert "confidence_score || 0" not in html
+    assert "Number.isFinite(confidenceRaw)" in html
 
 
 def test_simulation_history_listing(monkeypatch, tmp_path):

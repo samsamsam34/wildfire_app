@@ -160,6 +160,13 @@ class ConfidenceBlock(BaseModel):
     assumption_count: int
     low_confidence_flags: List[str]
     requires_user_verification: bool
+    environmental_data_present: bool = False
+    property_context_present: bool = False
+    confirmed_fields_count: int = 0
+    inferred_fields_count: int = 0
+    missing_critical_fields: List[str] = Field(default_factory=list)
+    confidence_drivers: List[str] = Field(default_factory=list)
+    confidence_limiters: List[str] = Field(default_factory=list)
 
 
 class InputSourceMetadata(BaseModel):

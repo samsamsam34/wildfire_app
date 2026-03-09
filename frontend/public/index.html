@@ -612,8 +612,22 @@
           .map(m => `<li><strong>${m.title}</strong>: ${m.reason}</li>`)
           .join("") || "<li class='muted'>No recommendations yet.</li>";
 
-        document.getElementById("confidenceText").textContent =
-          `Confidence score: ${Number(data.confidence_score || 0).toFixed(1)} / 100`;
+        const confidenceRaw = Number(data?.confidence_score);
+        const confidenceObj = data?.confidence || {};
+        if (Number.isFinite(confidenceRaw)) {
+          const hasGeoContext = confidenceObj.environmental_data_present === true;
+          const confirmedCount = Number(confidenceObj.confirmed_fields_count || 0);
+          let confidenceNote = "";
+          if (hasGeoContext && confirmedCount <= 0) {
+            confidenceNote = " Moderate confidence can still come from location and surrounding conditions.";
+          } else if (confirmedCount > 0) {
+            confidenceNote = " Confirming home details can improve this further.";
+          }
+          document.getElementById("confidenceText").textContent =
+            `Confidence score: ${confidenceRaw.toFixed(1)} / 100.${confidenceNote}`.trim();
+        } else {
+          document.getElementById("confidenceText").textContent = "Confidence score: not available.";
+        }
 
         document.getElementById("assumptions").innerHTML = (data.assumptions_used || []).map(v => `<li>${v}</li>`).join("") || "<li class='muted'>No assumptions listed.</li>";
         document.getElementById("flags").innerHTML = (data.low_confidence_flags || []).map(v => `<span class='pill'>${v}</span>`).join("");

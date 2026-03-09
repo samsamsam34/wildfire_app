@@ -381,10 +381,20 @@ def _build_confidence(
     environmental_layer_status: dict[str, str],
     data_provenance: DataProvenanceBlock | None = None,
 ) -> ConfidenceBlock:
+    missing_inputs_set = set(assumptions.missing_inputs)
     important_missing = len([m for m in assumptions.missing_inputs if m in CORE_FACT_FIELDS or m.endswith("_layer")])
     missing_layer_count = len([m for m in assumptions.missing_inputs if m.endswith("_layer")])
     inferred_count = len(assumptions.inferred_inputs)
-    confirmed_core_count = len([k for k in assumptions.confirmed_inputs if k in CORE_FACT_FIELDS])
+    observed_core_count = len(
+        [k for k in CORE_FACT_FIELDS if assumptions.observed_inputs.get(k) is not None and k not in missing_inputs_set]
+    )
+    confirmed_core_count = len(
+        [
+            k
+            for k in assumptions.confirmed_inputs
+            if k in CORE_FACT_FIELDS and k not in missing_inputs_set
+        ]
+    )
     external_fail_count = sum(
         1
         for note in assumptions.assumptions_used
@@ -416,18 +426,105 @@ def _build_confidence(
                 if meta.source_type not in LOW_QUALITY_SOURCE_TYPES and meta.freshness_status in {"stale", "unknown"}:
                     critical_unknown_or_stale += 1
 
-    confidence = (
-        0.5 * data_completeness_score
-        + 0.3 * environmental_data_completeness
-        + 0.2 * provider_health_score
+    ring_metrics = property_level_context.get("ring_metrics")
+    has_ring_metrics = isinstance(ring_metrics, dict) and bool(ring_metrics)
+    environmental_data_present = (
+        environmental_data_completeness > 0.0
+        or any(status == "ok" for status in (environmental_layer_status or {}).values())
     )
-    confidence -= important_missing * 8.0
-    confidence -= inferred_count * 3.0
-    confidence -= min(20.0, stale_share * 0.25)
-    confidence -= critical_unknown_or_stale * 3.5
-    confidence -= min(8.0, heuristic_count * 1.5)
-    confidence += min(6.0, confirmed_core_count * 1.5)
+    property_context_present = bool(
+        has_ring_metrics
+        or property_level_context.get("footprint_used")
+        or str(property_level_context.get("fallback_mode") or "") == "point_based"
+    )
+
+    # Confidence intentionally weights multiple evidence classes so baseline runs with real
+    # geospatial context can be non-zero even before optional homeowner facts are confirmed.
+    core_quality_by_field: list[float] = []
+    for field in sorted(CORE_FACT_FIELDS):
+        if field in assumptions.confirmed_inputs and field not in missing_inputs_set:
+            core_quality_by_field.append(100.0)
+        elif assumptions.observed_inputs.get(field) is not None and field not in missing_inputs_set:
+            core_quality_by_field.append(78.0)
+        elif field in assumptions.inferred_inputs:
+            core_quality_by_field.append(52.0)
+        else:
+            core_quality_by_field.append(18.0)
+    structural_signal_score = (
+        round(sum(core_quality_by_field) / len(core_quality_by_field), 1)
+        if core_quality_by_field
+        else 0.0
+    )
+    property_context_score = 90.0 if has_ring_metrics else (68.0 if property_context_present else 35.0)
+
+    confidence = (
+        0.35 * environmental_data_completeness
+        + 0.20 * property_context_score
+        + 0.20 * structural_signal_score
+        + 0.15 * provider_health_score
+        + 0.10 * data_completeness_score
+    )
+
+    confidence -= max(0.0, (missing_layer_count - 1) * 3.5)
+    confidence -= max(0.0, (inferred_count - observed_core_count) * 1.8)
+    confidence -= min(12.0, stale_share * 0.2)
+    confidence -= critical_unknown_or_stale * 2.5
+    confidence -= min(6.0, heuristic_count * 1.2)
+    confidence += min(8.0, confirmed_core_count * 1.4)
+
+    has_meaningful_environment = environmental_data_completeness >= 25.0 or missing_layer_count <= 2
+    has_meaningful_property = has_ring_metrics or observed_core_count > 0 or confirmed_core_count > 0
+    if geocode_verified and has_meaningful_environment:
+        contextual_floor = min(
+            45.0,
+            6.0
+            + (0.22 * environmental_data_completeness)
+            + (6.0 if property_context_present else 0.0)
+            + (4.0 if has_ring_metrics else 0.0),
+        )
+        confidence = max(confidence, contextual_floor)
+
+    if not geocode_verified or (not has_meaningful_environment and not has_meaningful_property):
+        confidence = 0.0
+
     confidence = max(0.0, min(100.0, round(confidence, 1)))
+
+    missing_critical_fields = sorted(
+        {
+            missing
+            for missing in assumptions.missing_inputs
+            if missing in CORE_FACT_FIELDS
+            or missing.endswith("_layer")
+            or missing in {"geocode_verification", "building_footprint"}
+        }
+    )
+
+    confidence_drivers: list[str] = []
+    confidence_limiters: list[str] = []
+    if environmental_data_present:
+        confidence_drivers.append(
+            f"Environmental/geospatial context available ({environmental_data_completeness:.1f}% layer completeness)."
+        )
+    if property_context_present:
+        if has_ring_metrics:
+            confidence_drivers.append("Building-footprint ring context is available.")
+        else:
+            confidence_drivers.append("Property context available via point-based fallback.")
+    if confirmed_core_count > 0:
+        confidence_drivers.append(f"{confirmed_core_count} core home fact(s) were confirmed by the user.")
+    elif observed_core_count > 0:
+        confidence_drivers.append(f"{observed_core_count} core home fact(s) were provided without confirmation.")
+
+    if missing_layer_count > 0:
+        confidence_limiters.append(f"{missing_layer_count} environmental layer(s) missing or unavailable.")
+    if inferred_count > 0:
+        confidence_limiters.append(f"{inferred_count} core property input(s) are inferred.")
+    if not has_ring_metrics:
+        confidence_limiters.append("Building footprint rings unavailable; using point-based property context.")
+    if critical_unknown_or_stale > 0:
+        confidence_limiters.append("Critical inputs have stale or unknown freshness metadata.")
+    if heuristic_count > 0:
+        confidence_limiters.append("Heuristic inputs are present in scoring context.")
 
     low_confidence_flags: list[str] = []
     if important_missing >= 3:
@@ -453,7 +550,7 @@ def _build_confidence(
     if confidence < 70:
         low_confidence_flags.append("Overall confidence below recommended underwriting threshold")
 
-    severe_layer_failure = external_fail_count >= 2 or missing_layer_count >= 3 or provider_error_count >= 1
+    severe_layer_failure = external_fail_count >= 2 or missing_layer_count >= 4 or provider_error_count >= 1
     major_layer_failure = external_fail_count >= 1 or missing_layer_count >= 1 or provider_error_count >= 1
     multiple_critical_missing = important_missing >= 4
 
@@ -463,6 +560,7 @@ def _build_confidence(
         or severe_layer_failure
         or multiple_critical_missing
         or critical_provider_errors >= 1
+        or (not has_meaningful_environment and not has_meaningful_property)
     ):
         confidence_tier = "preliminary"
     elif confidence < 70 or stale_share >= 25.0 or critical_unknown_or_stale >= 3:
@@ -510,6 +608,13 @@ def _build_confidence(
         assumption_count=len(assumptions.assumptions_used),
         low_confidence_flags=sorted(set(low_confidence_flags)),
         requires_user_verification=confidence < 70.0 or len(low_confidence_flags) > 0,
+        environmental_data_present=environmental_data_present,
+        property_context_present=property_context_present,
+        confirmed_fields_count=len(assumptions.confirmed_inputs),
+        inferred_fields_count=inferred_count,
+        missing_critical_fields=missing_critical_fields,
+        confidence_drivers=sorted(set(confidence_drivers)),
+        confidence_limiters=sorted(set(confidence_limiters)),
     )
 
 
