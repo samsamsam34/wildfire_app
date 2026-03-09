@@ -247,7 +247,9 @@ Preferred new-region workflow (canonical path):
 - Default source registry: `config/source_registry.json`.
   - If `--source-config` is omitted, this registry is loaded automatically.
   - Override with `--source-config <path>` or `WF_SOURCE_CONFIG_PATH`.
-  - Registry values support env references like `${WF_DEFAULT_DEM_ENDPOINT}`.
+  - Registry values support env references, including defaults, for example `${WF_DEFAULT_DEM_ENDPOINT:-https://...}`.
+  - Required core layers (`dem`, `fuel`, `canopy`, `fire_perimeters`, `building_footprints`) ship with non-empty starter source details so `--plan-only` can evaluate buildability without custom config.
+  - Optional layers may remain unconfigured; they warn but do not block required-region builds.
 
 Required vs optional layers:
 - Required core: `dem`, `fuel`, `canopy`, `fire_perimeters`, `building_footprints`

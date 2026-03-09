@@ -9,6 +9,7 @@ from backend.data_prep.catalog import ingest_catalog_raster, ingest_catalog_vect
 from scripts.catalog_coverage import build_catalog_coverage_plan, required_core_layers
 from scripts.prepare_region_from_catalog_or_sources import (
     _build_cli_error_payload,
+    _validate_layer_source_config,
     prepare_region_from_catalog_or_sources,
 )
 
@@ -179,6 +180,84 @@ def test_prepare_any_region_plan_only_no_name_error_and_policy_structure(tmp_pat
     assert "slope" in policy["derived_core_layers"]
     assert "slope" not in policy["required_core_layers"]
     assert "dem" in policy["required_core_layers"]
+
+
+def test_required_layer_source_validation_raster_and_vector():
+    raster = _validate_layer_source_config(
+        layer_key="dem",
+        layer_cfg={
+            "provider_type": "arcgis_image_service",
+            "source_endpoint": "https://example.test/dem/ImageServer",
+        },
+    )
+    vector = _validate_layer_source_config(
+        layer_key="fire_perimeters",
+        layer_cfg={
+            "provider_type": "arcgis_feature_service",
+            "source_endpoint": "https://example.test/fire/FeatureServer/0",
+        },
+    )
+    assert raster["config_valid"] is True
+    assert raster["config_status"] == "configured"
+    assert vector["config_valid"] is True
+    assert vector["config_status"] == "configured"
+
+
+def test_required_layer_source_validation_missing_fields_is_actionable():
+    invalid = _validate_layer_source_config(
+        layer_key="fuel",
+        layer_cfg={"provider_type": "arcgis_image_service"},
+    )
+    assert invalid["config_valid"] is False
+    assert invalid["config_status"] == "missing_source_details"
+    assert "source_endpoint|source_url|source_path" in invalid["missing_required_fields"]
+    assert "missing required source details" in str(invalid["actionable_error"]).lower()
+
+
+def test_plan_only_reports_required_missing_fields_with_specific_diagnostics(tmp_path):
+    bbox = {"min_lon": -114.2, "min_lat": 46.75, "max_lon": -113.8, "max_lat": 47.0}
+    result = prepare_region_from_catalog_or_sources(
+        region_id="missing_cfg",
+        display_name="Missing Config",
+        bounds=bbox,
+        catalog_root=tmp_path / "catalog",
+        regions_root=tmp_path / "regions",
+        source_config={
+            "dem": {"provider_type": "arcgis_image_service"},
+            "fuel": {"provider_type": "arcgis_image_service", "source_endpoint": "https://example.test/fuel/ImageServer"},
+            "canopy": {"provider_type": "arcgis_image_service", "source_endpoint": "https://example.test/canopy/ImageServer"},
+            "fire_perimeters": {"provider_type": "arcgis_feature_service", "source_endpoint": "https://example.test/fire/FeatureServer/0"},
+            "building_footprints": {"provider_type": "arcgis_feature_service", "source_endpoint": "https://example.test/buildings/FeatureServer/0"},
+        },
+        skip_optional_layers=True,
+        plan_only=True,
+    )
+    dem_diag = result["required_layer_diagnostics"]["dem"]
+    assert dem_diag["config_status"] == "missing_source_details"
+    assert dem_diag["provider_type"] == "arcgis_image_service"
+    assert "source_endpoint|source_url|source_path" in dem_diag["missing_required_fields"]
+    assert isinstance(dem_diag["blocking_reason"], str) and dem_diag["blocking_reason"]
+    assert result["buildable_estimate"]["buildable_with_current_config"] is False
+    assert "dem" in result["buildable_estimate"]["required_blockers"]
+
+
+def test_default_source_registry_has_valid_required_core_layer_entries(tmp_path):
+    registry_path = Path("config/source_registry.json")
+    assert registry_path.exists()
+    bbox = {"min_lon": -114.2, "min_lat": 46.75, "max_lon": -113.8, "max_lat": 47.0}
+    result = prepare_region_from_catalog_or_sources(
+        region_id="registry_validation_only",
+        display_name="Registry Validation Only",
+        bounds=bbox,
+        catalog_root=tmp_path / "catalog",
+        regions_root=tmp_path / "regions",
+        source_config_path=str(registry_path),
+        skip_optional_layers=True,
+        plan_only=True,
+    )
+    for layer_key in required_core_layers():
+        diag = result["required_layer_diagnostics"][layer_key]
+        assert diag["config_valid"] is True, f"{layer_key}: {diag}"
 
 
 def test_prepare_any_region_full_catalog_coverage_no_acquisition(tmp_path):
@@ -399,6 +478,28 @@ def test_prepare_any_region_plan_only_reports_steps_without_writes(tmp_path):
     assert result["coverage_plan"]["summary"]["required_missing"]
     assert result["acquisition_steps"]
     assert not (regions_root / "plan_only_region").exists()
+
+
+def test_plan_only_optional_layer_missing_config_does_not_block_required_buildability(tmp_path):
+    sources = _seed_sources(tmp_path)
+    catalog_root = tmp_path / "catalog"
+    regions_root = tmp_path / "regions"
+    bbox = {"min_lon": -0.6, "min_lat": 0.2, "max_lon": 0.6, "max_lat": 0.8}
+    cfg = _local_source_config(sources)
+
+    result = prepare_region_from_catalog_or_sources(
+        region_id="plan_required_only",
+        display_name="Plan Required Only",
+        bounds=bbox,
+        catalog_root=catalog_root,
+        regions_root=regions_root,
+        source_config=cfg,
+        skip_optional_layers=False,
+        plan_only=True,
+    )
+    assert result["buildable_estimate"]["buildable_with_current_config"] is True
+    assert result["optional_layer_diagnostics"]["whp"]["config_status"] == "missing_layer_entry"
+    assert result["optional_layer_diagnostics"]["roads"]["config_status"] == "missing_layer_entry"
 
 
 def test_prepare_any_region_uses_default_source_registry_and_runs_new_area_smoke(monkeypatch, tmp_path):

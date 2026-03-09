@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import sys
+import urllib.parse
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -33,6 +34,13 @@ DEFAULT_SOURCE_REGISTRY_CANDIDATES = (
     Path("config") / "source_registry.json",
     Path("config") / "source_config.example.json",
 )
+SUPPORTED_PROVIDER_TYPES = {
+    "arcgis_image_service",
+    "arcgis_feature_service",
+    "file_download",
+    "vector_service",
+    "local_file",
+}
 
 
 def _parse_bbox(values: Sequence[str]) -> dict[str, float]:
@@ -133,16 +141,27 @@ def _discover_default_source_config_path() -> Path | None:
     return None
 
 
+def _resolve_env_var_ref(value: str) -> str:
+    if not (value.startswith("${") and value.endswith("}") and len(value) > 3):
+        return value
+    token = value[2:-1].strip()
+    if not token:
+        return ""
+    if ":-" in token:
+        key, default_value = token.split(":-", 1)
+        key = key.strip()
+        env_value = os.getenv(key, "")
+        return env_value if env_value else default_value
+    return os.getenv(token, "")
+
+
 def _resolve_env_refs(value: Any) -> Any:
     if isinstance(value, dict):
         return {k: _resolve_env_refs(v) for k, v in value.items()}
     if isinstance(value, list):
         return [_resolve_env_refs(v) for v in value]
     if isinstance(value, str):
-        if value.startswith("${") and value.endswith("}") and len(value) > 3:
-            key = value[2:-1].strip()
-            return os.getenv(key, "")
-        return value
+        return _resolve_env_var_ref(value)
     return value
 
 
@@ -169,7 +188,11 @@ def _load_source_config(path_or_none: str | None) -> tuple[dict[str, Any], dict[
         selected_path = _discover_default_source_config_path()
 
     if not selected_path:
-        return {}, {"source_config_path": None, "default_source_registry_used": False}
+        return {}, {
+            "source_config_path": None,
+            "default_source_registry_used": False,
+            "source_config_candidates": [str(p) for p in DEFAULT_SOURCE_REGISTRY_CANDIDATES],
+        }
 
     with open(selected_path, "r", encoding="utf-8") as f:
         payload = json.load(f)
@@ -185,6 +208,7 @@ def _load_source_config(path_or_none: str | None) -> tuple[dict[str, Any], dict[
     return layers, {
         "source_config_path": str(selected_path),
         "default_source_registry_used": (not path_or_none),
+        "source_config_candidates": [str(p) for p in DEFAULT_SOURCE_REGISTRY_CANDIDATES],
     }
 
 
@@ -193,14 +217,110 @@ def _layer_config(layer_key: str, source_config: dict[str, Any]) -> dict[str, An
     return _normalize_layer_config(candidate)
 
 
-def _layer_is_configured(layer_cfg: dict[str, Any]) -> bool:
+def _is_probably_url(value: str) -> bool:
+    parsed = urllib.parse.urlparse(value)
+    return parsed.scheme in {"http", "https", "file"} and bool(parsed.netloc or parsed.path)
+
+
+def _validate_layer_source_config(*, layer_key: str, layer_cfg: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(layer_cfg, dict) or not layer_cfg:
-        return False
-    for key in ("source_path", "local_path", "source_url", "full_download_url", "source_endpoint"):
-        val = layer_cfg.get(key)
-        if isinstance(val, str) and val.strip():
-            return True
-    return False
+        return {
+            "config_present": False,
+            "config_valid": False,
+            "provider_type": _provider_default(LAYER_TYPES.get(layer_key, "vector")),
+            "config_status": "missing_layer_entry",
+            "missing_required_fields": ["provider_type", "source details"],
+            "invalid_fields": [],
+            "actionable_error": "No source-registry entry exists for this layer.",
+        }
+
+    layer_type = LAYER_TYPES.get(layer_key, "vector")
+    default_provider = _provider_default(layer_type)
+    provider_type = str(layer_cfg.get("provider_type") or default_provider).strip().lower()
+    source_path = str(layer_cfg.get("source_path") or "").strip()
+    local_path = str(layer_cfg.get("local_path") or "").strip()
+    source_url = str(layer_cfg.get("source_url") or "").strip()
+    full_download_url = str(layer_cfg.get("full_download_url") or "").strip()
+    source_endpoint = str(layer_cfg.get("source_endpoint") or "").strip()
+
+    has_local_path = bool(source_path or local_path)
+    has_url = bool(source_url or full_download_url)
+    has_endpoint = bool(source_endpoint)
+
+    invalid_fields: list[str] = []
+    if source_url and not _is_probably_url(source_url):
+        invalid_fields.append("source_url")
+    if full_download_url and not _is_probably_url(full_download_url):
+        invalid_fields.append("full_download_url")
+    if source_endpoint and not _is_probably_url(source_endpoint):
+        invalid_fields.append("source_endpoint")
+    if has_local_path:
+        candidate = Path(source_path or local_path).expanduser()
+        if not candidate.exists():
+            invalid_fields.append("source_path")
+
+    if provider_type not in SUPPORTED_PROVIDER_TYPES:
+        return {
+            "config_present": True,
+            "config_valid": False,
+            "provider_type": provider_type or default_provider,
+            "config_status": "unsupported_provider_type",
+            "missing_required_fields": [],
+            "invalid_fields": ["provider_type"],
+            "actionable_error": (
+                f"Unsupported provider_type '{provider_type}'. "
+                f"Supported: {', '.join(sorted(SUPPORTED_PROVIDER_TYPES))}."
+            ),
+        }
+
+    missing_required_fields: list[str] = []
+    if provider_type in {"arcgis_image_service", "arcgis_feature_service"}:
+        if not (has_local_path or has_endpoint or has_url):
+            missing_required_fields.append("source_endpoint|source_url|source_path")
+    elif provider_type in {"file_download", "vector_service"}:
+        if not (has_local_path or has_url):
+            missing_required_fields.append("source_url|full_download_url|source_path")
+    elif provider_type == "local_file":
+        if not has_local_path:
+            missing_required_fields.append("source_path|local_path")
+
+    if invalid_fields:
+        return {
+            "config_present": True,
+            "config_valid": False,
+            "provider_type": provider_type,
+            "config_status": "invalid_source_details",
+            "missing_required_fields": missing_required_fields,
+            "invalid_fields": sorted(set(invalid_fields)),
+            "actionable_error": (
+                "Source entry contains invalid or unreadable fields: "
+                + ", ".join(sorted(set(invalid_fields)))
+            ),
+        }
+
+    if missing_required_fields:
+        return {
+            "config_present": True,
+            "config_valid": False,
+            "provider_type": provider_type,
+            "config_status": "missing_source_details",
+            "missing_required_fields": missing_required_fields,
+            "invalid_fields": [],
+            "actionable_error": (
+                "Missing required source details: "
+                + ", ".join(missing_required_fields)
+            ),
+        }
+
+    return {
+        "config_present": True,
+        "config_valid": True,
+        "provider_type": provider_type,
+        "config_status": "configured",
+        "missing_required_fields": [],
+        "invalid_fields": [],
+        "actionable_error": None,
+    }
 
 
 def _provider_default(layer_type: str) -> str:
@@ -287,19 +407,22 @@ def _plan_acquisition_steps(
         status = str(layer_state.get("coverage_status") or "none")
         needs_fill = status == "none" or (status == "partial" and allow_partial_coverage_fill)
         cfg = _layer_config(layer_key, source_config)
-        has_config = _layer_is_configured(cfg)
+        validation = _validate_layer_source_config(layer_key=layer_key, layer_cfg=cfg)
+        has_config = bool(validation.get("config_valid"))
         layer_type = LAYER_TYPES.get(layer_key, "vector")
         diag = {
             "layer_key": layer_key,
             "layer_type": layer_type,
             "required": layer_key in required_layers,
             "coverage_status": status,
+            "config_present": bool(validation.get("config_present")),
             "config_available": has_config,
-            "config_status": (
-                "configured"
-                if has_config
-                else ("missing_source_details" if bool(cfg) else "not_configured")
-            ),
+            "config_valid": has_config,
+            "config_status": str(validation.get("config_status") or "missing_source_details"),
+            "provider_type": validation.get("provider_type"),
+            "missing_required_fields": list(validation.get("missing_required_fields") or []),
+            "invalid_fields": list(validation.get("invalid_fields") or []),
+            "actionable_error": validation.get("actionable_error"),
             "planned_action": "use_existing_catalog",
             "blocking_reason": None,
         }
@@ -311,12 +434,15 @@ def _plan_acquisition_steps(
                     "current_coverage_status": status,
                     "action": "acquire_and_ingest",
                     "config_available": has_config,
+                    "config_status": diag["config_status"],
+                    "provider_type": diag["provider_type"],
                 }
             )
             if layer_key in required_layers and not has_config:
                 buildable_with_config = False
-                diag["blocking_reason"] = (
-                    "Required layer missing source configuration (source_path/source_url/source_endpoint)."
+                diag["blocking_reason"] = str(
+                    validation.get("actionable_error")
+                    or "Required layer is missing source configuration."
                 )
         else:
             steps.append(
@@ -572,7 +698,7 @@ def prepare_region_from_catalog_or_sources(
         [
             layer
             for layer, diag in required_layer_diagnostics.items()
-            if diag.get("planned_action") == "acquire_and_ingest" and not diag.get("config_available")
+            if diag.get("planned_action") == "acquire_and_ingest" and not diag.get("config_valid")
         ]
     )
 
@@ -584,10 +710,7 @@ def prepare_region_from_catalog_or_sources(
             recommended_actions.append("Existing region manifest does not cover the requested bbox; execution will rebuild with expanded/new coverage.")
         recommended_actions.extend(
             [
-                (
-                    f"Provide source configuration for required layer '{layer}' in "
-                    f"{cfg_meta.get('source_config_path') or 'a source config file'}."
-                )
+                f"Required layer '{layer}': {required_layer_diagnostics.get(layer, {}).get('actionable_error')}"
                 for layer in required_blockers
             ]
         )
@@ -717,10 +840,11 @@ def prepare_region_from_catalog_or_sources(
             continue
         layer_key = str(step["layer_key"])
         layer_cfg = _layer_config(layer_key, cfg)
-        if not _layer_is_configured(layer_cfg):
+        validation = _validate_layer_source_config(layer_key=layer_key, layer_cfg=layer_cfg)
+        if not bool(validation.get("config_valid")):
             message = (
-                f"Required layer '{layer_key}' has no usable source configuration "
-                "(expected source_path/source_url/source_endpoint)."
+                f"Required layer '{layer_key}' has invalid source configuration: "
+                f"{validation.get('actionable_error') or 'missing source details'}"
             )
             if layer_key in required and require_core_layers:
                 item = {

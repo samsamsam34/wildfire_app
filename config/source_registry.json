@@ -5,56 +5,56 @@
   "layers": {
     "dem": {
       "provider_type": "arcgis_image_service",
-      "source_endpoint": "${WF_DEFAULT_DEM_ENDPOINT}",
-      "full_download_url": "${WF_DEFAULT_DEM_FULL_URL}",
+      "source_endpoint": "${WF_DEFAULT_DEM_ENDPOINT:-https://elevation.nationalmap.gov/arcgis/rest/services/3DEPElevation/ImageServer}",
+      "full_download_url": "${WF_DEFAULT_DEM_FULL_URL:-}",
       "supports_bbox_export": true,
       "allow_full_download_fallback": true,
       "target_resolution": 30.0,
       "expected_output_format": "tif",
-      "notes": "Set WF_DEFAULT_DEM_ENDPOINT to a bbox-capable ImageServer (for example USGS 3DEP)."
+      "notes": "USGS 3DEP image service default. Override with WF_DEFAULT_DEM_ENDPOINT if needed."
     },
     "fuel": {
       "provider_type": "arcgis_image_service",
-      "source_endpoint": "${WF_DEFAULT_FUEL_ENDPOINT}",
-      "full_download_url": "${WF_DEFAULT_FUEL_FULL_URL}",
+      "source_endpoint": "${WF_DEFAULT_FUEL_ENDPOINT:-https://landfire.gov/arcgis/rest/services/LF2022/LF2022_FBFM40/ImageServer}",
+      "full_download_url": "${WF_DEFAULT_FUEL_FULL_URL:-}",
       "supports_bbox_export": true,
       "allow_full_download_fallback": true,
       "target_resolution": 30.0,
       "expected_output_format": "tif",
-      "notes": "Set to LANDFIRE fuel service/archive source."
+      "notes": "LANDFIRE fuel image-service default. Override when using alternate LANDFIRE snapshots."
     },
     "canopy": {
       "provider_type": "arcgis_image_service",
-      "source_endpoint": "${WF_DEFAULT_CANOPY_ENDPOINT}",
-      "full_download_url": "${WF_DEFAULT_CANOPY_FULL_URL}",
+      "source_endpoint": "${WF_DEFAULT_CANOPY_ENDPOINT:-https://landfire.gov/arcgis/rest/services/LF2022/LF2022_CC/ImageServer}",
+      "full_download_url": "${WF_DEFAULT_CANOPY_FULL_URL:-}",
       "supports_bbox_export": true,
       "allow_full_download_fallback": true,
       "target_resolution": 30.0,
       "expected_output_format": "tif",
-      "notes": "Set to LANDFIRE canopy service/archive source."
+      "notes": "LANDFIRE canopy image-service default. Override when using alternate LANDFIRE snapshots."
     },
     "fire_perimeters": {
       "provider_type": "arcgis_feature_service",
-      "source_endpoint": "${WF_DEFAULT_FIRE_PERIMETERS_ENDPOINT}",
-      "full_download_url": "${WF_DEFAULT_FIRE_PERIMETERS_FULL_URL}",
+      "source_endpoint": "${WF_DEFAULT_FIRE_PERIMETERS_ENDPOINT:-https://services3.arcgis.com/T4QMspbfLg3qTGWY/ArcGIS/rest/services/InterAgency_Fire_Perimeter_History_All_Years_View/FeatureServer/0}",
+      "full_download_url": "${WF_DEFAULT_FIRE_PERIMETERS_FULL_URL:-}",
       "supports_bbox_export": true,
       "allow_full_download_fallback": true,
       "expected_output_format": "geojson",
-      "notes": "Set to NIFC/agency perimeter feature service."
+      "notes": "NIFC perimeter feature-service default. Override with WF_DEFAULT_FIRE_PERIMETERS_ENDPOINT if needed."
     },
     "building_footprints": {
       "provider_type": "arcgis_feature_service",
-      "source_endpoint": "${WF_DEFAULT_BUILDING_FOOTPRINTS_ENDPOINT}",
-      "full_download_url": "${WF_DEFAULT_BUILDING_FOOTPRINTS_FULL_URL}",
+      "source_endpoint": "${WF_DEFAULT_BUILDING_FOOTPRINTS_ENDPOINT:-https://services.arcgis.com/P3ePLMYs2RVChkJx/ArcGIS/rest/services/USA_Structures_View/FeatureServer/0}",
+      "full_download_url": "${WF_DEFAULT_BUILDING_FOOTPRINTS_FULL_URL:-}",
       "supports_bbox_export": true,
       "allow_full_download_fallback": true,
       "expected_output_format": "geojson",
-      "notes": "Set to Microsoft/FEMA structures feature source."
+      "notes": "Public USA structures feature-service default (fallback for building-footprint context)."
     },
     "roads": {
       "provider_type": "arcgis_feature_service",
-      "source_endpoint": "${WF_DEFAULT_ROADS_ENDPOINT}",
-      "full_download_url": "${WF_DEFAULT_ROADS_FULL_URL}",
+      "source_endpoint": "${WF_DEFAULT_ROADS_ENDPOINT:-}",
+      "full_download_url": "${WF_DEFAULT_ROADS_FULL_URL:-}",
       "supports_bbox_export": true,
       "allow_full_download_fallback": true,
       "expected_output_format": "geojson",
@@ -62,8 +62,8 @@
     },
     "whp": {
       "provider_type": "arcgis_image_service",
-      "source_endpoint": "${WF_DEFAULT_WHP_ENDPOINT}",
-      "full_download_url": "${WF_DEFAULT_WHP_FULL_URL}",
+      "source_endpoint": "${WF_DEFAULT_WHP_ENDPOINT:-}",
+      "full_download_url": "${WF_DEFAULT_WHP_FULL_URL:-}",
       "supports_bbox_export": true,
       "allow_full_download_fallback": true,
       "target_resolution": 30.0,
@@ -72,8 +72,8 @@
     },
     "mtbs_severity": {
       "provider_type": "arcgis_image_service",
-      "source_endpoint": "${WF_DEFAULT_MTBS_SEVERITY_ENDPOINT}",
-      "full_download_url": "${WF_DEFAULT_MTBS_SEVERITY_FULL_URL}",
+      "source_endpoint": "${WF_DEFAULT_MTBS_SEVERITY_ENDPOINT:-}",
+      "full_download_url": "${WF_DEFAULT_MTBS_SEVERITY_FULL_URL:-}",
       "supports_bbox_export": true,
       "allow_full_download_fallback": true,
       "target_resolution": 30.0,
@@ -82,8 +82,8 @@
     },
     "gridmet_dryness": {
       "provider_type": "arcgis_image_service",
-      "source_endpoint": "${WF_DEFAULT_GRIDMET_DRYNESS_ENDPOINT}",
-      "full_download_url": "${WF_DEFAULT_GRIDMET_DRYNESS_FULL_URL}",
+      "source_endpoint": "${WF_DEFAULT_GRIDMET_DRYNESS_ENDPOINT:-}",
+      "full_download_url": "${WF_DEFAULT_GRIDMET_DRYNESS_FULL_URL:-}",
       "supports_bbox_export": true,
       "allow_full_download_fallback": true,
       "target_resolution": 4000.0,
