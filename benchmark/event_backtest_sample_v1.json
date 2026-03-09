@@ -1,0 +1,219 @@
+{
+  "event_backtest_version": "1.0.0",
+  "dataset_id": "sample_event_backtest_v1",
+  "dataset_name": "Sample Event Backtest Pack",
+  "source_name": "public_proxy_fixture",
+  "organization_id": "default_org",
+  "ruleset_id": "default",
+  "records": [
+    {
+      "event_id": "marshall_2021",
+      "event_name": "Marshall Fire (Sample)",
+      "event_date": "2021-12-30",
+      "record_id": "marshall_destroyed_001",
+      "latitude": 39.96,
+      "longitude": -105.08,
+      "address_text": "1 Marshall Sample Way, Louisville, CO",
+      "outcome_label": "destroyed",
+      "outcome_rank": 4,
+      "label_confidence": 0.9,
+      "input_payload": {
+        "attributes": {
+          "roof_type": "wood",
+          "vent_type": "standard",
+          "defensible_space_ft": 6,
+          "construction_year": 1988
+        },
+        "confirmed_fields": ["roof_type", "vent_type", "defensible_space_ft"],
+        "audience": "insurer",
+        "tags": ["event-backtest", "marshall"]
+      },
+      "context_overrides": {
+        "burn_probability_index": 88.0,
+        "hazard_severity_index": 90.0,
+        "slope_index": 72.0,
+        "fuel_index": 84.0,
+        "moisture_index": 80.0,
+        "canopy_index": 86.0,
+        "wildland_distance_index": 85.0,
+        "historic_fire_index": 82.0,
+        "structure_ring_metrics": {
+          "ring_0_5_ft": {"vegetation_density": 90.0},
+          "ring_5_30_ft": {"vegetation_density": 84.0},
+          "ring_30_100_ft": {"vegetation_density": 80.0}
+        }
+      }
+    },
+    {
+      "event_id": "marshall_2021",
+      "event_name": "Marshall Fire (Sample)",
+      "event_date": "2021-12-30",
+      "record_id": "marshall_major_002",
+      "latitude": 39.958,
+      "longitude": -105.073,
+      "address_text": "2 Marshall Sample Way, Louisville, CO",
+      "outcome_label": "major_damage",
+      "outcome_rank": 3,
+      "label_confidence": 0.8,
+      "input_payload": {
+        "attributes": {
+          "roof_type": "composite",
+          "vent_type": "standard",
+          "defensible_space_ft": 14,
+          "construction_year": 1996
+        },
+        "confirmed_fields": ["roof_type", "defensible_space_ft"],
+        "audience": "insurer",
+        "tags": ["event-backtest", "marshall"]
+      },
+      "context_overrides": {
+        "burn_probability_index": 74.0,
+        "hazard_severity_index": 76.0,
+        "slope_index": 58.0,
+        "fuel_index": 72.0,
+        "moisture_index": 66.0,
+        "canopy_index": 74.0,
+        "wildland_distance_index": 70.0,
+        "historic_fire_index": 68.0,
+        "structure_ring_metrics": {
+          "ring_0_5_ft": {"vegetation_density": 70.0},
+          "ring_5_30_ft": {"vegetation_density": 66.0},
+          "ring_30_100_ft": {"vegetation_density": 62.0}
+        }
+      }
+    },
+    {
+      "event_id": "marshall_2021",
+      "event_name": "Marshall Fire (Sample)",
+      "event_date": "2021-12-30",
+      "record_id": "marshall_none_003",
+      "latitude": 39.951,
+      "longitude": -105.061,
+      "address_text": "3 Marshall Sample Way, Superior, CO",
+      "outcome_label": "no_known_damage",
+      "outcome_rank": 1,
+      "label_confidence": 0.7,
+      "input_payload": {
+        "attributes": {
+          "roof_type": "class a",
+          "vent_type": "ember-resistant",
+          "defensible_space_ft": 35,
+          "construction_year": 2016
+        },
+        "confirmed_fields": ["roof_type", "vent_type", "defensible_space_ft", "construction_year"],
+        "audience": "insurer",
+        "tags": ["event-backtest", "marshall"]
+      },
+      "context_overrides": {
+        "burn_probability_index": 30.0,
+        "hazard_severity_index": 34.0,
+        "slope_index": 30.0,
+        "fuel_index": 28.0,
+        "moisture_index": 35.0,
+        "canopy_index": 26.0,
+        "wildland_distance_index": 32.0,
+        "historic_fire_index": 24.0
+      }
+    },
+    {
+      "event_id": "camp_2018",
+      "event_name": "Camp Fire (Sample)",
+      "event_date": "2018-11-08",
+      "record_id": "camp_destroyed_001",
+      "latitude": 39.760,
+      "longitude": -121.620,
+      "address_text": "1 Camp Sample Rd, Paradise, CA",
+      "outcome_label": "destroyed",
+      "outcome_rank": 4,
+      "label_confidence": 0.9,
+      "input_payload": {
+        "attributes": {
+          "roof_type": "untreated wood shake",
+          "vent_type": "standard",
+          "defensible_space_ft": 3,
+          "construction_year": 1980
+        },
+        "confirmed_fields": ["roof_type", "vent_type", "defensible_space_ft"],
+        "audience": "insurer",
+        "tags": ["event-backtest", "camp"]
+      },
+      "context_overrides": {
+        "burn_probability_index": 92.0,
+        "hazard_severity_index": 95.0,
+        "slope_index": 68.0,
+        "fuel_index": 90.0,
+        "moisture_index": 84.0,
+        "canopy_index": 88.0,
+        "wildland_distance_index": 90.0,
+        "historic_fire_index": 86.0
+      }
+    },
+    {
+      "event_id": "camp_2018",
+      "event_name": "Camp Fire (Sample)",
+      "event_date": "2018-11-08",
+      "record_id": "camp_minor_002",
+      "latitude": 39.753,
+      "longitude": -121.601,
+      "address_text": "2 Camp Sample Rd, Paradise, CA",
+      "outcome_label": "minor_damage",
+      "outcome_rank": 2,
+      "label_confidence": 0.65,
+      "input_payload": {
+        "attributes": {
+          "roof_type": "composite",
+          "vent_type": "standard",
+          "defensible_space_ft": 18
+        },
+        "confirmed_fields": ["roof_type", "defensible_space_ft"],
+        "audience": "insurer",
+        "tags": ["event-backtest", "camp"]
+      },
+      "context_overrides": {
+        "burn_probability_index": 62.0,
+        "hazard_severity_index": 66.0,
+        "slope_index": 48.0,
+        "fuel_index": 58.0,
+        "moisture_index": 55.0,
+        "canopy_index": 60.0,
+        "wildland_distance_index": 64.0,
+        "historic_fire_index": 57.0
+      }
+    },
+    {
+      "event_id": "camp_2018",
+      "event_name": "Camp Fire (Sample)",
+      "event_date": "2018-11-08",
+      "record_id": "camp_unknown_003",
+      "latitude": 39.747,
+      "longitude": -121.585,
+      "address_text": "3 Camp Sample Rd, Paradise, CA",
+      "outcome_label": "unknown",
+      "outcome_rank": 0,
+      "label_confidence": 0.3,
+      "input_payload": {
+        "attributes": {},
+        "confirmed_fields": [],
+        "audience": "insurer",
+        "tags": ["event-backtest", "camp", "fallback-heavy"]
+      },
+      "context_overrides": {
+        "environmental_layer_status": {
+          "burn_probability": "missing",
+          "hazard": "missing",
+          "slope": "ok",
+          "fuel": "missing",
+          "canopy": "missing",
+          "fire_history": "missing"
+        },
+        "property_level_context": {
+          "footprint_used": false,
+          "footprint_status": "not_found",
+          "fallback_mode": "point_based"
+        },
+        "structure_ring_metrics": {}
+      },
+      "notes": "Fallback-heavy example for confidence stratification checks."
+    }
+  ]
+}

@@ -372,6 +372,43 @@ Benchmark artifacts include aggregated governance metadata plus a `model_governa
 
 Use `POST /risk/debug?include_benchmark_hints=true` or `GET /report/{assessment_id}/export?include_benchmark_hints=true` to include lightweight benchmark resemblance and sanity-check hints in diagnostics/export output.
 
+## Event Backtesting
+
+For empirical validation against labeled wildfire outcomes, run the event backtest harness:
+
+- sample dataset: `benchmark/event_backtest_sample_v1.json`
+- runner: `scripts/run_event_backtest.py`
+- supported dataset formats: JSON, GeoJSON, CSV
+
+Run with the sample dataset:
+
+```bash
+python scripts/run_event_backtest.py
+```
+
+Run with one or more custom datasets:
+
+```bash
+python scripts/run_event_backtest.py \
+  --dataset path/to/event_a.json \
+  --dataset path/to/event_b.csv \
+  --output-dir benchmark/event_backtest_results
+```
+
+Backtest artifacts include:
+- per-record scores, availability flags, confidence/use restriction, coverage/evidence summaries
+- score distributions by outcome label
+- rank correlations and risk-bucket adverse-outcome rates
+- confidence stratification (`high_evidence`, `mixed_evidence`, `fallback_heavy`)
+- false-low and false-high review sets
+- deterministic tuning review recommendations (no auto-applied tuning)
+- `model_governance` and aggregated version metadata
+
+Interpretation guardrails:
+- event labels are proxy outcomes, not carrier claims truth
+- use results for directional calibration and threshold review
+- do not treat fallback-heavy records as primary tuning anchors
+
 ## Limitations
 
 - Scoring and readiness are deterministic heuristics; this is not a carrier-approved underwriting model.
