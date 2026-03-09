@@ -251,6 +251,7 @@ def test_arcgis_feature_service_geojson_fallback_to_json_ingest(monkeypatch, tmp
     )
     assert meta["acquisition_method"] == "bbox_export_json_fallback"
     assert any("geojson_query_failed" in w for w in meta.get("warnings", []))
+    assert "geojson_unsupported_fallback_to_json_succeeded" in meta.get("warnings", [])
     request_url = str(meta.get("ingest_diagnostics", {}).get("request_url") or "")
     assert "f=json" in request_url
 

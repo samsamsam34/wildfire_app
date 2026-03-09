@@ -43,6 +43,15 @@ SUPPORTED_PROVIDER_TYPES = {
     "local_file",
 }
 
+PREFERRED_FEATURE_SERVICE_ENDPOINT_PREFIXES: dict[str, tuple[str, ...]] = {
+    "building_footprints": (
+        "https://services2.arcgis.com/FiaPA4ga0iQKduv3/arcgis/rest/services/USA_Structures_View/FeatureServer/0",
+    ),
+    "fire_perimeters": (
+        "https://services3.arcgis.com/T4QMspbfLg3qTGWY/arcgis/rest/services/InterAgencyFirePerimeterHistory_All_Years_View/FeatureServer/0",
+    ),
+}
+
 
 class RegionPrepExecutionError(RuntimeError):
     def __init__(self, message: str, *, details: dict[str, Any]):
@@ -236,6 +245,16 @@ def _is_probably_url(value: str) -> bool:
     return parsed.scheme in {"http", "https", "file"} and bool(parsed.netloc or parsed.path)
 
 
+def _stale_endpoint_warning(layer_key: str, source_endpoint: str) -> str | None:
+    expected_prefixes = PREFERRED_FEATURE_SERVICE_ENDPOINT_PREFIXES.get(layer_key, ())
+    endpoint = _sanitize_url(source_endpoint).lower()
+    if not expected_prefixes or not endpoint:
+        return None
+    if any(endpoint.startswith(prefix.lower()) for prefix in expected_prefixes):
+        return None
+    return "Configured endpoint may be stale; compare with current default source registry service root."
+
+
 def _validate_layer_source_config(*, layer_key: str, layer_cfg: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(layer_cfg, dict) or not layer_cfg:
         return {
@@ -246,6 +265,7 @@ def _validate_layer_source_config(*, layer_key: str, layer_cfg: dict[str, Any]) 
             "missing_required_fields": ["provider_type", "source details"],
             "invalid_fields": [],
             "actionable_error": "No source-registry entry exists for this layer.",
+            "advisory_warning": None,
         }
 
     layer_type = LAYER_TYPES.get(layer_key, "vector")
@@ -256,6 +276,7 @@ def _validate_layer_source_config(*, layer_key: str, layer_cfg: dict[str, Any]) 
     source_url = str(layer_cfg.get("source_url") or "").strip()
     full_download_url = str(layer_cfg.get("full_download_url") or "").strip()
     source_endpoint = str(layer_cfg.get("source_endpoint") or "").strip()
+    endpoint_warning = _stale_endpoint_warning(layer_key, source_endpoint)
 
     has_local_path = bool(source_path or local_path)
     has_url = bool(source_url or full_download_url)
@@ -285,6 +306,7 @@ def _validate_layer_source_config(*, layer_key: str, layer_cfg: dict[str, Any]) 
                 f"Unsupported provider_type '{provider_type}'. "
                 f"Supported: {', '.join(sorted(SUPPORTED_PROVIDER_TYPES))}."
             ),
+            "advisory_warning": endpoint_warning,
         }
 
     missing_required_fields: list[str] = []
@@ -310,6 +332,7 @@ def _validate_layer_source_config(*, layer_key: str, layer_cfg: dict[str, Any]) 
                 "Source entry contains invalid or unreadable fields: "
                 + ", ".join(sorted(set(invalid_fields)))
             ),
+            "advisory_warning": endpoint_warning,
         }
 
     if missing_required_fields:
@@ -324,6 +347,7 @@ def _validate_layer_source_config(*, layer_key: str, layer_cfg: dict[str, Any]) 
                 "Missing required source details: "
                 + ", ".join(missing_required_fields)
             ),
+            "advisory_warning": endpoint_warning,
         }
 
     return {
@@ -334,6 +358,7 @@ def _validate_layer_source_config(*, layer_key: str, layer_cfg: dict[str, Any]) 
         "missing_required_fields": [],
         "invalid_fields": [],
         "actionable_error": None,
+        "advisory_warning": endpoint_warning,
     }
 
 
@@ -437,6 +462,7 @@ def _plan_acquisition_steps(
             "missing_required_fields": list(validation.get("missing_required_fields") or []),
             "invalid_fields": list(validation.get("invalid_fields") or []),
             "actionable_error": validation.get("actionable_error"),
+            "advisory_warning": validation.get("advisory_warning"),
             "planned_action": "use_existing_catalog",
             "blocking_reason": None,
         }
@@ -976,6 +1002,7 @@ def prepare_region_from_catalog_or_sources(
             "response_status_code": None,
             "response_content_type": None,
             "provider_error_snippet": None,
+            "advisory_warning": None,
             "output_temp_path": None,
             "catalog_ingest_attempted": False,
             "catalog_ingest_succeeded": False,
@@ -987,6 +1014,10 @@ def prepare_region_from_catalog_or_sources(
         }
         per_layer_execution_diagnostics[layer_key] = layer_execution
         validation = _validate_layer_source_config(layer_key=layer_key, layer_cfg=layer_cfg)
+        endpoint_warning = validation.get("advisory_warning")
+        layer_execution["advisory_warning"] = endpoint_warning
+        if endpoint_warning:
+            layer_execution["diagnostic_summary"] = str(endpoint_warning)
         if not bool(validation.get("config_valid")):
             message = (
                 f"Required layer '{layer_key}' has invalid source configuration: "
@@ -995,6 +1026,7 @@ def prepare_region_from_catalog_or_sources(
             reason_code, actionable = _classify_execution_failure(message)
             layer_execution["failure_reason"] = reason_code
             layer_execution["actionable_error"] = actionable
+            layer_execution["advisory_warning"] = endpoint_warning
             if layer_key in required and require_core_layers:
                 item = {
                     "layer_key": layer_key,
@@ -1036,6 +1068,20 @@ def prepare_region_from_catalog_or_sources(
             layer_execution["catalog_entry_id"] = metadata.get("item_id")
             if isinstance(metadata.get("warnings"), list) and metadata.get("warnings"):
                 layer_execution["diagnostic_summary"] = "; ".join(str(w) for w in metadata.get("warnings", [])[:3])
+            if metadata.get("acquisition_method") == "bbox_export_json_fallback" and any(
+                "geojson_unsupported_fallback_to_json_succeeded" == str(w)
+                for w in metadata.get("warnings", [])
+            ):
+                layer_execution["diagnostic_summary"] = (
+                    "GeoJSON query rejected (HTTP 400); JSON fallback succeeded as expected."
+                )
+            if endpoint_warning:
+                if layer_execution.get("diagnostic_summary"):
+                    layer_execution["diagnostic_summary"] = (
+                        f"{layer_execution['diagnostic_summary']}; {endpoint_warning}"
+                    )
+                else:
+                    layer_execution["diagnostic_summary"] = str(endpoint_warning)
             acquired_layers.append(
                 {
                     "layer_key": layer_key,
@@ -1063,6 +1109,13 @@ def prepare_region_from_catalog_or_sources(
             layer_execution["response_content_type"] = context.get("response_content_type")
             layer_execution["provider_error_snippet"] = context.get("provider_error_snippet")
             layer_execution["diagnostic_summary"] = error_text[:400]
+            if endpoint_warning:
+                layer_execution["diagnostic_summary"] = (
+                    f"{layer_execution['diagnostic_summary']} | {endpoint_warning}"
+                )
+                layer_execution["actionable_error"] = (
+                    f"{actionable} {endpoint_warning}"
+                ).strip()
             item = {
                 "layer_key": layer_key,
                 "failure_type": "acquisition_or_ingest_failed",

@@ -217,6 +217,18 @@ def test_required_layer_source_validation_missing_fields_is_actionable():
     assert "missing required source details" in str(invalid["actionable_error"]).lower()
 
 
+def test_feature_service_validation_warns_when_endpoint_may_be_stale():
+    stale = _validate_layer_source_config(
+        layer_key="building_footprints",
+        layer_cfg={
+            "provider_type": "arcgis_feature_service",
+            "source_endpoint": "https://services.arcgis.com/P3ePLMYs2RVChkJx/ArcGIS/rest/services/USA_Structures_View/FeatureServer/0",
+        },
+    )
+    assert stale["config_valid"] is True
+    assert "configured endpoint may be stale" in str(stale.get("advisory_warning", "")).lower()
+
+
 def test_plan_only_reports_required_missing_fields_with_specific_diagnostics(tmp_path):
     bbox = {"min_lon": -114.2, "min_lat": 46.75, "max_lon": -113.8, "max_lat": 47.0}
     result = prepare_region_from_catalog_or_sources(

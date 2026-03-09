@@ -611,6 +611,11 @@ class ArcGISFeatureServiceProvider:
                 request_url = json_url
                 acquisition_method = "bbox_export_json_fallback"
                 meta = json_meta
+                if any(
+                    "geojson_query_failed" in str(w).lower() and "http error 400" in str(w).lower()
+                    for w in warnings
+                ):
+                    warnings.append("geojson_unsupported_fallback_to_json_succeeded")
                 break
             except Exception as exc:
                 last_exc = exc

@@ -715,6 +715,7 @@ def test_feature_service_geojson_fallback_to_json(monkeypatch, tmp_path):
     assert result is not None
     assert result.acquisition_method == "bbox_export_json_fallback"
     assert any("geojson_query_failed" in w for w in result.warnings)
+    assert "geojson_unsupported_fallback_to_json_succeeded" in result.warnings
     out = Path(str(result.local_path))
     assert out.exists()
     payload = json.loads(out.read_text(encoding="utf-8"))

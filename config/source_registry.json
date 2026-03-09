@@ -35,7 +35,7 @@
     },
     "fire_perimeters": {
       "provider_type": "arcgis_feature_service",
-      "source_endpoint": "${WF_DEFAULT_FIRE_PERIMETERS_ENDPOINT:-https://services3.arcgis.com/T4QMspbfLg3qTGWY/ArcGIS/rest/services/InterAgency_Fire_Perimeter_History_All_Years_View/FeatureServer/0}",
+      "source_endpoint": "${WF_DEFAULT_FIRE_PERIMETERS_ENDPOINT:-https://services3.arcgis.com/T4QMspbfLg3qTGWY/arcgis/rest/services/InterAgencyFirePerimeterHistory_All_Years_View/FeatureServer/0}",
       "full_download_url": "${WF_DEFAULT_FIRE_PERIMETERS_FULL_URL:-}",
       "supports_bbox_export": true,
       "allow_full_download_fallback": true,
@@ -47,7 +47,7 @@
     },
     "building_footprints": {
       "provider_type": "arcgis_feature_service",
-      "source_endpoint": "${WF_DEFAULT_BUILDING_FOOTPRINTS_ENDPOINT:-https://services.arcgis.com/P3ePLMYs2RVChkJx/ArcGIS/rest/services/USA_Structures_View/FeatureServer/0}",
+      "source_endpoint": "${WF_DEFAULT_BUILDING_FOOTPRINTS_ENDPOINT:-https://services2.arcgis.com/FiaPA4ga0iQKduv3/arcgis/rest/services/USA_Structures_View/FeatureServer/0}",
       "full_download_url": "${WF_DEFAULT_BUILDING_FOOTPRINTS_FULL_URL:-}",
       "supports_bbox_export": true,
       "allow_full_download_fallback": true,
