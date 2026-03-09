@@ -211,6 +211,7 @@
           <h2>3. Current Risk</h2>
           <div id="riskScore" class="score">-</div>
           <div id="riskLabel" class="muted">Run an assessment to see your score.</div>
+          <p id="regionDebugInline" class="muted" style="display:none; font-size:0.8rem; margin-top:0.35rem;">Region: unresolved</p>
           <p id="summaryText" style="margin-top:0.6rem;">We'll explain your score in plain language here.</p>
         </div>
 
@@ -370,7 +371,10 @@
 
     <script>
       const apiBase = (window.WILDFIRE_API_BASE || "http://127.0.0.1:8000").replace(/\/$/, "");
-      const isDebugMode = !!window.WILDFIRE_DEBUG_MODE;
+      const isDebugMode = !!window.WILDFIRE_DEBUG_MODE
+        || window.location.hostname === "localhost"
+        || window.location.hostname === "127.0.0.1"
+        || window.location.protocol === "file:";
       const apiKeyInput = document.getElementById("apiKey");
       let storedApiKey = "dev-key-1";
       try {
@@ -620,6 +624,18 @@
           scoreEl.className = "score warn";
           document.getElementById("riskLabel").textContent = "Not enough data to score";
         }
+        const regionInlineEl = document.getElementById("regionDebugInline");
+        if (regionInlineEl) {
+          if (isDebugMode) {
+            const regionId = data?.resolved_region_id || resolution?.resolved_region_id || "unresolved";
+            const coverage = data?.coverage_available ?? resolution?.coverage_available;
+            const regionText = coverage === false ? "unsupported_location" : regionId;
+            regionInlineEl.style.display = "block";
+            regionInlineEl.textContent = `Region: ${regionText}`;
+          } else {
+            regionInlineEl.style.display = "none";
+          }
+        }
 
         document.getElementById("summaryText").textContent = data.explanation_summary || "No summary available yet.";
         const propertyFindings = getPropertyFindings(data);
@@ -698,6 +714,15 @@
         scoreEl.textContent = "—";
         scoreEl.className = "score warn";
         document.getElementById("riskLabel").textContent = "Location not yet prepared";
+        const regionInlineEl = document.getElementById("regionDebugInline");
+        if (regionInlineEl) {
+          if (isDebugMode) {
+            regionInlineEl.style.display = "block";
+            regionInlineEl.textContent = "Region: unsupported_location";
+          } else {
+            regionInlineEl.style.display = "none";
+          }
+        }
         document.getElementById("summaryText").textContent = detail?.message
           || "We could not score this address yet because no prepared region currently covers it.";
         document.getElementById("propertyFindings").innerHTML = "<li class='muted'>No prepared region coverage for this location yet.</li>";

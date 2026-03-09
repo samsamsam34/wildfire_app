@@ -35,5 +35,8 @@ def test_frontend_does_not_require_manual_region_selection() -> None:
 def test_frontend_region_debug_metadata_is_dev_mode_only() -> None:
     html = _frontend_html()
     assert "window.WILDFIRE_DEBUG_MODE" in html
+    assert 'id="regionDebugInline"' in html
+    assert "Region: unsupported_location" in html
+    assert "Region: ${regionText}" in html
     assert 'id="regionResolutionText"' in html
     assert 'style="display:none;"' in html
