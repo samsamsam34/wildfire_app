@@ -2584,8 +2584,28 @@ def _run_assessment(
         scoring_notes.append(
             "Critical layer gaps: " + ", ".join(coverage_summary.critical_missing_layers[:6]) + "."
         )
+    optional_not_configured_layers = sorted(
+        {
+            row.layer_key
+            for row in layer_coverage_audit
+            if row.coverage_status == "not_configured"
+            and row.layer_key in {"whp", "mtbs_severity", "gridmet_dryness", "roads", "fema_structures"}
+        }
+    )
     for recommendation in coverage_summary.recommended_actions[:5]:
+        lower_reco = recommendation.lower()
+        if (
+            " is not configured;" in lower_reco
+            and any(lower_reco.startswith(f"{layer} ") for layer in optional_not_configured_layers)
+        ):
+            continue
         scoring_notes.append(recommendation)
+    if optional_not_configured_layers:
+        scoring_notes.append(
+            "Optional enrichment layers not configured: "
+            + ", ".join(optional_not_configured_layers[:6])
+            + ". Scores remain available using core prepared-region layers."
+        )
     if normalization_changes:
         notes = ", ".join(
             f"{field}: '{change['input']}' -> '{change['normalized']}'"

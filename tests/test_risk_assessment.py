@@ -2060,6 +2060,78 @@ def test_runtime_resolves_prepared_region_files(tmp_path):
     assert any("Prepared region" in src for src in sources_used)
 
 
+def test_missoula_prepared_region_assessment_smoke(monkeypatch, tmp_path):
+    _require_region_prep_deps()
+    _require_geo_runtime_deps()
+    auth.API_KEYS = set()
+
+    region_root = tmp_path / "regions"
+    sources = _make_region_sources(tmp_path)
+    required_only = {
+        key: value
+        for key, value in sources.items()
+        if key in {"dem", "slope", "fuel", "canopy", "fire_perimeters", "building_footprints"}
+    }
+    prepare_region_layers(
+        region_id="missoula_pilot",
+        display_name="Missoula Pilot",
+        bounds={"min_lon": -114.2, "min_lat": 46.75, "max_lon": -113.8, "max_lat": 47.0},
+        layer_sources=required_only,
+        region_data_dir=region_root,
+    )
+
+    runtime_client = WildfireDataClient()
+    runtime_client.region_data_dir = str(region_root)
+    runtime_client.use_prepared_regions = True
+    runtime_client.allow_legacy_layer_fallback = False
+    runtime_client.base_paths = {k: "" for k in runtime_client.base_paths.keys()}
+    runtime_client.paths = dict(runtime_client.base_paths)
+
+    monkeypatch.setattr(app_main, "wildfire_data", runtime_client)
+    monkeypatch.setattr(app_main.geocoder, "geocode", lambda _addr: (46.8721, -113.9940, "test-geocoder"))
+    monkeypatch.setattr(app_main, "store", AssessmentStore(str(tmp_path / "missoula_smoke.db")))
+
+    response = client.post(
+        "/risk/assess",
+        json=_payload(
+            "201 W Front St, Missoula, MT 59802",
+            {
+                "roof_type": "class a",
+                "vent_type": "ember-resistant",
+                "defensible_space_ft": 25,
+            },
+            confirmed=["roof_type", "vent_type", "defensible_space_ft"],
+        ),
+        headers=_headers(role="admin"),
+    )
+    assert response.status_code == 200
+    body = response.json()
+
+    property_ctx = body["property_level_context"]
+    assert property_ctx["region_status"] == "prepared"
+    assert property_ctx["region_id"] == "missoula_pilot"
+    assert str(property_ctx["region_manifest_path"]).endswith("missoula_pilot/manifest.json")
+
+    assert body["wildfire_risk_score_available"] is True
+    assert body["insurance_readiness_score_available"] is True
+    assert isinstance(body["wildfire_risk_score"], (int, float))
+    assert isinstance(body["insurance_readiness_score"], (int, float))
+    assert body["assessment_status"] in {"fully_scored", "partially_scored"}
+
+    coverage_summary = body["coverage_summary"]
+    assert coverage_summary["critical_missing_layers"] == []
+    assert coverage_summary["not_configured_count"] >= 1
+
+    layer_rows = body["layer_coverage_audit"]
+    required_layers = {"dem", "slope", "fuel", "canopy", "fire_perimeters", "building_footprints"}
+    for layer_key in required_layers:
+        row = next(r for r in layer_rows if r["layer_key"] == layer_key)
+        assert row["coverage_status"] in {"observed", "partial"}
+
+    assert any(r["layer_key"] == "gridmet_dryness" and r["coverage_status"] == "not_configured" for r in layer_rows)
+    assert any("optional enrichment layers not configured" in note.lower() for note in body["scoring_notes"])
+
+
 def test_runtime_region_not_prepared_returns_insufficient_data(monkeypatch, tmp_path):
     auth.API_KEYS = set()
     monkeypatch.setattr(app_main.geocoder, "geocode", lambda _: (39.7392, -104.9903, "test-geocoder"))
