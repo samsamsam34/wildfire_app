@@ -73,6 +73,8 @@ from backend.models import (
     PropertyAttributes,
     ReadinessFactor,
     RegionBoundingBox,
+    RegionCoverageRequest,
+    RegionCoverageStatus,
     RegionPrepareRequest,
     RegionPrepJobStatus,
     ReassessmentRequest,
@@ -3323,6 +3325,35 @@ def _region_data_root() -> str:
     return os.getenv("WF_REGION_DATA_DIR", str(wildfire_data.region_data_dir))
 
 
+def _region_coverage_for_coordinates(lat: float, lon: float) -> dict[str, Any]:
+    lookup = lookup_region_for_point(lat=lat, lon=lon, regions_root=_region_data_root())
+    if lookup.get("covered"):
+        return {
+            "covered": True,
+            "region_id": lookup.get("region_id"),
+            "display_name": lookup.get("display_name"),
+            "latitude": lat,
+            "longitude": lon,
+            "message": "Prepared region coverage is available for this location.",
+            "diagnostics": [],
+            "regions_root": _region_data_root(),
+        }
+    diagnostics = list(lookup.get("diagnostics") or [])
+    return {
+        "covered": False,
+        "region_id": None,
+        "display_name": None,
+        "latitude": lat,
+        "longitude": lon,
+        "message": (
+            "No prepared region covers this location. Run scripts/prepare_region_from_catalog_or_sources.py "
+            "for the requested bbox, validate it, then retry assessment."
+        ),
+        "diagnostics": diagnostics,
+        "regions_root": _region_data_root(),
+    }
+
+
 def _derive_region_bbox_from_point(lat: float, lon: float) -> dict[str, float]:
     tile_deg_raw = os.getenv("WF_AUTO_REGION_PREP_TILE_DEG", "0.25")
     try:
@@ -3752,6 +3783,30 @@ def get_region_prepare_job(job_id: str, _: ActorContext = Depends(get_actor_cont
     return _to_region_job_status(job)
 
 
+@app.post("/regions/coverage-check", response_model=RegionCoverageStatus, dependencies=[Depends(require_api_key)])
+def check_region_coverage(
+    payload: RegionCoverageRequest,
+    _: ActorContext = Depends(get_actor_context),
+) -> RegionCoverageStatus:
+    lat = payload.latitude
+    lon = payload.longitude
+    if lat is None or lon is None:
+        if not payload.address or len(payload.address.strip()) < 5:
+            raise HTTPException(status_code=400, detail="Provide either latitude/longitude or a valid address.")
+        try:
+            lat, lon, _ = geocoder.geocode(payload.address)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "Geocoding lookup failed; a trusted location match is required for region coverage checks. "
+                    "Please verify the address and try again."
+                ),
+            ) from exc
+    coverage = _region_coverage_for_coordinates(float(lat), float(lon))
+    return RegionCoverageStatus.model_validate(coverage)
+
+
 @app.post("/risk/assess", response_model=AssessmentResult, dependencies=[Depends(require_api_key)])
 def assess_risk(
     payload: AddressRequest,
@@ -3765,7 +3820,8 @@ def assess_risk(
     ruleset = _get_ruleset_or_default(payload.ruleset_id)
 
     auto_queue_on_uncovered = _env_flag("WF_AUTO_QUEUE_REGION_PREP_ON_MISS", False)
-    if auto_queue_on_uncovered:
+    require_prepared_region = _env_flag("WF_REQUIRE_PREPARED_REGION_COVERAGE", False)
+    if auto_queue_on_uncovered or require_prepared_region:
         try:
             lat, lon, _ = geocoder.geocode(payload.address)
         except Exception as exc:
@@ -3777,48 +3833,63 @@ def assess_risk(
                 ),
             ) from exc
 
-        coverage = lookup_region_for_point(lat=lat, lon=lon, regions_root=_region_data_root())
+        coverage = _region_coverage_for_coordinates(lat=float(lat), lon=float(lon))
         if not coverage.get("covered"):
-            requested_bbox = _derive_region_bbox_from_point(lat=lat, lon=lon)
-            region_id = _auto_region_id_for_bbox(requested_bbox)
-            display_name = f"Auto Prepared Region {region_id.replace('auto_', '').upper()}"
-            request_payload = _build_region_prepare_request_payload(
-                region_id=region_id,
-                display_name=display_name,
-                bbox=requested_bbox,
-            )
-            status = _enqueue_region_prep_job(
-                region_id=region_id,
-                display_name=display_name,
-                bbox=requested_bbox,
-                requested_address=payload.address,
-                point_lat=lat,
-                point_lon=lon,
-                request_payload=request_payload,
-            )
-            _log_audit(
-                ctx=ctx,
-                entity_type="region_prep_job",
-                entity_id=status.job_id,
-                action="region_prep_job_auto_enqueued",
-                organization_id=organization_id,
-                metadata={
-                    "address": payload.address,
-                    "region_id": region_id,
-                    "requested_bbox": requested_bbox,
-                    "reused_existing_job": status.reused_existing_job,
-                },
-            )
+            if auto_queue_on_uncovered:
+                requested_bbox = _derive_region_bbox_from_point(lat=lat, lon=lon)
+                region_id = _auto_region_id_for_bbox(requested_bbox)
+                display_name = f"Auto Prepared Region {region_id.replace('auto_', '').upper()}"
+                request_payload = _build_region_prepare_request_payload(
+                    region_id=region_id,
+                    display_name=display_name,
+                    bbox=requested_bbox,
+                )
+                status = _enqueue_region_prep_job(
+                    region_id=region_id,
+                    display_name=display_name,
+                    bbox=requested_bbox,
+                    requested_address=payload.address,
+                    point_lat=lat,
+                    point_lon=lon,
+                    request_payload=request_payload,
+                )
+                _log_audit(
+                    ctx=ctx,
+                    entity_type="region_prep_job",
+                    entity_id=status.job_id,
+                    action="region_prep_job_auto_enqueued",
+                    organization_id=organization_id,
+                    metadata={
+                        "address": payload.address,
+                        "region_id": region_id,
+                        "requested_bbox": requested_bbox,
+                        "reused_existing_job": status.reused_existing_job,
+                    },
+                )
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "region_not_ready": True,
+                        "prep_job_id": status.job_id,
+                        "prep_job_status": status.status,
+                        "requested_bbox": requested_bbox,
+                        "message": (
+                            "No prepared region currently covers this address. A region prep job has been queued; "
+                            "retry assessment after the job completes."
+                        ),
+                        "diagnostics": coverage.get("diagnostics", []),
+                    },
+                )
             raise HTTPException(
                 status_code=409,
                 detail={
                     "region_not_ready": True,
-                    "prep_job_id": status.job_id,
-                    "prep_job_status": status.status,
-                    "requested_bbox": requested_bbox,
+                    "prep_job_id": None,
+                    "prep_job_status": None,
+                    "requested_bbox": _derive_region_bbox_from_point(lat=lat, lon=lon),
                     "message": (
-                        "No prepared region currently covers this address. A region prep job has been queued; "
-                        "retry assessment after the job completes."
+                        "Prepared region coverage is required for assessment, but this address is outside "
+                        "current prepared regions. Run the offline region-prep command, validate, then retry."
                     ),
                     "diagnostics": coverage.get("diagnostics", []),
                 },

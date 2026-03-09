@@ -135,6 +135,47 @@ def test_regions_prepare_endpoint_dedupes_jobs(monkeypatch, tmp_path: Path) -> N
     assert loaded.json()["job_id"] == first_body["job_id"]
 
 
+def test_regions_coverage_check_endpoint_reports_uncovered(monkeypatch, tmp_path: Path) -> None:
+    auth.API_KEYS = set()
+    monkeypatch.setattr(app_main, "store", AssessmentStore(str(tmp_path / "coverage.db")))
+    monkeypatch.setenv("WF_REGION_DATA_DIR", str(tmp_path / "regions"))
+    monkeypatch.setattr(app_main.geocoder, "geocode", lambda _addr: (39.7392, -104.9903, "test-geocoder"))
+    monkeypatch.setattr(
+        app_main,
+        "lookup_region_for_point",
+        lambda lat, lon, regions_root=None: {"covered": False, "diagnostics": ["No covering region"]},
+    )
+
+    response = client.post("/regions/coverage-check", json={"address": "123 Test Ave, Denver, CO"})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["covered"] is False
+    assert body["message"]
+    assert body["diagnostics"]
+
+
+def test_assess_requires_prepared_region_when_enabled(monkeypatch, tmp_path: Path) -> None:
+    auth.API_KEYS = set()
+    monkeypatch.setattr(app_main, "store", AssessmentStore(str(tmp_path / "require_prepared.db")))
+    monkeypatch.setenv("WF_REQUIRE_PREPARED_REGION_COVERAGE", "true")
+    monkeypatch.setenv("WF_AUTO_QUEUE_REGION_PREP_ON_MISS", "false")
+    monkeypatch.setattr(app_main.geocoder, "geocode", lambda _addr: (39.7392, -104.9903, "test-geocoder"))
+    monkeypatch.setattr(
+        app_main,
+        "lookup_region_for_point",
+        lambda lat, lon, regions_root=None: {"covered": False, "diagnostics": ["No prepared region"]},
+    )
+
+    response = client.post("/risk/assess", json=_payload())
+    assert response.status_code == 409
+    detail = response.json()["detail"]
+    assert detail["region_not_ready"] is True
+    assert detail["prep_job_id"] is None
+    assert detail["requested_bbox"]
+    assert "offline region-prep" in detail["message"].lower()
+    assert app_main.store.list_region_prep_jobs(limit=10) == []
+
+
 def test_region_prep_worker_processes_queued_job(monkeypatch, tmp_path: Path) -> None:
     db_path = tmp_path / "worker.db"
     store = AssessmentStore(str(db_path))

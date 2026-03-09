@@ -21,9 +21,11 @@ from backend.data_prep.catalog import (
 )
 from backend.data_prep.prepare_region import parse_bbox
 from backend.data_prep.validate_region import validate_prepared_region
+from backend.region_registry import load_region_manifest
 from scripts.catalog_coverage import (
     build_catalog_coverage_plan,
     optional_layers,
+    required_layer_policy,
     required_core_layers,
 )
 
@@ -39,6 +41,84 @@ def _parse_bbox(values: Sequence[str]) -> dict[str, float]:
     if len(values) == 4:
         return parse_bbox(",".join(values))
     raise ValueError("--bbox expects one comma string or four numbers")
+
+
+def _coerce_bounds(bounds: Any) -> tuple[float, float, float, float] | None:
+    if not isinstance(bounds, dict):
+        return None
+    keys = ("min_lon", "min_lat", "max_lon", "max_lat")
+    if not all(k in bounds for k in keys):
+        return None
+    try:
+        return (
+            float(bounds["min_lon"]),
+            float(bounds["min_lat"]),
+            float(bounds["max_lon"]),
+            float(bounds["max_lat"]),
+        )
+    except (TypeError, ValueError):
+        return None
+
+
+def _contains_bbox(outer: tuple[float, float, float, float], inner: tuple[float, float, float, float]) -> bool:
+    return outer[0] <= inner[0] and outer[1] <= inner[1] and outer[2] >= inner[2] and outer[3] >= inner[3]
+
+
+def _inspect_existing_prepared_region(
+    *,
+    region_id: str,
+    bounds: dict[str, float],
+    regions_root: Path,
+) -> dict[str, Any]:
+    manifest = load_region_manifest(region_id, base_dir=str(regions_root))
+    requested = _coerce_bounds(bounds)
+    if manifest is None:
+        return {
+            "status": "not_found",
+            "region_id": region_id,
+            "manifest_path": str(regions_root / region_id / "manifest.json"),
+            "message": "No prepared region manifest exists for this region_id.",
+            "covers_requested_bbox": False,
+        }
+
+    manifest_bounds = _coerce_bounds(manifest.get("bounds"))
+    if manifest_bounds is None or requested is None:
+        return {
+            "status": "invalid_manifest",
+            "region_id": region_id,
+            "manifest_path": manifest.get("_manifest_path"),
+            "message": "Prepared region manifest exists but bounds are missing/invalid.",
+            "covers_requested_bbox": False,
+        }
+
+    covers = _contains_bbox(manifest_bounds, requested)
+    if covers:
+        return {
+            "status": "covered",
+            "region_id": region_id,
+            "manifest_path": manifest.get("_manifest_path"),
+            "message": "Prepared region manifest already covers the requested bbox.",
+            "covers_requested_bbox": True,
+            "manifest_bounds": {
+                "min_lon": manifest_bounds[0],
+                "min_lat": manifest_bounds[1],
+                "max_lon": manifest_bounds[2],
+                "max_lat": manifest_bounds[3],
+            },
+        }
+    return {
+        "status": "present_outside_bbox",
+        "region_id": region_id,
+        "manifest_path": manifest.get("_manifest_path"),
+        "message": "Prepared region exists but does not fully cover the requested bbox.",
+        "covers_requested_bbox": False,
+        "manifest_bounds": {
+            "min_lon": manifest_bounds[0],
+            "min_lat": manifest_bounds[1],
+            "max_lon": manifest_bounds[2],
+            "max_lat": manifest_bounds[3],
+        },
+    }
 
 
 def _discover_default_source_config_path() -> Path | None:
@@ -251,6 +331,38 @@ def _plan_acquisition_steps(
     return steps, buildable_with_config, diagnostics
 
 
+def _build_compact_summary(
+    *,
+    mode: str,
+    region_id: str,
+    prepared_region_status: dict[str, Any],
+    required_layers: Sequence[str],
+    optional_layer_keys: Sequence[str],
+    coverage_summary: dict[str, Any],
+    acquired_layers: Sequence[dict[str, Any]],
+    failed_acquisitions: Sequence[dict[str, Any]],
+    optional_omissions: Sequence[str],
+    validation_result: dict[str, Any] | None,
+    final_status: str,
+) -> dict[str, Any]:
+    return {
+        "mode": mode,
+        "region_id": region_id,
+        "final_status": final_status,
+        "prepared_region_status": prepared_region_status.get("status"),
+        "required_core_layers": list(required_layers),
+        "optional_layers": list(optional_layer_keys),
+        "required_missing_after": list(coverage_summary.get("required_missing", [])),
+        "required_partial_after": list(coverage_summary.get("required_partial", [])),
+        "optional_missing_after": list(coverage_summary.get("optional_missing", [])),
+        "acquired_layer_count": len(list(acquired_layers)),
+        "failed_acquisition_count": len(list(failed_acquisitions)),
+        "optional_omission_count": len(list(optional_omissions)),
+        "validation_status": (validation_result or {}).get("validation_status"),
+        "ready_for_runtime": (validation_result or {}).get("ready_for_runtime"),
+    }
+
+
 def _annotate_manifest_with_orchestration(
     *,
     manifest: dict[str, Any],
@@ -343,8 +455,25 @@ def prepare_region_from_catalog_or_sources(
     else:
         cfg, cfg_meta = _load_source_config(source_config_path)
         cfg_meta["inline_source_config_used"] = False
-    required = required_core_layers()
-    optional = [] if skip_optional_layers else optional_layers()
+    layer_policy = required_layer_policy()
+    required = list(layer_policy.get("required_core_layers") or required_core_layers())
+    derived_core = list(layer_policy.get("derived_core_layers") or ["slope"])
+    optional = [] if skip_optional_layers else list(layer_policy.get("optional_layers") or optional_layers())
+    prepared_region_status = _inspect_existing_prepared_region(
+        region_id=region_id,
+        bounds=bounds,
+        regions_root=reg_root,
+    )
+    stage_status: dict[str, dict[str, Any]] = {
+        "prepared_region_check": {
+            "status": "ok" if prepared_region_status.get("status") in {"covered", "present_outside_bbox"} else "missing",
+            "details": prepared_region_status.get("message"),
+        },
+        "coverage_plan": {"status": "ok", "details": None},
+        "acquisition": {"status": "not_started", "details": None},
+        "region_build": {"status": "not_started", "details": None},
+        "validation": {"status": "not_requested", "details": None},
+    }
 
     coverage_before = build_catalog_coverage_plan(
         bounds=bounds,
@@ -395,11 +524,44 @@ def prepare_region_from_catalog_or_sources(
     )
 
     if plan_only:
+        recommended_actions = list(coverage_before.get("summary", {}).get("recommended_actions", []))
+        if prepared_region_status.get("status") == "covered":
+            recommended_actions.append("Region is already prepared and covers this bbox; execution would reuse existing files unless --overwrite is set.")
+        if prepared_region_status.get("status") == "present_outside_bbox":
+            recommended_actions.append("Existing region manifest does not cover the requested bbox; execution will rebuild with expanded/new coverage.")
+        recommended_actions.extend(
+            [
+                (
+                    f"Provide source configuration for required layer '{layer}' in "
+                    f"{cfg_meta.get('source_config_path') or 'a source config file'}."
+                )
+                for layer in required_blockers
+            ]
+        )
+        compact_summary = _build_compact_summary(
+            mode="plan_only",
+            region_id=region_id,
+            prepared_region_status=prepared_region_status,
+            required_layers=required,
+            optional_layer_keys=optional,
+            coverage_summary=coverage_before.get("summary", {}),
+            acquired_layers=[],
+            failed_acquisitions=[],
+            optional_omissions=[],
+            validation_result=None,
+            final_status="dry_run_ready" if not required_blockers else "dry_run_partial",
+        )
         return {
             "mode": "plan_only",
             "region_id": region_id,
             "display_name": display_name,
             "requested_bbox": bounds,
+            "required_layer_policy": {
+                "required_core_layers": required,
+                "derived_core_layers": derived_core,
+                "optional_layers": optional,
+            },
+            "prepared_region_status": prepared_region_status,
             "source_registry": cfg_meta,
             "coverage_plan": coverage_before,
             "acquisition_steps": planned_steps,
@@ -418,23 +580,84 @@ def prepare_region_from_catalog_or_sources(
                 "buildable_from_existing_catalog": bool(coverage_before["summary"]["buildable_from_catalog"]),
                 "buildable_with_current_config": bool(buildable_with_config),
                 "required_blockers": required_blockers,
+                "region_already_prepared": prepared_region_status.get("status") == "covered",
             },
-            "recommended_actions": (
-                coverage_before.get("summary", {}).get("recommended_actions", [])
-                + [
-                    (
-                        f"Provide source configuration for required layer '{layer}' in "
-                        f"{cfg_meta.get('source_config_path') or 'a source config file'}."
-                    )
-                    for layer in required_blockers
-                ]
-            ),
+            "stage_status": stage_status,
+            "recommended_actions": recommended_actions,
+            "compact_summary": compact_summary,
+        }
+
+    if prepared_region_status.get("status") == "covered" and not overwrite:
+        stage_status["acquisition"] = {"status": "skipped", "details": "Region already prepared for requested bbox."}
+        stage_status["region_build"] = {"status": "skipped", "details": "Region already prepared; skipping rebuild."}
+        validation_result = None
+        if validate:
+            validation_result = validate_prepared_region(
+                region_id=region_id,
+                base_dir=str(reg_root),
+                update_manifest=True,
+            )
+            stage_status["validation"] = {
+                "status": "ok" if validation_result.get("validation_status") == "passed" else "failed",
+                "details": validation_result.get("blockers", []),
+            }
+        manifest_path = Path(str(prepared_region_status.get("manifest_path") or reg_root / region_id / "manifest.json"))
+        manifest = load_region_manifest(region_id, base_dir=str(reg_root)) or {"region_id": region_id}
+        compact_summary = _build_compact_summary(
+            mode="executed",
+            region_id=region_id,
+            prepared_region_status=prepared_region_status,
+            required_layers=required,
+            optional_layer_keys=optional,
+            coverage_summary=coverage_before.get("summary", {}),
+            acquired_layers=[],
+            failed_acquisitions=[],
+            optional_omissions=[],
+            validation_result=validation_result,
+            final_status="already_prepared",
+        )
+        return {
+            "mode": "executed",
+            "final_status": "already_prepared",
+            "region_id": region_id,
+            "display_name": display_name,
+            "requested_bbox": bounds,
+            "required_layer_policy": {
+                "required_core_layers": required,
+                "derived_core_layers": derived_core,
+                "optional_layers": optional,
+            },
+            "prepared_region_status": prepared_region_status,
+            "source_registry": cfg_meta,
+            "coverage_before": coverage_before,
+            "coverage_after": coverage_before,
+            "operator_summary": {
+                "required_layers_covered": required_layers_covered,
+                "required_layers_partial": required_layers_partial,
+                "required_layers_missing": required_layers_missing,
+                "optional_layers_partial": optional_layers_partial,
+                "optional_layers_missing": optional_layers_missing,
+                "layers_using_existing_catalog": layer_use_existing_catalog,
+                "layers_requiring_acquisition": [],
+            },
+            "required_layer_diagnostics": required_layer_diagnostics,
+            "optional_layer_diagnostics": optional_layer_diagnostics,
+            "acquired_layers": [],
+            "failed_acquisitions": [],
+            "required_failures": [],
+            "optional_omissions": [],
+            "manifest_path": str(manifest_path),
+            "manifest": manifest,
+            "validation": validation_result,
+            "stage_status": stage_status,
+            "compact_summary": compact_summary,
         }
 
     acquired_layers: list[dict[str, Any]] = []
     failed_acquisitions: list[dict[str, Any]] = []
     optional_omissions: list[str] = []
     required_failures: list[dict[str, Any]] = []
+    stage_status["acquisition"] = {"status": "running", "details": "Evaluating missing catalog coverage and ingesting required layers."}
 
     for step in planned_steps:
         if step.get("action") != "acquire_and_ingest":
@@ -496,6 +719,15 @@ def prepare_region_from_catalog_or_sources(
             else:
                 optional_omissions.append(layer_key)
 
+    stage_status["acquisition"] = {
+        "status": "partial" if optional_omissions else "ok",
+        "details": {
+            "acquired_layers": [item.get("layer_key") for item in acquired_layers],
+            "optional_omissions": sorted(set(optional_omissions)),
+            "failed_acquisitions": [item.get("layer_key") for item in failed_acquisitions],
+        },
+    }
+
     coverage_after = build_catalog_coverage_plan(
         bounds=bounds,
         required_layers=required,
@@ -552,13 +784,21 @@ def prepare_region_from_catalog_or_sources(
             guidance.append("Acquisition/ingest failed for: " + ", ".join(fetch_failed) + ". Check provider endpoint/auth/network.")
         if incomplete:
             guidance.append("Coverage still incomplete for: " + ", ".join(incomplete) + ". Retry with larger bbox or alternate source.")
+        stage_status["region_build"] = {
+            "status": "failed",
+            "details": {
+                "failure_stage": "coverage_incomplete_after_ingest",
+                "required_missing_after": required_missing_after,
+            },
+        }
         raise ValueError(
-            "Cannot build region due to required core layer blockers: "
+            "Cannot build region due to required core layer blockers (failure_stage=coverage_incomplete_after_ingest): "
             + ", ".join(required_missing_after)
             + ". "
             + " ".join(guidance)
         )
 
+    stage_status["region_build"] = {"status": "running", "details": "Building region from catalog coverage."}
     manifest = build_region_from_catalog(
         region_id=region_id,
         display_name=display_name,
@@ -572,6 +812,7 @@ def prepare_region_from_catalog_or_sources(
         validate=False,
         target_resolution=target_resolution,
     )
+    stage_status["region_build"] = {"status": "ok", "details": "Prepared region artifacts built successfully."}
 
     _annotate_manifest_with_orchestration(
         manifest=manifest,
@@ -595,11 +836,16 @@ def prepare_region_from_catalog_or_sources(
 
     validation_result = None
     if validate:
+        stage_status["validation"] = {"status": "running", "details": "Running prepared-region validation checks."}
         validation_result = validate_prepared_region(
             region_id=region_id,
             base_dir=str(reg_root),
             update_manifest=True,
         )
+        stage_status["validation"] = {
+            "status": "ok" if validation_result.get("validation_status") == "passed" else "failed",
+            "details": validation_result.get("blockers", []),
+        }
         manifest.setdefault("catalog", {})
         orchestration = manifest["catalog"].setdefault("orchestration_validation", {})
         orchestration["result"] = validation_result
@@ -609,11 +855,38 @@ def prepare_region_from_catalog_or_sources(
         with open(manifest_path, "w", encoding="utf-8") as f:
             json.dump(manifest, f, indent=2, sort_keys=True)
 
+    final_status = "success"
+    if optional_omissions:
+        final_status = "partial"
+    if validation_result and validation_result.get("validation_status") == "failed":
+        final_status = "partial"
+
+    compact_summary = _build_compact_summary(
+        mode="executed",
+        region_id=region_id,
+        prepared_region_status=prepared_region_status,
+        required_layers=required,
+        optional_layer_keys=optional,
+        coverage_summary=coverage_after.get("summary", {}),
+        acquired_layers=acquired_layers,
+        failed_acquisitions=failed_acquisitions,
+        optional_omissions=optional_omissions,
+        validation_result=validation_result,
+        final_status=final_status,
+    )
+
     return {
         "mode": "executed",
+        "final_status": final_status,
         "region_id": region_id,
         "display_name": display_name,
         "requested_bbox": bounds,
+        "required_layer_policy": {
+            "required_core_layers": required,
+            "derived_core_layers": derived_core,
+            "optional_layers": optional,
+        },
+        "prepared_region_status": prepared_region_status,
         "coverage_before": coverage_before,
         "coverage_after": coverage_after,
         "source_registry": cfg_meta,
@@ -635,6 +908,8 @@ def prepare_region_from_catalog_or_sources(
         "manifest_path": str(manifest_path),
         "manifest": manifest,
         "validation": validation_result,
+        "stage_status": stage_status,
+        "compact_summary": compact_summary,
     }
 
 
@@ -666,28 +941,47 @@ def main() -> None:
     parser.add_argument("--retry-backoff-seconds", type=float, default=1.5)
     args = parser.parse_args()
 
-    result = prepare_region_from_catalog_or_sources(
-        region_id=args.region_id,
-        display_name=args.display_name or args.region_id.replace("_", " ").title(),
-        bounds=_parse_bbox(args.bbox),
-        catalog_root=Path(args.catalog_root).expanduser() if args.catalog_root else None,
-        regions_root=Path(args.regions_root).expanduser() if args.regions_root else None,
-        cache_root=Path(args.cache_root).expanduser() if args.cache_root else None,
-        source_config_path=args.source_config,
-        require_core_layers=bool(args.require_core_layers),
-        skip_optional_layers=bool(args.skip_optional_layers),
-        validate=bool(args.validate),
-        overwrite=bool(args.overwrite),
-        allow_partial_coverage_fill=bool(args.allow_partial_coverage_fill),
-        prefer_bbox_downloads=bool(args.prefer_bbox_downloads),
-        allow_full_download_fallback=bool(args.allow_full_download_fallback),
-        plan_only=bool(args.plan_only),
-        target_resolution=args.target_resolution,
-        timeout_seconds=float(args.download_timeout),
-        retries=max(0, int(args.download_retries)),
-        backoff_seconds=max(0.0, float(args.retry_backoff_seconds)),
-    )
-    print(json.dumps(result, indent=2, sort_keys=True))
+    requested_bbox = _parse_bbox(args.bbox)
+    try:
+        result = prepare_region_from_catalog_or_sources(
+            region_id=args.region_id,
+            display_name=args.display_name or args.region_id.replace("_", " ").title(),
+            bounds=requested_bbox,
+            catalog_root=Path(args.catalog_root).expanduser() if args.catalog_root else None,
+            regions_root=Path(args.regions_root).expanduser() if args.regions_root else None,
+            cache_root=Path(args.cache_root).expanduser() if args.cache_root else None,
+            source_config_path=args.source_config,
+            require_core_layers=bool(args.require_core_layers),
+            skip_optional_layers=bool(args.skip_optional_layers),
+            validate=bool(args.validate),
+            overwrite=bool(args.overwrite),
+            allow_partial_coverage_fill=bool(args.allow_partial_coverage_fill),
+            prefer_bbox_downloads=bool(args.prefer_bbox_downloads),
+            allow_full_download_fallback=bool(args.allow_full_download_fallback),
+            plan_only=bool(args.plan_only),
+            target_resolution=args.target_resolution,
+            timeout_seconds=float(args.download_timeout),
+            retries=max(0, int(args.download_retries)),
+            backoff_seconds=max(0.0, float(args.retry_backoff_seconds)),
+        )
+        print(json.dumps(result, indent=2, sort_keys=True))
+    except Exception as exc:
+        error_payload = {
+            "mode": "executed" if not args.plan_only else "plan_only",
+            "final_status": "failed",
+            "region_id": args.region_id,
+            "display_name": args.display_name or args.region_id.replace("_", " ").title(),
+            "requested_bbox": requested_bbox,
+            "error": str(exc),
+            "failure_stage": (
+                "coverage_incomplete_after_ingest"
+                if "failure_stage=coverage_incomplete_after_ingest" in str(exc)
+                else "unknown"
+            ),
+            "suggestion": "Check source config, provider connectivity, and required-layer coverage diagnostics.",
+        }
+        print(json.dumps(error_payload, indent=2, sort_keys=True))
+        raise SystemExit(1) from exc
 
 
 if __name__ == "__main__":

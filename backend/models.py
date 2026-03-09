@@ -150,6 +150,23 @@ class RegionPrepJobStatus(BaseModel):
     result: Optional[Dict[str, Any]] = None
 
 
+class RegionCoverageRequest(BaseModel):
+    address: Optional[str] = None
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+
+
+class RegionCoverageStatus(BaseModel):
+    covered: bool
+    region_id: Optional[str] = None
+    display_name: Optional[str] = None
+    latitude: float
+    longitude: float
+    message: str
+    diagnostics: List[str] = Field(default_factory=list)
+    regions_root: str
+
+
 class RiskScores(BaseModel):
     site_hazard_score: Optional[float] = None
     home_ignition_vulnerability_score: Optional[float] = None

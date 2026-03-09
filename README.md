@@ -48,6 +48,7 @@ Core assessment:
 - `POST /risk/simulate`
 - `POST /risk/debug`
 - `POST /risk/layer-diagnostics`
+- `POST /regions/coverage-check` (check whether a location is covered by prepared regions)
 - `POST /regions/prepare`, `GET /regions/prepare/{job_id}` (queue/poll offline region-prep jobs)
 
 Reports:
@@ -152,6 +153,7 @@ Common runtime settings:
 - `WILDFIRE_APP_CATALOG_ROOT` (canonical catalog root, default `data/catalog`)
 - `WF_USE_PREPARED_REGIONS` (default true)
 - `WF_ALLOW_LEGACY_LAYER_FALLBACK` (optional direct-layer fallback mode)
+- `WF_REQUIRE_PREPARED_REGION_COVERAGE` (if true, uncovered addresses return `region_not_ready` instead of scoring fallback)
 - `WF_AUTO_QUEUE_REGION_PREP_ON_MISS` (when true, `/risk/assess` queues a prep job and returns `region_not_ready` for uncovered addresses)
 - `WF_AUTO_REGION_PREP_TILE_DEG` (bbox tile size used for auto-queued region prep, default `0.25`)
 - `WF_REGION_PREP_SOURCE_CONFIG` (optional source config path for queued prep jobs)
@@ -196,70 +198,10 @@ data/regions/<region_id>/
 ```
 
 Offline prep/validation scripts:
-- `scripts/prepare_region_layers.py`
-- `scripts/stage_landfire_assets.py`
-- `scripts/build_landfire_region.py`
-- `scripts/validate_prepared_region.py`
-- `scripts/catalog_ingest_raster.py`
-- `scripts/catalog_ingest_vector.py`
-- `scripts/build_region_from_catalog.py`
-- `scripts/prepare_region_from_catalog_or_sources.py`
-- `scripts/run_region_prep_worker.py`
-
-Queued uncovered-region workflow:
-- If `WF_AUTO_QUEUE_REGION_PREP_ON_MISS=true`, `POST /risk/assess` does a fast geocode + coverage lookup only.
-- If coverage is missing, it enqueues/reuses a region-prep job and returns a structured `region_not_ready` response with `prep_job_id`.
-- Run offline prep jobs locally with:
-
-```bash
-python scripts/run_region_prep_worker.py --once
-```
-
-BBox-first region prep:
-- Region prep remains offline/admin-only; runtime API still uses prepared local files.
-- `prepare_region_layers.py` now supports provider-aware acquisition with bbox-first behavior.
-- For supported providers (for example ArcGIS ImageServer/FeatureServer), prep requests only the region bbox first.
-- If bbox export/query is unsupported or fails, prep can fall back to full-download + local clip.
-- Manifest layer metadata records acquisition details (`acquisition_method`, `provider_type`, `source_endpoint`, `bbox_used`, cache hits, fallbacks).
-
-Example pilot prep flow:
-
-```bash
-python scripts/prepare_region_layers.py \
-  --region-id test_region \
-  --bbox -111.2 45.5 -110.9 45.8 \
-  --prefer-bbox-downloads \
-  --allow-full-download-fallback \
-  --source-config path/to/source_config.json
-python scripts/validate_prepared_region.py --region-id test_region --sample-lat 45.67 --sample-lon -111.04
-```
-
-Useful prep flags:
-- `--prefer-bbox-downloads`
-- `--allow-full-download-fallback` / `--no-allow-full-download-fallback`
-- `--require-core-layers` / `--no-require-core-layers`
-- `--skip-optional-layers`
-- `--target-resolution`
-- `--source-config`
-- `--cache-root`
-
-Minimal `source_config.json` example:
-
-```json
-{
-  "layers": {
-    "fuel": {
-      "provider_type": "arcgis_image_service",
-      "source_endpoint": "https://.../ImageServer",
-      "full_download_url": "https://.../fuel_full.zip"
-    },
-    "building_footprints": {
-      "provider_type": "arcgis_feature_service",
-      "source_endpoint": "https://.../FeatureServer/0"
-    }
-  }
-}
-```
+- Preferred: `scripts/prepare_region_from_catalog_or_sources.py` (plan/fill/build/validate in one command)
+- Validation: `scripts/validate_prepared_region.py`
+- Legacy/manual helpers (still available): `scripts/prepare_region_layers.py`, `scripts/stage_landfire_assets.py`, `scripts/build_landfire_region.py`, `scripts/catalog_ingest_raster.py`, `scripts/catalog_ingest_vector.py`, `scripts/build_region_from_catalog.py`
+- Local queue worker: `scripts/run_region_prep_worker.py`
 
 Canonical catalog and region build workflow:
 - Use `data/catalog/` as a reusable canonical cache of normalized raster/vector layers.
@@ -298,18 +240,20 @@ python scripts/build_region_from_catalog.py \
 
 Key point: runtime endpoints do not download large GIS datasets.
 
-Preparing a new area on demand:
-- Use `scripts/prepare_region_from_catalog_or_sources.py` when a bbox is not yet fully covered in local catalog.
-- The workflow is:
-  1) inspect catalog coverage for required layers,
-  2) fetch/ingest missing coverage from configured sources,
-  3) build the prepared region from catalog,
-  4) optionally validate.
-- Runtime still reads only prepared region outputs.
+Preferred new-region workflow:
+- Runtime still reads prepared files only; it does not perform heavy GIS prep at request time.
+- `scripts/prepare_region_from_catalog_or_sources.py` is the canonical entrypoint for new regions.
+- The command checks existing prepared coverage, checks catalog coverage, acquires missing layers, builds the region, and can validate in one run.
 - Default source registry: `config/source_registry.json`.
-  - If `--source-config` is omitted, the script auto-loads the default registry.
-  - You can override with `--source-config <path>` or `WF_SOURCE_CONFIG_PATH`.
+  - If `--source-config` is omitted, this registry is loaded automatically.
+  - Override with `--source-config <path>` or `WF_SOURCE_CONFIG_PATH`.
   - Registry values support env references like `${WF_DEFAULT_DEM_ENDPOINT}`.
+
+Required vs optional layers:
+- Required core: `dem`, `fuel`, `canopy`, `fire_perimeters`, `building_footprints`
+- Derived core: `slope` (from `dem`)
+- Optional enrichment: `whp`, `mtbs_severity`, `gridmet_dryness`, `roads`
+- Missing required layers fail the build; missing optional layers are reported as warnings/omissions.
 
 Plan-only check:
 
@@ -321,34 +265,46 @@ python scripts/prepare_region_from_catalog_or_sources.py \
   --plan-only
 ```
 
-Optional plan helper:
-
-```bash
-python scripts/plan_region_build.py \
-  --region-id missoula_pilot \
-  --display-name "Missoula Pilot" \
-  --bbox -114.2 46.75 -113.8 47.0
-```
-
 Prepare/build/validate:
 
 ```bash
 python scripts/prepare_region_from_catalog_or_sources.py \
-  --region-id bozeman_pilot \
-  --display-name "Bozeman Pilot" \
-  --bbox -111.2 45.5 -110.9 45.8 \
+  --region-id missoula_pilot \
+  --display-name "Missoula Pilot" \
+  --bbox -114.2 46.75 -113.8 47.0 \
   --prefer-bbox-downloads \
   --allow-full-download-fallback \
   --allow-partial-coverage-fill \
   --validate
 ```
 
-Plan output includes:
-- required layers covered/missing/partial
-- optional layers missing/partial
-- which layers will use existing catalog vs acquisition
-- required blockers (for example missing source config for a core layer)
-- buildability from current catalog vs buildability with current source registry
+Operator diagnostics in command output include:
+- prepared-region status (`covered`, `not_found`, `present_outside_bbox`, `invalid_manifest`)
+- catalog coverage sufficiency and acquisition plan
+- required blockers vs optional omissions
+- stage status (`prepared_region_check`, `coverage_plan`, `acquisition`, `region_build`, `validation`)
+- compact summary (`final_status`, missing layers after run, validation status)
+
+Manual uncovered-region workflow:
+- Set `WF_REQUIRE_PREPARED_REGION_COVERAGE=true` to require prepared coverage for assessment requests.
+- When uncovered, runtime returns `region_not_ready` with a suggested bbox.
+- Operator runs the preferred prep command above.
+- Retry `POST /risk/assess` after prep/validation completes.
+
+Optional auto-queue workflow:
+- Set `WF_AUTO_QUEUE_REGION_PREP_ON_MISS=true` to enqueue prep jobs automatically on uncovered addresses.
+- Start local worker:
+
+```bash
+python scripts/run_region_prep_worker.py --once
+```
+
+Developer checklist:
+1. Plan: run `prepare_region_from_catalog_or_sources.py --plan-only`.
+2. Verify required-layer blockers and source registry values.
+3. Execute with `--validate`.
+4. Inspect `data/regions/<region_id>/manifest.json` (`catalog`, acquisition method, omissions, validation status).
+5. If runtime still reports `region_not_ready`, run `POST /regions/coverage-check` for point-level coverage diagnostics.
 
 Trust/transparency behavior:
 - score families may be unavailable (`null`) when evidence is insufficient

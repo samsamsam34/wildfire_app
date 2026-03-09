@@ -391,6 +391,10 @@ def test_prepare_any_region_uses_default_source_registry_and_runs_new_area_smoke
         plan_only=True,
     )
     assert plan["mode"] == "plan_only"
+    assert plan["stage_status"]["coverage_plan"]["status"] == "ok"
+    assert "required_layer_policy" in plan
+    assert plan["required_layer_policy"]["required_core_layers"] == required_core_layers()
+    assert plan["compact_summary"]["mode"] == "plan_only"
     assert plan["source_registry"]["default_source_registry_used"] is True
     assert plan["source_registry"]["source_config_path"] == str(registry_path)
     assert sorted(plan["operator_summary"]["required_layers_missing"]) == sorted(required_core_layers())
@@ -408,7 +412,10 @@ def test_prepare_any_region_uses_default_source_registry_and_runs_new_area_smoke
         validate=True,
     )
     assert executed["mode"] == "executed"
+    assert executed["final_status"] in {"success", "partial"}
     assert executed["source_registry"]["default_source_registry_used"] is True
+    assert executed["stage_status"]["region_build"]["status"] == "ok"
+    assert executed["compact_summary"]["mode"] == "executed"
     assert sorted(item["layer_key"] for item in executed["acquired_layers"]) == sorted(required_core_layers())
     assert (regions_root / "new_area_smoke" / "manifest.json").exists()
     validation = executed.get("validation")
@@ -416,3 +423,38 @@ def test_prepare_any_region_uses_default_source_registry_and_runs_new_area_smoke
     assert validation.get("validation_status") in {"passed", "failed"}
     if validation.get("validation_status") == "failed":
         assert validation.get("blockers"), "Validation failures should include structured blockers."
+
+
+def test_prepare_any_region_already_prepared_without_overwrite_returns_fast_status(tmp_path):
+    sources = _seed_sources(tmp_path)
+    catalog_root = tmp_path / "catalog"
+    regions_root = tmp_path / "regions"
+    bbox = {"min_lon": -0.6, "min_lat": 0.2, "max_lon": 0.6, "max_lat": 0.8}
+    _ingest_core(sources=sources, bbox=bbox, catalog_root=catalog_root)
+
+    first = prepare_region_from_catalog_or_sources(
+        region_id="already_prepared",
+        display_name="Already Prepared",
+        bounds=bbox,
+        catalog_root=catalog_root,
+        regions_root=regions_root,
+        source_config={},
+        skip_optional_layers=True,
+        overwrite=True,
+    )
+    assert first["final_status"] in {"success", "partial"}
+
+    second = prepare_region_from_catalog_or_sources(
+        region_id="already_prepared",
+        display_name="Already Prepared",
+        bounds=bbox,
+        catalog_root=catalog_root,
+        regions_root=regions_root,
+        source_config={},
+        skip_optional_layers=True,
+        overwrite=False,
+        validate=True,
+    )
+    assert second["final_status"] == "already_prepared"
+    assert second["acquired_layers"] == []
+    assert second["stage_status"]["region_build"]["status"] == "skipped"

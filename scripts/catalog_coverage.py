@@ -33,6 +33,14 @@ def optional_layers() -> list[str]:
     return list(CATALOG_OPTIONAL_LAYERS)
 
 
+def required_layer_policy() -> dict[str, list[str]]:
+    return {
+        "required_core_layers": required_core_layers(),
+        "derived_core_layers": list(CATALOG_DERIVED_RASTER_LAYERS),
+        "optional_layers": optional_layers(),
+    }
+
+
 def _to_bbox_tuple(bounds: dict[str, float]) -> tuple[float, float, float, float]:
     return (
         float(bounds["min_lon"]),
