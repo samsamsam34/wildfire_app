@@ -86,6 +86,21 @@ def _local_source_config(sources: dict[str, Path]) -> dict[str, dict[str, str]]:
     return cfg
 
 
+def _write_source_registry(path: Path, sources: dict[str, Path]) -> Path:
+    layers: dict[str, dict[str, str]] = {}
+    for key in required_core_layers():
+        layers[key] = {
+            "provider_type": "local_file",
+            "source_path": str(sources[key]),
+        }
+    payload = {
+        "version": 1,
+        "layers": layers,
+    }
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return path
+
+
 def _ingest_core(
     *,
     sources: dict[str, Path],
@@ -249,7 +264,7 @@ def test_prepare_any_region_required_layer_failure_raises(tmp_path):
             overwrite=True,
             require_core_layers=True,
         )
-    assert "missing required core coverage" in str(exc.value).lower()
+    assert "required core layer blockers" in str(exc.value).lower()
 
 
 def test_prepare_any_region_optional_layer_omission_recorded(tmp_path):
@@ -356,3 +371,48 @@ def test_prepare_any_region_plan_only_reports_steps_without_writes(tmp_path):
     assert result["coverage_plan"]["summary"]["required_missing"]
     assert result["acquisition_steps"]
     assert not (regions_root / "plan_only_region").exists()
+
+
+def test_prepare_any_region_uses_default_source_registry_and_runs_new_area_smoke(monkeypatch, tmp_path):
+    sources = _seed_sources(tmp_path)
+    catalog_root = tmp_path / "catalog"
+    regions_root = tmp_path / "regions"
+    bbox = {"min_lon": -0.6, "min_lat": 0.2, "max_lon": 0.6, "max_lat": 0.8}
+    registry_path = _write_source_registry(tmp_path / "source_registry.json", sources)
+    monkeypatch.setenv("WF_SOURCE_CONFIG_PATH", str(registry_path))
+
+    plan = prepare_region_from_catalog_or_sources(
+        region_id="new_area_smoke",
+        display_name="New Area Smoke",
+        bounds=bbox,
+        catalog_root=catalog_root,
+        regions_root=regions_root,
+        skip_optional_layers=True,
+        plan_only=True,
+    )
+    assert plan["mode"] == "plan_only"
+    assert plan["source_registry"]["default_source_registry_used"] is True
+    assert plan["source_registry"]["source_config_path"] == str(registry_path)
+    assert sorted(plan["operator_summary"]["required_layers_missing"]) == sorted(required_core_layers())
+    assert sorted(plan["operator_summary"]["layers_requiring_acquisition"]) == sorted(required_core_layers())
+    assert plan["buildable_estimate"]["buildable_with_current_config"] is True
+
+    executed = prepare_region_from_catalog_or_sources(
+        region_id="new_area_smoke",
+        display_name="New Area Smoke",
+        bounds=bbox,
+        catalog_root=catalog_root,
+        regions_root=regions_root,
+        skip_optional_layers=True,
+        overwrite=True,
+        validate=True,
+    )
+    assert executed["mode"] == "executed"
+    assert executed["source_registry"]["default_source_registry_used"] is True
+    assert sorted(item["layer_key"] for item in executed["acquired_layers"]) == sorted(required_core_layers())
+    assert (regions_root / "new_area_smoke" / "manifest.json").exists()
+    validation = executed.get("validation")
+    assert isinstance(validation, dict)
+    assert validation.get("validation_status") in {"passed", "failed"}
+    if validation.get("validation_status") == "failed":
+        assert validation.get("blockers"), "Validation failures should include structured blockers."

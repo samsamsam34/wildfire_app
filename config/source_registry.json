@@ -1,0 +1,94 @@
+{
+  "version": 1,
+  "name": "wildfire-default-source-registry",
+  "description": "Default offline prep source registry. Override with --source-config when needed.",
+  "layers": {
+    "dem": {
+      "provider_type": "arcgis_image_service",
+      "source_endpoint": "${WF_DEFAULT_DEM_ENDPOINT}",
+      "full_download_url": "${WF_DEFAULT_DEM_FULL_URL}",
+      "supports_bbox_export": true,
+      "allow_full_download_fallback": true,
+      "target_resolution": 30.0,
+      "expected_output_format": "tif",
+      "notes": "Set WF_DEFAULT_DEM_ENDPOINT to a bbox-capable ImageServer (for example USGS 3DEP)."
+    },
+    "fuel": {
+      "provider_type": "arcgis_image_service",
+      "source_endpoint": "${WF_DEFAULT_FUEL_ENDPOINT}",
+      "full_download_url": "${WF_DEFAULT_FUEL_FULL_URL}",
+      "supports_bbox_export": true,
+      "allow_full_download_fallback": true,
+      "target_resolution": 30.0,
+      "expected_output_format": "tif",
+      "notes": "Set to LANDFIRE fuel service/archive source."
+    },
+    "canopy": {
+      "provider_type": "arcgis_image_service",
+      "source_endpoint": "${WF_DEFAULT_CANOPY_ENDPOINT}",
+      "full_download_url": "${WF_DEFAULT_CANOPY_FULL_URL}",
+      "supports_bbox_export": true,
+      "allow_full_download_fallback": true,
+      "target_resolution": 30.0,
+      "expected_output_format": "tif",
+      "notes": "Set to LANDFIRE canopy service/archive source."
+    },
+    "fire_perimeters": {
+      "provider_type": "arcgis_feature_service",
+      "source_endpoint": "${WF_DEFAULT_FIRE_PERIMETERS_ENDPOINT}",
+      "full_download_url": "${WF_DEFAULT_FIRE_PERIMETERS_FULL_URL}",
+      "supports_bbox_export": true,
+      "allow_full_download_fallback": true,
+      "expected_output_format": "geojson",
+      "notes": "Set to NIFC/agency perimeter feature service."
+    },
+    "building_footprints": {
+      "provider_type": "arcgis_feature_service",
+      "source_endpoint": "${WF_DEFAULT_BUILDING_FOOTPRINTS_ENDPOINT}",
+      "full_download_url": "${WF_DEFAULT_BUILDING_FOOTPRINTS_FULL_URL}",
+      "supports_bbox_export": true,
+      "allow_full_download_fallback": true,
+      "expected_output_format": "geojson",
+      "notes": "Set to Microsoft/FEMA structures feature source."
+    },
+    "roads": {
+      "provider_type": "arcgis_feature_service",
+      "source_endpoint": "${WF_DEFAULT_ROADS_ENDPOINT}",
+      "full_download_url": "${WF_DEFAULT_ROADS_FULL_URL}",
+      "supports_bbox_export": true,
+      "allow_full_download_fallback": true,
+      "expected_output_format": "geojson",
+      "notes": "Optional OSM/roads source."
+    },
+    "whp": {
+      "provider_type": "arcgis_image_service",
+      "source_endpoint": "${WF_DEFAULT_WHP_ENDPOINT}",
+      "full_download_url": "${WF_DEFAULT_WHP_FULL_URL}",
+      "supports_bbox_export": true,
+      "allow_full_download_fallback": true,
+      "target_resolution": 30.0,
+      "expected_output_format": "tif",
+      "notes": "Optional USFS WHP hazard layer."
+    },
+    "mtbs_severity": {
+      "provider_type": "arcgis_image_service",
+      "source_endpoint": "${WF_DEFAULT_MTBS_SEVERITY_ENDPOINT}",
+      "full_download_url": "${WF_DEFAULT_MTBS_SEVERITY_FULL_URL}",
+      "supports_bbox_export": true,
+      "allow_full_download_fallback": true,
+      "target_resolution": 30.0,
+      "expected_output_format": "tif",
+      "notes": "Optional MTBS severity raster."
+    },
+    "gridmet_dryness": {
+      "provider_type": "arcgis_image_service",
+      "source_endpoint": "${WF_DEFAULT_GRIDMET_DRYNESS_ENDPOINT}",
+      "full_download_url": "${WF_DEFAULT_GRIDMET_DRYNESS_FULL_URL}",
+      "supports_bbox_export": true,
+      "allow_full_download_fallback": true,
+      "target_resolution": 4000.0,
+      "expected_output_format": "tif",
+      "notes": "Optional dryness proxy raster."
+    }
+  }
+}

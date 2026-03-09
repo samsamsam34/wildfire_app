@@ -291,6 +291,10 @@ Preparing a new area on demand:
   3) build the prepared region from catalog,
   4) optionally validate.
 - Runtime still reads only prepared region outputs.
+- Default source registry: `config/source_registry.json`.
+  - If `--source-config` is omitted, the script auto-loads the default registry.
+  - You can override with `--source-config <path>` or `WF_SOURCE_CONFIG_PATH`.
+  - Registry values support env references like `${WF_DEFAULT_DEM_ENDPOINT}`.
 
 Plan-only check:
 
@@ -299,8 +303,16 @@ python scripts/prepare_region_from_catalog_or_sources.py \
   --region-id missoula_pilot \
   --display-name "Missoula Pilot" \
   --bbox -114.2 46.75 -113.8 47.0 \
-  --source-config path/to/source_config.json \
   --plan-only
+```
+
+Optional plan helper:
+
+```bash
+python scripts/plan_region_build.py \
+  --region-id missoula_pilot \
+  --display-name "Missoula Pilot" \
+  --bbox -114.2 46.75 -113.8 47.0
 ```
 
 Prepare/build/validate:
@@ -310,12 +322,18 @@ python scripts/prepare_region_from_catalog_or_sources.py \
   --region-id bozeman_pilot \
   --display-name "Bozeman Pilot" \
   --bbox -111.2 45.5 -110.9 45.8 \
-  --source-config path/to/source_config.json \
   --prefer-bbox-downloads \
   --allow-full-download-fallback \
   --allow-partial-coverage-fill \
   --validate
 ```
+
+Plan output includes:
+- required layers covered/missing/partial
+- optional layers missing/partial
+- which layers will use existing catalog vs acquisition
+- required blockers (for example missing source config for a core layer)
+- buildability from current catalog vs buildability with current source registry
 
 Trust/transparency behavior:
 - score families may be unavailable (`null`) when evidence is insufficient
