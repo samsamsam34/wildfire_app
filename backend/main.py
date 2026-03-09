@@ -45,8 +45,10 @@ from backend.models import (
     CSVImportError,
     CSVImportRequest,
     CSVImportResponse,
+    ConfidencePenalty,
     DataProvenanceBlock,
     DataProvenanceSummary,
+    EvidenceQualitySummary,
     EligibilityStatus,
     EnvironmentalFactors,
     FreshnessStatus,
@@ -70,6 +72,8 @@ from backend.models import (
     SimulationScenarioItem,
     ScoreFamilyInputQuality,
     ScoreEligibility,
+    ScoreEvidenceFactor,
+    ScoreEvidenceLedger,
     ScoreSummaries,
     ScoreSectionSummary,
     SubmodelScore,
@@ -484,6 +488,17 @@ def _build_confidence(
         )
         confidence = max(confidence, contextual_floor)
 
+    critical_near_structure_missing = (
+        not has_ring_metrics
+        and all(field in missing_inputs_set for field in {"roof_type", "vent_type", "defensible_space_ft"})
+    )
+    if critical_near_structure_missing:
+        confidence = min(confidence, 62.0)
+    if inferred_count >= 3:
+        confidence = min(confidence, 74.0)
+    if missing_layer_count >= 3:
+        confidence = min(confidence, 58.0)
+
     if not geocode_verified or (not has_meaningful_environment and not has_meaningful_property):
         confidence = 0.0
 
@@ -545,6 +560,8 @@ def _build_confidence(
         low_confidence_flags.append("Critical inputs have stale or unknown freshness metadata")
     if heuristic_count > 0:
         low_confidence_flags.append("Heuristic inputs are present in the scoring context")
+    if critical_near_structure_missing:
+        low_confidence_flags.append("Critical near-structure evidence is missing; confidence is capped")
     if any("provisional" in note.lower() for note in assumptions.assumptions_used):
         low_confidence_flags.append("Access scoring is provisional and not yet parcel/egress-based")
     if confidence < 70:
@@ -615,6 +632,402 @@ def _build_confidence(
         missing_critical_fields=missing_critical_fields,
         confidence_drivers=sorted(set(confidence_drivers)),
         confidence_limiters=sorted(set(confidence_limiters)),
+    )
+
+
+def _derive_confidence_penalties(
+    assumptions: AssumptionsBlock,
+    *,
+    environmental_data_completeness: float,
+    geocode_verified: bool,
+    property_level_context: dict[str, Any],
+    environmental_layer_status: dict[str, str],
+    data_provenance: DataProvenanceBlock | None = None,
+) -> list[ConfidencePenalty]:
+    penalties: list[ConfidencePenalty] = []
+    missing_inputs_set = set(assumptions.missing_inputs)
+    missing_layer_count = len([m for m in assumptions.missing_inputs if m.endswith("_layer")])
+    inferred_count = len(assumptions.inferred_inputs)
+    observed_core_count = len(
+        [k for k in CORE_FACT_FIELDS if assumptions.observed_inputs.get(k) is not None and k not in missing_inputs_set]
+    )
+    provider_error_count = sum(1 for status in (environmental_layer_status or {}).values() if status == "error")
+    ring_metrics = property_level_context.get("ring_metrics")
+    has_ring_metrics = isinstance(ring_metrics, dict) and bool(ring_metrics)
+    stale_share = float((data_provenance.summary.stale_data_share if data_provenance else 0.0) or 0.0)
+    heuristic_count = int((data_provenance.summary.heuristic_input_count if data_provenance else 0) or 0)
+
+    if not geocode_verified:
+        penalties.append(
+            ConfidencePenalty(
+                penalty_key="unverified_geocode",
+                reason="Address geocoding could not be provider-verified.",
+                amount=35.0,
+            )
+        )
+    if environmental_data_completeness < 100.0:
+        penalties.append(
+            ConfidencePenalty(
+                penalty_key="environmental_incompleteness",
+                reason="One or more environmental layers are missing or degraded.",
+                amount=round(max(0.0, (100.0 - environmental_data_completeness) * 0.12), 1),
+            )
+        )
+    if missing_layer_count > 0:
+        penalties.append(
+            ConfidencePenalty(
+                penalty_key="missing_environmental_layers",
+                reason=f"{missing_layer_count} environmental layer(s) missing from this run.",
+                amount=round(missing_layer_count * 3.5, 1),
+            )
+        )
+    if inferred_count > observed_core_count:
+        penalties.append(
+            ConfidencePenalty(
+                penalty_key="inferred_structure_facts",
+                reason="Core structure attributes rely on inferred/default assumptions.",
+                amount=round((inferred_count - observed_core_count) * 1.8, 1),
+            )
+        )
+    if not has_ring_metrics:
+        penalties.append(
+            ConfidencePenalty(
+                penalty_key="missing_ring_context",
+                reason="Building footprint/ring metrics unavailable; using point-based fallback.",
+                amount=6.0,
+            )
+        )
+    if provider_error_count > 0:
+        penalties.append(
+            ConfidencePenalty(
+                penalty_key="provider_errors",
+                reason="One or more providers/layers returned runtime errors.",
+                amount=round(provider_error_count * 10.0, 1),
+            )
+        )
+    if stale_share > 0:
+        penalties.append(
+            ConfidencePenalty(
+                penalty_key="stale_inputs",
+                reason="Some inputs are stale relative to freshness policy.",
+                amount=round(min(12.0, stale_share * 0.2), 1),
+            )
+        )
+    if heuristic_count > 0:
+        penalties.append(
+            ConfidencePenalty(
+                penalty_key="heuristic_inputs",
+                reason="Heuristic inputs were used where direct evidence was unavailable.",
+                amount=round(min(6.0, heuristic_count * 1.2), 1),
+            )
+        )
+
+    return [p for p in penalties if p.amount > 0]
+
+
+def _safe_float(value: object) -> float | None:
+    try:
+        if value is None:
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _average_numeric_values(values: list[object]) -> float | None:
+    nums = [v for v in (_safe_float(val) for val in values) if v is not None]
+    if not nums:
+        return None
+    return round(sum(nums) / len(nums), 2)
+
+
+def _source_type_to_evidence_status(source_type: str) -> str:
+    if source_type in {"observed", "footprint_derived", "user_provided"}:
+        return "observed"
+    if source_type == "public_record_inferred":
+        return "inferred"
+    if source_type == "heuristic":
+        return "fallback"
+    return "missing"
+
+
+def _map_key_input_to_source_field(key: str) -> str | None:
+    k = key.lower()
+    if "burn_probability" in k:
+        return "burn_probability"
+    if "hazard" in k:
+        return "wildfire_hazard"
+    if "slope" in k or "aspect" in k:
+        return "slope"
+    if "fuel" in k:
+        return "fuel_model"
+    if "canopy" in k:
+        return "canopy_cover"
+    if "wildland_distance" in k:
+        return "wildland_distance"
+    if "historic_fire" in k:
+        return "historic_fire_distance"
+    if "roof" in k:
+        return "roof_type"
+    if "vent" in k:
+        return "vent_type"
+    if "construction" in k:
+        return "construction_year"
+    if "defensible_space" in k:
+        return "defensible_space_ft"
+    if "ring_0_5" in k or "zone_0_5" in k:
+        return "zone_0_5_ft"
+    if "ring_5_30" in k or "zone_5_30" in k:
+        return "zone_5_30_ft"
+    if "ring_30_100" in k or "zone_30_100" in k:
+        return "zone_30_100_ft"
+    return None
+
+
+def _combine_evidence_status(statuses: list[str]) -> str:
+    if not statuses:
+        return "missing"
+    rank = {"observed": 1, "inferred": 2, "fallback": 3, "missing": 4}
+    return max(statuses, key=lambda s: rank.get(s, 4))
+
+
+def _status_from_source_fields(
+    source_fields: list[str],
+    input_source_metadata: dict[str, InputSourceMetadata],
+) -> tuple[str, str]:
+    statuses: list[str] = []
+    resolved_fields: list[str] = []
+    for field in source_fields:
+        meta = input_source_metadata.get(field)
+        if meta:
+            statuses.append(_source_type_to_evidence_status(meta.source_type))
+            resolved_fields.append(field)
+    return _combine_evidence_status(statuses), ", ".join(sorted(set(resolved_fields))) or "derived"
+
+
+def _build_score_evidence_ledger(
+    *,
+    submodel_scores: dict[str, SubmodelScore],
+    weighted_contributions: dict[str, WeightedContribution],
+    readiness_factors: list[ReadinessFactor],
+    readiness_score: float | None,
+    site_hazard_score: float | None,
+    home_ignition_vulnerability_score: float | None,
+    wildfire_risk_score: float | None,
+    input_source_metadata: dict[str, InputSourceMetadata],
+) -> ScoreEvidenceLedger:
+    category_map = {
+        "vegetation_intensity_risk": "environmental",
+        "fuel_proximity_risk": "environmental",
+        "slope_topography_risk": "environmental",
+        "ember_exposure_risk": "environmental",
+        "flame_contact_risk": "structural",
+        "historic_fire_risk": "historical_fire",
+        "structure_vulnerability_risk": "structural",
+        "defensible_space_risk": "defensible_space",
+    }
+    display_map = {
+        "vegetation_intensity_risk": "Vegetation Intensity",
+        "fuel_proximity_risk": "Fuel Proximity",
+        "slope_topography_risk": "Slope & Topography",
+        "ember_exposure_risk": "Ember Exposure",
+        "flame_contact_risk": "Flame Contact Exposure",
+        "historic_fire_risk": "Historic Fire Exposure",
+        "structure_vulnerability_risk": "Structure Vulnerability",
+        "defensible_space_risk": "Defensible Space",
+    }
+
+    site_entries: list[ScoreEvidenceFactor] = []
+    home_entries: list[ScoreEvidenceFactor] = []
+
+    for submodel in CANONICAL_SUBMODELS:
+        score = submodel_scores.get(submodel)
+        weight = weighted_contributions.get(submodel)
+        if not score or not weight:
+            continue
+        source_fields = [
+            field for field in (_map_key_input_to_source_field(k) for k in score.key_inputs.keys()) if field
+        ]
+        evidence_status, resolved_source_fields = _status_from_source_fields(source_fields, input_source_metadata)
+        factor = ScoreEvidenceFactor(
+            factor_key=submodel,
+            display_name=display_map.get(submodel, submodel),
+            category=category_map.get(submodel, "data_quality"),
+            raw_value=_average_numeric_values(list(score.key_inputs.values())),
+            normalized_value=round(score.score, 1),
+            weight=round(weight.weight, 4),
+            contribution=round(weight.contribution, 2),
+            direction="increases_risk",
+            evidence_status=evidence_status,
+            source_field=resolved_source_fields,
+            source_layer=resolved_source_fields,
+            notes=[score.explanation] + score.assumptions[:2],
+        )
+        if submodel in ENVIRONMENTAL_SUBMODELS:
+            site_entries.append(factor)
+        else:
+            home_entries.append(factor)
+
+    struct_weight = sum(sc.weight for key, sc in weighted_contributions.items() if key in STRUCTURAL_SUBMODELS)
+    struct_contrib = sum(sc.contribution for key, sc in weighted_contributions.items() if key in STRUCTURAL_SUBMODELS)
+    struct_base = round(struct_contrib / struct_weight, 1) if struct_weight > 0 else None
+    if struct_base is not None and home_ignition_vulnerability_score is not None:
+        ring_modifier = round(home_ignition_vulnerability_score - struct_base, 2)
+        if abs(ring_modifier) >= 0.01:
+            ring_status, ring_sources = _status_from_source_fields(
+                ["zone_0_5_ft", "zone_5_30_ft", "zone_30_100_ft"],
+                input_source_metadata,
+            )
+            home_entries.append(
+                ScoreEvidenceFactor(
+                    factor_key="structure_ring_modifier",
+                    display_name="Structure Ring Context Modifier",
+                    category="defensible_space",
+                    raw_value=struct_base,
+                    normalized_value=home_ignition_vulnerability_score,
+                    weight=1.0,
+                    contribution=ring_modifier,
+                    direction="increases_risk" if ring_modifier >= 0 else "reduces_risk",
+                    evidence_status=ring_status,
+                    source_field=ring_sources,
+                    source_layer=ring_sources,
+                    notes=[
+                        "Captures additional near-structure ring influence beyond base structural submodels."
+                    ],
+                )
+            )
+
+    readiness_field_map = {
+        "roof_material": "roof_type",
+        "vent_quality": "vent_type",
+        "defensible_space": "defensible_space_ft",
+        "structure_vulnerability": "structure_vulnerability_risk",
+        "adjacent_fuel_pressure": "fuel_model",
+        "vegetation_intensity": "zone_5_30_ft",
+        "severe_ember_exposure": "burn_probability",
+        "severe_environmental_hazard": "wildfire_hazard",
+    }
+    readiness_entries: list[ScoreEvidenceFactor] = []
+    for factor in readiness_factors:
+        source_field = readiness_field_map.get(factor.name)
+        status, resolved = _status_from_source_fields(
+            [source_field] if source_field else [],
+            input_source_metadata,
+        )
+        direction = "blocks_readiness"
+        if factor.status == "pass" and factor.score_impact >= 0:
+            direction = "improves_readiness"
+        readiness_entries.append(
+            ScoreEvidenceFactor(
+                factor_key=factor.name,
+                display_name=factor.name.replace("_", " ").title(),
+                category="data_quality" if factor.status == "watch" else "structural",
+                raw_value=None,
+                normalized_value=readiness_score,
+                weight=1.0,
+                contribution=round(factor.score_impact, 2),
+                direction=direction,
+                evidence_status=status,
+                source_field=resolved or source_field,
+                source_layer=resolved or source_field,
+                notes=[factor.detail],
+            )
+        )
+
+    env_weight = sum(weighted_contributions[key].weight for key in weighted_contributions if key in ENVIRONMENTAL_SUBMODELS)
+    struct_weight_total = sum(
+        weighted_contributions[key].weight for key in weighted_contributions if key in STRUCTURAL_SUBMODELS
+    )
+    denom = env_weight + struct_weight_total
+    wildfire_entries: list[ScoreEvidenceFactor] = []
+    if denom > 0 and wildfire_risk_score is not None:
+        if site_hazard_score is not None:
+            site_ratio = env_weight / denom
+            wildfire_entries.append(
+                ScoreEvidenceFactor(
+                    factor_key="site_hazard_component",
+                    display_name="Site Hazard Component",
+                    category="environmental",
+                    raw_value=site_hazard_score,
+                    normalized_value=site_hazard_score,
+                    weight=round(site_ratio, 4),
+                    contribution=round(site_hazard_score * site_ratio, 2),
+                    direction="composes_score",
+                    evidence_status=_combine_evidence_status([f.evidence_status for f in site_entries]),
+                    source_field="site_hazard_score",
+                    source_layer="site_hazard_score",
+                    notes=["Weighted contribution of Site Hazard to blended wildfire score."],
+                )
+            )
+        if home_ignition_vulnerability_score is not None:
+            home_ratio = struct_weight_total / denom
+            wildfire_entries.append(
+                ScoreEvidenceFactor(
+                    factor_key="home_ignition_component",
+                    display_name="Home Ignition Vulnerability Component",
+                    category="structural",
+                    raw_value=home_ignition_vulnerability_score,
+                    normalized_value=home_ignition_vulnerability_score,
+                    weight=round(home_ratio, 4),
+                    contribution=round(home_ignition_vulnerability_score * home_ratio, 2),
+                    direction="composes_score",
+                    evidence_status=_combine_evidence_status([f.evidence_status for f in home_entries]),
+                    source_field="home_ignition_vulnerability_score",
+                    source_layer="home_ignition_vulnerability_score",
+                    notes=["Weighted contribution of Home Ignition Vulnerability to blended wildfire score."],
+                )
+            )
+
+    return ScoreEvidenceLedger(
+        site_hazard_score=site_entries,
+        home_ignition_vulnerability_score=home_entries,
+        insurance_readiness_score=readiness_entries,
+        wildfire_risk_score=wildfire_entries,
+    )
+
+
+def _build_evidence_quality_summary(
+    *,
+    ledger: ScoreEvidenceLedger,
+    confidence_penalties: list[ConfidencePenalty],
+    confidence: ConfidenceBlock,
+    assessment_status: AssessmentStatus,
+) -> EvidenceQualitySummary:
+    factors = (
+        list(ledger.site_hazard_score)
+        + list(ledger.home_ignition_vulnerability_score)
+        + list(ledger.insurance_readiness_score)
+    )
+
+    observed_count = sum(1 for f in factors if f.evidence_status == "observed")
+    inferred_count = sum(1 for f in factors if f.evidence_status == "inferred")
+    missing_count = sum(1 for f in factors if f.evidence_status == "missing")
+    fallback_count = sum(1 for f in factors if f.evidence_status == "fallback")
+    total = max(1, len(factors))
+
+    raw_quality = (
+        observed_count
+        + (0.65 * inferred_count)
+        + (0.35 * fallback_count)
+    ) / total
+    penalty_adjustment = min(25.0, sum(p.amount for p in confidence_penalties) * 0.2)
+    evidence_quality_score = round(max(0.0, min(100.0, raw_quality * 100.0 - penalty_adjustment)), 1)
+
+    if assessment_status == "insufficient_data" or confidence.confidence_tier == "preliminary":
+        evidence_use_restriction = "screening_only"
+    elif confidence.confidence_tier == "low" or (missing_count + fallback_count) >= max(3, observed_count):
+        evidence_use_restriction = "review_required"
+    else:
+        evidence_use_restriction = "consumer_estimate"
+
+    return EvidenceQualitySummary(
+        observed_factor_count=observed_count,
+        inferred_factor_count=inferred_count,
+        missing_factor_count=missing_count,
+        fallback_factor_count=fallback_count,
+        evidence_quality_score=evidence_quality_score,
+        confidence_penalties=confidence_penalties,
+        use_restriction=evidence_use_restriction,  # type: ignore[arg-type]
     )
 
 
@@ -1591,6 +2004,24 @@ def _apply_ruleset_to_result(result: AssessmentResult, ruleset: UnderwritingRule
     result.scoring_notes.append(
         f"Underwriting ruleset {ruleset.ruleset_id}@{ruleset.ruleset_version} applied (multiplier={penalty_multiplier})."
     )
+    if result.confidence:
+        carried_penalties = list(result.evidence_quality_summary.confidence_penalties or [])
+        result.score_evidence_ledger = _build_score_evidence_ledger(
+            submodel_scores=result.submodel_scores,
+            weighted_contributions=result.weighted_contributions,
+            readiness_factors=result.readiness_factors,
+            readiness_score=result.insurance_readiness_score,
+            site_hazard_score=result.site_hazard_score,
+            home_ignition_vulnerability_score=result.home_ignition_vulnerability_score,
+            wildfire_risk_score=result.wildfire_risk_score,
+            input_source_metadata=result.input_source_metadata,
+        )
+        result.evidence_quality_summary = _build_evidence_quality_summary(
+            ledger=result.score_evidence_ledger,
+            confidence_penalties=carried_penalties,
+            confidence=result.confidence,
+            assessment_status=result.assessment_status,
+        )
     return result
 
 
@@ -1722,6 +2153,14 @@ def _run_assessment(
         readiness_eligibility=insurance_readiness_eligibility,
         assessment_status=assessment_status,
     )
+    confidence_penalties = _derive_confidence_penalties(
+        assumptions_block,
+        environmental_data_completeness=environmental_data_completeness,
+        geocode_verified=True,
+        property_level_context=property_level_context,
+        environmental_layer_status=context.environmental_layer_status,
+        data_provenance=data_provenance,
+    )
     assessment_diagnostics = _build_assessment_diagnostics(
         data_provenance=data_provenance,
         confidence_downgrade_reasons=confidence_downgrade_reasons,
@@ -1753,6 +2192,27 @@ def _run_assessment(
     insurance_readiness_score = score_outputs["insurance_readiness_score"]
     blended_wildfire_risk_score = score_outputs["wildfire_risk_score"]
     legacy_weighted_wildfire_risk_score = score_outputs["legacy_weighted_wildfire_risk_score"]
+    readiness_factors = [
+        ReadinessFactor(name=f["name"], status=f["status"], score_impact=f["score_impact"], detail=f["detail"])
+        for f in readiness.readiness_factors
+    ]
+
+    score_evidence_ledger = _build_score_evidence_ledger(
+        submodel_scores=submodel_scores,
+        weighted_contributions=weighted_contributions,
+        readiness_factors=readiness_factors,
+        readiness_score=insurance_readiness_score,
+        site_hazard_score=site_hazard_score,
+        home_ignition_vulnerability_score=home_ignition_vulnerability_score,
+        wildfire_risk_score=blended_wildfire_risk_score,
+        input_source_metadata=input_source_metadata,
+    )
+    evidence_quality_summary = _build_evidence_quality_summary(
+        ledger=score_evidence_ledger,
+        confidence_penalties=confidence_penalties,
+        confidence=confidence_block,
+        assessment_status=assessment_status,
+    )
 
     site_hazard_section, home_ignition_section, insurance_readiness_section = _build_score_sections(
         site_hazard_score=site_hazard_score,
@@ -1865,11 +2325,6 @@ def _run_assessment(
     )
     coordinates = Coordinates(latitude=lat, longitude=lon)
 
-    readiness_factors = [
-        ReadinessFactor(name=f["name"], status=f["status"], score_impact=f["score_impact"], detail=f["detail"])
-        for f in readiness.readiness_factors
-    ]
-
     submodel_explanations = {k: v.explanation for k, v in submodel_scores.items()}
     fact_map = _attributes_to_dict(payload.attributes)
     final_tags = sorted(set((payload.tags or []) + (tags or [])))
@@ -1934,6 +2389,8 @@ def _run_assessment(
         site_hazard_input_quality=site_hazard_input_quality,
         home_vulnerability_input_quality=home_vulnerability_input_quality,
         insurance_readiness_input_quality=insurance_readiness_input_quality,
+        score_evidence_ledger=score_evidence_ledger,
+        evidence_quality_summary=evidence_quality_summary,
         site_hazard_eligibility=site_hazard_eligibility,
         home_vulnerability_eligibility=home_vulnerability_eligibility,
         insurance_readiness_eligibility=insurance_readiness_eligibility,
@@ -2036,6 +2493,8 @@ def _run_assessment(
             "stale_data_share": result.data_provenance.summary.stale_data_share,
             "heuristic_input_count": result.data_provenance.summary.heuristic_input_count,
         },
+        "score_evidence_ledger": result.score_evidence_ledger.model_dump(),
+        "evidence_quality_summary": result.evidence_quality_summary.model_dump(),
         "score_family_input_quality": {
             "site_hazard": result.site_hazard_input_quality.model_dump(),
             "home_vulnerability": result.home_vulnerability_input_quality.model_dump(),
@@ -2267,7 +2726,10 @@ def _build_report_export(
             "site_hazard_input_quality": result.site_hazard_input_quality.model_dump(),
             "home_vulnerability_input_quality": result.home_vulnerability_input_quality.model_dump(),
             "insurance_readiness_input_quality": result.insurance_readiness_input_quality.model_dump(),
+            "evidence_quality_summary": result.evidence_quality_summary.model_dump(),
         },
+        score_evidence_ledger=result.score_evidence_ledger,
+        evidence_quality_summary=result.evidence_quality_summary,
         mitigation_recommendations=result.mitigation_plan,
     )
 

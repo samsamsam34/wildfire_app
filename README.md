@@ -27,6 +27,8 @@ Runtime scoring reads prepared local data. Large GIS download/prep is handled of
   - score availability flags (distinguish “not scored” from real low scores)
   - confidence tier and use restriction
   - score eligibility, blockers, diagnostics, and provenance metadata
+  - factor-level score evidence ledger (`score_evidence_ledger`) with weight/contribution/evidence status per factor
+  - evidence-quality summary (`evidence_quality_summary`) with observed/inferred/missing/fallback counts and confidence penalties
 - Persists assessment/report payloads in SQLite with compatibility handling for older rows.
 
 ## Main API Capabilities
@@ -132,6 +134,8 @@ Trust/transparency behavior:
 - score families may be unavailable (`null`) when evidence is insufficient
 - availability flags are included for each score
 - confidence/provenance fields explain missing, inferred, stale, or provisional inputs
+- each score family can be audited through factor-level ledger entries (inputs, weights, contributions, evidence status, source references)
+- evidence quality summary exposes confidence penalties and insurer-facing interpretation guardrails
 - access exposure is explicitly provisional and not parcel-verified
 
 ## Testing

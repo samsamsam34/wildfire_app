@@ -174,6 +174,8 @@ def _assert_core_contract(body: dict) -> None:
         "site_hazard_input_quality",
         "home_vulnerability_input_quality",
         "insurance_readiness_input_quality",
+        "score_evidence_ledger",
+        "evidence_quality_summary",
         "site_hazard_eligibility",
         "home_vulnerability_eligibility",
         "insurance_readiness_eligibility",
@@ -287,6 +289,49 @@ def _assert_core_contract(body: dict) -> None:
         assert "stale_share" in quality
         assert "missing_share" in quality
         assert "heuristic_count" in quality
+    ledger = body["score_evidence_ledger"]
+    assert set(ledger.keys()) == {
+        "site_hazard_score",
+        "home_ignition_vulnerability_score",
+        "insurance_readiness_score",
+        "wildfire_risk_score",
+    }
+    for family, rows in ledger.items():
+        assert isinstance(rows, list)
+        for row in rows:
+            for key in [
+                "factor_key",
+                "display_name",
+                "category",
+                "weight",
+                "contribution",
+                "direction",
+                "evidence_status",
+                "notes",
+            ]:
+                assert key in row
+            assert row["evidence_status"] in {"observed", "inferred", "missing", "fallback"}
+            assert row["direction"] in {
+                "increases_risk",
+                "reduces_risk",
+                "blocks_readiness",
+                "improves_readiness",
+                "composes_score",
+                "data_quality",
+            }
+    summary = body["evidence_quality_summary"]
+    for key in [
+        "observed_factor_count",
+        "inferred_factor_count",
+        "missing_factor_count",
+        "fallback_factor_count",
+        "evidence_quality_score",
+        "confidence_penalties",
+        "use_restriction",
+    ]:
+        assert key in summary
+    assert summary["use_restriction"] in {"consumer_estimate", "screening_only", "review_required"}
+    assert 0.0 <= float(summary["evidence_quality_score"]) <= 100.0
     diagnostics = body["assessment_diagnostics"]
     for key in [
         "critical_inputs_present",
@@ -399,6 +444,38 @@ def test_score_decomposition_and_blended_wildfire_score(monkeypatch, tmp_path):
     assert assessed["insurance_readiness_score"] != round(100.0 - assessed["wildfire_risk_score"], 1)
 
 
+def test_score_evidence_ledger_includes_contribution_evidence_and_blended_composition(monkeypatch, tmp_path):
+    ring_metrics = {
+        "ring_0_5_ft": {"vegetation_density": 68.0},
+        "ring_5_30_ft": {"vegetation_density": 64.0},
+        "ring_30_100_ft": {"vegetation_density": 60.0},
+    }
+    _setup(monkeypatch, tmp_path, _ctx(env=58.0, wildland=61.0, historic=52.0, ring_metrics=ring_metrics))
+    assessed = _run(
+        _payload(
+            "Evidence Ledger Way",
+            {
+                "roof_type": "class a",
+                "vent_type": "ember-resistant",
+                "defensible_space_ft": 20,
+                "construction_year": 2012,
+            },
+            confirmed=["roof_type", "vent_type", "defensible_space_ft"],
+        )
+    )
+
+    ledger = assessed["score_evidence_ledger"]
+    assert any(row["factor_key"] == "vegetation_intensity_risk" for row in ledger["site_hazard_score"])
+    assert any(row["factor_key"] == "structure_vulnerability_risk" for row in ledger["home_ignition_vulnerability_score"])
+    assert any(row["factor_key"] == "site_hazard_component" for row in ledger["wildfire_risk_score"])
+    assert any(row["factor_key"] == "home_ignition_component" for row in ledger["wildfire_risk_score"])
+    for family in ledger.values():
+        for row in family:
+            assert "contribution" in row
+            assert "evidence_status" in row
+            assert row["evidence_status"] in {"observed", "inferred", "missing", "fallback"}
+
+
 def test_confidence_tier_high_and_shareable_when_inputs_are_strong(monkeypatch, tmp_path):
     ring_metrics = {
         "ring_0_5_ft": {"vegetation_density": 20.0},
@@ -471,6 +548,8 @@ def test_low_confidence_restriction_when_key_layers_missing(monkeypatch, tmp_pat
     assessed = _run(_payload("344 Low Confidence Ct", {"defensible_space_ft": 10}))
     assert assessed["confidence_tier"] in {"low", "preliminary"}
     assert assessed["use_restriction"] == "not_for_underwriting_or_binding"
+    assert assessed["evidence_quality_summary"]["use_restriction"] in {"review_required", "screening_only"}
+    assert assessed["evidence_quality_summary"]["confidence_penalties"]
 
 
 @pytest.mark.parametrize(
@@ -482,8 +561,8 @@ def test_low_confidence_restriction_when_key_layers_missing(monkeypatch, tmp_pat
             [],
             ["roof_type", "vent_type", "defensible_space_ft"],
             {"construction_year": "pre_2008_proxy", "roof_type": "composition", "vent_type": "standard", "defensible_space_ft": 15},
-            "moderate",
-            "homeowner_review_recommended",
+            "low",
+            "agent_or_inspector_review_recommended",
         ),
         ([], ["roof_type", "vent_type", "defensible_space_ft", "construction_year"], {}, "preliminary", "not_for_underwriting_or_binding"),
     ],
@@ -557,6 +636,82 @@ def test_ring_metrics_increase_home_ignition_vulnerability_score(monkeypatch, tm
     high = _run(_payload("356 Ring High", attrs))
 
     assert high["home_ignition_vulnerability_score"] > low["home_ignition_vulnerability_score"]
+
+
+def test_worsening_defensible_space_does_not_improve_readiness(monkeypatch, tmp_path):
+    _setup(monkeypatch, tmp_path, _ctx(env=52.0, wildland=58.0, historic=47.0))
+    safer = _run(
+        _payload(
+            "Defensible Space Better Ave",
+            {
+                "roof_type": "class a",
+                "vent_type": "ember-resistant",
+                "defensible_space_ft": 40,
+                "construction_year": 2016,
+            },
+            confirmed=["roof_type", "vent_type", "defensible_space_ft"],
+        )
+    )
+    worse = _run(
+        _payload(
+            "Defensible Space Worse Ave",
+            {
+                "roof_type": "class a",
+                "vent_type": "ember-resistant",
+                "defensible_space_ft": 5,
+                "construction_year": 2016,
+            },
+            confirmed=["roof_type", "vent_type", "defensible_space_ft"],
+        )
+    )
+    assert worse["insurance_readiness_score"] <= safer["insurance_readiness_score"]
+
+
+def test_better_roof_and_vents_do_not_increase_home_vulnerability(monkeypatch, tmp_path):
+    _setup(monkeypatch, tmp_path, _ctx(env=55.0, wildland=62.0, historic=50.0))
+    weaker = _run(
+        _payload(
+            "Weak Hardening Ln",
+            {
+                "roof_type": "wood",
+                "vent_type": "standard",
+                "defensible_space_ft": 20,
+                "construction_year": 1995,
+            },
+        )
+    )
+    stronger = _run(
+        _payload(
+            "Strong Hardening Ln",
+            {
+                "roof_type": "class a",
+                "vent_type": "ember-resistant",
+                "defensible_space_ft": 20,
+                "construction_year": 1995,
+            },
+            confirmed=["roof_type", "vent_type"],
+        )
+    )
+    assert stronger["home_ignition_vulnerability_score"] <= weaker["home_ignition_vulnerability_score"]
+
+
+def test_higher_near_structure_vegetation_does_not_reduce_site_hazard(monkeypatch, tmp_path):
+    attrs = {"roof_type": "class a", "vent_type": "ember-resistant", "defensible_space_ft": 20}
+    low_ring = {
+        "ring_0_5_ft": {"vegetation_density": 20.0},
+        "ring_5_30_ft": {"vegetation_density": 25.0},
+        "ring_30_100_ft": {"vegetation_density": 30.0},
+    }
+    high_ring = {
+        "ring_0_5_ft": {"vegetation_density": 88.0},
+        "ring_5_30_ft": {"vegetation_density": 82.0},
+        "ring_30_100_ft": {"vegetation_density": 78.0},
+    }
+    _setup(monkeypatch, tmp_path, _ctx(env=50.0, wildland=50.0, historic=45.0, ring_metrics=low_ring))
+    low = _run(_payload("Low Near Veg", attrs))
+    _setup(monkeypatch, tmp_path, _ctx(env=50.0, wildland=50.0, historic=45.0, ring_metrics=high_ring))
+    high = _run(_payload("High Near Veg", attrs))
+    assert high["site_hazard_score"] >= low["site_hazard_score"]
 
 
 def test_geocoding_failure_does_not_use_synthetic_coordinate_fallback(monkeypatch, tmp_path):
@@ -900,11 +1055,42 @@ def test_report_export_and_view_with_audience(monkeypatch, tmp_path):
     exported = export_res.json()
     assert exported["audience_mode"] == "insurer"
     assert "audience_focus" in exported
+    assert "score_evidence_ledger" in exported
+    assert "evidence_quality_summary" in exported
+    assert exported["evidence_quality_summary"]["use_restriction"] in {
+        "consumer_estimate",
+        "screening_only",
+        "review_required",
+    }
+    assert "evidence_quality_summary" in exported["assumptions_confidence"]
 
     view_res = client.get(f"/report/{assessed['assessment_id']}/view?audience=agent")
     assert view_res.status_code == 200
     assert "text/html" in view_res.headers.get("content-type", "")
     assert "Audience View agent" in view_res.text
+
+
+def test_debug_endpoint_includes_evidence_ledger_and_summary(monkeypatch, tmp_path):
+    _setup(monkeypatch, tmp_path, _ctx(env=49.0, wildland=51.0, historic=44.0))
+    res = client.post(
+        "/risk/debug",
+        json={
+            "address": "Debug Evidence Ln",
+            "attributes": {
+                "roof_type": "class a",
+                "vent_type": "ember-resistant",
+                "defensible_space_ft": 25,
+            },
+            "confirmed_fields": ["roof_type", "vent_type", "defensible_space_ft"],
+            "audience": "insurer",
+            "tags": [],
+        },
+    )
+    assert res.status_code == 200
+    payload = res.json()
+    assert "score_evidence_ledger" in payload
+    assert "evidence_quality_summary" in payload
+    assert payload["evidence_quality_summary"]["observed_factor_count"] >= 0
 
 
 def test_portfolio_batch_and_partial_failure(monkeypatch, tmp_path):
@@ -1854,6 +2040,40 @@ def test_confidence_reduces_when_ring_metrics_unavailable(monkeypatch, tmp_path)
 
     assert assessed_with["confidence_score"] >= assessed_without["confidence_score"]
     assert assessed_without["property_level_context"]["fallback_mode"] == "point_based"
+    assert assessed_without["evidence_quality_summary"]["use_restriction"] in {"review_required", "screening_only", "consumer_estimate"}
+
+
+def test_observed_property_data_quality_beats_fallback_only(monkeypatch, tmp_path):
+    observed_ctx = _ctx(
+        env=46.0,
+        wildland=43.0,
+        historic=34.0,
+        ring_metrics={
+            "zone_0_5_ft": {"vegetation_density": 22.0},
+            "zone_5_30_ft": {"vegetation_density": 30.0},
+            "zone_30_100_ft": {"vegetation_density": 38.0},
+        },
+    )
+    _setup(monkeypatch, tmp_path, observed_ctx)
+    observed = _run(
+        _payload(
+            "Observed Data Ln",
+            {
+                "roof_type": "class a",
+                "vent_type": "ember-resistant",
+                "defensible_space_ft": 35,
+                "construction_year": 2016,
+            },
+            confirmed=["roof_type", "vent_type", "defensible_space_ft", "construction_year"],
+        )
+    )
+
+    fallback_ctx = _ctx(env=46.0, wildland=43.0, historic=34.0, ring_metrics={})
+    _setup(monkeypatch, tmp_path, fallback_ctx)
+    fallback = _run(_payload("Fallback Data Ln", {}, confirmed=[]))
+
+    assert observed["confidence_score"] > fallback["confidence_score"]
+    assert observed["evidence_quality_summary"]["evidence_quality_score"] > fallback["evidence_quality_summary"]["evidence_quality_score"]
 
 
 def test_score_family_eligibility_full_path(monkeypatch, tmp_path):

@@ -41,6 +41,16 @@ SourceType = Literal[
 ]
 FreshnessStatus = Literal["current", "aging", "stale", "unknown"]
 ProviderStatus = Literal["ok", "missing", "error"]
+EvidenceStatus = Literal["observed", "inferred", "missing", "fallback"]
+LedgerDirection = Literal[
+    "increases_risk",
+    "reduces_risk",
+    "blocks_readiness",
+    "improves_readiness",
+    "composes_score",
+    "data_quality",
+]
+EvidenceUseRestriction = Literal["consumer_estimate", "screening_only", "review_required"]
 
 
 class PropertyAttributes(BaseModel):
@@ -213,6 +223,44 @@ class ScoreFamilyInputQuality(BaseModel):
     heuristic_count: int = 0
 
 
+class ConfidencePenalty(BaseModel):
+    penalty_key: str
+    reason: str
+    amount: float
+
+
+class ScoreEvidenceFactor(BaseModel):
+    factor_key: str
+    display_name: str
+    category: str
+    raw_value: Optional[float] = None
+    normalized_value: Optional[float] = None
+    weight: float = 0.0
+    contribution: float = 0.0
+    direction: LedgerDirection = "increases_risk"
+    evidence_status: EvidenceStatus = "missing"
+    source_layer: Optional[str] = None
+    source_field: Optional[str] = None
+    notes: List[str] = Field(default_factory=list)
+
+
+class ScoreEvidenceLedger(BaseModel):
+    site_hazard_score: List[ScoreEvidenceFactor] = Field(default_factory=list)
+    home_ignition_vulnerability_score: List[ScoreEvidenceFactor] = Field(default_factory=list)
+    insurance_readiness_score: List[ScoreEvidenceFactor] = Field(default_factory=list)
+    wildfire_risk_score: List[ScoreEvidenceFactor] = Field(default_factory=list)
+
+
+class EvidenceQualitySummary(BaseModel):
+    observed_factor_count: int = 0
+    inferred_factor_count: int = 0
+    missing_factor_count: int = 0
+    fallback_factor_count: int = 0
+    evidence_quality_score: float = 0.0
+    confidence_penalties: List[ConfidencePenalty] = Field(default_factory=list)
+    use_restriction: EvidenceUseRestriction = "screening_only"
+
+
 class ScoreEligibility(BaseModel):
     eligible: bool = False
     eligibility_status: EligibilityStatus = "insufficient"
@@ -355,6 +403,8 @@ class AssessmentResult(BaseModel):
     site_hazard_input_quality: ScoreFamilyInputQuality = Field(default_factory=ScoreFamilyInputQuality)
     home_vulnerability_input_quality: ScoreFamilyInputQuality = Field(default_factory=ScoreFamilyInputQuality)
     insurance_readiness_input_quality: ScoreFamilyInputQuality = Field(default_factory=ScoreFamilyInputQuality)
+    score_evidence_ledger: ScoreEvidenceLedger = Field(default_factory=ScoreEvidenceLedger)
+    evidence_quality_summary: EvidenceQualitySummary = Field(default_factory=EvidenceQualitySummary)
     site_hazard_eligibility: ScoreEligibility = Field(default_factory=ScoreEligibility)
     home_vulnerability_eligibility: ScoreEligibility = Field(default_factory=ScoreEligibility)
     insurance_readiness_eligibility: ScoreEligibility = Field(default_factory=ScoreEligibility)
@@ -455,6 +505,8 @@ class ReportExport(BaseModel):
     top_risk_drivers: List[str]
     top_protective_factors: List[str]
     assumptions_confidence: Dict[str, object]
+    score_evidence_ledger: ScoreEvidenceLedger = Field(default_factory=ScoreEvidenceLedger)
+    evidence_quality_summary: EvidenceQualitySummary = Field(default_factory=EvidenceQualitySummary)
     mitigation_recommendations: List[MitigationAction]
     simulation: Optional[Dict[str, object]] = None
 
