@@ -31,6 +31,7 @@ from backend.version import (
     BENCHMARK_PACK_VERSION,
     CALIBRATION_VERSION,
     DATA_BUNDLE_VERSION,
+    DEFAULT_RULESET_VERSION,
     FACTOR_SCHEMA_VERSION,
     LEGACY_MODEL_VERSION,
     MODEL_VERSION,
@@ -47,7 +48,7 @@ DEFAULT_RULESETS: list[UnderwritingRuleset] = [
     UnderwritingRuleset(
         ruleset_id="default",
         ruleset_name="Default Carrier Profile",
-        ruleset_version="1.0",
+        ruleset_version=DEFAULT_RULESET_VERSION,
         ruleset_description="Baseline underwriting-oriented adjustments with moderate thresholds.",
         config={
             "penalty_multiplier": 1.0,
@@ -60,7 +61,7 @@ DEFAULT_RULESETS: list[UnderwritingRuleset] = [
     UnderwritingRuleset(
         ruleset_id="strict_carrier_demo",
         ruleset_name="Strict Carrier Demo",
-        ruleset_version="1.0",
+        ruleset_version=DEFAULT_RULESET_VERSION,
         ruleset_description="Lower blocker thresholds and stronger readiness penalty scaling.",
         config={
             "penalty_multiplier": 1.2,
@@ -73,7 +74,7 @@ DEFAULT_RULESETS: list[UnderwritingRuleset] = [
     UnderwritingRuleset(
         ruleset_id="inspection_first_demo",
         ruleset_name="Inspection First Demo",
-        ruleset_version="1.0",
+        ruleset_version=DEFAULT_RULESET_VERSION,
         ruleset_description="Conservative profile that pushes inspections before final underwriting readiness.",
         config={
             "penalty_multiplier": 1.1,
@@ -1534,7 +1535,7 @@ class AssessmentStore:
         payload.setdefault(
             "model_governance",
             build_model_governance(
-                ruleset_version=str(payload.get("ruleset_version") or "1.0.0"),
+                ruleset_version=str(payload.get("ruleset_version") or DEFAULT_RULESET_VERSION),
                 benchmark_pack_version=str(payload.get("benchmark_pack_version") or BENCHMARK_PACK_VERSION),
                 region_data_version=(
                     str(payload.get("region_data_version")) if payload.get("region_data_version") is not None else None

@@ -5,6 +5,8 @@ from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from backend.version import DEFAULT_RULESET_VERSION
+
 Audience = Literal["homeowner", "agent", "inspector", "insurer"]
 AnnotationRole = Literal["homeowner", "agent", "broker", "inspector", "insurer"]
 AnnotationVisibility = Literal["internal", "shared"]
@@ -460,7 +462,7 @@ class AssessmentResult(BaseModel):
 
     ruleset_id: str = "default"
     ruleset_name: str = "Default Carrier Profile"
-    ruleset_version: str = "1.0"
+    ruleset_version: str = DEFAULT_RULESET_VERSION
     ruleset_description: str = "Default underwriting-oriented readiness adjustments"
 
     review_status: ReviewStatus = "pending"
@@ -807,7 +809,7 @@ class UnderwritingRuleset(BaseModel):
 class UnderwritingRulesetCreate(BaseModel):
     ruleset_id: str = Field(..., min_length=2)
     ruleset_name: str = Field(..., min_length=2)
-    ruleset_version: str = "1.0"
+    ruleset_version: str = DEFAULT_RULESET_VERSION
     ruleset_description: str = ""
     config: Dict[str, object] = Field(default_factory=dict)
 

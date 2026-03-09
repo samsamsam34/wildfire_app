@@ -108,6 +108,7 @@ from backend.version import (
     API_VERSION,
     BENCHMARK_PACK_VERSION,
     CALIBRATION_VERSION,
+    DEFAULT_RULESET_VERSION,
     FACTOR_SCHEMA_VERSION,
     MODEL_VERSION,
     PRODUCT_VERSION,
@@ -3649,7 +3650,10 @@ def health() -> dict:
         "status": "ok",
         "product_version": PRODUCT_VERSION,
         "api_version": API_VERSION,
-        "model_governance": _build_result_governance(ruleset_version="1.0.0", region_data_version=None),
+        "model_governance": _build_result_governance(
+            ruleset_version=DEFAULT_RULESET_VERSION,
+            region_data_version=None,
+        ),
     }
 
 

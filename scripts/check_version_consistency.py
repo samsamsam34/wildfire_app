@@ -11,12 +11,15 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from backend.models import ModelGovernanceInfo
 from backend.version import (
     API_VERSION,
     BENCHMARK_PACK_VERSION,
     CALIBRATION_VERSION,
     FACTOR_SCHEMA_VERSION,
+    GOVERNANCE_KEYS,
     PRODUCT_VERSION,
+    RELEASE_NOTE_REQUIRED_SECTIONS,
     RULESET_LOGIC_VERSION,
     SCORING_MODEL_VERSION,
 )
@@ -49,8 +52,16 @@ def _check_changelog(path: Path, product_version: str) -> str | None:
     if not path.exists():
         return f"Missing changelog file: {path}"
     text = path.read_text(encoding="utf-8")
-    if f"[{product_version}]" not in text:
+    heading = f"## [{product_version}]"
+    if heading not in text:
         return f"CHANGELOG does not include current product version heading [{product_version}]"
+    entry_text = text.split(heading, 1)[1]
+    for section in RELEASE_NOTE_REQUIRED_SECTIONS:
+        if f"### {section}" not in entry_text:
+            return (
+                f"CHANGELOG entry [{product_version}] is missing required section: "
+                f"### {section}"
+            )
     return None
 
 
@@ -76,6 +87,43 @@ def _check_benchmark_pack(path: Path) -> list[str]:
     return failures
 
 
+def _check_governance_model_shape() -> list[str]:
+    failures: list[str] = []
+    fields = set(ModelGovernanceInfo.model_fields.keys())
+    missing = [key for key in GOVERNANCE_KEYS if key not in fields]
+    if missing:
+        failures.append(
+            "ModelGovernanceInfo is missing required governance keys: "
+            + ", ".join(sorted(missing))
+        )
+    return failures
+
+
+def _check_health_governance() -> list[str]:
+    failures: list[str] = []
+    try:
+        import backend.main as app_main  # lazy import
+
+        payload = app_main.health()
+    except Exception as exc:
+        return [f"Unable to load /health payload for governance checks: {exc}"]
+
+    governance = payload.get("model_governance")
+    if not isinstance(governance, dict):
+        return ["Health response missing model_governance object."]
+
+    missing = [key for key in GOVERNANCE_KEYS if key not in governance]
+    if missing:
+        failures.append(
+            "Health response model_governance missing keys: " + ", ".join(sorted(missing))
+        )
+    if payload.get("product_version") != governance.get("product_version"):
+        failures.append("Health product_version does not match model_governance.product_version")
+    if payload.get("api_version") != governance.get("api_version"):
+        failures.append("Health api_version does not match model_governance.api_version")
+    return failures
+
+
 def main() -> int:
     args = parse_args()
 
@@ -98,6 +146,8 @@ def main() -> int:
         failures.append(changelog_failure)
 
     failures.extend(_check_benchmark_pack(Path(args.benchmark_pack)))
+    failures.extend(_check_governance_model_shape())
+    failures.extend(_check_health_governance())
 
     if failures:
         print("Version consistency check failed:")

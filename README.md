@@ -90,6 +90,7 @@ Version utilities:
 ```bash
 python scripts/print_model_versions.py
 python scripts/check_version_consistency.py
+python scripts/print_release_note_template.py --version 0.10.1 --date 2026-03-09
 ```
 
 Bump guidance:
@@ -105,6 +106,14 @@ Bump guidance:
 - `region_data_version` / `data_bundle_version`: prepared layer snapshot changed materially
 
 For cross-assessment comparisons, `/assessments/.../compare/...` includes a `version_comparison` block and compatibility label.
+
+Release note format:
+- Keep one `CHANGELOG.md` entry per `product_version` with required sections:
+  - `Version changes`
+  - `Reason`
+  - `Expected effect on outputs`
+  - `Migration/interpretation notes`
+  - `Historical comparison validity`
 
 ## Layer Diagnostics / Coverage Audit
 

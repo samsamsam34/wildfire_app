@@ -11,6 +11,7 @@ from backend.version import (
     PRODUCT_VERSION,
     build_model_governance,
     compare_model_governance,
+    release_note_template,
 )
 
 
@@ -66,3 +67,25 @@ def test_check_version_consistency_script_passes():
     )
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert "passed" in proc.stdout.lower()
+
+
+def test_release_note_template_contains_required_sections():
+    rendered = release_note_template("0.10.1", "2026-03-09")
+    assert "## [0.10.1] - 2026-03-09" in rendered
+    assert "### Version changes" in rendered
+    assert "### Reason" in rendered
+    assert "### Expected effect on outputs" in rendered
+    assert "### Migration/interpretation notes" in rendered
+    assert "### Historical comparison validity" in rendered
+
+
+def test_print_release_note_template_script_outputs_heading():
+    script = Path("scripts") / "print_release_note_template.py"
+    proc = subprocess.run(
+        [sys.executable, str(script), "--version", "0.10.1", "--date", "2026-03-09"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "## [0.10.1] - 2026-03-09" in proc.stdout

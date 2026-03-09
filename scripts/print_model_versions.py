@@ -12,6 +12,7 @@ if str(ROOT) not in sys.path:
 
 from backend.version import (
     BENCHMARK_PACK_VERSION,
+    DEFAULT_RULESET_VERSION,
     build_model_governance,
 )
 
@@ -20,7 +21,11 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Print current product/API/scoring governance versions."
     )
-    parser.add_argument("--ruleset-version", default="1.0.0", help="Ruleset version to include in governance output.")
+    parser.add_argument(
+        "--ruleset-version",
+        default=DEFAULT_RULESET_VERSION,
+        help="Ruleset version to include in governance output.",
+    )
     parser.add_argument("--region-data-version", default=None, help="Optional region data version override.")
     parser.add_argument("--data-bundle-version", default=None, help="Optional data bundle version override.")
     parser.add_argument(

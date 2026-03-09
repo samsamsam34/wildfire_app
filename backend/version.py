@@ -8,6 +8,7 @@ API_VERSION = "1.0.0"
 
 # Scoring and governance dimensions.
 SCORING_MODEL_VERSION = "1.5.0"
+DEFAULT_RULESET_VERSION = "1.0.0"
 RULESET_LOGIC_VERSION = "1.0.0"
 FACTOR_SCHEMA_VERSION = "1.0.0"
 BENCHMARK_PACK_VERSION = "1.0.0"
@@ -46,6 +47,14 @@ REVIEW_COMPARABILITY_KEYS = (
     "data_bundle_version",
 )
 
+RELEASE_NOTE_REQUIRED_SECTIONS = (
+    "Version changes",
+    "Reason",
+    "Expected effect on outputs",
+    "Migration/interpretation notes",
+    "Historical comparison validity",
+)
+
 
 def _clean_optional(value: Any) -> str | None:
     if value is None:
@@ -56,7 +65,7 @@ def _clean_optional(value: Any) -> str | None:
 
 def build_model_governance(
     *,
-    ruleset_version: str = "1.0.0",
+    ruleset_version: str = DEFAULT_RULESET_VERSION,
     region_data_version: str | None = None,
     benchmark_pack_version: str | None = None,
     data_bundle_version: str | None = None,
@@ -71,7 +80,7 @@ def build_model_governance(
         "product_version": _clean_optional(product_version) or PRODUCT_VERSION,
         "api_version": _clean_optional(api_version) or API_VERSION,
         "scoring_model_version": _clean_optional(scoring_model_version) or SCORING_MODEL_VERSION,
-        "ruleset_version": _clean_optional(ruleset_version) or "1.0.0",
+        "ruleset_version": _clean_optional(ruleset_version) or DEFAULT_RULESET_VERSION,
         "rules_logic_version": _clean_optional(rules_logic_version) or RULESET_LOGIC_VERSION,
         "factor_schema_version": _clean_optional(factor_schema_version) or FACTOR_SCHEMA_VERSION,
         "benchmark_pack_version": _clean_optional(benchmark_pack_version) or BENCHMARK_PACK_VERSION,
@@ -84,7 +93,7 @@ def build_model_governance(
 def normalize_model_governance(payload: Mapping[str, Any] | None) -> dict[str, str | None]:
     raw = dict(payload or {})
     return build_model_governance(
-        ruleset_version=str(raw.get("ruleset_version") or "1.0.0"),
+        ruleset_version=str(raw.get("ruleset_version") or DEFAULT_RULESET_VERSION),
         region_data_version=_clean_optional(raw.get("region_data_version")),
         benchmark_pack_version=_clean_optional(raw.get("benchmark_pack_version")),
         data_bundle_version=_clean_optional(raw.get("data_bundle_version")),
@@ -142,3 +151,28 @@ def compare_model_governance(
         "comparison_label": label,
         "warnings": warnings,
     }
+
+
+def release_note_template(version: str, release_date: str) -> str:
+    return (
+        f"## [{version}] - {release_date}\n"
+        "### Version changes\n"
+        "- `product_version`: `<x.y.z>` (`major|minor|patch`)\n"
+        "- `api_version`: `<x.y.z>`\n"
+        "- `scoring_model_version`: `<x.y.z>`\n"
+        "- `ruleset_version`: `<x.y.z>` (or per-ruleset note)\n"
+        "- `rules_logic_version`: `<x.y.z>`\n"
+        "- `factor_schema_version`: `<x.y.z>`\n"
+        "- `benchmark_pack_version`: `<x.y.z>`\n"
+        "- `calibration_version`: `<x.y.z>`\n"
+        "- `region_data_version`: `<id|snapshot>`\n"
+        "- `data_bundle_version`: `<id|snapshot>`\n\n"
+        "### Reason\n"
+        "- Why this release exists and what changed.\n\n"
+        "### Expected effect on outputs\n"
+        "- What users should expect to change (or not change) in API/scoring outputs.\n\n"
+        "### Migration/interpretation notes\n"
+        "- Any client migration notes or interpretation guidance.\n\n"
+        "### Historical comparison validity\n"
+        "- `directly_comparable` | `comparable_with_review` | `not_directly_comparable`\n"
+    )

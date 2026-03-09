@@ -11,6 +11,7 @@ from backend.models import AddressRequest, AssessmentResult, UnderwritingRuleset
 from backend.wildfire_data import WildfireContext
 from backend.version import (
     BENCHMARK_PACK_VERSION,
+    DEFAULT_RULESET_VERSION,
     FACTOR_SCHEMA_VERSION,
     MODEL_VERSION,
     build_model_governance,
@@ -205,7 +206,7 @@ def _resolve_ruleset(ruleset_id: str | None) -> UnderwritingRuleset:
         return UnderwritingRuleset(
             ruleset_id=ruleset_id or "default",
             ruleset_name="Default Carrier Profile",
-            ruleset_version="1.0",
+            ruleset_version=DEFAULT_RULESET_VERSION,
             ruleset_description="Fallback ruleset for benchmark harness.",
             config={},
         )
