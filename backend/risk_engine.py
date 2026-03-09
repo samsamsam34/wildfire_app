@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Tuple
 
 from backend.models import PropertyAttributes, RiskDrivers
+from backend.normalization import normalize_property_attributes
 from backend.scoring_config import ScoringConfig, load_scoring_config
 from backend.wildfire_data import WildfireContext
 
@@ -64,6 +65,7 @@ class RiskEngine:
         return round(latitude, 6), round(longitude, 6)
 
     def _build_submodels(self, attrs: PropertyAttributes, context: WildfireContext) -> Dict[str, SubmodelResult]:
+        attrs = normalize_property_attributes(attrs)
         submodels: Dict[str, SubmodelResult] = {}
 
         roof = (attrs.roof_type or "unknown").lower()
@@ -473,6 +475,7 @@ class RiskEngine:
         return round(max(0.0, min(100.0, blended)), 1)
 
     def compute_insurance_readiness(self, attrs: PropertyAttributes, context: WildfireContext, risk: RiskComputation) -> ReadinessRuleResult:
+        attrs = normalize_property_attributes(attrs)
         p = self.config.readiness_penalties
         b = self.config.readiness_bonuses
 

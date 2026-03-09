@@ -83,6 +83,7 @@ from backend.models import (
     WeightedContribution,
     WorkflowState,
 )
+from backend.normalization import normalize_property_attributes, normalized_attribute_changes
 from backend.risk_engine import RiskComputation, RiskEngine
 from backend.scoring_config import load_scoring_config
 from backend.version import MODEL_VERSION
@@ -1922,9 +1923,8 @@ def _build_factor_breakdown(submodels: dict[str, SubmodelScore], risk: RiskCompu
     )
 
 
-def _build_top_protective_factors(payload: AddressRequest, submodels: dict[str, SubmodelScore]) -> list[str]:
+def _build_top_protective_factors(attrs: PropertyAttributes, submodels: dict[str, SubmodelScore]) -> list[str]:
     factors: list[str] = []
-    attrs = payload.attributes
 
     if attrs.roof_type and attrs.roof_type.lower() in {"class a", "metal", "tile", "composite"}:
         factors.append("class A or equivalent fire-rated roof")
@@ -2045,9 +2045,12 @@ def _run_assessment(
             ),
         ) from exc
 
+    scoring_attrs = normalize_property_attributes(payload.attributes)
+    normalization_changes = normalized_attribute_changes(payload.attributes, scoring_attrs)
+
     context = wildfire_data.collect_context(lat, lon)
-    risk: RiskComputation = risk_engine.score(payload.attributes, lat, lon, context)
-    readiness = risk_engine.compute_insurance_readiness(payload.attributes, context, risk)
+    risk: RiskComputation = risk_engine.score(scoring_attrs, lat, lon, context)
+    readiness = risk_engine.compute_insurance_readiness(scoring_attrs, context, risk)
 
     submodel_scores: dict[str, SubmodelScore] = {}
     weighted_contributions: dict[str, WeightedContribution] = {}
@@ -2075,7 +2078,7 @@ def _run_assessment(
         weighted_contributions[legacy_key] = weighted_contributions[canonical]
 
     mitigation_plan = build_mitigation_plan(
-        payload.attributes,
+        scoring_attrs,
         context,
         {k: v.score for k, v in submodel_scores.items()},
         readiness.readiness_blockers,
@@ -2169,7 +2172,7 @@ def _run_assessment(
 
     property_findings = _build_property_findings(property_level_context)
     top_risk_drivers = _merge_property_drivers(_build_top_risk_drivers(submodel_scores), property_findings)
-    top_protective_factors = _build_top_protective_factors(payload, submodel_scores)
+    top_protective_factors = _build_top_protective_factors(scoring_attrs, submodel_scores)
 
     raw_site_hazard_score, raw_home_ignition_vulnerability_score = _build_score_decomposition(risk=risk)
     raw_legacy_weighted_wildfire_risk_score = risk.total_score
@@ -2265,6 +2268,12 @@ def _run_assessment(
         scoring_notes.append(
             f"{data_provenance.summary.stale_data_share:.1f}% of tracked inputs are stale per freshness policy."
         )
+    if normalization_changes:
+        notes = ", ".join(
+            f"{field}: '{change['input']}' -> '{change['normalized']}'"
+            for field, change in sorted(normalization_changes.items())
+        )
+        scoring_notes.append(f"Categorical inputs were normalized for scoring ({notes}).")
     stale_fields = [meta.field_name for meta in data_provenance.inputs if meta.freshness_status == "stale"]
     if stale_fields:
         scoring_notes.append("Stale inputs: " + ", ".join(sorted(stale_fields)[:6]) + ".")
@@ -2472,6 +2481,8 @@ def _run_assessment(
             "insurance_readiness_score": result.insurance_readiness_score,
             "insurance_readiness_score_available": result.insurance_readiness_score_available,
         },
+        "normalized_property_facts": _attributes_to_dict(scoring_attrs),
+        "normalization_changes": normalization_changes,
         "confidence_gating": {
             "confidence_score": result.confidence_score,
             "data_completeness_score": result.data_completeness_score,

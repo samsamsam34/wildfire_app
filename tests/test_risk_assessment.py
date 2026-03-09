@@ -858,6 +858,49 @@ def test_simulation_returns_deltas(monkeypatch, tmp_path):
     assert "roof_type" in sim["changed_inputs"]
 
 
+def test_simulation_ui_enum_roof_values_produce_non_zero_delta(monkeypatch, tmp_path):
+    _setup(monkeypatch, tmp_path, _ctx(env=70.0, wildland=85.0, historic=65.0))
+
+    baseline = _run(
+        _payload(
+            "790 Enum Fix Ave, Colorado Springs, CO",
+            {
+                "roof_type": "wood_shake",
+                "vent_type": "standard_vents",
+                "defensible_space_ft": 5,
+                "construction_year": 1990,
+            },
+            confirmed=["roof_type", "vent_type", "defensible_space_ft"],
+        )
+    )
+
+    sim_res = client.post(
+        "/risk/simulate",
+        json={
+            "assessment_id": baseline["assessment_id"],
+            "scenario_name": "enum_upgrade",
+            "scenario_overrides": {
+                "roof_type": "class_a_asphalt_composition",
+                "vent_type": "ember_resistant_vents",
+                "defensible_space_ft": 35,
+            },
+            "scenario_confirmed_fields": ["roof_type", "vent_type", "defensible_space_ft"],
+        },
+    )
+    assert sim_res.status_code == 200
+    sim = sim_res.json()
+
+    assert sim["changed_inputs"]["roof_type"]["before"] == "wood_shake"
+    assert sim["changed_inputs"]["roof_type"]["after"] == "class_a_asphalt_composition"
+    assert sim["changed_inputs"]["vent_type"]["before"] == "standard_vents"
+    assert sim["changed_inputs"]["vent_type"]["after"] == "ember_resistant_vents"
+
+    assert sim["delta"]["wildfire_risk_score_delta"] is not None
+    assert sim["delta"]["insurance_readiness_score_delta"] is not None
+    assert sim["delta"]["wildfire_risk_score_delta"] < 0
+    assert sim["delta"]["insurance_readiness_score_delta"] > 0
+
+
 def test_baseline_confidence_non_zero_with_geospatial_context_and_no_optional_home_facts(monkeypatch, tmp_path):
     _setup(monkeypatch, tmp_path, _ctx(env=52.0, wildland=57.0, historic=46.0, ring_metrics={}))
 
