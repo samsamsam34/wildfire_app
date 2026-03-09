@@ -171,6 +171,7 @@ Common runtime settings:
 - `WF_AUTO_REGION_PREP_TILE_DEG` (bbox tile size used for auto-queued region prep, default `0.25`)
 - `WF_REGION_PREP_SOURCE_CONFIG` (optional source config path for queued prep jobs)
 - `WF_REGION_PREP_VALIDATE`, `WF_REGION_PREP_REQUIRE_CORE_LAYERS`, `WF_REGION_PREP_SKIP_OPTIONAL_LAYERS` (queued prep behavior)
+- `WILDFIRE_SCORING_PARAMETERS_PATH` (optional scoring/tuning parameter file, default `config/scoring_parameters.yaml`)
 - Optional open-data runtime sources:
   - `WF_LAYER_WHP_TIF`
   - `WF_LAYER_MTBS_SEVERITY_TIF`
@@ -413,6 +414,43 @@ Interpretation guardrails:
 - event labels are proxy outcomes, not carrier claims truth
 - use results for directional calibration and threshold review
 - do not treat fallback-heavy records as primary tuning anchors
+
+## Model Tuning
+
+The repo includes a deterministic tuning harness that turns event-backtest output into bounded, explainable parameter experiments.
+
+- parameter file: `config/scoring_parameters.yaml`
+- runner: `scripts/run_model_tuning.py`
+
+Run with the sample backtest dataset:
+
+```bash
+python scripts/run_model_tuning.py
+```
+
+Run with custom datasets and enforce objective improvement:
+
+```bash
+python scripts/run_model_tuning.py \
+  --dataset path/to/event_a.json \
+  --dataset path/to/event_b.csv \
+  --max-candidates 8 \
+  --require-improvement
+```
+
+What the tuning harness does:
+- computes structured false-low/false-high error analysis from backtest records
+- evaluates bounded parameter variations (weights/thresholds) against rank, bucket, and false-rate metrics
+- enforces monotonic guardrails before recommending any candidate
+- writes JSON + markdown artifacts with:
+  - `tuning_run_id`, `parameter_set_id`, timestamps, metrics
+  - before/after comparison and recommended review changes
+  - `model_governance` version metadata for release-to-release traceability
+
+Governance guidance:
+- tuning artifacts are recommendations only; no weights are auto-applied
+- promote parameter changes only after benchmark + backtest review
+- bump governance versions (`scoring_model_version`, `calibration_version`, etc.) when accepted tuning changes materially affect outputs
 
 ## Limitations
 

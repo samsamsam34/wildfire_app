@@ -11,6 +11,7 @@ from typing import Any
 
 from backend.benchmarking import build_wildfire_context, patched_runtime_inputs
 from backend.models import AddressRequest, AssessmentResult, UnderwritingRuleset
+from backend.scoring_config import load_scoring_config
 from backend.version import (
     BENCHMARK_PACK_VERSION,
     CALIBRATION_VERSION,
@@ -35,6 +36,7 @@ OUTCOME_RANK_DEFAULTS = {
 }
 DEFAULT_DATASET_PATH = Path("benchmark") / "event_backtest_sample_v1.json"
 DEFAULT_RESULTS_DIR = Path("benchmark") / "event_backtest_results"
+DEFAULT_SCORING_CONFIG = load_scoring_config()
 
 
 @dataclass
@@ -299,11 +301,21 @@ def load_event_backtest_dataset(path: str | Path) -> EventBacktestDataset:
 
 
 def _risk_bucket(score: float | None) -> str:
+    thresholds = DEFAULT_SCORING_CONFIG.risk_bucket_thresholds
+    try:
+        low_max = float(thresholds.get("low_max", 33.0))
+    except (TypeError, ValueError):
+        low_max = 33.0
+    try:
+        medium_max = float(thresholds.get("medium_max", 66.0))
+    except (TypeError, ValueError):
+        medium_max = 66.0
+
     if score is None:
         return "unscored"
-    if score < 33:
+    if score < low_max:
         return "low"
-    if score < 66:
+    if score < medium_max:
         return "medium"
     return "high"
 
@@ -454,6 +466,12 @@ def _confidence_stratification(records: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def _false_low_false_high(records: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    thresholds = DEFAULT_SCORING_CONFIG.error_analysis_thresholds
+    false_low_max = float(thresholds.get("false_low_max_score", 40.0))
+    false_high_min = float(thresholds.get("false_high_min_score", 70.0))
+    adverse_min = int(float(thresholds.get("adverse_outcome_min_rank", 3.0)))
+    non_adverse_max = int(float(thresholds.get("non_adverse_outcome_max_rank", 1.0)))
+
     false_low: list[dict[str, Any]] = []
     false_high: list[dict[str, Any]] = []
     for rec in records:
@@ -461,9 +479,9 @@ def _false_low_false_high(records: list[dict[str, Any]]) -> tuple[list[dict[str,
         if not isinstance(score, (int, float)):
             continue
         rank = int(rec.get("outcome_rank", 0))
-        if rank >= 3 and score < 40:
+        if rank >= adverse_min and score < false_low_max:
             false_low.append(rec)
-        if rank <= 1 and score >= 70:
+        if rank <= non_adverse_max and score >= false_high_min:
             false_high.append(rec)
     false_low.sort(key=lambda r: (r.get("scores", {}).get("wildfire_risk_score") or 0))
     false_high.sort(key=lambda r: (r.get("scores", {}).get("wildfire_risk_score") or 0), reverse=True)

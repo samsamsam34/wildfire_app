@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from backend.models import AddressRequest, AssessmentResult, UnderwritingRuleset
+from backend.scoring_config import load_scoring_config
 from backend.wildfire_data import WildfireContext
 from backend.version import (
     BENCHMARK_PACK_VERSION,
@@ -19,6 +20,7 @@ from backend.version import (
 
 DEFAULT_PACK_PATH = Path("benchmark") / "scenario_pack_v1.json"
 DEFAULT_RESULTS_DIR = Path("benchmark") / "results"
+DEFAULT_SCORING_CONFIG = load_scoring_config()
 
 
 def _now_iso() -> str:
@@ -26,13 +28,27 @@ def _now_iso() -> str:
 
 
 def _risk_band(score: float | None) -> str:
+    thresholds = DEFAULT_SCORING_CONFIG.benchmark_risk_band_thresholds
+    try:
+        low_max = float(thresholds.get("low_max", 30.0))
+    except (TypeError, ValueError):
+        low_max = 30.0
+    try:
+        moderate_max = float(thresholds.get("moderate_max", 55.0))
+    except (TypeError, ValueError):
+        moderate_max = 55.0
+    try:
+        high_max = float(thresholds.get("high_max", 75.0))
+    except (TypeError, ValueError):
+        high_max = 75.0
+
     if score is None:
         return "unscored"
-    if score < 30:
+    if score < low_max:
         return "low"
-    if score < 55:
+    if score < moderate_max:
         return "moderate"
-    if score < 75:
+    if score < high_max:
         return "high"
     return "severe"
 

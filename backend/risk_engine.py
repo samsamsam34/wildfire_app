@@ -469,19 +469,40 @@ class RiskEngine:
         zone_5_30 = _to_float(defensible_inputs.get("ring_5_30_ft_vegetation_density"))
         zone_30_100 = _to_float(fuel_inputs.get("ring_30_100_ft_vegetation_density"))
 
+        ring_cfg = self.config.vulnerability_ring_penalties or {}
+
+        def _penalty(zone_key: str, value: float | None, default_threshold: float, default_slope: float) -> float:
+            if value is None:
+                return 0.0
+            zone_params = ring_cfg.get(zone_key) if isinstance(ring_cfg.get(zone_key), dict) else {}
+            try:
+                threshold = float(zone_params.get("threshold", default_threshold))
+            except (TypeError, ValueError, AttributeError):
+                threshold = default_threshold
+            try:
+                slope = float(zone_params.get("slope", default_slope))
+            except (TypeError, ValueError, AttributeError):
+                slope = default_slope
+            return max(0.0, (value - threshold) * slope)
+
         ring_penalty = 0.0
-        if zone_0_5 is not None:
-            ring_penalty += max(0.0, (zone_0_5 - 55.0) * 0.18)
-        if zone_5_30 is not None:
-            ring_penalty += max(0.0, (zone_5_30 - 60.0) * 0.12)
-        if zone_30_100 is not None:
-            ring_penalty += max(0.0, (zone_30_100 - 65.0) * 0.08)
+        ring_penalty += _penalty("zone_0_5_ft", zone_0_5, 55.0, 0.18)
+        ring_penalty += _penalty("zone_5_30_ft", zone_5_30, 60.0, 0.12)
+        ring_penalty += _penalty("zone_30_100_ft", zone_30_100, 65.0, 0.08)
 
         return round(max(0.0, min(100.0, base + ring_penalty)), 1)
 
     def compute_blended_wildfire_score(self, site_hazard_score: float, home_ignition_vulnerability_score: float) -> float:
-        env_weight = self._group_weight(ENVIRONMENT_SUBMODELS)
-        struct_weight = self._group_weight(STRUCTURE_SUBMODELS)
+        blend_weights = self.config.risk_blending_weights or {}
+        try:
+            env_weight = float(blend_weights.get("environmental", 0.0))
+            struct_weight = float(blend_weights.get("structural", 0.0))
+        except (TypeError, ValueError):
+            env_weight = 0.0
+            struct_weight = 0.0
+        if env_weight <= 0 or struct_weight <= 0:
+            env_weight = self._group_weight(ENVIRONMENT_SUBMODELS)
+            struct_weight = self._group_weight(STRUCTURE_SUBMODELS)
         denom = env_weight + struct_weight
         if denom <= 0:
             return 0.0
@@ -493,6 +514,13 @@ class RiskEngine:
         attrs = normalize_property_attributes(attrs)
         p = self.config.readiness_penalties
         b = self.config.readiness_bonuses
+        thresholds = self.config.readiness_thresholds or {}
+
+        def _threshold(key: str, default: float) -> float:
+            try:
+                return float(thresholds.get(key, default))
+            except (TypeError, ValueError):
+                return default
 
         factors: List[dict] = []
         blockers: List[str] = []
@@ -540,10 +568,10 @@ class RiskEngine:
                 }
             )
             add_penalty("defensible_space", p["defensible_watch"])
-        elif defensible_ft >= 30:
+        elif defensible_ft >= _threshold("defensible_space_pass_ft", 30.0):
             factors.append({"name": "defensible_space", "status": "pass", "score_impact": b["defensible_pass"], "detail": "Defensible space at/above 30 ft supports carrier criteria."})
             bonus += b["defensible_pass"]
-        elif defensible_ft >= 5:
+        elif defensible_ft >= _threshold("defensible_space_watch_min_ft", 5.0):
             factors.append({"name": "defensible_space", "status": "watch", "score_impact": -p["defensible_watch"], "detail": "Defensible space below 30 ft may trigger underwriting concerns."})
             add_penalty("defensible_space", p["defensible_watch"])
             blockers.append("Defensible space below 30 ft")
@@ -553,10 +581,10 @@ class RiskEngine:
             blockers.append("Severely inadequate defensible space")
 
         structure_score = risk.submodel_scores["structure_vulnerability_risk"].score
-        if structure_score >= 75:
+        if structure_score >= _threshold("structure_vulnerability_fail_score", 75.0):
             factors.append({"name": "structure_vulnerability", "status": "fail", "score_impact": -8.0, "detail": "Overall structure hardening signal is poor."})
             add_penalty("structure_vulnerability", 8.0)
-        elif structure_score >= 60:
+        elif structure_score >= _threshold("structure_vulnerability_watch_score", 60.0):
             factors.append({"name": "structure_vulnerability", "status": "watch", "score_impact": -4.0, "detail": "Structure hardening is moderate and should be improved."})
             add_penalty("structure_vulnerability", 4.0)
         else:
@@ -564,11 +592,11 @@ class RiskEngine:
             bonus += 1.0
 
         fuel_score = risk.submodel_scores["fuel_proximity_risk"].score
-        if fuel_score >= 75:
+        if fuel_score >= _threshold("adjacent_fuel_fail_score", 75.0):
             factors.append({"name": "adjacent_fuel_pressure", "status": "fail", "score_impact": -p["fuel_fail"], "detail": "Very high adjacent fuel pressure reduces readiness."})
             add_penalty("adjacent_fuel_pressure", p["fuel_fail"])
             blockers.append("Very high adjacent fuel proximity")
-        elif fuel_score >= 55:
+        elif fuel_score >= _threshold("adjacent_fuel_watch_score", 55.0):
             factors.append({"name": "adjacent_fuel_pressure", "status": "watch", "score_impact": -p["fuel_watch"], "detail": "Moderate-high adjacent fuel pressure warrants mitigation."})
             add_penalty("adjacent_fuel_pressure", p["fuel_watch"])
         else:
@@ -576,11 +604,11 @@ class RiskEngine:
             bonus += b["fuel_pass"]
 
         vegetation_score = risk.submodel_scores["vegetation_intensity_risk"].score
-        if vegetation_score >= 75:
+        if vegetation_score >= _threshold("vegetation_intensity_fail_score", 75.0):
             factors.append({"name": "vegetation_intensity", "status": "fail", "score_impact": -p["vegetation_fail"], "detail": "High near-structure vegetation intensity elevates spread potential."})
             add_penalty("vegetation_intensity", p["vegetation_fail"])
             blockers.append("High vegetation intensity near structure")
-        elif vegetation_score >= 55:
+        elif vegetation_score >= _threshold("vegetation_intensity_watch_score", 55.0):
             factors.append({"name": "vegetation_intensity", "status": "watch", "score_impact": -p["vegetation_watch"], "detail": "Moderate vegetation intensity should be reduced in home ignition zones."})
             add_penalty("vegetation_intensity", p["vegetation_watch"])
         else:
@@ -588,11 +616,11 @@ class RiskEngine:
             bonus += b["vegetation_pass"]
 
         ember_score = risk.submodel_scores["ember_exposure_risk"].score
-        if ember_score >= 80:
+        if ember_score >= _threshold("ember_exposure_fail_score", 80.0):
             factors.append({"name": "severe_ember_exposure", "status": "fail", "score_impact": -10.0, "detail": "Extreme ember exposure can materially reduce availability."})
             add_penalty("severe_ember_exposure", 10.0)
             blockers.append("Severe ember exposure")
-        elif ember_score >= 65:
+        elif ember_score >= _threshold("ember_exposure_watch_score", 65.0):
             factors.append({"name": "severe_ember_exposure", "status": "watch", "score_impact": -5.0, "detail": "Elevated ember exposure should be mitigated."})
             add_penalty("severe_ember_exposure", 5.0)
 
@@ -603,11 +631,11 @@ class RiskEngine:
         if context.hazard_severity_index is not None:
             severe_env_inputs.append(float(context.hazard_severity_index))
         severe_env = max(severe_env_inputs) if severe_env_inputs else 0.0
-        if severe_env >= 85:
+        if severe_env >= _threshold("severe_environment_fail_score", 85.0):
             factors.append({"name": "severe_environmental_hazard", "status": "fail", "score_impact": -p["severe_env_fail"], "detail": "Severe environmental hazard conditions reduce availability."})
             add_penalty("severe_environmental_hazard", p["severe_env_fail"])
             blockers.append("Severe environmental hazard conditions")
-        elif severe_env >= 70:
+        elif severe_env >= _threshold("severe_environment_watch_score", 70.0):
             factors.append({"name": "severe_environmental_hazard", "status": "watch", "score_impact": -p["severe_env_watch"], "detail": "Elevated environmental hazard conditions present."})
             add_penalty("severe_environmental_hazard", p["severe_env_watch"])
         else:
