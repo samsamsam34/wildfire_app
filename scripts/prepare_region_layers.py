@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 from typing import Sequence
 
+from backend.data_prep.catalog import build_region_from_catalog
 from backend.data_prep.prepare_region import parse_bbox, prepare_region_layers
 from backend.data_prep.sources import (
     default_cache_root,
@@ -148,6 +149,7 @@ def main() -> None:
     )
     parser.add_argument("--out-dir", dest="region_data_dir", default=None)
     parser.add_argument("--cache-root", default=None)
+    parser.add_argument("--catalog-root", default=None, help="Catalog root for catalog-based region builds.")
     parser.add_argument("--source-config", default=None, help="Optional JSON source config with provider definitions.")
     parser.add_argument("--crs", default="EPSG:4326")
     parser.add_argument("--copy", action="store_true", help="Copy files instead of symlinking")
@@ -200,6 +202,11 @@ def main() -> None:
         type=float,
         default=None,
         help="Target output resolution (meters) for provider bbox exports when supported.",
+    )
+    parser.add_argument(
+        "--use-catalog",
+        action="store_true",
+        help="Build region outputs from canonical catalog data instead of direct source acquisition.",
     )
     parser.add_argument(
         "--cache-only-landfire",
@@ -334,35 +341,54 @@ def main() -> None:
         canopy_checksum=args.canopy_checksum,
     )
 
-    manifest = prepare_region_layers(
-        region_id=args.region_id,
-        display_name=display_name,
-        bounds=bbox,
-        layer_sources=layer_sources,
-        layer_urls=layer_urls,
-        region_data_dir=region_data_dir,
-        cache_dir=cache_root,
-        crs=args.crs,
-        copy_files=args.copy,
-        source_metadata=source_metadata,
-        force=args.force,
-        skip_download=args.skip_download,
-        allow_partial=args.allow_partial,
-        auto_discover=not args.no_auto_discovery,
-        download_timeout=args.download_timeout,
-        download_retries=args.download_retries,
-        retry_backoff_seconds=args.retry_backoff_seconds,
-        dry_run=args.dry_run,
-        keep_temp_on_failure=args.keep_temp_on_failure,
-        clean_download_cache=args.clean_download_cache,
-        landfire_only=args.landfire_only,
-        source_config=source_config,
-        prefer_bbox_downloads=bool(args.prefer_bbox_downloads),
-        allow_full_download_fallback=bool(args.allow_full_download_fallback),
-        require_core_layers=bool(args.require_core_layers),
-        skip_optional_layers=bool(args.skip_optional_layers),
-        target_resolution=args.target_resolution,
-    )
+    if args.use_catalog:
+        if args.dry_run:
+            raise ValueError("--dry-run is not currently supported with --use-catalog in this script.")
+        manifest = build_region_from_catalog(
+            region_id=args.region_id,
+            display_name=display_name,
+            bounds=bbox,
+            catalog_root=Path(args.catalog_root).expanduser() if args.catalog_root else None,
+            regions_root=region_data_dir,
+            overwrite=bool(args.force),
+            require_core_layers=bool(args.require_core_layers),
+            skip_optional_layers=bool(args.skip_optional_layers),
+            allow_partial=bool(args.allow_partial),
+            validate=False,
+            target_resolution=args.target_resolution,
+            raster_compression="DEFLATE",
+            tile_size=512,
+        )
+    else:
+        manifest = prepare_region_layers(
+            region_id=args.region_id,
+            display_name=display_name,
+            bounds=bbox,
+            layer_sources=layer_sources,
+            layer_urls=layer_urls,
+            region_data_dir=region_data_dir,
+            cache_dir=cache_root,
+            crs=args.crs,
+            copy_files=args.copy,
+            source_metadata=source_metadata,
+            force=args.force,
+            skip_download=args.skip_download,
+            allow_partial=args.allow_partial,
+            auto_discover=not args.no_auto_discovery,
+            download_timeout=args.download_timeout,
+            download_retries=args.download_retries,
+            retry_backoff_seconds=args.retry_backoff_seconds,
+            dry_run=args.dry_run,
+            keep_temp_on_failure=args.keep_temp_on_failure,
+            clean_download_cache=args.clean_download_cache,
+            landfire_only=args.landfire_only,
+            source_config=source_config,
+            prefer_bbox_downloads=bool(args.prefer_bbox_downloads),
+            allow_full_download_fallback=bool(args.allow_full_download_fallback),
+            require_core_layers=bool(args.require_core_layers),
+            skip_optional_layers=bool(args.skip_optional_layers),
+            target_resolution=args.target_resolution,
+        )
 
     prepared = manifest.get("prepared_layers", [])
     attempted = manifest.get("attempted_layers", [])
@@ -390,6 +416,8 @@ def main() -> None:
                 "archives_extracted": manifest.get("archives_extracted", False),
                 "auto_discovery_used": manifest.get("download_config", {}).get("auto_discover", False),
                 "landfire_only": manifest.get("download_config", {}).get("landfire_only", False),
+                "use_catalog": bool(args.use_catalog),
+                "catalog_root": str(Path(args.catalog_root).expanduser()) if args.catalog_root else None,
                 "cache_dir": manifest.get("download_config", {}).get("cache_dir"),
                 "warnings": manifest.get("warnings", []),
                 "errors": manifest.get("errors", []),

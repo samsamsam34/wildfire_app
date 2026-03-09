@@ -90,6 +90,7 @@ python3 -m http.server 8080 --directory frontend/public
 Common runtime settings:
 - `WILDFIRE_API_KEYS` (optional local auth)
 - `WF_REGION_DATA_DIR` (prepared region root, default `data/regions`)
+- `WILDFIRE_APP_CATALOG_ROOT` (canonical catalog root, default `data/catalog`)
 - `WF_USE_PREPARED_REGIONS` (default true)
 - `WF_ALLOW_LEGACY_LAYER_FALLBACK` (optional direct-layer fallback mode)
 - Optional open-data runtime sources:
@@ -136,6 +137,9 @@ Offline prep/validation scripts:
 - `scripts/stage_landfire_assets.py`
 - `scripts/build_landfire_region.py`
 - `scripts/validate_prepared_region.py`
+- `scripts/catalog_ingest_raster.py`
+- `scripts/catalog_ingest_vector.py`
+- `scripts/build_region_from_catalog.py`
 
 BBox-first region prep:
 - Region prep remains offline/admin-only; runtime API still uses prepared local files.
@@ -182,6 +186,41 @@ Minimal `source_config.json` example:
   }
 }
 ```
+
+Canonical catalog and region build workflow:
+- Use `data/catalog/` as a reusable canonical cache of normalized raster/vector layers.
+- Ingestion (slow/path-provider aware) is separate from region assembly (fast/bbox subset from catalog).
+- Runtime API still reads `data/regions/<region_id>/...` only; it does not download GIS data.
+
+Catalog layout:
+
+```text
+data/catalog/
+  rasters/<layer_name>/
+  vectors/<layer_name>/
+  metadata/<layer_name>/
+  index/catalog_index.json
+```
+
+Catalog ingest examples:
+
+```bash
+python scripts/catalog_ingest_raster.py --layer dem --source-path path/to/dem.tif
+python scripts/catalog_ingest_raster.py --layer fuel --source-endpoint https://.../ImageServer --bbox -111.2 45.5 -110.9 45.8 --prefer-bbox-downloads
+python scripts/catalog_ingest_vector.py --layer fire_perimeters --source-endpoint https://.../FeatureServer/0 --bbox -111.2 45.5 -110.9 45.8 --prefer-bbox-downloads
+```
+
+Build region from catalog:
+
+```bash
+python scripts/build_region_from_catalog.py \
+  --region-id bozeman_pilot \
+  --display-name "Bozeman Pilot" \
+  --bbox -111.2 45.5 -110.9 45.8 \
+  --validate
+```
+
+`scripts/prepare_region_layers.py` also supports catalog mode via `--use-catalog`.
 
 Key point: runtime endpoints do not download large GIS datasets.
 
