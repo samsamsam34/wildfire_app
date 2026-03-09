@@ -458,3 +458,47 @@ def test_prepare_any_region_already_prepared_without_overwrite_returns_fast_stat
     assert second["final_status"] == "already_prepared"
     assert second["acquired_layers"] == []
     assert second["stage_status"]["region_build"]["status"] == "skipped"
+
+
+def test_prepare_any_region_second_region_missoula_smoke(monkeypatch, tmp_path):
+    sources = _seed_sources(tmp_path)
+    catalog_root = tmp_path / "catalog"
+    regions_root = tmp_path / "regions"
+    # Missoula-like bbox (naming + coordinates for operator parity).
+    bbox = {"min_lon": -114.2, "min_lat": 46.75, "max_lon": -113.8, "max_lat": 47.0}
+    registry_path = _write_source_registry(tmp_path / "source_registry_missoula.json", sources)
+    monkeypatch.setenv("WF_SOURCE_CONFIG_PATH", str(registry_path))
+
+    plan = prepare_region_from_catalog_or_sources(
+        region_id="missoula_pilot",
+        display_name="Missoula Pilot",
+        bounds=bbox,
+        catalog_root=catalog_root,
+        regions_root=regions_root,
+        skip_optional_layers=True,
+        plan_only=True,
+    )
+    assert plan["mode"] == "plan_only"
+    assert plan["buildable_estimate"]["buildable_with_current_config"] is True
+    assert sorted(plan["operator_summary"]["required_layers_missing"]) == sorted(required_core_layers())
+    assert plan["stage_status"]["coverage_plan"]["status"] == "ok"
+
+    executed = prepare_region_from_catalog_or_sources(
+        region_id="missoula_pilot",
+        display_name="Missoula Pilot",
+        bounds=bbox,
+        catalog_root=catalog_root,
+        regions_root=regions_root,
+        skip_optional_layers=True,
+        overwrite=True,
+        validate=True,
+    )
+    assert executed["mode"] == "executed"
+    assert executed["final_status"] in {"success", "partial"}
+    assert sorted(item["layer_key"] for item in executed["acquired_layers"]) == sorted(required_core_layers())
+    assert (regions_root / "missoula_pilot" / "manifest.json").exists()
+    validation = executed.get("validation")
+    assert isinstance(validation, dict)
+    assert validation.get("validation_status") in {"passed", "failed"}
+    if validation.get("validation_status") == "failed":
+        assert validation.get("blockers"), "Validation failure should include structured blockers."

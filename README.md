@@ -198,9 +198,9 @@ data/regions/<region_id>/
 ```
 
 Offline prep/validation scripts:
-- Preferred: `scripts/prepare_region_from_catalog_or_sources.py` (plan/fill/build/validate in one command)
+- Preferred (canonical): `scripts/prepare_region_from_catalog_or_sources.py` (plan/fill/build/validate in one command)
 - Validation: `scripts/validate_prepared_region.py`
-- Legacy/manual helpers (still available): `scripts/prepare_region_layers.py`, `scripts/stage_landfire_assets.py`, `scripts/build_landfire_region.py`, `scripts/catalog_ingest_raster.py`, `scripts/catalog_ingest_vector.py`, `scripts/build_region_from_catalog.py`
+- Legacy/manual helpers (still available, but not the primary operator flow): `scripts/prepare_region_layers.py`, `scripts/stage_landfire_assets.py`, `scripts/build_landfire_region.py`, `scripts/catalog_ingest_raster.py`, `scripts/catalog_ingest_vector.py`, `scripts/build_region_from_catalog.py`
 - Local queue worker: `scripts/run_region_prep_worker.py`
 
 Canonical catalog and region build workflow:
@@ -240,7 +240,7 @@ python scripts/build_region_from_catalog.py \
 
 Key point: runtime endpoints do not download large GIS datasets.
 
-Preferred new-region workflow:
+Preferred new-region workflow (canonical path):
 - Runtime still reads prepared files only; it does not perform heavy GIS prep at request time.
 - `scripts/prepare_region_from_catalog_or_sources.py` is the canonical entrypoint for new regions.
 - The command checks existing prepared coverage, checks catalog coverage, acquires missing layers, builds the region, and can validate in one run.
