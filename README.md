@@ -159,6 +159,7 @@ Offline prep/validation scripts:
 - `scripts/catalog_ingest_raster.py`
 - `scripts/catalog_ingest_vector.py`
 - `scripts/build_region_from_catalog.py`
+- `scripts/prepare_region_from_catalog_or_sources.py`
 
 BBox-first region prep:
 - Region prep remains offline/admin-only; runtime API still uses prepared local files.
@@ -242,6 +243,40 @@ python scripts/build_region_from_catalog.py \
 `scripts/prepare_region_layers.py` also supports catalog mode via `--use-catalog`.
 
 Key point: runtime endpoints do not download large GIS datasets.
+
+Preparing a new area on demand:
+- Use `scripts/prepare_region_from_catalog_or_sources.py` when a bbox is not yet fully covered in local catalog.
+- The workflow is:
+  1) inspect catalog coverage for required layers,
+  2) fetch/ingest missing coverage from configured sources,
+  3) build the prepared region from catalog,
+  4) optionally validate.
+- Runtime still reads only prepared region outputs.
+
+Plan-only check:
+
+```bash
+python scripts/prepare_region_from_catalog_or_sources.py \
+  --region-id missoula_pilot \
+  --display-name "Missoula Pilot" \
+  --bbox -114.2 46.75 -113.8 47.0 \
+  --source-config path/to/source_config.json \
+  --plan-only
+```
+
+Prepare/build/validate:
+
+```bash
+python scripts/prepare_region_from_catalog_or_sources.py \
+  --region-id bozeman_pilot \
+  --display-name "Bozeman Pilot" \
+  --bbox -111.2 45.5 -110.9 45.8 \
+  --source-config path/to/source_config.json \
+  --prefer-bbox-downloads \
+  --allow-full-download-fallback \
+  --allow-partial-coverage-fill \
+  --validate
+```
 
 Trust/transparency behavior:
 - score families may be unavailable (`null`) when evidence is insufficient

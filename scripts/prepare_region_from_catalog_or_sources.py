@@ -1,0 +1,445 @@
+from __future__ import annotations
+
+import argparse
+import json
+from pathlib import Path
+from typing import Any, Sequence
+
+from backend.data_prep.catalog import (
+    LAYER_TYPES,
+    build_region_from_catalog,
+    default_cache_root,
+    default_catalog_root,
+    ingest_catalog_raster,
+    ingest_catalog_vector,
+)
+from backend.data_prep.prepare_region import parse_bbox
+from backend.data_prep.validate_region import validate_prepared_region
+from scripts.catalog_coverage import (
+    build_catalog_coverage_plan,
+    optional_layers,
+    required_core_layers,
+)
+
+
+def _parse_bbox(values: Sequence[str]) -> dict[str, float]:
+    if len(values) == 1:
+        return parse_bbox(values[0])
+    if len(values) == 4:
+        return parse_bbox(",".join(values))
+    raise ValueError("--bbox expects one comma string or four numbers")
+
+
+def _load_source_config(path_or_none: str | None) -> dict[str, Any]:
+    if not path_or_none:
+        return {}
+    cfg_path = Path(path_or_none).expanduser()
+    if not cfg_path.exists():
+        raise ValueError(f"Source config not found: {cfg_path}")
+    with open(cfg_path, "r", encoding="utf-8") as f:
+        payload = json.load(f)
+    if not isinstance(payload, dict):
+        raise ValueError("Source config must be a JSON object.")
+    if isinstance(payload.get("layers"), dict):
+        return payload["layers"]
+    return payload
+
+
+def _layer_config(layer_key: str, source_config: dict[str, Any]) -> dict[str, Any]:
+    candidate = source_config.get(layer_key)
+    return candidate if isinstance(candidate, dict) else {}
+
+
+def _provider_default(layer_type: str) -> str:
+    if layer_type == "raster":
+        return "arcgis_image_service"
+    return "arcgis_feature_service"
+
+
+def _ingest_layer_for_bbox(
+    *,
+    layer_key: str,
+    bounds: dict[str, float],
+    layer_cfg: dict[str, Any],
+    catalog_root: Path,
+    cache_root: Path,
+    prefer_bbox_downloads: bool,
+    allow_full_download_fallback: bool,
+    target_resolution: float | None,
+    timeout_seconds: float,
+    retries: int,
+    backoff_seconds: float,
+    force: bool,
+) -> dict[str, Any]:
+    layer_type = LAYER_TYPES.get(layer_key, "vector")
+    provider_type = str(layer_cfg.get("provider_type") or _provider_default(layer_type))
+    source_path = layer_cfg.get("source_path") or layer_cfg.get("local_path")
+    source_url = layer_cfg.get("source_url") or layer_cfg.get("full_download_url")
+    source_endpoint = layer_cfg.get("source_endpoint")
+    per_layer_resolution = layer_cfg.get("target_resolution", target_resolution)
+
+    if layer_type == "raster":
+        metadata = ingest_catalog_raster(
+            layer_name=layer_key,
+            source_path=str(source_path) if source_path else None,
+            source_url=str(source_url) if source_url else None,
+            source_endpoint=str(source_endpoint) if source_endpoint else None,
+            provider_type=provider_type,
+            bounds=bounds,
+            catalog_root=catalog_root,
+            cache_root=cache_root,
+            prefer_bbox_downloads=prefer_bbox_downloads,
+            allow_full_download_fallback=allow_full_download_fallback,
+            target_resolution=float(per_layer_resolution) if per_layer_resolution is not None else None,
+            timeout_seconds=timeout_seconds,
+            retries=retries,
+            backoff_seconds=backoff_seconds,
+            force=force,
+        )
+    else:
+        metadata = ingest_catalog_vector(
+            layer_name=layer_key,
+            source_path=str(source_path) if source_path else None,
+            source_url=str(source_url) if source_url else None,
+            source_endpoint=str(source_endpoint) if source_endpoint else None,
+            provider_type=provider_type,
+            bounds=bounds,
+            catalog_root=catalog_root,
+            cache_root=cache_root,
+            prefer_bbox_downloads=prefer_bbox_downloads,
+            allow_full_download_fallback=allow_full_download_fallback,
+            timeout_seconds=timeout_seconds,
+            retries=retries,
+            backoff_seconds=backoff_seconds,
+            force=force,
+        )
+    return metadata
+
+
+def _plan_acquisition_steps(
+    *,
+    coverage_plan: dict[str, Any],
+    required_layers: Sequence[str],
+    optional_layer_keys: Sequence[str],
+    source_config: dict[str, Any],
+    allow_partial_coverage_fill: bool,
+) -> tuple[list[dict[str, Any]], bool]:
+    steps: list[dict[str, Any]] = []
+    buildable_with_config = True
+    layers = coverage_plan.get("layers", {})
+
+    for layer_key in list(required_layers) + list(optional_layer_keys):
+        layer_state = layers.get(layer_key, {})
+        status = str(layer_state.get("coverage_status") or "none")
+        needs_fill = status == "none" or (status == "partial" and allow_partial_coverage_fill)
+        cfg = _layer_config(layer_key, source_config)
+        has_config = bool(cfg)
+        if needs_fill:
+            steps.append(
+                {
+                    "layer_key": layer_key,
+                    "current_coverage_status": status,
+                    "action": "acquire_and_ingest",
+                    "config_available": has_config,
+                }
+            )
+            if layer_key in required_layers and not has_config:
+                buildable_with_config = False
+        else:
+            steps.append(
+                {
+                    "layer_key": layer_key,
+                    "current_coverage_status": status,
+                    "action": "use_existing_catalog",
+                    "config_available": has_config,
+                }
+            )
+    return steps, buildable_with_config
+
+
+def _annotate_manifest_with_orchestration(
+    *,
+    manifest: dict[str, Any],
+    bounds: dict[str, float],
+    coverage_before: dict[str, Any],
+    coverage_after: dict[str, Any],
+    acquired_layers: list[dict[str, Any]],
+    failed_acquisitions: list[dict[str, Any]],
+    optional_omissions: list[str],
+) -> None:
+    acquired_by_layer = {str(item["layer_key"]): item for item in acquired_layers if isinstance(item, dict)}
+    manifest.setdefault("catalog", {})
+    manifest["catalog"]["built_from_catalog"] = True
+    manifest["catalog"]["requested_bbox"] = {
+        "min_lon": float(bounds["min_lon"]),
+        "min_lat": float(bounds["min_lat"]),
+        "max_lon": float(bounds["max_lon"]),
+        "max_lat": float(bounds["max_lat"]),
+    }
+    manifest["catalog"]["coverage_before"] = coverage_before
+    manifest["catalog"]["coverage_after"] = coverage_after
+    manifest["catalog"]["acquired_layers"] = acquired_layers
+    manifest["catalog"]["failed_acquisitions"] = failed_acquisitions
+    manifest["catalog"]["optional_omissions"] = optional_omissions
+
+    layer_states = coverage_after.get("layers", {})
+    for layer_key, layer_meta in (manifest.get("layers") or {}).items():
+        state = layer_states.get(layer_key, {})
+        layer_meta["catalog_coverage_status"] = state.get("coverage_status", "unknown")
+        if layer_key == "slope":
+            layer_meta["catalog_source_origin"] = "derived"
+            layer_meta["catalog_fetched_this_run"] = False
+            continue
+        acquired = acquired_by_layer.get(layer_key)
+        if acquired:
+            method = str(acquired.get("acquisition_method") or "")
+            if method in {"bbox_export", "cached_bbox_export"}:
+                origin = "newly_ingested_bbox_coverage"
+            elif "full_download" in method:
+                origin = "full_download_fallback"
+            else:
+                origin = "newly_ingested_source"
+            layer_meta["catalog_source_origin"] = origin
+            layer_meta["catalog_fetched_this_run"] = True
+            layer_meta["catalog_acquisition_method"] = method
+        else:
+            layer_meta["catalog_source_origin"] = "existing_catalog_coverage"
+            layer_meta["catalog_fetched_this_run"] = False
+
+
+def prepare_region_from_catalog_or_sources(
+    *,
+    region_id: str,
+    display_name: str,
+    bounds: dict[str, float],
+    catalog_root: Path | None = None,
+    regions_root: Path | None = None,
+    cache_root: Path | None = None,
+    source_config: dict[str, Any] | None = None,
+    require_core_layers: bool = True,
+    skip_optional_layers: bool = False,
+    validate: bool = False,
+    overwrite: bool = False,
+    allow_partial_coverage_fill: bool = False,
+    prefer_bbox_downloads: bool = True,
+    allow_full_download_fallback: bool = True,
+    plan_only: bool = False,
+    target_resolution: float | None = None,
+    timeout_seconds: float = 60.0,
+    retries: int = 2,
+    backoff_seconds: float = 1.5,
+) -> dict[str, Any]:
+    cat_root = Path(catalog_root or default_catalog_root()).expanduser()
+    reg_root = Path(regions_root or (Path("data") / "regions")).expanduser()
+    cache = Path(cache_root or default_cache_root()).expanduser()
+    cfg = source_config or {}
+    required = required_core_layers()
+    optional = [] if skip_optional_layers else optional_layers()
+
+    coverage_before = build_catalog_coverage_plan(
+        bounds=bounds,
+        required_layers=required,
+        optional_layer_keys=optional,
+        catalog_root=cat_root,
+    )
+    planned_steps, buildable_with_config = _plan_acquisition_steps(
+        coverage_plan=coverage_before,
+        required_layers=required,
+        optional_layer_keys=optional,
+        source_config=cfg,
+        allow_partial_coverage_fill=allow_partial_coverage_fill,
+    )
+
+    if plan_only:
+        return {
+            "mode": "plan_only",
+            "region_id": region_id,
+            "display_name": display_name,
+            "requested_bbox": bounds,
+            "coverage_plan": coverage_before,
+            "acquisition_steps": planned_steps,
+            "buildable_estimate": {
+                "buildable_from_existing_catalog": bool(coverage_before["summary"]["buildable_from_catalog"]),
+                "buildable_with_current_config": bool(buildable_with_config),
+            },
+        }
+
+    acquired_layers: list[dict[str, Any]] = []
+    failed_acquisitions: list[dict[str, Any]] = []
+    optional_omissions: list[str] = []
+
+    for step in planned_steps:
+        if step.get("action") != "acquire_and_ingest":
+            continue
+        layer_key = str(step["layer_key"])
+        layer_cfg = _layer_config(layer_key, cfg)
+        if not layer_cfg:
+            message = f"No source config for layer '{layer_key}'."
+            if layer_key in required and require_core_layers:
+                failed_acquisitions.append({"layer_key": layer_key, "error": message})
+            else:
+                optional_omissions.append(layer_key)
+            continue
+        try:
+            metadata = _ingest_layer_for_bbox(
+                layer_key=layer_key,
+                bounds=bounds,
+                layer_cfg=layer_cfg,
+                catalog_root=cat_root,
+                cache_root=cache,
+                prefer_bbox_downloads=prefer_bbox_downloads,
+                allow_full_download_fallback=allow_full_download_fallback,
+                target_resolution=target_resolution,
+                timeout_seconds=timeout_seconds,
+                retries=retries,
+                backoff_seconds=backoff_seconds,
+                force=overwrite,
+            )
+            acquired_layers.append(
+                {
+                    "layer_key": layer_key,
+                    "catalog_path": metadata.get("catalog_path"),
+                    "provider_type": metadata.get("provider_type"),
+                    "acquisition_method": metadata.get("acquisition_method"),
+                    "source_url": metadata.get("source_url"),
+                    "source_endpoint": metadata.get("source_endpoint"),
+                    "bbox_used": metadata.get("bbox_used"),
+                    "cache_hit": bool(metadata.get("cache_hit", False)),
+                }
+            )
+        except Exception as exc:
+            item = {"layer_key": layer_key, "error": str(exc)}
+            if layer_key in required and require_core_layers:
+                failed_acquisitions.append(item)
+            else:
+                optional_omissions.append(layer_key)
+
+    coverage_after = build_catalog_coverage_plan(
+        bounds=bounds,
+        required_layers=required,
+        optional_layer_keys=optional,
+        catalog_root=cat_root,
+    )
+    required_missing_after = list(coverage_after["summary"]["required_missing"])
+    if failed_acquisitions:
+        required_missing_after.extend(
+            [str(item.get("layer_key")) for item in failed_acquisitions if str(item.get("layer_key")) in required]
+        )
+    required_missing_after = sorted(set(required_missing_after))
+
+    if require_core_layers and required_missing_after:
+        raise ValueError(
+            "Cannot build region: missing required core coverage after acquisition: "
+            + ", ".join(required_missing_after)
+        )
+
+    manifest = build_region_from_catalog(
+        region_id=region_id,
+        display_name=display_name,
+        bounds=bounds,
+        catalog_root=cat_root,
+        regions_root=reg_root,
+        overwrite=overwrite,
+        require_core_layers=require_core_layers,
+        skip_optional_layers=skip_optional_layers,
+        allow_partial=not require_core_layers,
+        validate=False,
+        target_resolution=target_resolution,
+    )
+
+    _annotate_manifest_with_orchestration(
+        manifest=manifest,
+        bounds=bounds,
+        coverage_before=coverage_before,
+        coverage_after=coverage_after,
+        acquired_layers=acquired_layers,
+        failed_acquisitions=failed_acquisitions,
+        optional_omissions=sorted(set(optional_omissions)),
+    )
+
+    validation_result = None
+    if validate:
+        validation_result = validate_prepared_region(
+            region_id=region_id,
+            base_dir=str(reg_root),
+            update_manifest=True,
+        )
+        manifest.setdefault("catalog", {})
+        orchestration = manifest["catalog"].setdefault("orchestration_validation", {})
+        orchestration["result"] = validation_result
+
+    manifest_path = reg_root / region_id / "manifest.json"
+    if manifest_path.exists():
+        with open(manifest_path, "w", encoding="utf-8") as f:
+            json.dump(manifest, f, indent=2, sort_keys=True)
+
+    return {
+        "mode": "executed",
+        "region_id": region_id,
+        "display_name": display_name,
+        "requested_bbox": bounds,
+        "coverage_before": coverage_before,
+        "coverage_after": coverage_after,
+        "acquired_layers": acquired_layers,
+        "failed_acquisitions": failed_acquisitions,
+        "optional_omissions": sorted(set(optional_omissions)),
+        "manifest_path": str(manifest_path),
+        "manifest": manifest,
+        "validation": validation_result,
+    }
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Prepare any region from canonical catalog coverage, automatically acquiring and ingesting "
+            "missing bbox coverage from configured sources when needed."
+        )
+    )
+    parser.add_argument("--region-id", required=True)
+    parser.add_argument("--display-name", default=None)
+    parser.add_argument("--bbox", nargs="+", required=True)
+    parser.add_argument("--catalog-root", default=None)
+    parser.add_argument("--regions-root", default=None)
+    parser.add_argument("--cache-root", default=None)
+    parser.add_argument("--source-config", default=None)
+    parser.add_argument("--require-core-layers", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--skip-optional-layers", action="store_true")
+    parser.add_argument("--validate", action="store_true")
+    parser.add_argument("--overwrite", action="store_true")
+    parser.add_argument("--allow-partial-coverage-fill", action="store_true")
+    parser.add_argument("--prefer-bbox-downloads", action="store_true")
+    parser.add_argument("--allow-full-download-fallback", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--plan-only", action="store_true")
+    parser.add_argument("--target-resolution", type=float, default=None)
+    parser.add_argument("--download-timeout", type=float, default=60.0)
+    parser.add_argument("--download-retries", type=int, default=2)
+    parser.add_argument("--retry-backoff-seconds", type=float, default=1.5)
+    args = parser.parse_args()
+
+    result = prepare_region_from_catalog_or_sources(
+        region_id=args.region_id,
+        display_name=args.display_name or args.region_id.replace("_", " ").title(),
+        bounds=_parse_bbox(args.bbox),
+        catalog_root=Path(args.catalog_root).expanduser() if args.catalog_root else None,
+        regions_root=Path(args.regions_root).expanduser() if args.regions_root else None,
+        cache_root=Path(args.cache_root).expanduser() if args.cache_root else None,
+        source_config=_load_source_config(args.source_config),
+        require_core_layers=bool(args.require_core_layers),
+        skip_optional_layers=bool(args.skip_optional_layers),
+        validate=bool(args.validate),
+        overwrite=bool(args.overwrite),
+        allow_partial_coverage_fill=bool(args.allow_partial_coverage_fill),
+        prefer_bbox_downloads=bool(args.prefer_bbox_downloads),
+        allow_full_download_fallback=bool(args.allow_full_download_fallback),
+        plan_only=bool(args.plan_only),
+        target_resolution=args.target_resolution,
+        timeout_seconds=float(args.download_timeout),
+        retries=max(0, int(args.download_retries)),
+        backoff_seconds=max(0.0, float(args.retry_backoff_seconds)),
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+
+
+if __name__ == "__main__":
+    main()
