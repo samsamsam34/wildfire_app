@@ -120,17 +120,57 @@ def _looks_like_html(path: Path) -> bool:
     return b"<html" in data or b"<!doctype html" in data or b"<body" in data
 
 
-def _download_file(url: str, target: Path, timeout_seconds: float = 60.0) -> None:
+def _extract_json_error(path: Path) -> str | None:
+    try:
+        raw = path.read_bytes()
+    except Exception:
+        return None
+    if not raw:
+        return "empty payload"
+    stripped = raw.lstrip()
+    if not stripped.startswith(b"{"):
+        return None
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    if isinstance(payload.get("error"), dict):
+        err = payload["error"]
+        message = str(err.get("message") or "unknown provider error")
+        details = err.get("details") or []
+        if isinstance(details, list) and details:
+            message = f"{message}: {'; '.join(str(d) for d in details)}"
+        return message
+    if payload.get("type") != "FeatureCollection":
+        return "unexpected JSON payload"
+    return None
+
+
+def _download_file(url: str, target: Path, timeout_seconds: float = 60.0) -> dict[str, Any]:
+    bytes_downloaded = 0
     with urllib.request.urlopen(url, timeout=timeout_seconds) as response, open(target, "wb") as out:
+        status = getattr(response, "status", None)
+        content_type = response.headers.get("Content-Type") if getattr(response, "headers", None) else None
         while True:
             chunk = response.read(64 * 1024)
             if not chunk:
                 break
+            bytes_downloaded += len(chunk)
             out.write(chunk)
     if target.stat().st_size <= 0:
         raise ValueError(f"Downloaded empty payload for {url}")
     if _looks_like_html(target):
         raise ValueError(f"Downloaded HTML/error payload for {url}")
+    json_error = _extract_json_error(target)
+    if json_error:
+        raise ValueError(f"Downloaded JSON/error payload for {url}: {json_error}")
+    return {
+        "http_status": int(status) if status is not None else None,
+        "response_content_type": content_type,
+        "bytes_downloaded": bytes_downloaded,
+    }
 
 
 def _ensure_raster_deps() -> None:
@@ -199,9 +239,18 @@ def _clip_vector_if_requested(src: Path, dst: Path, bounds: dict[str, float] | N
     assert shape is not None and mapping is not None and box is not None
     with open(src, "r", encoding="utf-8") as f:
         payload = json.load(f)
+    if isinstance(payload, dict) and isinstance(payload.get("error"), dict):
+        err = payload["error"]
+        message = str(err.get("message") or "unknown provider error")
+        details = err.get("details") or []
+        if isinstance(details, list) and details:
+            message = f"{message}: {'; '.join(str(d) for d in details)}"
+        raise ValueError(f"Vector source returned provider error: {message}")
     features = payload.get("features", []) if isinstance(payload, dict) else []
     if not isinstance(features, list):
         raise ValueError(f"Invalid vector source: {src}")
+    if not features:
+        raise ValueError(f"Vector source returned empty feature set for requested bbox: {src}")
     aoi = box(bounds["min_lon"], bounds["min_lat"], bounds["max_lon"], bounds["max_lat"]) if bounds else None
     out_features: list[dict[str, Any]] = []
     bounds_union = None
@@ -359,12 +408,18 @@ def _resolve_ingest_input(
             "source_endpoint": source_endpoint,
             "cache_hit": False,
             "warnings": warnings,
+            "fetch_attempted": False,
+            "fetch_succeeded": True,
+            "http_status": None,
+            "response_content_type": None,
+            "bytes_downloaded": None,
         }
 
     if not source_url and not source_endpoint:
         raise ValueError("Either source_path, source_url, or source_endpoint is required.")
 
     if source_endpoint and bounds:
+        prefer_bbox_for_endpoint = bool(prefer_bbox_downloads or not source_url)
         result = acquire_layer_from_config(
             layer_key=layer_name,
             layer_type=layer_type,
@@ -377,7 +432,7 @@ def _resolve_ingest_input(
             },
             bounds=bounds,
             cache_root=cache_root,
-            prefer_bbox_downloads=prefer_bbox_downloads,
+            prefer_bbox_downloads=prefer_bbox_for_endpoint,
             allow_full_download_fallback=allow_full_download_fallback,
             target_resolution=target_resolution,
             timeout_seconds=timeout_seconds,
@@ -393,6 +448,11 @@ def _resolve_ingest_input(
                 "source_endpoint": result.source_endpoint or source_endpoint,
                 "cache_hit": bool(result.cache_hit),
                 "warnings": warnings,
+                "fetch_attempted": bool(not result.cache_hit and result.acquisition_method not in {"local_existing"}),
+                "fetch_succeeded": True,
+                "http_status": result.http_status,
+                "response_content_type": result.response_content_type,
+                "bytes_downloaded": result.bytes_downloaded,
             }
         if result and result.source_url:
             source_url = result.source_url
@@ -404,15 +464,20 @@ def _resolve_ingest_input(
     else:
         acquisition_method = "full_download_clip"
 
-    assert source_url
+    if not source_url:
+        raise ValueError(
+            f"No download URL resolved for layer '{layer_name}'. "
+            "Provide source_url/full_download_url or enable bbox-capable source_endpoint."
+        )
     cache_dir = cache_root / "catalog_downloads"
     cache_dir.mkdir(parents=True, exist_ok=True)
     suffix = Path(urllib.parse.urlparse(source_url).path).suffix or (".tif" if layer_type == "raster" else ".geojson")
     digest = _hash_payload({"layer_name": layer_name, "source_url": source_url})
     target = cache_dir / f"{digest}{suffix}"
     cache_hit = target.exists() and target.stat().st_size > 0 and not _looks_like_html(target)
+    download_meta: dict[str, Any] | None = None
     if not cache_hit:
-        _download_file(source_url, target, timeout_seconds=timeout_seconds)
+        download_meta = _download_file(source_url, target, timeout_seconds=timeout_seconds)
     return target, {
         "provider_type": provider_type or "file_download",
         "acquisition_method": "cached_full_download" if cache_hit else acquisition_method,
@@ -420,6 +485,11 @@ def _resolve_ingest_input(
         "source_endpoint": source_endpoint,
         "cache_hit": cache_hit,
         "warnings": warnings,
+        "fetch_attempted": not cache_hit,
+        "fetch_succeeded": True,
+        "http_status": None if cache_hit else (download_meta or {}).get("http_status"),
+        "response_content_type": None if cache_hit else (download_meta or {}).get("response_content_type"),
+        "bytes_downloaded": None if cache_hit else (download_meta or {}).get("bytes_downloaded"),
     }
 
 
@@ -493,6 +563,21 @@ def ingest_catalog_raster(
             metadata = json.load(f)
         metadata["cache_hit"] = True
         metadata["updated_at"] = _now()
+        metadata.setdefault("ingest_diagnostics", {})
+        metadata["ingest_diagnostics"].update(
+            {
+                "fetch_attempted": bool(acquisition_meta.get("fetch_attempted", False)),
+                "fetch_succeeded": bool(acquisition_meta.get("fetch_succeeded", True)),
+                "http_status": acquisition_meta.get("http_status"),
+                "response_content_type": acquisition_meta.get("response_content_type"),
+                "bytes_downloaded": acquisition_meta.get("bytes_downloaded"),
+                "temp_input_path": str(ingest_path),
+                "catalog_ingest_attempted": True,
+                "catalog_ingest_succeeded": True,
+                "catalog_entry_path": str(out_path),
+                "catalog_entry_id": metadata.get("item_id"),
+            }
+        )
     else:
         clip_meta = _clip_raster_if_requested(ingest_path, out_path, bounds)
         metadata = {
@@ -516,6 +601,18 @@ def ingest_catalog_raster(
             "checksum": None,
             "created_at": created_at,
             "updated_at": _now(),
+            "ingest_diagnostics": {
+                "fetch_attempted": bool(acquisition_meta.get("fetch_attempted", False)),
+                "fetch_succeeded": bool(acquisition_meta.get("fetch_succeeded", True)),
+                "http_status": acquisition_meta.get("http_status"),
+                "response_content_type": acquisition_meta.get("response_content_type"),
+                "bytes_downloaded": acquisition_meta.get("bytes_downloaded"),
+                "temp_input_path": str(ingest_path),
+                "catalog_ingest_attempted": True,
+                "catalog_ingest_succeeded": True,
+                "catalog_entry_path": str(out_path),
+                "catalog_entry_id": item_id,
+            },
         }
         _write_layer_metadata(root, layer_name, item_id, metadata)
 
@@ -582,6 +679,21 @@ def ingest_catalog_vector(
             metadata = json.load(f)
         metadata["cache_hit"] = True
         metadata["updated_at"] = _now()
+        metadata.setdefault("ingest_diagnostics", {})
+        metadata["ingest_diagnostics"].update(
+            {
+                "fetch_attempted": bool(acquisition_meta.get("fetch_attempted", False)),
+                "fetch_succeeded": bool(acquisition_meta.get("fetch_succeeded", True)),
+                "http_status": acquisition_meta.get("http_status"),
+                "response_content_type": acquisition_meta.get("response_content_type"),
+                "bytes_downloaded": acquisition_meta.get("bytes_downloaded"),
+                "temp_input_path": str(ingest_path),
+                "catalog_ingest_attempted": True,
+                "catalog_ingest_succeeded": True,
+                "catalog_entry_path": str(out_path),
+                "catalog_entry_id": metadata.get("item_id"),
+            }
+        )
     else:
         clip_meta = _clip_vector_if_requested(ingest_path, out_path, bounds)
         metadata = {
@@ -606,6 +718,18 @@ def ingest_catalog_vector(
             "checksum": None,
             "created_at": created_at,
             "updated_at": _now(),
+            "ingest_diagnostics": {
+                "fetch_attempted": bool(acquisition_meta.get("fetch_attempted", False)),
+                "fetch_succeeded": bool(acquisition_meta.get("fetch_succeeded", True)),
+                "http_status": acquisition_meta.get("http_status"),
+                "response_content_type": acquisition_meta.get("response_content_type"),
+                "bytes_downloaded": acquisition_meta.get("bytes_downloaded"),
+                "temp_input_path": str(ingest_path),
+                "catalog_ingest_attempted": True,
+                "catalog_ingest_succeeded": True,
+                "catalog_entry_path": str(out_path),
+                "catalog_entry_id": item_id,
+            },
         }
         _write_layer_metadata(root, layer_name, item_id, metadata)
 

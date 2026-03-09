@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 
+import scripts.prepare_region_from_catalog_or_sources as prep_orch
 from backend.data_prep.catalog import ingest_catalog_raster, ingest_catalog_vector
 from scripts.catalog_coverage import build_catalog_coverage_plan, required_core_layers
 from scripts.prepare_region_from_catalog_or_sources import (
+    RegionPrepExecutionError,
     _build_cli_error_payload,
     _validate_layer_source_config,
     prepare_region_from_catalog_or_sources,
@@ -644,3 +647,269 @@ def test_cli_error_payload_flags_internal_missing_constant():
     assert payload["issue_type"] == "internal_code_error"
     assert payload["failure_stage"] == "internal_layer_definition_reference"
     assert payload["missing_constant"] == "CATALOG_DERIVED_RASTER_LAYERS"
+
+
+def _coverage_plan_for_required(required: list[str], status: str) -> dict[str, Any]:
+    layers = {
+        layer: {
+            "coverage_status": status,
+            "entries_total": 0 if status == "none" else 1,
+            "entries_with_bounds": 0 if status == "none" else 1,
+            "entries_covering": [],
+            "entries_intersecting": [],
+            "entries_missing_bounds": [],
+            "notes": [],
+        }
+        for layer in required
+    }
+    return {
+        "requested_bbox": {"min_lon": 0.0, "min_lat": 0.0, "max_lon": 1.0, "max_lat": 1.0},
+        "required_layers": required,
+        "optional_layers": [],
+        "layers": layers,
+        "summary": {
+            "required_missing": sorted(required) if status == "none" else [],
+            "required_partial": [],
+            "optional_missing": [],
+            "optional_partial": [],
+            "buildable_from_catalog": status == "full",
+            "fully_covered_from_catalog": status == "full",
+            "recommended_actions": [],
+        },
+    }
+
+
+def _valid_required_source_config() -> dict[str, dict[str, str]]:
+    return {
+        "dem": {"provider_type": "arcgis_image_service", "source_endpoint": "https://example.test/dem/ImageServer"},
+        "fuel": {"provider_type": "arcgis_image_service", "source_endpoint": "https://example.test/fuel/ImageServer"},
+        "canopy": {"provider_type": "arcgis_image_service", "source_endpoint": "https://example.test/canopy/ImageServer"},
+        "fire_perimeters": {"provider_type": "arcgis_feature_service", "source_endpoint": "https://example.test/fire/FeatureServer/0"},
+        "building_footprints": {"provider_type": "arcgis_feature_service", "source_endpoint": "https://example.test/buildings/FeatureServer/0"},
+    }
+
+
+def test_execution_diagnostics_classifies_invalid_raster_payload(monkeypatch, tmp_path):
+    required = required_core_layers()
+
+    def fake_coverage_plan(*args, **kwargs):
+        return _coverage_plan_for_required(required, "none")
+
+    def fake_ingest(*args, **kwargs):
+        if kwargs["layer_key"] == "canopy":
+            raise ValueError("download returned JSON/error content for canopy: Token Required")
+        return {
+            "item_id": f"{kwargs['layer_key']}-item",
+            "catalog_path": str(tmp_path / f"{kwargs['layer_key']}.tif"),
+            "provider_type": "arcgis_image_service",
+            "acquisition_method": "bbox_export",
+            "source_url": "https://example.test/layer",
+            "source_endpoint": "https://example.test/layer/ImageServer",
+            "bbox_used": "0,0,1,1",
+            "cache_hit": False,
+            "ingest_diagnostics": {
+                "fetch_attempted": True,
+                "fetch_succeeded": True,
+                "catalog_ingest_succeeded": True,
+                "temp_input_path": str(tmp_path / "tmp.tif"),
+            },
+        }
+
+    monkeypatch.setattr(prep_orch, "build_catalog_coverage_plan", fake_coverage_plan)
+    monkeypatch.setattr(prep_orch, "_ingest_layer_for_bbox", fake_ingest)
+
+    with pytest.raises(RegionPrepExecutionError) as exc:
+        prepare_region_from_catalog_or_sources(
+            region_id="diag_invalid_raster",
+            display_name="Diag Invalid Raster",
+            bounds={"min_lon": 0.0, "min_lat": 0.0, "max_lon": 1.0, "max_lat": 1.0},
+            catalog_root=tmp_path / "catalog",
+            regions_root=tmp_path / "regions",
+            source_config=_valid_required_source_config(),
+            skip_optional_layers=True,
+            overwrite=True,
+        )
+    details = exc.value.details
+    canopy = details["per_layer_execution_diagnostics"]["canopy"]
+    assert canopy["failure_reason"] == "invalid_provider_payload"
+    assert "provider returned an error payload" in canopy["actionable_error"].lower()
+
+
+def test_execution_diagnostics_classifies_empty_vector_result(monkeypatch, tmp_path):
+    required = required_core_layers()
+
+    def fake_coverage_plan(*args, **kwargs):
+        return _coverage_plan_for_required(required, "none")
+
+    def fake_ingest(*args, **kwargs):
+        if kwargs["layer_key"] == "fire_perimeters":
+            raise ValueError("Vector source returned empty feature set for requested bbox")
+        return {
+            "item_id": f"{kwargs['layer_key']}-item",
+            "catalog_path": str(tmp_path / f"{kwargs['layer_key']}.tif"),
+            "provider_type": "arcgis_image_service",
+            "acquisition_method": "bbox_export",
+            "source_url": "https://example.test/layer",
+            "source_endpoint": "https://example.test/layer/ImageServer",
+            "bbox_used": "0,0,1,1",
+            "cache_hit": False,
+            "ingest_diagnostics": {
+                "fetch_attempted": True,
+                "fetch_succeeded": True,
+                "catalog_ingest_succeeded": True,
+                "temp_input_path": str(tmp_path / "tmp.any"),
+            },
+        }
+
+    monkeypatch.setattr(prep_orch, "build_catalog_coverage_plan", fake_coverage_plan)
+    monkeypatch.setattr(prep_orch, "_ingest_layer_for_bbox", fake_ingest)
+
+    with pytest.raises(RegionPrepExecutionError) as exc:
+        prepare_region_from_catalog_or_sources(
+            region_id="diag_empty_vector",
+            display_name="Diag Empty Vector",
+            bounds={"min_lon": 0.0, "min_lat": 0.0, "max_lon": 1.0, "max_lat": 1.0},
+            catalog_root=tmp_path / "catalog",
+            regions_root=tmp_path / "regions",
+            source_config=_valid_required_source_config(),
+            skip_optional_layers=True,
+            overwrite=True,
+        )
+    details = exc.value.details
+    fire = details["per_layer_execution_diagnostics"]["fire_perimeters"]
+    assert fire["failure_reason"] == "provider_empty_result"
+
+
+def test_execution_diagnostics_flags_coverage_recording_failure(monkeypatch, tmp_path):
+    required = required_core_layers()
+    call_state = {"count": 0}
+
+    def fake_coverage_plan(*args, **kwargs):
+        call_state["count"] += 1
+        if call_state["count"] == 1:
+            return _coverage_plan_for_required(required, "none")
+        after = _coverage_plan_for_required(required, "full")
+        after["layers"]["canopy"]["coverage_status"] = "none"
+        after["summary"]["required_missing"] = ["canopy"]
+        after["summary"]["buildable_from_catalog"] = False
+        after["summary"]["fully_covered_from_catalog"] = False
+        return after
+
+    def fake_ingest(*args, **kwargs):
+        layer_key = kwargs["layer_key"]
+        return {
+            "item_id": f"{layer_key}-item",
+            "catalog_path": str(tmp_path / f"{layer_key}.tif"),
+            "provider_type": "arcgis_image_service",
+            "acquisition_method": "bbox_export",
+            "source_url": "https://example.test/layer",
+            "source_endpoint": "https://example.test/layer/ImageServer",
+            "bbox_used": "0,0,1,1",
+            "cache_hit": False,
+            "ingest_diagnostics": {
+                "fetch_attempted": True,
+                "fetch_succeeded": True,
+                "catalog_ingest_succeeded": True,
+                "temp_input_path": str(tmp_path / f"{layer_key}.tmp"),
+            },
+        }
+
+    monkeypatch.setattr(prep_orch, "build_catalog_coverage_plan", fake_coverage_plan)
+    monkeypatch.setattr(prep_orch, "_ingest_layer_for_bbox", fake_ingest)
+
+    with pytest.raises(RegionPrepExecutionError) as exc:
+        prepare_region_from_catalog_or_sources(
+            region_id="diag_coverage_recheck",
+            display_name="Diag Coverage Recheck",
+            bounds={"min_lon": 0.0, "min_lat": 0.0, "max_lon": 1.0, "max_lat": 1.0},
+            catalog_root=tmp_path / "catalog",
+            regions_root=tmp_path / "regions",
+            source_config=_valid_required_source_config(),
+            skip_optional_layers=True,
+            overwrite=True,
+        )
+    details = exc.value.details
+    assert "canopy" in details["stage_failures"]["coverage_recheck"]
+    canopy = details["per_layer_execution_diagnostics"]["canopy"]
+    assert canopy["failure_reason"] == "coverage_recording_or_recheck_failure"
+
+
+def test_successful_ingest_sets_non_none_coverage_status(monkeypatch, tmp_path):
+    required = required_core_layers()
+    call_state = {"count": 0}
+
+    def fake_coverage_plan(*args, **kwargs):
+        call_state["count"] += 1
+        if call_state["count"] == 1:
+            return _coverage_plan_for_required(required, "none")
+        return _coverage_plan_for_required(required, "full")
+
+    def fake_ingest(*args, **kwargs):
+        layer_key = kwargs["layer_key"]
+        suffix = ".geojson" if layer_key in {"fire_perimeters", "building_footprints"} else ".tif"
+        return {
+            "item_id": f"{layer_key}-item",
+            "catalog_path": str(tmp_path / f"{layer_key}{suffix}"),
+            "provider_type": kwargs["layer_cfg"].get("provider_type"),
+            "acquisition_method": "bbox_export",
+            "source_url": "https://example.test/layer",
+            "source_endpoint": "https://example.test/endpoint",
+            "bbox_used": "0,0,1,1",
+            "cache_hit": False,
+            "ingest_diagnostics": {
+                "fetch_attempted": True,
+                "fetch_succeeded": True,
+                "catalog_ingest_succeeded": True,
+                "temp_input_path": str(tmp_path / f"{layer_key}.tmp"),
+            },
+        }
+
+    def fake_build_region(**kwargs):
+        layers = {
+            "dem": {},
+            "slope": {},
+            "fuel": {},
+            "canopy": {},
+            "fire_perimeters": {},
+            "building_footprints": {},
+        }
+        return {"region_id": kwargs["region_id"], "layers": layers, "catalog": {}}
+
+    monkeypatch.setattr(prep_orch, "build_catalog_coverage_plan", fake_coverage_plan)
+    monkeypatch.setattr(prep_orch, "_ingest_layer_for_bbox", fake_ingest)
+    monkeypatch.setattr(prep_orch, "build_region_from_catalog", fake_build_region)
+
+    result = prepare_region_from_catalog_or_sources(
+        region_id="diag_success",
+        display_name="Diag Success",
+        bounds={"min_lon": 0.0, "min_lat": 0.0, "max_lon": 1.0, "max_lat": 1.0},
+        catalog_root=tmp_path / "catalog",
+        regions_root=tmp_path / "regions",
+        source_config=_valid_required_source_config(),
+        skip_optional_layers=True,
+        overwrite=True,
+    )
+    assert result["final_status"] == "success"
+    for layer in required:
+        assert result["per_layer_execution_diagnostics"][layer]["coverage_status_after_ingest"] == "full"
+
+
+def test_cli_error_payload_includes_layer_execution_diagnostics():
+    exc = RegionPrepExecutionError(
+        "failed",
+        details={
+            "failed_required_layers": ["fuel"],
+            "per_layer_execution_diagnostics": {"fuel": {"failure_reason": "remote_provider_error"}},
+            "stage_failures": {"acquisition": ["fuel"], "ingest": [], "coverage_recheck": []},
+        },
+    )
+    payload = _build_cli_error_payload(
+        exc=exc,
+        region_id="x",
+        display_name="X",
+        requested_bbox={"min_lon": 0, "min_lat": 0, "max_lon": 1, "max_lat": 1},
+        mode="executed",
+    )
+    assert payload["failed_required_layers"] == ["fuel"]
+    assert "fuel" in payload["per_layer_execution_diagnostics"]
+    assert payload["stage_failures"]["acquisition"] == ["fuel"]

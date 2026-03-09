@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
@@ -34,6 +35,9 @@ class AcquisitionResult:
     output_resolution: float | None
     cache_hit: bool
     warnings: list[str]
+    http_status: int | None = None
+    response_content_type: str | None = None
+    bytes_downloaded: int | None = None
 
 
 class SourceProvider(Protocol):
@@ -69,6 +73,34 @@ def _looks_like_html(path: Path) -> bool:
     return b"<html" in data or b"<!doctype html" in data or b"<body" in data
 
 
+def _extract_json_error(path: Path) -> str | None:
+    try:
+        raw = path.read_bytes()
+    except Exception:
+        return None
+    if not raw:
+        return "empty payload"
+    stripped = raw.lstrip()
+    if not stripped.startswith(b"{"):
+        return None
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    if isinstance(payload.get("error"), dict):
+        err = payload["error"]
+        message = str(err.get("message") or "unknown provider error")
+        details = err.get("details") or []
+        if isinstance(details, list) and details:
+            message = f"{message}: {'; '.join(str(d) for d in details)}"
+        return message
+    if payload.get("type") != "FeatureCollection":
+        return "unexpected JSON payload"
+    return None
+
+
 def _download_with_retry(
     *,
     url: str,
@@ -76,27 +108,48 @@ def _download_with_retry(
     timeout_seconds: float,
     retries: int,
     backoff_seconds: float,
-) -> None:
+) -> dict[str, Any]:
     last_exc: Exception | None = None
+    last_status: int | None = None
+    last_content_type: str | None = None
+    last_bytes_downloaded: int | None = None
     for attempt in range(max(0, retries) + 1):
         try:
+            bytes_downloaded = 0
             with urllib.request.urlopen(url, timeout=timeout_seconds) as response, open(out_path, "wb") as out:
+                status = getattr(response, "status", None)
+                content_type = response.headers.get("Content-Type") if getattr(response, "headers", None) else None
                 while True:
                     chunk = response.read(64 * 1024)
                     if not chunk:
                         break
+                    bytes_downloaded += len(chunk)
                     out.write(chunk)
             if out_path.stat().st_size <= 0:
                 raise ValueError(f"download returned empty file for {url}")
             if _looks_like_html(out_path):
                 raise ValueError(f"download returned HTML/error content for {url}")
-            return
+            json_error = _extract_json_error(out_path)
+            if json_error:
+                raise ValueError(f"download returned JSON/error content for {url}: {json_error}")
+            return {
+                "http_status": int(status) if status is not None else None,
+                "response_content_type": content_type,
+                "bytes_downloaded": bytes_downloaded,
+            }
         except Exception as exc:  # pragma: no cover - runtime network behavior
             last_exc = exc
+            if isinstance(exc, urllib.error.HTTPError):
+                last_status = int(exc.code)
+                last_content_type = exc.headers.get("Content-Type") if exc.headers else None
+            last_bytes_downloaded = out_path.stat().st_size if out_path.exists() else None
             if attempt >= max(0, retries):
                 break
             time.sleep(max(0.0, backoff_seconds) * (2**attempt))
-    raise ValueError(f"Failed download after retries for {url}: {last_exc}") from last_exc
+    raise ValueError(
+        f"Failed download after retries for {url}: {last_exc} "
+        f"(http_status={last_status}, content_type={last_content_type}, bytes_downloaded={last_bytes_downloaded})"
+    ) from last_exc
 
 
 def _deg_to_meters_lon(deg: float, lat: float) -> float:
@@ -191,7 +244,7 @@ class ArcGISImageServiceProvider:
             )
 
         url = self._build_export_url(bounds=bounds, target_resolution=target_resolution)
-        _download_with_retry(
+        download_meta = _download_with_retry(
             url=url,
             out_path=out_path,
             timeout_seconds=timeout_seconds,
@@ -209,6 +262,9 @@ class ArcGISImageServiceProvider:
             output_resolution=target_resolution,
             cache_hit=False,
             warnings=[],
+            http_status=download_meta.get("http_status"),
+            response_content_type=download_meta.get("response_content_type"),
+            bytes_downloaded=download_meta.get("bytes_downloaded"),
         )
 
     def fetch_full(self, *, layer_key: str, source_url: str) -> AcquisitionResult:
@@ -308,7 +364,7 @@ class ArcGISFeatureServiceProvider:
                 warnings=[],
             )
         url = self._build_query_url(bounds=bounds)
-        _download_with_retry(
+        download_meta = _download_with_retry(
             url=url,
             out_path=out_path,
             timeout_seconds=timeout_seconds,
@@ -326,6 +382,9 @@ class ArcGISFeatureServiceProvider:
             output_resolution=target_resolution,
             cache_hit=False,
             warnings=[],
+            http_status=download_meta.get("http_status"),
+            response_content_type=download_meta.get("response_content_type"),
+            bytes_downloaded=download_meta.get("bytes_downloaded"),
         )
 
     def fetch_full(self, *, layer_key: str, source_url: str) -> AcquisitionResult:
@@ -477,4 +536,3 @@ def default_source_config() -> dict[str, Any]:
         "generated_at": _now(),
         "layers": {},
     }
-

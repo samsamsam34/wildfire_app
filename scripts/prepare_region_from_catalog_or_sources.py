@@ -43,6 +43,12 @@ SUPPORTED_PROVIDER_TYPES = {
 }
 
 
+class RegionPrepExecutionError(RuntimeError):
+    def __init__(self, message: str, *, details: dict[str, Any]):
+        super().__init__(message)
+        self.details = details
+
+
 def _parse_bbox(values: Sequence[str]) -> dict[str, float]:
     if len(values) == 1:
         return parse_bbox(values[0])
@@ -537,9 +543,35 @@ def _build_cli_error_payload(
         "error": str(exc),
         "actionable_message": actionable_message,
     }
+    details = getattr(exc, "details", None)
+    if isinstance(details, dict):
+        payload.update(details)
     if isinstance(exc, NameError):
         payload["missing_constant"] = str(exc).replace("name ", "").replace(" is not defined", "").strip("'")
     return payload
+
+
+def _classify_execution_failure(error: str) -> tuple[str, str]:
+    msg = error.lower()
+    if "source configuration" in msg or "missing source details" in msg:
+        return "config_validation_failed", "Layer source configuration is invalid or incomplete."
+    if "failed download after retries" in msg or "urlopen error" in msg or "http error" in msg:
+        return "remote_provider_error", "Provider request failed. Check endpoint connectivity/auth and retry."
+    if "html/error payload" in msg or "json/error payload" in msg or "json/error content" in msg:
+        return "invalid_provider_payload", "Provider returned an error payload instead of layer data."
+    if "no download url resolved" in msg:
+        return "request_construction_failure", "Source configuration could not resolve a valid request URL."
+    if "empty feature set" in msg:
+        return "provider_empty_result", "Provider query returned no features for this bbox."
+    if "provider error" in msg and "vector source" in msg:
+        return "provider_query_error", "Provider returned a vector query error payload."
+    if "raster has no crs" in msg:
+        return "invalid_raster_crs", "Raster payload is missing CRS metadata."
+    if "does not intersect bbox" in msg:
+        return "outside_extent", "Fetched data does not intersect the requested bbox."
+    if "required for catalog raster operations" in msg or "required for catalog vector operations" in msg:
+        return "runtime_dependency_missing", "Missing local geospatial runtime dependency during ingest."
+    return "ingest_or_registration_failed", "Catalog ingest failed. Check payload validity and catalog write path."
 
 
 def _annotate_manifest_with_orchestration(
@@ -818,6 +850,7 @@ def prepare_region_from_catalog_or_sources(
             },
             "required_layer_diagnostics": required_layer_diagnostics,
             "optional_layer_diagnostics": optional_layer_diagnostics,
+            "per_layer_execution_diagnostics": {},
             "acquired_layers": [],
             "failed_acquisitions": [],
             "required_failures": [],
@@ -833,6 +866,7 @@ def prepare_region_from_catalog_or_sources(
     failed_acquisitions: list[dict[str, Any]] = []
     optional_omissions: list[str] = []
     required_failures: list[dict[str, Any]] = []
+    per_layer_execution_diagnostics: dict[str, dict[str, Any]] = {}
     stage_status["acquisition"] = {"status": "running", "details": "Evaluating missing catalog coverage and ingesting required layers."}
 
     for step in planned_steps:
@@ -840,12 +874,44 @@ def prepare_region_from_catalog_or_sources(
             continue
         layer_key = str(step["layer_key"])
         layer_cfg = _layer_config(layer_key, cfg)
+        provider_type = str(layer_cfg.get("provider_type") or _provider_default(LAYER_TYPES.get(layer_key, "vector")))
+        source_endpoint = layer_cfg.get("source_endpoint")
+        source_url = layer_cfg.get("source_url") or layer_cfg.get("full_download_url")
+        request_mode = (
+            "bbox_export_or_query"
+            if bool(step.get("config_status") == "configured" and step.get("provider_type") in {"arcgis_image_service", "arcgis_feature_service"})
+            else "full_download_or_local"
+        )
+        layer_execution = {
+            "layer_key": layer_key,
+            "provider_type": provider_type,
+            "source_endpoint": source_endpoint,
+            "source_url": source_url,
+            "request_mode": request_mode,
+            "bbox_used": dict(bounds),
+            "fetch_attempted": False,
+            "fetch_succeeded": False,
+            "http_status": None,
+            "response_content_type": None,
+            "output_temp_path": None,
+            "catalog_ingest_attempted": False,
+            "catalog_ingest_succeeded": False,
+            "catalog_entry_path": None,
+            "catalog_entry_id": None,
+            "coverage_status_after_ingest": "none",
+            "failure_reason": None,
+            "actionable_error": None,
+        }
+        per_layer_execution_diagnostics[layer_key] = layer_execution
         validation = _validate_layer_source_config(layer_key=layer_key, layer_cfg=layer_cfg)
         if not bool(validation.get("config_valid")):
             message = (
                 f"Required layer '{layer_key}' has invalid source configuration: "
                 f"{validation.get('actionable_error') or 'missing source details'}"
             )
+            reason_code, actionable = _classify_execution_failure(message)
+            layer_execution["failure_reason"] = reason_code
+            layer_execution["actionable_error"] = actionable
             if layer_key in required and require_core_layers:
                 item = {
                     "layer_key": layer_key,
@@ -858,6 +924,7 @@ def prepare_region_from_catalog_or_sources(
                 optional_omissions.append(layer_key)
             continue
         try:
+            layer_execution["catalog_ingest_attempted"] = True
             metadata = _ingest_layer_for_bbox(
                 layer_key=layer_key,
                 bounds=bounds,
@@ -872,6 +939,17 @@ def prepare_region_from_catalog_or_sources(
                 backoff_seconds=backoff_seconds,
                 force=overwrite,
             )
+            ingest_diag = metadata.get("ingest_diagnostics") if isinstance(metadata, dict) else {}
+            if not isinstance(ingest_diag, dict):
+                ingest_diag = {}
+            layer_execution["fetch_attempted"] = bool(ingest_diag.get("fetch_attempted", False))
+            layer_execution["fetch_succeeded"] = bool(ingest_diag.get("fetch_succeeded", True))
+            layer_execution["http_status"] = ingest_diag.get("http_status")
+            layer_execution["response_content_type"] = ingest_diag.get("response_content_type")
+            layer_execution["output_temp_path"] = ingest_diag.get("temp_input_path")
+            layer_execution["catalog_ingest_succeeded"] = bool(ingest_diag.get("catalog_ingest_succeeded", True))
+            layer_execution["catalog_entry_path"] = metadata.get("catalog_path")
+            layer_execution["catalog_entry_id"] = metadata.get("item_id")
             acquired_layers.append(
                 {
                     "layer_key": layer_key,
@@ -885,10 +963,23 @@ def prepare_region_from_catalog_or_sources(
                 }
             )
         except Exception as exc:
+            error_text = str(exc)
+            reason_code, actionable = _classify_execution_failure(error_text)
+            layer_execution["failure_reason"] = reason_code
+            layer_execution["actionable_error"] = actionable
+            layer_execution["catalog_ingest_succeeded"] = False
+            layer_execution["fetch_succeeded"] = False
+            if "failed download after retries" in error_text.lower():
+                layer_execution["fetch_attempted"] = True
             item = {
                 "layer_key": layer_key,
                 "failure_type": "acquisition_or_ingest_failed",
-                "error": str(exc),
+                "error": error_text,
+                "failure_reason": reason_code,
+                "actionable_error": actionable,
+                "provider_type": provider_type,
+                "source_endpoint": source_endpoint,
+                "source_url": source_url,
             }
             if layer_key in required and require_core_layers:
                 failed_acquisitions.append(item)
@@ -896,8 +987,13 @@ def prepare_region_from_catalog_or_sources(
             else:
                 optional_omissions.append(layer_key)
 
+    acquisition_status = "ok"
+    if failed_acquisitions:
+        acquisition_status = "failed"
+    elif optional_omissions:
+        acquisition_status = "partial"
     stage_status["acquisition"] = {
-        "status": "partial" if optional_omissions else "ok",
+        "status": acquisition_status,
         "details": {
             "acquired_layers": [item.get("layer_key") for item in acquired_layers],
             "optional_omissions": sorted(set(optional_omissions)),
@@ -911,6 +1007,10 @@ def prepare_region_from_catalog_or_sources(
         optional_layer_keys=optional,
         catalog_root=cat_root,
     )
+    for layer_key, layer_diag in per_layer_execution_diagnostics.items():
+        layer_diag["coverage_status_after_ingest"] = str(
+            coverage_after.get("layers", {}).get(layer_key, {}).get("coverage_status") or "none"
+        )
     required_missing_after = list(coverage_after["summary"]["required_missing"])
     if failed_acquisitions:
         required_missing_after.extend(
@@ -961,6 +1061,33 @@ def prepare_region_from_catalog_or_sources(
             guidance.append("Acquisition/ingest failed for: " + ", ".join(fetch_failed) + ". Check provider endpoint/auth/network.")
         if incomplete:
             guidance.append("Coverage still incomplete for: " + ", ".join(incomplete) + ". Retry with larger bbox or alternate source.")
+        for layer in required_missing_after:
+            diag = per_layer_execution_diagnostics.get(layer)
+            if isinstance(diag, dict) and not diag.get("failure_reason"):
+                diag["failure_reason"] = "coverage_recording_or_recheck_failure"
+                diag["actionable_error"] = (
+                    "Layer ingest completed but catalog coverage still reports missing/partial. "
+                    "Check bounds metadata/index update for this layer."
+                )
+        stage_failures = {
+            "acquisition": sorted(
+                {
+                    layer
+                    for layer, diag in per_layer_execution_diagnostics.items()
+                    if diag.get("failure_reason")
+                    in {"remote_provider_error", "invalid_provider_payload", "provider_query_error", "provider_empty_result", "request_construction_failure"}
+                }
+            ),
+            "ingest": sorted(
+                {
+                    layer
+                    for layer, diag in per_layer_execution_diagnostics.items()
+                    if diag.get("failure_reason")
+                    in {"invalid_raster_crs", "outside_extent", "runtime_dependency_missing", "ingest_or_registration_failed"}
+                }
+            ),
+            "coverage_recheck": sorted(set(required_missing_after)),
+        }
         stage_status["region_build"] = {
             "status": "failed",
             "details": {
@@ -968,11 +1095,17 @@ def prepare_region_from_catalog_or_sources(
                 "required_missing_after": required_missing_after,
             },
         }
-        raise ValueError(
+        raise RegionPrepExecutionError(
             "Cannot build region due to required core layer blockers (failure_stage=coverage_incomplete_after_ingest): "
             + ", ".join(required_missing_after)
             + ". "
-            + " ".join(guidance)
+            + " ".join(guidance),
+            details={
+                "failed_required_layers": sorted(set(required_missing_after)),
+                "per_layer_execution_diagnostics": per_layer_execution_diagnostics,
+                "stage_failures": stage_failures,
+                "failed_acquisitions": failed_acquisitions,
+            },
         )
 
     stage_status["region_build"] = {"status": "running", "details": "Building region from catalog coverage."}
@@ -1078,6 +1211,7 @@ def prepare_region_from_catalog_or_sources(
         },
         "required_layer_diagnostics": required_layer_diagnostics,
         "optional_layer_diagnostics": optional_layer_diagnostics,
+        "per_layer_execution_diagnostics": per_layer_execution_diagnostics,
         "acquired_layers": acquired_layers,
         "failed_acquisitions": failed_acquisitions,
         "required_failures": required_failures,

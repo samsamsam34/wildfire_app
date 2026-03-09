@@ -285,6 +285,7 @@ Operator diagnostics in command output include:
 - catalog coverage sufficiency and acquisition plan
 - required blockers vs optional omissions
 - stage status (`prepared_region_check`, `coverage_plan`, `acquisition`, `region_build`, `validation`)
+- per-layer execution diagnostics during run (`provider_type`, request mode, fetch/ingest success, failure reason, actionable error)
 - compact summary (`final_status`, missing layers after run, validation status)
 
 Manual uncovered-region workflow:

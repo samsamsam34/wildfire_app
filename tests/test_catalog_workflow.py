@@ -11,6 +11,8 @@ from backend.data_prep.catalog import (
     ingest_catalog_vector,
     load_catalog_index,
 )
+from backend.data_prep import catalog as catalog_mod
+from backend.data_prep.sources.acquisition import AcquisitionResult
 from backend.data_prep.prepare_region import prepare_region_layers
 
 try:
@@ -60,6 +62,11 @@ def _write_geojson(path: Path) -> None:
             }
         ],
     }
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+
+def _write_empty_geojson(path: Path) -> None:
+    payload = {"type": "FeatureCollection", "features": []}
     path.write_text(json.dumps(payload), encoding="utf-8")
 
 
@@ -123,6 +130,80 @@ def test_catalog_vector_ingest_reuses_existing_entry(tmp_path):
     entries = index["layers"]["fire_perimeters"]["entries"]
     ids = [e["item_id"] for e in entries]
     assert ids.count(first["item_id"]) == 1
+
+
+def test_catalog_vector_ingest_empty_feature_set_fails_clearly(tmp_path):
+    if catalog_mod.shape is None:
+        pytest.skip("shapely is required for vector ingest tests")
+    catalog_root = tmp_path / "catalog"
+    empty = tmp_path / "empty.geojson"
+    _write_empty_geojson(empty)
+    with pytest.raises(ValueError) as exc:
+        ingest_catalog_vector(
+            layer_name="fire_perimeters",
+            source_path=str(empty),
+            catalog_root=catalog_root,
+            bounds={"min_lon": 0.0, "min_lat": 0.0, "max_lon": 0.8, "max_lat": 0.8},
+        )
+    assert "empty feature set" in str(exc.value).lower()
+
+
+def test_resolve_ingest_input_prefers_bbox_for_endpoint_only_sources(monkeypatch, tmp_path):
+    source_file = tmp_path / "fire.geojson"
+    source_file.write_text(
+        json.dumps(
+            {
+                "type": "FeatureCollection",
+                "features": [
+                    {
+                        "type": "Feature",
+                        "properties": {"id": 1},
+                        "geometry": {"type": "Point", "coordinates": [0.1, 0.1]},
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    call_args: dict[str, object] = {}
+
+    def fake_acquire_layer_from_config(**kwargs):
+        call_args["prefer_bbox_downloads"] = kwargs["prefer_bbox_downloads"]
+        return AcquisitionResult(
+            layer_key="fire_perimeters",
+            provider_type="arcgis_feature_service",
+            acquisition_method="bbox_export",
+            source_endpoint="https://example.test/fire/FeatureServer/0",
+            source_url="https://example.test/fire/FeatureServer/0/query?f=geojson",
+            local_path=str(source_file),
+            bbox_used="0,0,1,1",
+            output_resolution=None,
+            cache_hit=False,
+            warnings=[],
+        )
+
+    monkeypatch.setattr(catalog_mod, "acquire_layer_from_config", fake_acquire_layer_from_config)
+
+    resolved_path, meta = catalog_mod._resolve_ingest_input(
+        layer_name="fire_perimeters",
+        layer_type="vector",
+        source_path=None,
+        source_url=None,
+        source_endpoint="https://example.test/fire/FeatureServer/0",
+        provider_type="arcgis_feature_service",
+        bounds={"min_lon": 0.0, "min_lat": 0.0, "max_lon": 1.0, "max_lat": 1.0},
+        cache_root=tmp_path / "cache",
+        prefer_bbox_downloads=False,
+        allow_full_download_fallback=True,
+        target_resolution=None,
+        timeout_seconds=10.0,
+        retries=0,
+        backoff_seconds=0.0,
+    )
+
+    assert call_args["prefer_bbox_downloads"] is True
+    assert resolved_path == source_file
+    assert meta["acquisition_method"] == "bbox_export"
 
 
 def test_build_region_from_catalog_success_and_manifest_provenance(tmp_path):
