@@ -363,6 +363,7 @@
 
           <h3 style="margin-top:0.9rem;">Property-Level Context</h3>
           <p id="propertyContextText" class="muted">No property-level context available yet.</p>
+          <p id="regionResolutionText" class="muted">Region resolution details unavailable.</p>
         </details>
       </section>
     </div>
@@ -673,6 +674,9 @@
           document.getElementById("readinessText").textContent = "Insurance readiness score: not computed (insufficient evidence)";
         }
         document.getElementById("propertyContextText").textContent = buildPropertyContextSummary(data, propertyFindings);
+        const resolvedRegionId = resolution?.resolved_region_id || data?.property_level_context?.region_id || "unresolved";
+        document.getElementById("regionResolutionText").textContent =
+          `Resolved prepared region: ${resolvedRegionId} (${resolution?.reason || "unknown"}).`;
       }
 
       function renderUncoveredLocationState(detail) {
@@ -701,6 +705,8 @@
         document.getElementById("submodels").innerHTML = "<tr><td colspan='3' class='muted'>No factor data until region coverage is prepared.</td></tr>";
         document.getElementById("readinessText").textContent = "Insurance readiness score: not computed (location outside prepared coverage)";
         document.getElementById("propertyContextText").textContent = recommendation;
+        document.getElementById("regionResolutionText").textContent =
+          `Resolved prepared region: none (${reasonText}).`;
       }
 
       async function fetchCoverageForAddress(address) {

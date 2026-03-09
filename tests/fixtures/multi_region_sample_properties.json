@@ -1,0 +1,127 @@
+{
+  "dataset_id": "multi_region_runtime_smoke_v1",
+  "description": "Sample addresses for Missoula and Bozeman multi-region runtime QA.",
+  "samples": [
+    {
+      "sample_id": "missoula_1",
+      "city": "Missoula",
+      "address": "201 W Front St, Missoula, MT 59802",
+      "latitude": 46.8721,
+      "longitude": -113.994,
+      "expected_region_prefix": "missoula_",
+      "expected_coverage": true,
+      "attributes": {"roof_type": "class_a_asphalt_composition", "vent_type": "ember_resistant_vents", "defensible_space_ft": 35},
+      "confirmed_fields": ["roof_type", "vent_type", "defensible_space_ft"]
+    },
+    {
+      "sample_id": "missoula_2",
+      "city": "Missoula",
+      "address": "140 N Higgins Ave, Missoula, MT 59802",
+      "latitude": 46.8725,
+      "longitude": -113.9959,
+      "expected_region_prefix": "missoula_",
+      "expected_coverage": true,
+      "attributes": {"roof_type": "wood_shake", "vent_type": "standard_vents", "defensible_space_ft": 8},
+      "confirmed_fields": ["roof_type", "vent_type", "defensible_space_ft"]
+    },
+    {
+      "sample_id": "missoula_3",
+      "city": "Missoula",
+      "address": "2901 Brooks St, Missoula, MT 59801",
+      "latitude": 46.8424,
+      "longitude": -114.0294,
+      "expected_region_prefix": "missoula_",
+      "expected_coverage": true,
+      "attributes": {"roof_type": "metal", "vent_type": "ember_resistant_vents", "defensible_space_ft": 28},
+      "confirmed_fields": ["roof_type", "vent_type", "defensible_space_ft"]
+    },
+    {
+      "sample_id": "missoula_4",
+      "city": "Missoula",
+      "address": "2100 Stephens Ave, Missoula, MT 59801",
+      "latitude": 46.8485,
+      "longitude": -113.9948,
+      "expected_region_prefix": "missoula_",
+      "expected_coverage": true,
+      "attributes": {"roof_type": "class_a_asphalt_composition", "vent_type": "covered_vents_screens", "defensible_space_ft": 18},
+      "confirmed_fields": ["roof_type", "vent_type", "defensible_space_ft"]
+    },
+    {
+      "sample_id": "missoula_5",
+      "city": "Missoula",
+      "address": "100 Madison St, Missoula, MT 59802",
+      "latitude": 46.8744,
+      "longitude": -113.9993,
+      "expected_region_prefix": "missoula_",
+      "expected_coverage": true,
+      "attributes": {"roof_type": "wood_shake", "vent_type": "standard_vents", "defensible_space_ft": 4},
+      "confirmed_fields": ["roof_type", "vent_type", "defensible_space_ft"]
+    },
+    {
+      "sample_id": "bozeman_1",
+      "city": "Bozeman",
+      "address": "30 W Main St, Bozeman, MT 59715",
+      "latitude": 45.6796,
+      "longitude": -111.0386,
+      "expected_region_prefix": "bozeman_",
+      "expected_coverage": true,
+      "attributes": {"roof_type": "class_a_asphalt_composition", "vent_type": "ember_resistant_vents", "defensible_space_ft": 30},
+      "confirmed_fields": ["roof_type", "vent_type", "defensible_space_ft"]
+    },
+    {
+      "sample_id": "bozeman_2",
+      "city": "Bozeman",
+      "address": "1 Museum Dr, Bozeman, MT 59715",
+      "latitude": 45.6639,
+      "longitude": -111.0468,
+      "expected_region_prefix": "bozeman_",
+      "expected_coverage": true,
+      "attributes": {"roof_type": "wood_shake", "vent_type": "standard_vents", "defensible_space_ft": 6},
+      "confirmed_fields": ["roof_type", "vent_type", "defensible_space_ft"]
+    },
+    {
+      "sample_id": "bozeman_3",
+      "city": "Bozeman",
+      "address": "600 S 16th Ave, Bozeman, MT 59715",
+      "latitude": 45.6729,
+      "longitude": -111.0604,
+      "expected_region_prefix": "bozeman_",
+      "expected_coverage": true,
+      "attributes": {"roof_type": "metal", "vent_type": "ember_resistant_vents", "defensible_space_ft": 32},
+      "confirmed_fields": ["roof_type", "vent_type", "defensible_space_ft"]
+    },
+    {
+      "sample_id": "bozeman_4",
+      "city": "Bozeman",
+      "address": "3970 Valley Commons Dr, Bozeman, MT 59718",
+      "latitude": 45.6622,
+      "longitude": -111.1264,
+      "expected_region_prefix": "bozeman_",
+      "expected_coverage": true,
+      "attributes": {"roof_type": "class_a_asphalt_composition", "vent_type": "covered_vents_screens", "defensible_space_ft": 20},
+      "confirmed_fields": ["roof_type", "vent_type", "defensible_space_ft"]
+    },
+    {
+      "sample_id": "bozeman_5",
+      "city": "Bozeman",
+      "address": "901 N Rouse Ave, Bozeman, MT 59715",
+      "latitude": 45.6916,
+      "longitude": -111.0384,
+      "expected_region_prefix": "bozeman_",
+      "expected_coverage": true,
+      "attributes": {"roof_type": "wood_shake", "vent_type": "standard_vents", "defensible_space_ft": 10},
+      "confirmed_fields": ["roof_type", "vent_type", "defensible_space_ft"]
+    },
+    {
+      "sample_id": "bend_uncovered_1",
+      "city": "Bend",
+      "address": "62910 O B Riley Rd, Bend, OR 97703",
+      "latitude": 44.0839,
+      "longitude": -121.3153,
+      "expected_region_prefix": null,
+      "expected_coverage": false,
+      "attributes": {},
+      "confirmed_fields": []
+    }
+  ]
+}

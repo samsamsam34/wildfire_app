@@ -21,3 +21,12 @@ def test_frontend_handles_structured_region_not_ready_errors() -> None:
     assert "detail.coverage_available === false" in html
     assert "fetchCoverageForAddress(" in html
     assert "renderUncoveredLocationState(enriched);" in html
+
+
+def test_frontend_does_not_require_manual_region_selection() -> None:
+    html = _frontend_html()
+    assert "/risk/assess" in html
+    assert "fetchCoverageForAddress(" in html
+    assert "resolved_region_id" in html
+    assert 'id="region_id"' not in html
+    assert "outside the currently prepared region set" in html
