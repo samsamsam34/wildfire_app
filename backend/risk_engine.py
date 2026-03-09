@@ -50,6 +50,10 @@ class RiskComputation:
     assumptions: List[str]
     submodel_scores: Dict[str, SubmodelResult]
     weighted_contributions: Dict[str, dict]
+    access_provisional: bool = True
+    access_note: str = (
+        "Access exposure is derived separately from wildfire total scoring and may be limited by available road-network data."
+    )
 
 
 class RiskEngine:
@@ -405,11 +409,20 @@ class RiskEngine:
         environmental_driver = round(sum(weighted_contributions[n]["contribution"] for n in ENVIRONMENT_SUBMODELS) / env_weight, 1)
         structural_driver = round(sum(weighted_contributions[n]["contribution"] for n in STRUCTURE_SUBMODELS) / struct_weight, 1)
 
-        # Provisional placeholder only: no parcel driveway/egress model yet in MVP.
-        access_exposure = round(max(0.0, min(100.0, abs(lat * 2.1 + lon * 1.3) % 100.0)), 1)
-        assumptions.append(
-            "Access exposure remains provisional (synthetic placeholder) and is not a weighted submodel in v1.5.0."
+        access_exposure = context.access_exposure_index
+        access_provisional = True
+        access_note = (
+            "Access exposure is derived from OSM road-network context and remains separate from weighted wildfire scoring."
         )
+        if access_exposure is None:
+            access_exposure = 0.0
+            access_note = (
+                "Access exposure was not computed because road-network evidence was unavailable; metric is advisory only."
+            )
+            assumptions.append("Access exposure unavailable; road-network context missing for this property.")
+        else:
+            access_provisional = False
+            assumptions.append("Access exposure derived from road-network context (not included in wildfire total score).")
 
         return RiskComputation(
             total_score=round(max(0.0, min(100.0, total)), 1),
@@ -417,6 +430,8 @@ class RiskEngine:
             assumptions=sorted(set(assumptions)),
             submodel_scores=submodels,
             weighted_contributions=weighted_contributions,
+            access_provisional=access_provisional,
+            access_note=access_note,
         )
 
     def _group_weight(self, group: set[str]) -> float:

@@ -15,11 +15,18 @@ except Exception:  # pragma: no cover - optional in constrained test runners
 import backend.auth as auth
 import backend.main as app_main
 import backend.data_prep.prepare_region as prep_region_module
+import backend.wildfire_data as wildfire_data_module
 from backend.building_footprints import BuildingFootprintClient, BuildingFootprintResult, compute_structure_rings
 from backend.data_prep.prepare_region import prepare_region_layers
 from backend.database import AssessmentStore
 from backend.mitigation import build_mitigation_plan
 from backend.models import AssumptionsBlock, PropertyAttributes
+from backend.open_data_adapters import (
+    GridMETDrynessObservation,
+    MTBSSummary,
+    OSMAccessSummary,
+    WHPObservation,
+)
 from backend.region_registry import find_region_for_point, list_prepared_regions, load_region_manifest
 from backend.version import LEGACY_MODEL_VERSION, MODEL_VERSION
 from backend.wildfire_data import WildfireContext, WildfireDataClient, compute_environmental_data_completeness
@@ -51,6 +58,13 @@ def _require_region_prep_deps() -> None:
         pytest.skip("rasterio is not installed in this environment")
     if getattr(prep_region_module, "shape", None) is None:
         pytest.skip("shapely is not available for region prep tests")
+
+
+def _require_geo_runtime_deps() -> None:
+    if getattr(wildfire_data_module, "rasterio", None) is None:
+        pytest.skip("rasterio is not installed in this environment")
+    if getattr(wildfire_data_module, "Transformer", None) is None:
+        pytest.skip("pyproj is not installed in this environment")
 
 
 def _ctx(
@@ -482,7 +496,17 @@ def test_confidence_tier_high_and_shareable_when_inputs_are_strong(monkeypatch, 
         "ring_5_30_ft": {"vegetation_density": 25.0},
         "ring_30_100_ft": {"vegetation_density": 30.0},
     }
-    _setup(monkeypatch, tmp_path, _ctx(env=35.0, wildland=35.0, historic=20.0, ring_metrics=ring_metrics))
+    strong_ctx = _ctx(env=35.0, wildland=35.0, historic=20.0, ring_metrics=ring_metrics)
+    strong_ctx.access_exposure_index = 22.0
+    strong_ctx.access_context = {
+        "status": "ok",
+        "source": "OpenStreetMap road network",
+        "distance_to_nearest_road_m": 12.0,
+        "road_segments_within_300m": 7,
+        "intersections_within_300m": 3,
+        "dead_end_indicator": False,
+    }
+    _setup(monkeypatch, tmp_path, strong_ctx)
 
     assessed = _run(
         _payload(
@@ -1421,15 +1445,17 @@ def test_structure_ring_generation_correctness():
     )
     rings, assumptions = compute_structure_rings(footprint)
 
-    assert set(rings.keys()) == {"ring_0_5_ft", "ring_5_30_ft", "ring_30_100_ft"}
+    assert set(rings.keys()) == {"ring_0_5_ft", "ring_5_30_ft", "ring_30_100_ft", "ring_100_300_ft"}
     assert not assumptions
 
     area_0_5 = rings["ring_0_5_ft"].area
     area_5_30 = rings["ring_5_30_ft"].area
     area_30_100 = rings["ring_30_100_ft"].area
+    area_100_300 = rings["ring_100_300_ft"].area
     assert area_0_5 > 0
     assert area_5_30 > area_0_5
     assert area_30_100 > area_5_30
+    assert area_100_300 > area_30_100
 
 
 def test_structure_ring_summary_pipeline(monkeypatch):
@@ -1483,9 +1509,11 @@ def test_structure_ring_summary_pipeline(monkeypatch):
         "ring_0_5_ft",
         "ring_5_30_ft",
         "ring_30_100_ft",
+        "ring_100_300_ft",
         "zone_0_5_ft",
         "zone_5_30_ft",
         "zone_30_100_ft",
+        "zone_100_300_ft",
     }
     assert metrics["ring_0_5_ft"]["vegetation_density"] == 60.0
     assert metrics["zone_0_5_ft"]["vegetation_density"] == 60.0
@@ -1515,6 +1543,133 @@ def test_context_collect_fallback_when_footprint_unavailable(monkeypatch):
     assert ctx.property_level_context.get("footprint_used") is False
     assert ctx.property_level_context.get("footprint_status") in {"not_found", "provider_unavailable"}
     assert "ring_metrics" in ctx.property_level_context
+
+
+def test_whp_adapter_populates_burn_and_hazard_when_direct_layers_missing(monkeypatch):
+    _require_geo_runtime_deps()
+    client = WildfireDataClient()
+    runtime_paths = {k: "" for k in client.base_paths.keys()}
+    runtime_paths["whp"] = "whp.tif"
+
+    monkeypatch.setattr(
+        client,
+        "_resolve_runtime_layer_paths",
+        lambda _lat, _lon: (
+            runtime_paths,
+            {"region_status": "legacy_fallback", "region_id": None, "region_display_name": None, "manifest_path": None},
+            [],
+            [],
+        ),
+    )
+    monkeypatch.setattr(client, "_sample_layer_value", lambda _path, _lat, _lon: (None, "missing"))
+    monkeypatch.setattr(
+        client.whp_adapter,
+        "sample",
+        lambda **_kwargs: WHPObservation(
+            status="ok",
+            raw_value=3.5,
+            hazard_class="high",
+            burn_probability_index=78.0,
+            hazard_severity_index=74.0,
+        ),
+    )
+
+    ctx = client.collect_context(39.7392, -104.9903)
+    assert ctx.burn_probability_index == 78.0
+    assert ctx.hazard_severity_index == 74.0
+    assert ctx.environmental_layer_status["burn_probability"] == "ok"
+    assert ctx.environmental_layer_status["hazard"] == "ok"
+    assert ctx.hazard_context.get("status") == "observed"
+    assert "WHP" in str(ctx.hazard_context.get("source"))
+
+
+def test_gridmet_dryness_populates_moisture_index(monkeypatch):
+    _require_geo_runtime_deps()
+    client = WildfireDataClient()
+    runtime_paths = {k: "" for k in client.base_paths.keys()}
+    runtime_paths["gridmet_dryness"] = "gridmet.tif"
+
+    monkeypatch.setattr(
+        client,
+        "_resolve_runtime_layer_paths",
+        lambda _lat, _lon: (
+            runtime_paths,
+            {"region_status": "legacy_fallback", "region_id": None, "region_display_name": None, "manifest_path": None},
+            [],
+            [],
+        ),
+    )
+    monkeypatch.setattr(client, "_sample_layer_value", lambda _path, _lat, _lon: (None, "missing"))
+    monkeypatch.setattr(
+        client.gridmet_adapter,
+        "sample_dryness",
+        lambda **_kwargs: GridMETDrynessObservation(
+            status="ok",
+            raw_value=62.5,
+            dryness_index=66.0,
+        ),
+    )
+
+    ctx = client.collect_context(39.7392, -104.9903)
+    assert ctx.moisture_index == 66.0
+    assert ctx.moisture_context.get("status") == "observed"
+    assert "gridMET" in str(ctx.moisture_context.get("source"))
+    assert not any("Moisture/fuel dryness context unavailable" in note for note in ctx.assumptions)
+
+
+def test_mtbs_summary_populates_historical_fire_context(monkeypatch):
+    _require_geo_runtime_deps()
+    client = WildfireDataClient()
+    runtime_paths = {k: "" for k in client.base_paths.keys()}
+    runtime_paths["perimeters"] = "mtbs_perimeters.geojson"
+    runtime_paths["mtbs_severity"] = "mtbs_severity.tif"
+
+    monkeypatch.setattr(
+        client,
+        "_resolve_runtime_layer_paths",
+        lambda _lat, _lon: (
+            runtime_paths,
+            {"region_status": "legacy_fallback", "region_id": None, "region_display_name": None, "manifest_path": None},
+            [],
+            [],
+        ),
+    )
+    monkeypatch.setattr(client, "_sample_layer_value", lambda _path, _lat, _lon: (None, "missing"))
+    monkeypatch.setattr(
+        client.mtbs_adapter,
+        "summarize",
+        lambda **_kwargs: MTBSSummary(
+            status="ok",
+            nearest_perimeter_km=1.3,
+            intersects_prior_burn=False,
+            nearby_high_severity=True,
+            fire_history_index=57.0,
+        ),
+    )
+
+    ctx = client.collect_context(39.7392, -104.9903)
+    assert ctx.historic_fire_index == 57.0
+    assert ctx.historical_fire_context.get("status") == "ok"
+    assert ctx.environmental_layer_status["fire_history"] == "ok"
+
+
+def test_osm_access_exposure_replaces_synthetic_placeholder(monkeypatch):
+    context = _ctx(env=58.0, wildland=62.0, historic=54.0)
+    context.access_exposure_index = 41.0
+    context.access_context = {
+        "status": "ok",
+        "source": "OpenStreetMap road network",
+        "distance_to_nearest_road_m": 21.4,
+        "road_segments_within_300m": 8,
+        "intersections_within_300m": 4,
+        "dead_end_indicator": False,
+    }
+    attrs = PropertyAttributes(roof_type="class a", vent_type="ember-resistant", defensible_space_ft=25)
+    risk = app_main.risk_engine.score(attrs, 39.7392, -104.9903, context)
+
+    assert risk.drivers.access_exposure == 41.0
+    assert risk.access_provisional is False
+    assert "synthetic placeholder" not in " ".join(risk.assumptions).lower()
 
 
 def _make_region_sources(tmp_path: Path) -> dict[str, str]:
@@ -2007,7 +2162,8 @@ def test_scoring_notes_include_missing_layers_and_provisional_access(monkeypatch
     assert "burn probability layer" in notes
     assert "fuel layer" in notes
     assert "building footprint not found" in notes
-    assert "access risk is provisional" in notes
+    assert "access exposure" in notes
+    assert "advisory" in notes
 
 
 def test_coverage_scores_and_provenance_reflect_missing_vs_user_inputs(monkeypatch, tmp_path):
@@ -2054,6 +2210,26 @@ def test_coverage_scores_and_provenance_reflect_missing_vs_user_inputs(monkeypat
     assert burn_meta["freshness_status"] in {"current", "aging", "stale", "unknown"}
     assert isinstance(burn_meta["used_in_scoring"], bool)
     assert 0.0 <= float(burn_meta["confidence_weight"]) <= 1.0
+
+
+def test_access_provenance_marks_observed_open_data_when_available(monkeypatch, tmp_path):
+    context = _ctx(env=54.0, wildland=58.0, historic=49.0)
+    context.access_exposure_index = 36.0
+    context.access_context = {
+        "status": "ok",
+        "source": "OpenStreetMap road network",
+        "distance_to_nearest_road_m": 18.2,
+        "road_segments_within_300m": 6,
+        "intersections_within_300m": 3,
+        "dead_end_indicator": False,
+    }
+    _setup(monkeypatch, tmp_path, context)
+    assessed = _run(_payload("Access Provenance Way", {"defensible_space_ft": 18}))
+
+    access_meta = assessed["input_source_metadata"]["access_exposure"]
+    assert access_meta["source_type"] == "observed"
+    assert "OpenStreetMap" in access_meta["source_name"]
+    assert access_meta["provider_status"] == "ok"
 
 
 def test_confidence_reduces_when_ring_metrics_unavailable(monkeypatch, tmp_path):

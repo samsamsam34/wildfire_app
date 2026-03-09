@@ -959,7 +959,7 @@ class AssessmentStore:
                 "access_risk": drivers.get("access_exposure", 0.0),
                 "access_risk_provisional": True,
                 "access_included_in_total": False,
-                "access_risk_note": "Access exposure is provisional and not included in total score until real parcel/egress inputs are integrated.",
+                "access_risk_note": "Access exposure is advisory and excluded from weighted wildfire scoring. When available, it is derived from open road-network context.",
             }
 
         payload.setdefault("submodel_scores", {})
@@ -1002,7 +1002,7 @@ class AssessmentStore:
         fb.setdefault("access_included_in_total", False)
         fb.setdefault(
             "access_risk_note",
-            "Access exposure is provisional and not included in total score until real parcel/egress inputs are integrated.",
+            "Access exposure is advisory and excluded from weighted wildfire scoring. When available, it is derived from open road-network context.",
         )
         payload["factor_breakdown"] = fb
 

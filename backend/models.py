@@ -128,8 +128,8 @@ class FactorBreakdown(BaseModel):
     access_risk_provisional: bool = True
     access_included_in_total: bool = False
     access_risk_note: str = (
-        "Access exposure is provisional and not included in total score "
-        "until real parcel/egress inputs are integrated."
+        "Access exposure is advisory and excluded from weighted wildfire scoring. "
+        "When available, it is derived from open road-network context."
     )
 
 

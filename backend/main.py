@@ -70,6 +70,8 @@ from backend.models import (
     SimulationRequest,
     SimulationResult,
     SimulationScenarioItem,
+    SourceType,
+    ProviderStatus,
     ScoreFamilyInputQuality,
     ScoreEligibility,
     ScoreEvidenceFactor,
@@ -108,7 +110,7 @@ geocoder = Geocoder()
 wildfire_data = WildfireDataClient()
 store = AssessmentStore()
 
-ACCESS_PROVISIONAL_NOTE = "Access risk is provisional and not included in total scoring."
+ACCESS_PROVISIONAL_NOTE = "Access exposure is advisory and excluded from weighted wildfire scoring."
 
 SUBMODEL_ALIASES = {
     "ember_exposure": "ember_exposure_risk",
@@ -1074,6 +1076,7 @@ def _build_property_findings(property_level_context: dict[str, Any]) -> list[str
     ring_0_5 = _density_from_ring(rings.get("ring_0_5_ft") or rings.get("zone_0_5_ft"))
     ring_5_30 = _density_from_ring(rings.get("ring_5_30_ft") or rings.get("zone_5_30_ft"))
     ring_30_100 = _density_from_ring(rings.get("ring_30_100_ft") or rings.get("zone_30_100_ft"))
+    ring_100_300 = _density_from_ring(rings.get("ring_100_300_ft") or rings.get("zone_100_300_ft"))
     findings: list[str] = []
 
     if ring_0_5 is not None and ring_0_5 >= 60:
@@ -1088,6 +1091,8 @@ def _build_property_findings(property_level_context: dict[str, Any]) -> list[str
 
     if ring_30_100 is not None and ring_30_100 >= 65:
         findings.append("Vegetation and fuels are elevated in the 30-100 foot zone around the home.")
+    if ring_100_300 is not None and ring_100_300 >= 70:
+        findings.append("Surrounding fuels remain elevated in the wider 100-300 foot zone.")
 
     if ring_0_5 is not None and ring_5_30 is not None and (ring_5_30 - ring_0_5) >= 20:
         findings.append("Defensible space appears stronger very close to the home than farther out.")
@@ -1316,6 +1321,25 @@ def _build_data_provenance(
         "historic_fire_distance": "fire_history",
         "wildland_distance": "fuel",
     }
+    hazard_context = getattr(context, "hazard_context", {}) or {}
+    if str(hazard_context.get("status") or "").lower() == "observed":
+        source_name = str(hazard_context.get("source") or "USFS Wildfire Hazard Potential (WHP)")
+        whp_version = os.getenv("WF_LAYER_WHP_VERSION")
+        whp_date = os.getenv("WF_LAYER_WHP_DATE")
+        env_dataset_meta["burn_probability"] = (
+            source_name,
+            "environmental_raster",
+            whp_version,
+            whp_date,
+            270.0,
+        )
+        env_dataset_meta["wildfire_hazard"] = (
+            source_name,
+            "environmental_raster",
+            whp_version,
+            whp_date,
+            270.0,
+        )
 
     env_sources: dict[str, InputSourceMetadata] = {}
     for field, value in env_value_getters.items():
@@ -1404,7 +1428,7 @@ def _build_data_provenance(
     )
 
     rings = property_level_context.get("ring_metrics") if isinstance(property_level_context, dict) else None
-    for zone_key in ["zone_0_5_ft", "zone_5_30_ft", "zone_30_100_ft"]:
+    for zone_key in ["zone_0_5_ft", "zone_5_30_ft", "zone_30_100_ft", "zone_100_300_ft"]:
         zone_data = rings.get(zone_key) if isinstance(rings, dict) else None
         density = zone_data.get("vegetation_density") if isinstance(zone_data, dict) else None
         source_type = "footprint_derived" if density is not None else "missing"
@@ -1418,19 +1442,46 @@ def _build_data_provenance(
             dataset_version=os.getenv("WF_BUILDING_FOOTPRINT_VERSION"),
             observed_at=os.getenv("WF_BUILDING_FOOTPRINT_DATE") or (now_iso if density is not None else None),
             used_in_scoring=True,
-            spatial_resolution_m={"zone_0_5_ft": 1.5, "zone_5_30_ft": 9.1, "zone_30_100_ft": 30.5}[zone_key],
+            spatial_resolution_m={
+                "zone_0_5_ft": 1.5,
+                "zone_5_30_ft": 9.1,
+                "zone_30_100_ft": 30.5,
+                "zone_100_300_ft": 91.4,
+            }[zone_key],
             details=details,
         )
 
+    access_context = getattr(context, "access_context", {}) or {}
+    access_status = str(access_context.get("status") or "missing")
+    access_source_type: SourceType = "missing"
+    access_provider_status: ProviderStatus = "missing"
+    access_source_name = str(access_context.get("source") or "osm_road_network")
+    access_details = "Road-network access context unavailable."
+    access_observed_at: str | None = None
+    if access_status == "ok" and getattr(context, "access_exposure_index", None) is not None:
+        access_source_type = "observed"
+        access_provider_status = "ok"
+        access_observed_at = now_iso
+        access_details = "Observed from OSM road-network features near the property."
+    elif access_status == "partial":
+        access_source_type = "heuristic"
+        access_provider_status = "ok"
+        access_observed_at = now_iso
+        access_details = "Partially observed road-network evidence; treated as advisory."
+    elif access_status == "error":
+        access_source_type = "missing"
+        access_provider_status = "error"
+        access_details = "Road-network source failed during access context extraction."
+
     property_sources["access_exposure"] = _metadata(
         field_name="access_exposure",
-        source_type="heuristic",
-        source_name="synthetic_access_placeholder",
-        provider_status="ok",
-        source_class="heuristic",
-        observed_at=None,
+        source_type=access_source_type,
+        source_name=access_source_name,
+        provider_status=access_provider_status,
+        source_class="observed" if access_source_type == "observed" else "missing",
+        observed_at=access_observed_at,
         used_in_scoring=False,
-        details="Provisional synthetic placeholder; not parcel-verified and not included in wildfire total.",
+        details=access_details,
     )
 
     merged = {**env_sources, **property_sources}
@@ -1920,6 +1971,9 @@ def _build_factor_breakdown(submodels: dict[str, SubmodelScore], risk: RiskCompu
         environmental_risk=risk.drivers.environmental,
         structural_risk=risk.drivers.structural,
         access_risk=risk.drivers.access_exposure,
+        access_risk_provisional=risk.access_provisional,
+        access_included_in_total=False,
+        access_risk_note=risk.access_note,
     )
 
 
@@ -2263,6 +2317,16 @@ def _run_assessment(
     if data_provenance.heuristic_inputs_used:
         scoring_notes.append(
             "Heuristic inputs used: " + ", ".join(data_provenance.heuristic_inputs_used[:6]) + "."
+        )
+    access_context = getattr(context, "access_context", {}) or {}
+    access_status = str(access_context.get("status") or "missing")
+    if access_status == "ok":
+        scoring_notes.append(
+            "Access exposure derived from observable OSM road-network features (advisory and excluded from wildfire total weighting)."
+        )
+    else:
+        scoring_notes.append(
+            "Access exposure unavailable from open road-network context; advisory access metric could not be computed."
         )
     if data_provenance.summary.stale_data_share > 0:
         scoring_notes.append(

@@ -9,6 +9,12 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from backend.building_footprints import BuildingFootprintClient, compute_structure_rings
+from backend.open_data_adapters import (
+    GridMETAdapter,
+    MTBSAdapter,
+    OSMRoadAdapter,
+    WHPAdapter,
+)
 from backend.region_registry import (
     find_region_for_point,
     resolve_region_file,
@@ -43,6 +49,7 @@ class WildfireContext:
     historic_fire_index: Optional[float]
     burn_probability_index: Optional[float]
     hazard_severity_index: Optional[float]
+    access_exposure_index: Optional[float] = None
     burn_probability: Optional[float] = None
     wildfire_hazard: Optional[float] = None
     slope: Optional[float] = None
@@ -56,6 +63,10 @@ class WildfireContext:
     structure_ring_metrics: Dict[str, Dict[str, float | None]] = field(default_factory=dict)
     property_level_context: Dict[str, Any] = field(default_factory=dict)
     region_context: Dict[str, Any] = field(default_factory=dict)
+    hazard_context: Dict[str, Any] = field(default_factory=dict)
+    moisture_context: Dict[str, Any] = field(default_factory=dict)
+    historical_fire_context: Dict[str, Any] = field(default_factory=dict)
+    access_context: Dict[str, Any] = field(default_factory=dict)
 
 
 def compute_environmental_data_completeness(context: WildfireContext) -> float:
@@ -94,14 +105,19 @@ class WildfireDataClient:
         self.base_paths = {
             "burn_prob": os.getenv("WF_LAYER_BURN_PROB_TIF", ""),
             "hazard": os.getenv("WF_LAYER_HAZARD_SEVERITY_TIF", ""),
+            "whp": os.getenv("WF_LAYER_WHP_TIF", ""),
             "slope": os.getenv("WF_LAYER_SLOPE_TIF", ""),
             "aspect": os.getenv("WF_LAYER_ASPECT_TIF", ""),
             "dem": os.getenv("WF_LAYER_DEM_TIF", ""),
             "fuel": os.getenv("WF_LAYER_FUEL_TIF", ""),
             "canopy": os.getenv("WF_LAYER_CANOPY_TIF", ""),
             "moisture": os.getenv("WF_LAYER_MOISTURE_TIF", ""),
+            "gridmet_dryness": os.getenv("WF_LAYER_GRIDMET_DRYNESS_TIF", ""),
             "perimeters": os.getenv("WF_LAYER_FIRE_PERIMETERS_GEOJSON", ""),
+            "mtbs_severity": os.getenv("WF_LAYER_MTBS_SEVERITY_TIF", ""),
             "footprints": os.getenv("WF_LAYER_BUILDING_FOOTPRINTS_GEOJSON", ""),
+            "fema_structures": os.getenv("WF_LAYER_FEMA_STRUCTURES_GEOJSON", ""),
+            "roads": os.getenv("WF_LAYER_OSM_ROADS_GEOJSON", ""),
         }
         # Active runtime paths for the most recent collect_context() call.
         self.paths = dict(self.base_paths)
@@ -117,6 +133,10 @@ class WildfireDataClient:
             "no",
         }
         self.footprints = BuildingFootprintClient()
+        self.whp_adapter = WHPAdapter()
+        self.gridmet_adapter = GridMETAdapter()
+        self.mtbs_adapter = MTBSAdapter()
+        self.osm_adapter = OSMRoadAdapter()
 
     @staticmethod
     def _to_index(value: float, src_min: float, src_max: float) -> float:
@@ -146,6 +166,9 @@ class WildfireDataClient:
             configured_paths.get("canopy"),
             configured_paths.get("perimeters"),
             configured_paths.get("footprints"),
+            configured_paths.get("whp"),
+            configured_paths.get("gridmet_dryness"),
+            configured_paths.get("roads"),
         ]
         return any(self._file_exists(path or "") for path in configured)
 
@@ -182,14 +205,19 @@ class WildfireDataClient:
                 layer_key_map = {
                     "burn_prob": ("burn_probability", "burn_prob"),
                     "hazard": ("wildfire_hazard", "hazard"),
+                    "whp": ("whp", "wildfire_hazard_potential"),
                     "slope": ("slope",),
                     "aspect": ("aspect",),
                     "dem": ("dem",),
                     "fuel": ("fuel",),
                     "canopy": ("canopy",),
                     "moisture": ("moisture",),
+                    "gridmet_dryness": ("gridmet_dryness", "gridmet"),
                     "perimeters": ("fire_perimeters", "perimeters"),
+                    "mtbs_severity": ("mtbs_severity", "burn_severity"),
                     "footprints": ("building_footprints", "footprints"),
+                    "fema_structures": ("fema_structures",),
+                    "roads": ("roads", "osm_roads", "road_network"),
                 }
                 for runtime_key, manifest_keys in layer_key_map.items():
                     resolved: str | None = None
@@ -329,12 +357,14 @@ class WildfireDataClient:
         canopy_path: str,
         fuel_path: str,
         footprint_path: str | None = None,
+        fallback_footprint_path: str | None = None,
     ) -> tuple[dict[str, Any], list[str], list[str]]:
         assumptions: list[str] = []
         sources: list[str] = []
         footprint_client = self.footprints
-        if footprint_path and footprint_path != getattr(self.footprints, "path", None):
-            footprint_client = BuildingFootprintClient(path=footprint_path)
+        source_paths = [p for p in [footprint_path, fallback_footprint_path] if p]
+        if source_paths:
+            footprint_client = BuildingFootprintClient(path=source_paths[0], extra_paths=source_paths[1:])
 
         try:
             result = footprint_client.get_building_footprint(lat, lon)
@@ -349,6 +379,8 @@ class WildfireDataClient:
                 "footprint_confidence": 0.0,
                 "fallback_mode": "point_based",
                 "ring_metrics": None,
+                "nearest_vegetation_distance_ft": None,
+                "neighboring_structure_metrics": None,
             }, assumptions, sources
 
         assumptions.extend(result.assumptions)
@@ -367,6 +399,8 @@ class WildfireDataClient:
                 "footprint_confidence": result.confidence,
                 "fallback_mode": "point_based",
                 "ring_metrics": None,
+                "nearest_vegetation_distance_ft": None,
+                "neighboring_structure_metrics": None,
             }, assumptions, sources
 
         sources.append("Building footprint source")
@@ -378,8 +412,9 @@ class WildfireDataClient:
             "ring_0_5_ft": "zone_0_5_ft",
             "ring_5_30_ft": "zone_5_30_ft",
             "ring_30_100_ft": "zone_30_100_ft",
+            "ring_100_300_ft": "zone_100_300_ft",
         }
-        for ring_key in ("ring_0_5_ft", "ring_5_30_ft", "ring_30_100_ft"):
+        for ring_key in ("ring_0_5_ft", "ring_5_30_ft", "ring_30_100_ft", "ring_100_300_ft"):
             ring_geom = rings.get(ring_key)
             if ring_geom is None:
                 metrics = {
@@ -418,6 +453,26 @@ class WildfireDataClient:
             ring_metrics[ring_key] = metrics
             ring_metrics[zone_aliases[ring_key]] = dict(metrics)
 
+        nearest_vegetation_distance_ft: float | None = None
+        for ring_key, approx_ft in [
+            ("ring_0_5_ft", 3.0),
+            ("ring_5_30_ft", 18.0),
+            ("ring_30_100_ft", 65.0),
+            ("ring_100_300_ft", 180.0),
+        ]:
+            density = (ring_metrics.get(ring_key) or {}).get("vegetation_density")
+            if density is not None and float(density) >= 40.0:
+                nearest_vegetation_distance_ft = approx_ft
+                break
+
+        neighbor_metrics = footprint_client.get_neighbor_structure_metrics(
+            lat=lat,
+            lon=lon,
+            subject_footprint=result.footprint,
+            source_path=result.source,
+            radius_m=300.0 * 0.3048,
+        )
+
         if ring_metrics:
             sources.append("Structure ring vegetation summaries")
 
@@ -429,6 +484,8 @@ class WildfireDataClient:
             "footprint_confidence": result.confidence,
             "fallback_mode": "footprint" if ring_metrics else "point_based",
             "ring_metrics": ring_metrics,
+            "nearest_vegetation_distance_ft": nearest_vegetation_distance_ft,
+            "neighboring_structure_metrics": neighbor_metrics,
             "footprint_centroid": {
                 "latitude": result.centroid[0] if result.centroid else None,
                 "longitude": result.centroid[1] if result.centroid else None,
@@ -628,6 +685,10 @@ class WildfireDataClient:
             "footprint_status": "not_found",
             "fallback_mode": "point_based",
             "ring_metrics": None,
+            "hazard_context": {},
+            "moisture_context": {},
+            "historical_fire_context": {},
+            "access_context": {},
             "region_status": region_context.get("region_status"),
             "region_id": region_context.get("region_id"),
             "region_display_name": region_context.get("region_display_name"),
@@ -648,6 +709,7 @@ class WildfireDataClient:
                 historic_fire_index=None,
                 burn_probability_index=None,
                 hazard_severity_index=None,
+                access_exposure_index=None,
                 burn_probability=None,
                 wildfire_hazard=None,
                 slope=None,
@@ -661,6 +723,10 @@ class WildfireDataClient:
                 structure_ring_metrics=structure_ring_metrics,
                 property_level_context=property_level_context,
                 region_context=region_context,
+                hazard_context={},
+                moisture_context={},
+                historical_fire_context={},
+                access_context={},
             )
 
         ring_context, ring_assumptions, ring_sources = self._compute_structure_ring_metrics(
@@ -669,6 +735,7 @@ class WildfireDataClient:
             canopy_path=runtime_paths.get("canopy", ""),
             fuel_path=runtime_paths.get("fuel", ""),
             footprint_path=runtime_paths.get("footprints"),
+            fallback_footprint_path=runtime_paths.get("fema_structures"),
         )
         property_level_context = ring_context
         property_level_context.update(
@@ -684,19 +751,52 @@ class WildfireDataClient:
         sources.extend(ring_sources)
 
         burn_prob, burn_status = self._sample_layer_value(runtime_paths["burn_prob"], lat, lon)
+        hazard, hazard_status = self._sample_layer_value(runtime_paths["hazard"], lat, lon)
+
+        hazard_context: dict[str, Any] = {
+            "source": None,
+            "status": "missing",
+            "raw_value": None,
+            "hazard_class": None,
+        }
+        if burn_prob is None or hazard is None:
+            whp_obs = self.whp_adapter.sample(lat=lat, lon=lon, whp_path=runtime_paths.get("whp"))
+            if whp_obs.status == "ok":
+                if burn_prob is None:
+                    burn_prob = whp_obs.raw_value
+                    burn_status = "ok"
+                if hazard is None:
+                    hazard = whp_obs.raw_value
+                    hazard_status = "ok"
+                hazard_context = {
+                    "source": whp_obs.source_dataset,
+                    "status": "observed",
+                    "raw_value": whp_obs.raw_value,
+                    "hazard_class": whp_obs.hazard_class,
+                    "burn_probability_index": whp_obs.burn_probability_index,
+                    "hazard_severity_index": whp_obs.hazard_severity_index,
+                    "notes": whp_obs.notes,
+                }
+                sources.append("USFS WHP raster")
+            else:
+                assumptions.extend(whp_obs.notes)
+
         environmental_layer_status["burn_probability"] = burn_status
         if burn_prob is None:
             assumptions.append("Burn probability layer unavailable at property location.")
             burn_probability_index = None
+        elif hazard_context.get("burn_probability_index") is not None:
+            burn_probability_index = float(hazard_context["burn_probability_index"])
         else:
             burn_probability_index = self._to_index(burn_prob, 0.0, 1.0 if burn_prob <= 1.0 else 100.0)
             sources.append("Burn probability raster")
 
-        hazard, hazard_status = self._sample_layer_value(runtime_paths["hazard"], lat, lon)
         environmental_layer_status["hazard"] = hazard_status
         if hazard is None:
             assumptions.append("Wildfire hazard severity layer unavailable at property location.")
             hazard_severity_index = None
+        elif hazard_context.get("hazard_severity_index") is not None:
+            hazard_severity_index = float(hazard_context["hazard_severity_index"])
         else:
             hazard_severity_index = self._to_index(hazard, 0.0, 5.0 if hazard <= 5.0 else 100.0)
             sources.append("Wildfire hazard severity raster")
@@ -765,12 +865,43 @@ class WildfireDataClient:
             environmental_layer_status["canopy"] = "missing" if not self._file_exists(canopy_path) else "error"
             assumptions.append("Canopy density unavailable within 100m neighborhood.")
 
+        moisture_context: dict[str, Any] = {
+            "source": None,
+            "status": "missing",
+            "raw_value": None,
+            "dryness_index": None,
+        }
         moisture, _moisture_status = self._sample_layer_value(runtime_paths["moisture"], lat, lon)
         if moisture is None:
-            moisture_index = None
-            assumptions.append("Moisture/fuel dryness raster missing; dryness could not be directly measured.")
+            gridmet_obs = self.gridmet_adapter.sample_dryness(
+                lat=lat,
+                lon=lon,
+                dryness_raster_path=runtime_paths.get("gridmet_dryness"),
+            )
+            if gridmet_obs.status == "ok":
+                moisture = gridmet_obs.raw_value
+                moisture_index = gridmet_obs.dryness_index
+                moisture_context = {
+                    "source": gridmet_obs.source_dataset,
+                    "status": "observed",
+                    "raw_value": gridmet_obs.raw_value,
+                    "dryness_index": gridmet_obs.dryness_index,
+                    "rolling_window_days": gridmet_obs.rolling_window_days,
+                    "notes": gridmet_obs.notes,
+                }
+                sources.append("gridMET dryness proxy")
+            else:
+                moisture_index = None
+                assumptions.extend(gridmet_obs.notes)
+                assumptions.append("Moisture/fuel dryness context unavailable from configured sources.")
         else:
             moisture_index = self._to_index(moisture, 0.0, 100.0)
+            moisture_context = {
+                "source": "Moisture/fuel dryness raster",
+                "status": "observed",
+                "raw_value": moisture,
+                "dryness_index": moisture_index,
+            }
             sources.append("Moisture/fuel dryness raster")
 
         wildland_distance, wildland_distance_index = self._wildland_distance_metrics(lat, lon, fuel_path, canopy_path)
@@ -779,14 +910,64 @@ class WildfireDataClient:
         else:
             assumptions.append("Fuel/canopy rasters missing; wildland distance unavailable.")
 
-        historic_fire_distance, historic_fire_index, fire_history_status = self._historical_fire_metrics(
-            lat, lon, runtime_paths["perimeters"]
+        mtbs_summary = self.mtbs_adapter.summarize(
+            lat=lat,
+            lon=lon,
+            perimeter_path=runtime_paths.get("perimeters"),
+            burn_severity_path=runtime_paths.get("mtbs_severity"),
         )
-        environmental_layer_status["fire_history"] = fire_history_status
-        if fire_history_status == "ok":
-            sources.append("Historical fire perimeter recurrence")
+        historical_fire_context: dict[str, Any] = {
+            "source": mtbs_summary.source_dataset,
+            "status": mtbs_summary.status,
+            "nearest_perimeter_km": mtbs_summary.nearest_perimeter_km,
+            "intersects_prior_burn": mtbs_summary.intersects_prior_burn,
+            "nearby_high_severity": mtbs_summary.nearby_high_severity,
+            "notes": mtbs_summary.notes,
+        }
+        if mtbs_summary.status == "ok":
+            historic_fire_distance = mtbs_summary.nearest_perimeter_km
+            historic_fire_index = mtbs_summary.fire_history_index
+            fire_history_status = "ok"
+            sources.append("MTBS historical fire context")
         else:
-            assumptions.append("Historical perimeter layer unavailable; recurrence unavailable.")
+            historic_fire_distance, historic_fire_index, fire_history_status = self._historical_fire_metrics(
+                lat, lon, runtime_paths["perimeters"]
+            )
+            if fire_history_status == "ok":
+                sources.append("Historical fire perimeter recurrence")
+            else:
+                assumptions.extend(mtbs_summary.notes)
+                assumptions.append("Historical perimeter layer unavailable; recurrence unavailable.")
+        environmental_layer_status["fire_history"] = fire_history_status
+
+        access_summary = self.osm_adapter.summarize(
+            lat=lat,
+            lon=lon,
+            roads_path=runtime_paths.get("roads"),
+        )
+        access_context: dict[str, Any] = {
+            "source": access_summary.source_dataset,
+            "status": access_summary.status,
+            "distance_to_nearest_road_m": access_summary.distance_to_nearest_road_m,
+            "road_segments_within_300m": access_summary.road_segments_within_300m,
+            "intersections_within_300m": access_summary.intersections_within_300m,
+            "dead_end_indicator": access_summary.dead_end_indicator,
+            "notes": access_summary.notes,
+        }
+        access_exposure_index = access_summary.access_exposure_index
+        if access_summary.status == "ok" and access_exposure_index is not None:
+            sources.append("OSM road-network access metrics")
+        else:
+            assumptions.extend(access_summary.notes)
+
+        property_level_context.update(
+            {
+                "hazard_context": hazard_context,
+                "moisture_context": moisture_context,
+                "historical_fire_context": historical_fire_context,
+                "access_context": access_context,
+            }
+        )
 
         weighted_terms = [
             (0.20, burn_probability_index),
@@ -817,6 +998,7 @@ class WildfireDataClient:
             historic_fire_index=None if historic_fire_index is None else round(historic_fire_index, 1),
             burn_probability_index=None if burn_probability_index is None else round(burn_probability_index, 1),
             hazard_severity_index=None if hazard_severity_index is None else round(hazard_severity_index, 1),
+            access_exposure_index=None if access_exposure_index is None else round(access_exposure_index, 1),
             burn_probability=burn_prob,
             wildfire_hazard=hazard,
             slope=slope,
@@ -830,4 +1012,8 @@ class WildfireDataClient:
             structure_ring_metrics=structure_ring_metrics,
             property_level_context=property_level_context,
             region_context=region_context,
+            hazard_context=hazard_context,
+            moisture_context=moisture_context,
+            historical_fire_context=historical_fire_context,
+            access_context=access_context,
         )

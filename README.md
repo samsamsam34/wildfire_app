@@ -22,7 +22,12 @@ Runtime scoring reads prepared local data. Large GIS download/prep is handled of
 - Runs factorized wildfire scoring across environmental and structure-focused submodels.
 - Computes insurance readiness through a separate rules path with blockers and penalties.
 - Supports homeowner inputs (`roof_type`, `vent_type`, `defensible_space_ft`, etc.), reassessment, and what-if simulation.
-- Uses optional building-footprint ring metrics (`0-5 ft`, `5-30 ft`, `30-100 ft`) when available.
+- Uses structure-based ring metrics (`0-5 ft`, `5-30 ft`, `30-100 ft`, `100-300 ft`) when footprint data is available.
+- Enriches context from open datasets when configured:
+  - USFS WHP for hazard/burn context
+  - MTBS perimeter/severity context for historical fire exposure
+  - gridMET-derived dryness proxy
+  - OpenStreetMap road-network features for access exposure
 - Returns trust-oriented outputs:
   - score availability flags (distinguish “not scored” from real low scores)
   - confidence tier and use restriction
@@ -87,6 +92,12 @@ Common runtime settings:
 - `WF_REGION_DATA_DIR` (prepared region root, default `data/regions`)
 - `WF_USE_PREPARED_REGIONS` (default true)
 - `WF_ALLOW_LEGACY_LAYER_FALLBACK` (optional direct-layer fallback mode)
+- Optional open-data runtime sources:
+  - `WF_LAYER_WHP_TIF`
+  - `WF_LAYER_MTBS_SEVERITY_TIF`
+  - `WF_LAYER_GRIDMET_DRYNESS_TIF`
+  - `WF_LAYER_OSM_ROADS_GEOJSON`
+  - `WF_LAYER_FEMA_STRUCTURES_GEOJSON`
 - `WILDFIRE_APP_CACHE_ROOT`, `WILDFIRE_APP_DATA_ROOT`, `WILDFIRE_APP_TMP_ROOT` (offline prep script paths)
 
 Legacy direct-layer paths are still supported via `WF_LAYER_*` env vars (`DEM`, `SLOPE`, `FUEL`, `CANOPY`, fire perimeters, building footprints, etc.), but prepared-region runtime is the primary path.
@@ -112,6 +123,11 @@ data/regions/<region_id>/
   canopy.tif
   fire_perimeters.geojson
   building_footprints.geojson
+  # optional enrichment layers
+  whp.tif
+  mtbs_severity.tif
+  gridmet_dryness.tif
+  roads.geojson
   manifest.json
 ```
 
@@ -136,7 +152,7 @@ Trust/transparency behavior:
 - confidence/provenance fields explain missing, inferred, stale, or provisional inputs
 - each score family can be audited through factor-level ledger entries (inputs, weights, contributions, evidence status, source references)
 - evidence quality summary exposes confidence penalties and insurer-facing interpretation guardrails
-- access exposure is explicitly provisional and not parcel-verified
+- access exposure uses observable OSM road-network features when available and remains advisory (not part of weighted wildfire total)
 
 ## Testing
 
@@ -157,4 +173,4 @@ Main coverage areas:
 
 - Scoring and readiness are deterministic heuristics; this is not a carrier-approved underwriting model.
 - Report export is JSON/HTML oriented (no built-in PDF generator).
-- Building-footprint/ring enrichment depends on local footprint data availability.
+- Open-data enrichment depends on local prepared layers and configured sources; missing datasets still trigger partial/fallback paths.
