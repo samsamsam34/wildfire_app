@@ -20,8 +20,8 @@ from backend.open_data_adapters import (
     OSMRoadAdapter,
     WHPAdapter,
 )
+from backend.data_prep.region_lookup import find_region_for_point as lookup_region_for_point
 from backend.region_registry import (
-    find_region_for_point,
     resolve_region_file,
     validate_region_files,
 )
@@ -197,7 +197,14 @@ class WildfireDataClient:
 
         region_manifest: dict[str, Any] | None = None
         if self.use_prepared_regions:
-            region_manifest = find_region_for_point(lat, lon, base_dir=self.region_data_dir)
+            lookup = lookup_region_for_point(lat=lat, lon=lon, regions_root=self.region_data_dir)
+            if lookup.get("covered"):
+                manifest = lookup.get("manifest")
+                if isinstance(manifest, dict):
+                    region_manifest = manifest
+            else:
+                diagnostics = list(lookup.get("diagnostics") or [])
+                assumptions.extend(diagnostics[:3])
 
         if region_manifest:
             valid, missing = validate_region_files(region_manifest, base_dir=self.region_data_dir)

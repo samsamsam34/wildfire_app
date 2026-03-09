@@ -480,11 +480,23 @@
         }
 
         const res = await fetch(`${apiBase}${path}`, opts);
-        if (!res.ok) throw new Error(`API ${res.status}: ${await res.text()}`);
-
         const contentType = res.headers.get("content-type") || "";
-        if (contentType.includes("application/json")) return res.json();
-        return res.text();
+        const isJson = contentType.includes("application/json");
+        const payload = isJson ? await res.json() : await res.text();
+
+        if (!res.ok) {
+          const detail = (payload && typeof payload === "object" && "detail" in payload) ? payload.detail : payload;
+          const message = (detail && typeof detail === "object" && detail.message)
+            ? detail.message
+            : (typeof detail === "string" ? detail : `API ${res.status}`);
+          const err = new Error(message);
+          err.status = res.status;
+          err.payload = payload;
+          err.detail = detail;
+          throw err;
+        }
+
+        return payload;
       }
 
       function riskBand(score) {
@@ -578,6 +590,19 @@
       }
 
       function renderAssessment(data) {
+        const resolution = data?.region_resolution || {};
+        if (resolution?.coverage_available === false && resolution?.reason === "no_prepared_region_for_location") {
+          renderUncoveredLocationState({
+            coverage_available: false,
+            resolved_region_id: null,
+            reason: resolution.reason,
+            message: "This location is outside the currently prepared region set.",
+            recommended_action: resolution.recommended_action,
+            diagnostics: resolution.diagnostics || [],
+          });
+          return;
+        }
+
         latestAssessment = data;
 
         const scoreEl = document.getElementById("riskScore");
@@ -650,6 +675,38 @@
         document.getElementById("propertyContextText").textContent = buildPropertyContextSummary(data, propertyFindings);
       }
 
+      function renderUncoveredLocationState(detail) {
+        latestAssessment = null;
+        const reasonText = detail?.reason || "no_prepared_region_for_location";
+        const recommendation = detail?.recommended_action || "Prepare and validate a region for this location, then retry assessment.";
+        const diagnostics = Array.isArray(detail?.diagnostics) ? detail.diagnostics : [];
+
+        const scoreEl = document.getElementById("riskScore");
+        scoreEl.textContent = "—";
+        scoreEl.className = "score warn";
+        document.getElementById("riskLabel").textContent = "Location not yet prepared";
+        document.getElementById("summaryText").textContent = detail?.message
+          || "We could not score this address yet because no prepared region currently covers it.";
+        document.getElementById("propertyFindings").innerHTML = "<li class='muted'>No prepared region coverage for this location yet.</li>";
+        document.getElementById("drivers").innerHTML = "<li class='muted'>Scoring requires prepared region assets for this location.</li>";
+        document.getElementById("protective").innerHTML = "<li class='muted'>Protective factors will appear once coverage is available.</li>";
+        document.getElementById("nextStepsText").textContent = "This location needs region preparation before scoring can run.";
+        document.getElementById("mitigations").innerHTML = `<li>${recommendation}</li>`;
+        document.getElementById("confidenceText").textContent = "Confidence score: not available for uncovered locations.";
+        document.getElementById("assumptions").innerHTML = `<li>Resolution reason: ${reasonText}</li>`;
+        document.getElementById("flags").innerHTML = diagnostics
+          .slice(0, 3)
+          .map(v => `<span class='pill'>${v}</span>`)
+          .join("");
+        document.getElementById("submodels").innerHTML = "<tr><td colspan='3' class='muted'>No factor data until region coverage is prepared.</td></tr>";
+        document.getElementById("readinessText").textContent = "Insurance readiness score: not computed (location outside prepared coverage)";
+        document.getElementById("propertyContextText").textContent = recommendation;
+      }
+
+      async function fetchCoverageForAddress(address) {
+        return api("/regions/coverage-check", { address }, "POST");
+      }
+
       function buildAssessmentPayload() {
         return {
           address: document.getElementById("address").value,
@@ -699,6 +756,33 @@
           setRequestStatus(`Assessment complete (ID: ${data.assessment_id || "unknown"}).`, "success");
         } catch (err) {
           console.error("Assessment request failed:", err);
+          const detail = err?.detail && typeof err.detail === "object" ? err.detail : null;
+          const isUncovered = !!(
+            detail &&
+            (
+              detail.region_not_ready === true
+              || detail.coverage_available === false
+              || detail.reason === "no_prepared_region_for_location"
+            )
+          );
+          if (isUncovered) {
+            let enriched = detail;
+            try {
+              const coverage = await fetchCoverageForAddress(document.getElementById("address").value);
+              enriched = {
+                ...detail,
+                coverage_available: coverage?.coverage_available ?? coverage?.covered ?? false,
+                resolved_region_id: coverage?.resolved_region_id ?? coverage?.region_id ?? null,
+                diagnostics: detail?.diagnostics?.length ? detail.diagnostics : (coverage?.diagnostics || []),
+                recommended_action: detail?.recommended_action || coverage?.recommended_action,
+              };
+            } catch (_coverageErr) {
+              // Keep original uncovered payload if coverage-check lookup fails.
+            }
+            renderUncoveredLocationState(enriched);
+            setRequestStatus(enriched?.message || "This location is outside currently prepared regions.", "error");
+            return;
+          }
           setRequestStatus(`Assessment failed: ${err.message}`, "error");
           alert(err.message);
         } finally {

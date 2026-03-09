@@ -132,6 +132,10 @@ Key response blocks:
 - `fallback_used`: scoring fallback path was used
 - `partial`: layer exists but only partial evidence is available
 
+Region resolution fields:
+- Assessment responses include `region_resolution` with `coverage_available`, `resolved_region_id`, `reason`, and `recommended_action`.
+- Uncovered locations can return `region_not_ready` details (HTTP 409 when prepared coverage is required) or `insufficient_data` with `region_resolution.reason=no_prepared_region_for_location`.
+
 ## Local Development / Setup
 
 ```bash

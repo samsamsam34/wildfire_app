@@ -167,6 +167,19 @@ class RegionCoverageStatus(BaseModel):
     message: str
     diagnostics: List[str] = Field(default_factory=list)
     regions_root: str
+    coverage_available: bool = False
+    resolved_region_id: Optional[str] = None
+    reason: str = ""
+    recommended_action: Optional[str] = None
+
+
+class RegionResolution(BaseModel):
+    coverage_available: bool = False
+    resolved_region_id: Optional[str] = None
+    resolved_region_display_name: Optional[str] = None
+    reason: str = "unknown"
+    recommended_action: Optional[str] = None
+    diagnostics: List[str] = Field(default_factory=list)
 
 
 class RiskScores(BaseModel):
@@ -518,6 +531,7 @@ class AssessmentResult(BaseModel):
     evidence_quality_summary: EvidenceQualitySummary = Field(default_factory=EvidenceQualitySummary)
     layer_coverage_audit: List[LayerCoverageAuditItem] = Field(default_factory=list)
     coverage_summary: LayerCoverageSummary = Field(default_factory=LayerCoverageSummary)
+    region_resolution: RegionResolution = Field(default_factory=RegionResolution)
     site_hazard_eligibility: ScoreEligibility = Field(default_factory=ScoreEligibility)
     home_vulnerability_eligibility: ScoreEligibility = Field(default_factory=ScoreEligibility)
     insurance_readiness_eligibility: ScoreEligibility = Field(default_factory=ScoreEligibility)

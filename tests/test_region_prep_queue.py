@@ -150,6 +150,10 @@ def test_regions_coverage_check_endpoint_reports_uncovered(monkeypatch, tmp_path
     assert response.status_code == 200
     body = response.json()
     assert body["covered"] is False
+    assert body["coverage_available"] is False
+    assert body["resolved_region_id"] is None
+    assert body["reason"] == "no_prepared_region_for_location"
+    assert body["recommended_action"]
     assert body["message"]
     assert body["diagnostics"]
 
@@ -170,6 +174,10 @@ def test_assess_requires_prepared_region_when_enabled(monkeypatch, tmp_path: Pat
     assert response.status_code == 409
     detail = response.json()["detail"]
     assert detail["region_not_ready"] is True
+    assert detail["coverage_available"] is False
+    assert detail["resolved_region_id"] is None
+    assert detail["reason"] == "no_prepared_region_for_location"
+    assert detail["recommended_action"]
     assert detail["prep_job_id"] is None
     assert detail["requested_bbox"]
     assert "offline region-prep" in detail["message"].lower()

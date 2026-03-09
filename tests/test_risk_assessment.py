@@ -2060,6 +2060,40 @@ def test_runtime_resolves_prepared_region_files(tmp_path):
     assert any("Prepared region" in src for src in sources_used)
 
 
+def test_runtime_prefers_smallest_covering_region_for_point(tmp_path):
+    _require_region_prep_deps()
+    region_root = tmp_path / "regions"
+    sources = _make_region_sources(tmp_path)
+    prepare_region_layers(
+        region_id="large_region",
+        display_name="Large Region",
+        bounds={"min_lon": -112.0, "min_lat": 45.0, "max_lon": -110.0, "max_lat": 47.0},
+        layer_sources=sources,
+        region_data_dir=region_root,
+    )
+    prepare_region_layers(
+        region_id="small_region",
+        display_name="Small Region",
+        bounds={"min_lon": -111.2, "min_lat": 45.5, "max_lon": -110.9, "max_lat": 45.8},
+        layer_sources=sources,
+        region_data_dir=region_root,
+    )
+
+    client = WildfireDataClient()
+    client.region_data_dir = str(region_root)
+    client.use_prepared_regions = True
+    client.allow_legacy_layer_fallback = False
+    client.base_paths = {k: "" for k in client.base_paths.keys()}
+    client.paths = dict(client.base_paths)
+
+    paths, region_context, assumptions, sources_used = client._resolve_runtime_layer_paths(45.67, -111.04)
+    assert region_context["region_status"] == "prepared"
+    assert region_context["region_id"] == "small_region"
+    assert paths["dem"].endswith("dem.tif")
+    assert not any("region not prepared" in a.lower() for a in assumptions)
+    assert any("Prepared region" in src for src in sources_used)
+
+
 def test_missoula_prepared_region_assessment_smoke(monkeypatch, tmp_path):
     _require_region_prep_deps()
     _require_geo_runtime_deps()
@@ -2111,6 +2145,9 @@ def test_missoula_prepared_region_assessment_smoke(monkeypatch, tmp_path):
     assert property_ctx["region_status"] == "prepared"
     assert property_ctx["region_id"] == "missoula_pilot"
     assert str(property_ctx["region_manifest_path"]).endswith("missoula_pilot/manifest.json")
+    assert body["region_resolution"]["coverage_available"] is True
+    assert body["region_resolution"]["resolved_region_id"] == "missoula_pilot"
+    assert body["region_resolution"]["reason"] == "prepared_region_found"
 
     assert body["wildfire_risk_score_available"] is True
     assert body["insurance_readiness_score_available"] is True
@@ -2154,6 +2191,10 @@ def test_runtime_region_not_prepared_returns_insufficient_data(monkeypatch, tmp_
     body = response.json()
     assert body["assessment_status"] == "insufficient_data"
     assert body["property_level_context"]["region_status"] == "region_not_prepared"
+    assert body["region_resolution"]["coverage_available"] is False
+    assert body["region_resolution"]["resolved_region_id"] is None
+    assert body["region_resolution"]["reason"] == "no_prepared_region_for_location"
+    assert body["region_resolution"]["recommended_action"]
     assert any("region not prepared" in blocker.lower() for blocker in body["assessment_blockers"])
     assert any("region not prepared" in note.lower() for note in body["scoring_notes"])
 

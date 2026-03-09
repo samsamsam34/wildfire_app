@@ -75,6 +75,7 @@ from backend.models import (
     RegionBoundingBox,
     RegionCoverageRequest,
     RegionCoverageStatus,
+    RegionResolution,
     RegionPrepareRequest,
     RegionPrepJobStatus,
     ReassessmentRequest,
@@ -2379,12 +2380,17 @@ def _run_assessment(
     )
 
     property_level_context = _normalize_property_level_context(context.property_level_context)
+    coverage_lookup = _region_coverage_for_coordinates(lat=lat, lon=lon)
     layer_coverage_audit, coverage_summary = _normalize_layer_coverage(
         property_level_context,
         environmental_layer_status=context.environmental_layer_status,
     )
     property_level_context["layer_coverage_audit"] = [row.model_dump() for row in layer_coverage_audit]
     property_level_context["coverage_summary"] = coverage_summary.model_dump()
+    region_resolution = _build_region_resolution(
+        property_level_context=property_level_context,
+        coverage_lookup=coverage_lookup,
+    )
     factors = EnvironmentalFactors(
         burn_probability=context.burn_probability,
         wildfire_hazard=context.wildfire_hazard,
@@ -2747,6 +2753,7 @@ def _run_assessment(
         evidence_quality_summary=evidence_quality_summary,
         layer_coverage_audit=layer_coverage_audit,
         coverage_summary=coverage_summary,
+        region_resolution=region_resolution,
         site_hazard_eligibility=site_hazard_eligibility,
         home_vulnerability_eligibility=home_vulnerability_eligibility,
         insurance_readiness_eligibility=insurance_readiness_eligibility,
@@ -2863,6 +2870,7 @@ def _run_assessment(
         },
         "layer_coverage_audit": [row.model_dump() for row in result.layer_coverage_audit],
         "coverage_summary": result.coverage_summary.model_dump(),
+        "region_resolution": result.region_resolution.model_dump(),
         "score_evidence_ledger": result.score_evidence_ledger.model_dump(),
         "evidence_quality_summary": result.evidence_quality_summary.model_dump(),
         "score_family_input_quality": {
@@ -3073,6 +3081,7 @@ def _build_report_export(
             "environmental_layer_status": result.environmental_layer_status,
             "data_provenance": result.data_provenance.model_dump(),
             "property_level_context": result.property_level_context,
+            "region_resolution": result.region_resolution.model_dump(),
             "assessment_diagnostics": result.assessment_diagnostics.model_dump(),
             "layer_coverage_audit": [row.model_dump() for row in result.layer_coverage_audit],
             "coverage_summary": result.coverage_summary.model_dump(),
@@ -3349,6 +3358,7 @@ def _region_data_root() -> str:
 def _region_coverage_for_coordinates(lat: float, lon: float) -> dict[str, Any]:
     lookup = lookup_region_for_point(lat=lat, lon=lon, regions_root=_region_data_root())
     if lookup.get("covered"):
+        resolved_region_id = lookup.get("region_id")
         return {
             "covered": True,
             "region_id": lookup.get("region_id"),
@@ -3358,6 +3368,10 @@ def _region_coverage_for_coordinates(lat: float, lon: float) -> dict[str, Any]:
             "message": "Prepared region coverage is available for this location.",
             "diagnostics": [],
             "regions_root": _region_data_root(),
+            "coverage_available": True,
+            "resolved_region_id": resolved_region_id,
+            "reason": "prepared_region_found",
+            "recommended_action": None,
         }
     diagnostics = list(lookup.get("diagnostics") or [])
     return {
@@ -3372,7 +3386,66 @@ def _region_coverage_for_coordinates(lat: float, lon: float) -> dict[str, Any]:
         ),
         "diagnostics": diagnostics,
         "regions_root": _region_data_root(),
+        "coverage_available": False,
+        "resolved_region_id": None,
+        "reason": "no_prepared_region_for_location",
+        "recommended_action": (
+            "Prepare and validate a region for this location using "
+            "scripts/prepare_region_from_catalog_or_sources.py, then retry assessment."
+        ),
     }
+
+
+def _build_region_resolution(
+    *,
+    property_level_context: dict[str, Any],
+    coverage_lookup: dict[str, Any] | None = None,
+) -> RegionResolution:
+    region_status = str(property_level_context.get("region_status") or "")
+    region_id = property_level_context.get("region_id")
+    region_display_name = property_level_context.get("region_display_name")
+    diagnostics = list((coverage_lookup or {}).get("diagnostics") or [])
+
+    if region_status == "prepared":
+        return RegionResolution(
+            coverage_available=True,
+            resolved_region_id=str(region_id) if region_id else None,
+            resolved_region_display_name=str(region_display_name) if region_display_name else None,
+            reason="prepared_region_found",
+            recommended_action=None,
+            diagnostics=diagnostics,
+        )
+    if region_status == "invalid_manifest":
+        return RegionResolution(
+            coverage_available=False,
+            resolved_region_id=str(region_id) if region_id else None,
+            resolved_region_display_name=str(region_display_name) if region_display_name else None,
+            reason="prepared_region_manifest_invalid",
+            recommended_action="Run scripts/validate_prepared_region.py for this region and repair missing files.",
+            diagnostics=diagnostics,
+        )
+    if region_status == "legacy_fallback":
+        return RegionResolution(
+            coverage_available=False,
+            resolved_region_id=None,
+            resolved_region_display_name=None,
+            reason="legacy_fallback_used",
+            recommended_action=(
+                "Prepare and validate a region for this location to enable prepared-region runtime scoring."
+            ),
+            diagnostics=diagnostics,
+        )
+    return RegionResolution(
+        coverage_available=False,
+        resolved_region_id=None,
+        resolved_region_display_name=None,
+        reason="no_prepared_region_for_location",
+        recommended_action=(
+            "Prepare and validate a region for this location using "
+            "scripts/prepare_region_from_catalog_or_sources.py, then retry assessment."
+        ),
+        diagnostics=diagnostics,
+    )
 
 
 def _derive_region_bbox_from_point(lat: float, lon: float) -> dict[str, float]:
@@ -3894,6 +3967,9 @@ def assess_risk(
                     status_code=409,
                     detail={
                         "region_not_ready": True,
+                        "coverage_available": False,
+                        "resolved_region_id": None,
+                        "reason": "no_prepared_region_for_location",
                         "prep_job_id": status.job_id,
                         "prep_job_status": status.status,
                         "requested_bbox": requested_bbox,
@@ -3901,6 +3977,7 @@ def assess_risk(
                             "No prepared region currently covers this address. A region prep job has been queued; "
                             "retry assessment after the job completes."
                         ),
+                        "recommended_action": "Retry assessment after prep job completion.",
                         "diagnostics": coverage.get("diagnostics", []),
                     },
                 )
@@ -3908,12 +3985,18 @@ def assess_risk(
                 status_code=409,
                 detail={
                     "region_not_ready": True,
+                    "coverage_available": False,
+                    "resolved_region_id": None,
+                    "reason": "no_prepared_region_for_location",
                     "prep_job_id": None,
                     "prep_job_status": None,
                     "requested_bbox": _derive_region_bbox_from_point(lat=lat, lon=lon),
                     "message": (
                         "Prepared region coverage is required for assessment, but this address is outside "
                         "current prepared regions. Run the offline region-prep command, validate, then retry."
+                    ),
+                    "recommended_action": (
+                        "Run scripts/prepare_region_from_catalog_or_sources.py for this bbox, validate, then retry."
                     ),
                     "diagnostics": coverage.get("diagnostics", []),
                 },
@@ -4150,6 +4233,7 @@ def layer_diagnostics(payload: AddressRequest, ctx: ActorContext = Depends(get_a
             "region_id": (debug_payload.get("property_level_context") or {}).get("region_id"),
             "region_status": (debug_payload.get("property_level_context") or {}).get("region_status"),
             "manifest_path": (debug_payload.get("property_level_context") or {}).get("region_manifest_path"),
+            "region_resolution": debug_payload.get("region_resolution", {}),
         },
         "structure_footprint": {
             "footprint_used": (debug_payload.get("property_level_context") or {}).get("footprint_used"),
