@@ -217,6 +217,18 @@ def test_required_layer_source_validation_missing_fields_is_actionable():
     assert "missing required source details" in str(invalid["actionable_error"]).lower()
 
 
+def test_optional_layer_source_validation_includes_env_override_guidance():
+    invalid = _validate_layer_source_config(
+        layer_key="gridmet_dryness",
+        layer_cfg={"provider_type": "arcgis_image_service"},
+    )
+    assert invalid["config_valid"] is False
+    assert invalid["config_status"] == "missing_source_details"
+    msg = str(invalid["actionable_error"])
+    assert "WF_DEFAULT_GRIDMET_DRYNESS_ENDPOINT" in msg
+    assert "WF_DEFAULT_GRIDMET_DRYNESS_FULL_URL" in msg
+
+
 def test_feature_service_validation_warns_when_endpoint_may_be_stale():
     stale = _validate_layer_source_config(
         layer_key="building_footprints",
@@ -273,6 +285,33 @@ def test_default_source_registry_has_valid_required_core_layer_entries(tmp_path)
     for layer_key in required_core_layers():
         diag = result["required_layer_diagnostics"][layer_key]
         assert diag["config_valid"] is True, f"{layer_key}: {diag}"
+
+
+def test_default_source_registry_optional_layers_have_actionable_status(tmp_path):
+    registry_path = Path("config/source_registry.json")
+    assert registry_path.exists()
+    bbox = {"min_lon": -114.2, "min_lat": 46.75, "max_lon": -113.8, "max_lat": 47.0}
+    result = prepare_region_from_catalog_or_sources(
+        region_id="registry_optional_validation",
+        display_name="Registry Optional Validation",
+        bounds=bbox,
+        catalog_root=tmp_path / "catalog",
+        regions_root=tmp_path / "regions",
+        source_config_path=str(registry_path),
+        skip_optional_layers=False,
+        plan_only=True,
+    )
+    assert result["buildable_estimate"]["buildable_with_current_config"] is True
+    for layer_key in ("whp", "mtbs_severity", "roads"):
+        diag = result["optional_layer_diagnostics"][layer_key]
+        assert diag["config_valid"] is True, f"{layer_key}: {diag}"
+
+    gridmet_diag = result["optional_layer_diagnostics"]["gridmet_dryness"]
+    assert gridmet_diag["config_valid"] is False
+    assert gridmet_diag["config_status"] == "missing_source_details"
+    assert "WF_DEFAULT_GRIDMET_DRYNESS_ENDPOINT" in str(gridmet_diag["actionable_error"])
+    assert result["optional_config_warnings"]
+    assert any("gridmet_dryness" in str(msg) for msg in result["optional_config_warnings"])
 
 
 def test_prepare_any_region_full_catalog_coverage_no_acquisition(tmp_path):

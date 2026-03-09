@@ -258,7 +258,8 @@ Preferred new-region workflow (canonical path):
   - Override with `--source-config <path>` or `WF_SOURCE_CONFIG_PATH`.
   - Registry values support env references, including defaults, for example `${WF_DEFAULT_DEM_ENDPOINT:-https://...}`.
   - Required core layers (`dem`, `fuel`, `canopy`, `fire_perimeters`, `building_footprints`) ship with non-empty starter source details so `--plan-only` can evaluate buildability without custom config.
-  - Optional layers may remain unconfigured; they warn but do not block required-region builds.
+  - Optional defaults are included for `whp`, `mtbs_severity`, and `roads`; `gridmet_dryness` usually requires an explicit endpoint/URL override.
+  - Optional layers remain non-blocking; missing/invalid optional config is surfaced in `optional_layer_diagnostics` and `optional_config_warnings`.
 
 Required vs optional layers:
 - Required core: `dem`, `fuel`, `canopy`, `fire_perimeters`, `building_footprints`

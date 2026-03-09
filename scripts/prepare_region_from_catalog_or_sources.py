@@ -52,6 +52,29 @@ PREFERRED_FEATURE_SERVICE_ENDPOINT_PREFIXES: dict[str, tuple[str, ...]] = {
     ),
 }
 
+LAYER_SOURCE_HINTS: dict[str, dict[str, Any]] = {
+    "whp": {
+        "layer_type": "raster",
+        "env_vars": ["WF_DEFAULT_WHP_ENDPOINT", "WF_DEFAULT_WHP_FULL_URL"],
+        "registry_keys": ["source_endpoint", "source_url", "source_path"],
+    },
+    "mtbs_severity": {
+        "layer_type": "raster",
+        "env_vars": ["WF_DEFAULT_MTBS_SEVERITY_ENDPOINT", "WF_DEFAULT_MTBS_SEVERITY_FULL_URL"],
+        "registry_keys": ["source_endpoint", "source_url", "source_path"],
+    },
+    "gridmet_dryness": {
+        "layer_type": "raster",
+        "env_vars": ["WF_DEFAULT_GRIDMET_DRYNESS_ENDPOINT", "WF_DEFAULT_GRIDMET_DRYNESS_FULL_URL"],
+        "registry_keys": ["source_endpoint", "source_url", "source_path"],
+    },
+    "roads": {
+        "layer_type": "vector",
+        "env_vars": ["WF_DEFAULT_ROADS_ENDPOINT", "WF_DEFAULT_ROADS_FULL_URL"],
+        "registry_keys": ["source_endpoint", "source_url", "source_path"],
+    },
+}
+
 
 class RegionPrepExecutionError(RuntimeError):
     def __init__(self, message: str, *, details: dict[str, Any]):
@@ -255,8 +278,24 @@ def _stale_endpoint_warning(layer_key: str, source_endpoint: str) -> str | None:
     return "Configured endpoint may be stale; compare with current default source registry service root."
 
 
+def _layer_config_guidance(layer_key: str) -> str | None:
+    hint = LAYER_SOURCE_HINTS.get(layer_key)
+    if not hint:
+        return None
+    env_vars = ", ".join(hint.get("env_vars", []))
+    registry_keys = ", ".join(hint.get("registry_keys", []))
+    return (
+        f"Set one of [{registry_keys}] for '{layer_key}' in the source registry or via env overrides "
+        f"({env_vars})."
+    )
+
+
 def _validate_layer_source_config(*, layer_key: str, layer_cfg: dict[str, Any]) -> dict[str, Any]:
+    guidance = _layer_config_guidance(layer_key)
     if not isinstance(layer_cfg, dict) or not layer_cfg:
+        message = "No source-registry entry exists for this layer."
+        if guidance:
+            message = f"{message} {guidance}"
         return {
             "config_present": False,
             "config_valid": False,
@@ -264,7 +303,7 @@ def _validate_layer_source_config(*, layer_key: str, layer_cfg: dict[str, Any]) 
             "config_status": "missing_layer_entry",
             "missing_required_fields": ["provider_type", "source details"],
             "invalid_fields": [],
-            "actionable_error": "No source-registry entry exists for this layer.",
+            "actionable_error": message,
             "advisory_warning": None,
         }
 
@@ -295,6 +334,12 @@ def _validate_layer_source_config(*, layer_key: str, layer_cfg: dict[str, Any]) 
             invalid_fields.append("source_path")
 
     if provider_type not in SUPPORTED_PROVIDER_TYPES:
+        message = (
+            f"Unsupported provider_type '{provider_type}'. "
+            f"Supported: {', '.join(sorted(SUPPORTED_PROVIDER_TYPES))}."
+        )
+        if guidance:
+            message = f"{message} {guidance}"
         return {
             "config_present": True,
             "config_valid": False,
@@ -302,10 +347,7 @@ def _validate_layer_source_config(*, layer_key: str, layer_cfg: dict[str, Any]) 
             "config_status": "unsupported_provider_type",
             "missing_required_fields": [],
             "invalid_fields": ["provider_type"],
-            "actionable_error": (
-                f"Unsupported provider_type '{provider_type}'. "
-                f"Supported: {', '.join(sorted(SUPPORTED_PROVIDER_TYPES))}."
-            ),
+            "actionable_error": message,
             "advisory_warning": endpoint_warning,
         }
 
@@ -321,6 +363,12 @@ def _validate_layer_source_config(*, layer_key: str, layer_cfg: dict[str, Any]) 
             missing_required_fields.append("source_path|local_path")
 
     if invalid_fields:
+        message = (
+            "Source entry contains invalid or unreadable fields: "
+            + ", ".join(sorted(set(invalid_fields)))
+        )
+        if guidance:
+            message = f"{message}. {guidance}"
         return {
             "config_present": True,
             "config_valid": False,
@@ -328,14 +376,14 @@ def _validate_layer_source_config(*, layer_key: str, layer_cfg: dict[str, Any]) 
             "config_status": "invalid_source_details",
             "missing_required_fields": missing_required_fields,
             "invalid_fields": sorted(set(invalid_fields)),
-            "actionable_error": (
-                "Source entry contains invalid or unreadable fields: "
-                + ", ".join(sorted(set(invalid_fields)))
-            ),
+            "actionable_error": message,
             "advisory_warning": endpoint_warning,
         }
 
     if missing_required_fields:
+        message = "Missing required source details: " + ", ".join(missing_required_fields)
+        if guidance:
+            message = f"{message}. {guidance}"
         return {
             "config_present": True,
             "config_valid": False,
@@ -343,10 +391,7 @@ def _validate_layer_source_config(*, layer_key: str, layer_cfg: dict[str, Any]) 
             "config_status": "missing_source_details",
             "missing_required_fields": missing_required_fields,
             "invalid_fields": [],
-            "actionable_error": (
-                "Missing required source details: "
-                + ", ".join(missing_required_fields)
-            ),
+            "actionable_error": message,
             "advisory_warning": endpoint_warning,
         }
 
@@ -839,6 +884,15 @@ def prepare_region_from_catalog_or_sources(
             if diag.get("planned_action") == "acquire_and_ingest" and not diag.get("config_valid")
         ]
     )
+    optional_config_warnings = sorted(
+        {
+            str(diag.get("actionable_error"))
+            for layer, diag in optional_layer_diagnostics.items()
+            if str(diag.get("planned_action")) == "acquire_and_ingest"
+            and not bool(diag.get("config_valid"))
+            and diag.get("actionable_error")
+        }
+    )
 
     if plan_only:
         recommended_actions = list(coverage_before.get("summary", {}).get("recommended_actions", []))
@@ -852,6 +906,7 @@ def prepare_region_from_catalog_or_sources(
                 for layer in required_blockers
             ]
         )
+        recommended_actions.extend([f"Optional layer config: {msg}" for msg in optional_config_warnings])
         compact_summary = _build_compact_summary(
             mode="plan_only",
             region_id=region_id,
@@ -896,6 +951,7 @@ def prepare_region_from_catalog_or_sources(
                 "required_blockers": required_blockers,
                 "region_already_prepared": prepared_region_status.get("status") == "covered",
             },
+            "optional_config_warnings": optional_config_warnings,
             "stage_status": stage_status,
             "recommended_actions": recommended_actions,
             "compact_summary": compact_summary,
@@ -956,6 +1012,7 @@ def prepare_region_from_catalog_or_sources(
             },
             "required_layer_diagnostics": required_layer_diagnostics,
             "optional_layer_diagnostics": optional_layer_diagnostics,
+            "optional_config_warnings": optional_config_warnings,
             "per_layer_execution_diagnostics": {},
             "acquired_layers": [],
             "failed_acquisitions": [],
@@ -1381,6 +1438,7 @@ def prepare_region_from_catalog_or_sources(
         },
         "required_layer_diagnostics": required_layer_diagnostics,
         "optional_layer_diagnostics": optional_layer_diagnostics,
+        "optional_config_warnings": optional_config_warnings,
         "per_layer_execution_diagnostics": per_layer_execution_diagnostics,
         "acquired_layers": acquired_layers,
         "failed_acquisitions": failed_acquisitions,

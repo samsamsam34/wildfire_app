@@ -59,32 +59,35 @@
     },
     "roads": {
       "provider_type": "arcgis_feature_service",
-      "source_endpoint": "${WF_DEFAULT_ROADS_ENDPOINT:-}",
+      "source_endpoint": "${WF_DEFAULT_ROADS_ENDPOINT:-https://services.arcgis.com/xOi1kZaI0eWDREZv/ArcGIS/rest/services/NTAD_North_American_Roads/FeatureServer/0}",
       "full_download_url": "${WF_DEFAULT_ROADS_FULL_URL:-}",
       "supports_bbox_export": true,
       "allow_full_download_fallback": true,
+      "query_format": "json",
+      "supports_geojson_direct": false,
+      "require_return_geometry": true,
       "expected_output_format": "geojson",
-      "notes": "Optional OSM/roads source."
+      "notes": "Optional roads source via NTAD FeatureServer (JSON query preferred). Override WF_DEFAULT_ROADS_ENDPOINT if needed."
     },
     "whp": {
       "provider_type": "arcgis_image_service",
-      "source_endpoint": "${WF_DEFAULT_WHP_ENDPOINT:-}",
+      "source_endpoint": "${WF_DEFAULT_WHP_ENDPOINT:-https://apps.fs.usda.gov/fsgisx01/rest/services/RDW_Wildfire/RMRS_WildfireHazardPotential_Classified_2023/ImageServer}",
       "full_download_url": "${WF_DEFAULT_WHP_FULL_URL:-}",
       "supports_bbox_export": true,
       "allow_full_download_fallback": true,
       "target_resolution": 30.0,
       "expected_output_format": "tif",
-      "notes": "Optional USFS WHP hazard layer."
+      "notes": "Optional USFS WHP 2023 classified image service."
     },
     "mtbs_severity": {
       "provider_type": "arcgis_image_service",
-      "source_endpoint": "${WF_DEFAULT_MTBS_SEVERITY_ENDPOINT:-}",
+      "source_endpoint": "${WF_DEFAULT_MTBS_SEVERITY_ENDPOINT:-https://apps.fs.usda.gov/fsgisx01/rest/services/RDW_Wildfire/MTBS_CONUS/ImageServer}",
       "full_download_url": "${WF_DEFAULT_MTBS_SEVERITY_FULL_URL:-}",
       "supports_bbox_export": true,
       "allow_full_download_fallback": true,
       "target_resolution": 30.0,
       "expected_output_format": "tif",
-      "notes": "Optional MTBS severity raster."
+      "notes": "Optional MTBS CONUS burn-severity image service."
     },
     "gridmet_dryness": {
       "provider_type": "arcgis_image_service",
@@ -94,7 +97,7 @@
       "allow_full_download_fallback": true,
       "target_resolution": 4000.0,
       "expected_output_format": "tif",
-      "notes": "Optional dryness proxy raster."
+      "notes": "Optional gridMET dryness proxy. No default public endpoint is bundled; set WF_DEFAULT_GRIDMET_DRYNESS_ENDPOINT or WF_DEFAULT_GRIDMET_DRYNESS_FULL_URL."
     }
   }
 }
