@@ -145,3 +145,43 @@ def test_validate_prepared_region_manifest_status_update(monkeypatch, tmp_path):
     assert payload["validation_status"] == "passed"
     assert payload["runtime_compatibility_status"] == "pass"
     assert payload["validation_run_at"]
+
+
+def test_validate_prepared_region_includes_configured_optional_layers(monkeypatch, tmp_path):
+    region_dir, manifest_path = _write_region_fixture(tmp_path)
+    (region_dir / "whp.tif").write_bytes(b"fake-raster")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest.setdefault("files", {})["whp"] = "whp.tif"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    monkeypatch.setattr(
+        region_validator,
+        "_validate_layer_openable_and_intersects",
+        lambda layer_key, layer_path, bounds: ([], []),
+    )
+
+    result = validate_prepared_region(region_id="test_region", base_dir=str(tmp_path))
+    assert result["ready_for_runtime"] is True
+    assert "whp" in result["required_layers_checked"]
+
+
+def test_validate_prepared_region_ring_support_partial_when_sample_not_in_footprint(monkeypatch, tmp_path):
+    _write_region_fixture(tmp_path)
+    monkeypatch.setattr(
+        region_validator,
+        "_validate_layer_openable_and_intersects",
+        lambda layer_key, layer_path, bounds: ([], []),
+    )
+
+    result = validate_prepared_region(
+        region_id="test_region",
+        base_dir=str(tmp_path),
+        sample_lat=0.95,
+        sample_lon=0.95,
+    )
+    assert result["ready_for_runtime"] is True
+    if getattr(region_validator, "box", None) is None or getattr(region_validator, "shape", None) is None:
+        assert result["footprint_ring_support"] == "available"
+    else:
+        assert result["footprint_ring_support"] == "partial"
+        assert any("structure rings may fallback to point-based mode" in w.lower() for w in result["warnings"])

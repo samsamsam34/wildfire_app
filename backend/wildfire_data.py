@@ -9,6 +9,11 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from backend.building_footprints import BuildingFootprintClient, compute_structure_rings
+from backend.layer_diagnostics import (
+    initialize_layer_audit,
+    summarize_layer_audit,
+    update_layer_audit,
+)
 from backend.open_data_adapters import (
     GridMETAdapter,
     MTBSAdapter,
@@ -67,6 +72,8 @@ class WildfireContext:
     moisture_context: Dict[str, Any] = field(default_factory=dict)
     historical_fire_context: Dict[str, Any] = field(default_factory=dict)
     access_context: Dict[str, Any] = field(default_factory=dict)
+    layer_coverage_audit: List[Dict[str, Any]] = field(default_factory=list)
+    coverage_summary: Dict[str, Any] = field(default_factory=dict)
 
 
 def compute_environmental_data_completeness(context: WildfireContext) -> float:
@@ -509,6 +516,29 @@ class WildfireDataClient:
         except Exception:
             return None
 
+    def _sample_layer_value_detailed(self, path: str, lat: float, lon: float) -> tuple[float | None, str, str | None]:
+        if not path:
+            return None, "not_configured", "Layer path is not configured."
+        if not self._file_exists(path):
+            return None, "missing_file", "Configured layer file is missing."
+        if not rasterio:
+            return None, "sampling_failed", "Raster dependencies unavailable for sampling."
+        try:
+            ds = self._open_raster(path)
+            x, y = self._to_dataset_crs(ds, lon, lat)
+            bounds = ds.bounds
+            if x < bounds.left or x > bounds.right or y < bounds.bottom or y > bounds.top:
+                return None, "outside_extent", "Property point is outside layer extent."
+            sample = next(ds.sample([(x, y)]))[0]
+            nodata = ds.nodata
+            if nodata is not None and float(sample) == float(nodata):
+                return None, "outside_extent", "Layer sampled nodata at property location."
+            if np is not None and hasattr(np, "isnan") and np.isnan(sample):
+                return None, "outside_extent", "Layer sampled nodata at property location."
+            return float(sample), "ok", None
+        except Exception as exc:
+            return None, "sampling_failed", str(exc)
+
     def _sample_layer_value(self, path: str, lat: float, lon: float) -> Tuple[float | None, str]:
         if not self._file_exists(path):
             return None, "missing"
@@ -671,6 +701,7 @@ class WildfireDataClient:
         assumptions.extend(runtime_assumptions)
         sources.extend(runtime_sources)
         self.paths = dict(runtime_paths)
+        layer_audit = initialize_layer_audit(runtime_paths, region_context)
         environmental_layer_status: dict[str, str] = {
             "burn_probability": "missing",
             "hazard": "missing",
@@ -696,8 +727,26 @@ class WildfireDataClient:
         }
         structure_ring_metrics: dict[str, dict[str, float | None]] = {}
 
+        def _status_for_env(sample_status: str) -> str:
+            if sample_status == "ok":
+                return "ok"
+            if sample_status == "sampling_failed":
+                return "error"
+            return "missing"
+
         if not (rasterio and np is not None and Transformer is not None):
             assumptions.append("Geospatial stack unavailable; install rasterio/numpy/pyproj/shapely.")
+            for lk in ["dem", "slope", "fuel", "canopy", "whp", "mtbs_severity", "gridmet_dryness", "roads"]:
+                update_layer_audit(
+                    layer_audit,
+                    lk,
+                    sample_attempted=True,
+                    sample_succeeded=False,
+                    coverage_status="sampling_failed",
+                    failure_reason="Geospatial stack unavailable.",
+                )
+            layer_audit_rows = [layer_audit[k] for k in sorted(layer_audit.keys())]
+            coverage_summary = summarize_layer_audit(layer_audit_rows)
             return WildfireContext(
                 environmental_index=None,
                 slope_index=None,
@@ -727,6 +776,8 @@ class WildfireDataClient:
                 moisture_context={},
                 historical_fire_context={},
                 access_context={},
+                layer_coverage_audit=layer_audit_rows,
+                coverage_summary=coverage_summary,
             )
 
         ring_context, ring_assumptions, ring_sources = self._compute_structure_ring_metrics(
@@ -746,12 +797,46 @@ class WildfireDataClient:
                 "region_manifest_path": region_context.get("manifest_path"),
             }
         )
+        footprint_status = str(ring_context.get("footprint_status") or "not_found")
+        update_layer_audit(
+            layer_audit,
+            "building_footprints",
+            sample_attempted=True,
+            sample_succeeded=bool(ring_context.get("footprint_used")),
+            coverage_status=(
+                "observed"
+                if ring_context.get("footprint_used")
+                else ("not_configured" if footprint_status == "provider_unavailable" else "fallback_used")
+            ),
+            failure_reason=None if ring_context.get("footprint_used") else f"footprint_status={footprint_status}",
+        )
+        neighbor_metrics = ring_context.get("neighboring_structure_metrics")
+        update_layer_audit(
+            layer_audit,
+            "neighbor_structures",
+            sample_attempted=True,
+            sample_succeeded=isinstance(neighbor_metrics, dict) and neighbor_metrics.get("neighbor_count") is not None,
+            coverage_status=(
+                "observed"
+                if isinstance(neighbor_metrics, dict) and neighbor_metrics.get("neighbor_count") is not None
+                else "fallback_used"
+            ),
+            raw_value_preview=neighbor_metrics if isinstance(neighbor_metrics, dict) else None,
+            failure_reason=None if isinstance(neighbor_metrics, dict) else "Neighbor structure metrics unavailable.",
+        )
         structure_ring_metrics = ring_context.get("ring_metrics", {}) or {}
         assumptions.extend(ring_assumptions)
         sources.extend(ring_sources)
 
-        burn_prob, burn_status = self._sample_layer_value(runtime_paths["burn_prob"], lat, lon)
-        hazard, hazard_status = self._sample_layer_value(runtime_paths["hazard"], lat, lon)
+        burn_prob, burn_status_detail, burn_reason = self._sample_layer_value_detailed(runtime_paths["burn_prob"], lat, lon)
+        hazard, hazard_status_detail, hazard_reason = self._sample_layer_value_detailed(runtime_paths["hazard"], lat, lon)
+        update_layer_audit(
+            layer_audit,
+            "dem",
+            sample_attempted=True,
+            sample_succeeded=self._file_exists(runtime_paths.get("dem", "")),
+            coverage_status="observed" if self._file_exists(runtime_paths.get("dem", "")) else "missing_file",
+        )
 
         hazard_context: dict[str, Any] = {
             "source": None,
@@ -761,13 +846,26 @@ class WildfireDataClient:
         }
         if burn_prob is None or hazard is None:
             whp_obs = self.whp_adapter.sample(lat=lat, lon=lon, whp_path=runtime_paths.get("whp"))
+            update_layer_audit(
+                layer_audit,
+                "whp",
+                sample_attempted=True,
+                sample_succeeded=whp_obs.status == "ok",
+                coverage_status=(
+                    "observed"
+                    if whp_obs.status == "ok"
+                    else ("missing_file" if runtime_paths.get("whp") else "not_configured")
+                ),
+                raw_value_preview=whp_obs.raw_value,
+                failure_reason=None if whp_obs.status == "ok" else "; ".join(whp_obs.notes[:2]),
+            )
             if whp_obs.status == "ok":
                 if burn_prob is None:
                     burn_prob = whp_obs.raw_value
-                    burn_status = "ok"
+                    burn_status_detail = "ok"
                 if hazard is None:
                     hazard = whp_obs.raw_value
-                    hazard_status = "ok"
+                    hazard_status_detail = "ok"
                 hazard_context = {
                     "source": whp_obs.source_dataset,
                     "status": "observed",
@@ -781,7 +879,17 @@ class WildfireDataClient:
             else:
                 assumptions.extend(whp_obs.notes)
 
-        environmental_layer_status["burn_probability"] = burn_status
+        environmental_layer_status["burn_probability"] = _status_for_env(burn_status_detail)
+        update_layer_audit(
+            layer_audit,
+            "whp",
+            note=burn_reason if burn_reason else None,
+        )
+        update_layer_audit(
+            layer_audit,
+            "whp",
+            note=hazard_reason if hazard_reason else None,
+        )
         if burn_prob is None:
             assumptions.append("Burn probability layer unavailable at property location.")
             burn_probability_index = None
@@ -791,7 +899,7 @@ class WildfireDataClient:
             burn_probability_index = self._to_index(burn_prob, 0.0, 1.0 if burn_prob <= 1.0 else 100.0)
             sources.append("Burn probability raster")
 
-        environmental_layer_status["hazard"] = hazard_status
+        environmental_layer_status["hazard"] = _status_for_env(hazard_status_detail)
         if hazard is None:
             assumptions.append("Wildfire hazard severity layer unavailable at property location.")
             hazard_severity_index = None
@@ -801,18 +909,27 @@ class WildfireDataClient:
             hazard_severity_index = self._to_index(hazard, 0.0, 5.0 if hazard <= 5.0 else 100.0)
             sources.append("Wildfire hazard severity raster")
 
-        slope, slope_status = self._sample_layer_value(runtime_paths["slope"], lat, lon)
-        aspect, aspect_status = self._sample_layer_value(runtime_paths["aspect"], lat, lon)
+        slope, slope_status_detail, slope_reason = self._sample_layer_value_detailed(runtime_paths["slope"], lat, lon)
+        aspect, aspect_status_detail, _aspect_reason = self._sample_layer_value_detailed(runtime_paths["aspect"], lat, lon)
         if slope is None or aspect is None:
             dem_path = runtime_paths["dem"]
             if self._file_exists(dem_path):
                 derived_slope, derived_aspect = self._derive_slope_aspect_from_dem(dem_path, lat, lon)
                 if slope is None and derived_slope is not None:
                     slope = derived_slope
-                    slope_status = "ok"
+                    slope_status_detail = "ok"
+                    update_layer_audit(
+                        layer_audit,
+                        "slope",
+                        sample_attempted=True,
+                        sample_succeeded=True,
+                        coverage_status="observed",
+                        raw_value_preview=round(float(derived_slope), 2),
+                        note="Slope derived from DEM fallback.",
+                    )
                 if aspect is None and derived_aspect is not None:
                     aspect = derived_aspect
-                    aspect_status = "ok"
+                    aspect_status_detail = "ok"
                 if derived_slope is not None and derived_aspect is not None:
                     sources.append("DEM-derived slope/aspect")
                 else:
@@ -820,7 +937,31 @@ class WildfireDataClient:
             else:
                 assumptions.append("Slope/aspect rasters missing and DEM not configured.")
 
-        environmental_layer_status["slope"] = slope_status
+        if slope_status_detail != "ok":
+            update_layer_audit(
+                layer_audit,
+                "slope",
+                sample_attempted=True,
+                sample_succeeded=False,
+                coverage_status=(
+                    "outside_extent"
+                    if slope_status_detail == "outside_extent"
+                    else ("missing_file" if slope_status_detail == "missing_file" else "not_configured")
+                    if slope_status_detail in {"missing_file", "not_configured"}
+                    else "sampling_failed"
+                ),
+                failure_reason=slope_reason,
+            )
+        elif layer_audit["slope"]["coverage_status"] != "observed":
+            update_layer_audit(
+                layer_audit,
+                "slope",
+                sample_attempted=True,
+                sample_succeeded=True,
+                coverage_status="observed",
+                raw_value_preview=round(float(slope), 2) if slope is not None else None,
+            )
+        environmental_layer_status["slope"] = _status_for_env(slope_status_detail)
         slope_index = None if slope is None else self._to_index(slope, 0.0, 45.0)
         if slope is not None and "DEM-derived slope/aspect" not in sources:
             sources.append("Slope raster")
@@ -839,19 +980,44 @@ class WildfireDataClient:
                 sources.append("Aspect raster")
 
         fuel_path = runtime_paths["fuel"]
+        fuel_center, fuel_status_detail, fuel_reason = self._sample_layer_value_detailed(fuel_path, lat, lon)
         fuel_samples = self._sample_circle(fuel_path, lat, lon, radius_m=100.0) if self._file_exists(fuel_path) else []
         if fuel_samples:
             fuel_index = self._fuel_combustibility_index(fuel_samples)
             fuel_model = round(sum(fuel_samples) / len(fuel_samples), 2)
             environmental_layer_status["fuel"] = "ok"
             sources.append("Fuel model raster")
+            update_layer_audit(
+                layer_audit,
+                "fuel",
+                sample_attempted=True,
+                sample_succeeded=True,
+                coverage_status="observed",
+                raw_value_preview=round(fuel_model, 2),
+            )
         else:
             fuel_index = None
             fuel_model = None
-            environmental_layer_status["fuel"] = "missing" if not self._file_exists(fuel_path) else "error"
+            environmental_layer_status["fuel"] = _status_for_env(fuel_status_detail)
+            update_layer_audit(
+                layer_audit,
+                "fuel",
+                sample_attempted=True,
+                sample_succeeded=False,
+                coverage_status=(
+                    "outside_extent"
+                    if fuel_status_detail == "outside_extent"
+                    else ("missing_file" if fuel_status_detail == "missing_file" else "not_configured")
+                    if fuel_status_detail in {"missing_file", "not_configured"}
+                    else "sampling_failed"
+                ),
+                raw_value_preview=fuel_center,
+                failure_reason=fuel_reason,
+            )
             assumptions.append("Fuel model unavailable within 100m neighborhood.")
 
         canopy_path = runtime_paths["canopy"]
+        canopy_center, canopy_status_detail, canopy_reason = self._sample_layer_value_detailed(canopy_path, lat, lon)
         canopy_samples = self._sample_circle(canopy_path, lat, lon, radius_m=100.0) if self._file_exists(canopy_path) else []
         if canopy_samples:
             canopy_mean = sum(canopy_samples) / len(canopy_samples)
@@ -859,10 +1025,33 @@ class WildfireDataClient:
             canopy_cover = round(canopy_mean, 2)
             environmental_layer_status["canopy"] = "ok"
             sources.append("Canopy density raster")
+            update_layer_audit(
+                layer_audit,
+                "canopy",
+                sample_attempted=True,
+                sample_succeeded=True,
+                coverage_status="observed",
+                raw_value_preview=round(canopy_cover, 2),
+            )
         else:
             canopy_index = None
             canopy_cover = None
-            environmental_layer_status["canopy"] = "missing" if not self._file_exists(canopy_path) else "error"
+            environmental_layer_status["canopy"] = _status_for_env(canopy_status_detail)
+            update_layer_audit(
+                layer_audit,
+                "canopy",
+                sample_attempted=True,
+                sample_succeeded=False,
+                coverage_status=(
+                    "outside_extent"
+                    if canopy_status_detail == "outside_extent"
+                    else ("missing_file" if canopy_status_detail == "missing_file" else "not_configured")
+                    if canopy_status_detail in {"missing_file", "not_configured"}
+                    else "sampling_failed"
+                ),
+                raw_value_preview=canopy_center,
+                failure_reason=canopy_reason,
+            )
             assumptions.append("Canopy density unavailable within 100m neighborhood.")
 
         moisture_context: dict[str, Any] = {
@@ -877,6 +1066,19 @@ class WildfireDataClient:
                 lat=lat,
                 lon=lon,
                 dryness_raster_path=runtime_paths.get("gridmet_dryness"),
+            )
+            update_layer_audit(
+                layer_audit,
+                "gridmet_dryness",
+                sample_attempted=True,
+                sample_succeeded=gridmet_obs.status == "ok",
+                coverage_status=(
+                    "observed"
+                    if gridmet_obs.status == "ok"
+                    else ("missing_file" if runtime_paths.get("gridmet_dryness") else "not_configured")
+                ),
+                raw_value_preview=gridmet_obs.raw_value,
+                failure_reason=None if gridmet_obs.status == "ok" else "; ".join(gridmet_obs.notes[:2]),
             )
             if gridmet_obs.status == "ok":
                 moisture = gridmet_obs.raw_value
@@ -903,6 +1105,15 @@ class WildfireDataClient:
                 "dryness_index": moisture_index,
             }
             sources.append("Moisture/fuel dryness raster")
+            update_layer_audit(
+                layer_audit,
+                "gridmet_dryness",
+                sample_attempted=True,
+                sample_succeeded=True,
+                coverage_status="observed",
+                raw_value_preview=round(float(moisture), 2),
+                note="Primary moisture layer sampled successfully.",
+            )
 
         wildland_distance, wildland_distance_index = self._wildland_distance_metrics(lat, lon, fuel_path, canopy_path)
         if wildland_distance is not None:
@@ -929,15 +1140,59 @@ class WildfireDataClient:
             historic_fire_index = mtbs_summary.fire_history_index
             fire_history_status = "ok"
             sources.append("MTBS historical fire context")
+            update_layer_audit(
+                layer_audit,
+                "fire_perimeters",
+                sample_attempted=True,
+                sample_succeeded=True,
+                coverage_status="observed",
+                raw_value_preview=historic_fire_distance,
+            )
+            update_layer_audit(
+                layer_audit,
+                "mtbs_severity",
+                sample_attempted=True,
+                sample_succeeded=True,
+                coverage_status="observed",
+                raw_value_preview=mtbs_summary.nearby_high_severity,
+            )
         else:
             historic_fire_distance, historic_fire_index, fire_history_status = self._historical_fire_metrics(
                 lat, lon, runtime_paths["perimeters"]
             )
             if fire_history_status == "ok":
                 sources.append("Historical fire perimeter recurrence")
+                update_layer_audit(
+                    layer_audit,
+                    "fire_perimeters",
+                    sample_attempted=True,
+                    sample_succeeded=True,
+                    coverage_status="observed",
+                    raw_value_preview=historic_fire_distance,
+                )
             else:
                 assumptions.extend(mtbs_summary.notes)
                 assumptions.append("Historical perimeter layer unavailable; recurrence unavailable.")
+                update_layer_audit(
+                    layer_audit,
+                    "fire_perimeters",
+                    sample_attempted=True,
+                    sample_succeeded=False,
+                    coverage_status=(
+                        "missing_file" if runtime_paths.get("perimeters") else "not_configured"
+                    ),
+                    failure_reason="Historical perimeter sampling unavailable.",
+                )
+            update_layer_audit(
+                layer_audit,
+                "mtbs_severity",
+                sample_attempted=True,
+                sample_succeeded=False,
+                coverage_status=(
+                    "fallback_used" if runtime_paths.get("mtbs_severity") else "not_configured"
+                ),
+                failure_reason="MTBS severity context unavailable; perimeter fallback used.",
+            )
         environmental_layer_status["fire_history"] = fire_history_status
 
         access_summary = self.osm_adapter.summarize(
@@ -957,8 +1212,28 @@ class WildfireDataClient:
         access_exposure_index = access_summary.access_exposure_index
         if access_summary.status == "ok" and access_exposure_index is not None:
             sources.append("OSM road-network access metrics")
+            update_layer_audit(
+                layer_audit,
+                "roads",
+                sample_attempted=True,
+                sample_succeeded=True,
+                coverage_status="observed",
+                raw_value_preview=access_exposure_index,
+            )
         else:
             assumptions.extend(access_summary.notes)
+            update_layer_audit(
+                layer_audit,
+                "roads",
+                sample_attempted=True,
+                sample_succeeded=False,
+                coverage_status=(
+                    "missing_file"
+                    if runtime_paths.get("roads") and not self._file_exists(runtime_paths.get("roads", ""))
+                    else ("not_configured" if not runtime_paths.get("roads") else "sampling_failed")
+                ),
+                failure_reason="; ".join(access_summary.notes[:2]) if access_summary.notes else "Road sampling unavailable.",
+            )
 
         property_level_context.update(
             {
@@ -966,6 +1241,15 @@ class WildfireDataClient:
                 "moisture_context": moisture_context,
                 "historical_fire_context": historical_fire_context,
                 "access_context": access_context,
+            }
+        )
+        layer_audit_rows = [layer_audit[k] for k in sorted(layer_audit.keys())]
+        coverage_summary = summarize_layer_audit(layer_audit_rows)
+        property_level_context.update(
+            {
+                "layer_coverage_audit": layer_audit_rows,
+                "coverage_summary": coverage_summary,
+                "runtime_paths": {k: v for k, v in runtime_paths.items() if v},
             }
         )
 
@@ -1016,4 +1300,6 @@ class WildfireDataClient:
             moisture_context=moisture_context,
             historical_fire_context=historical_fire_context,
             access_context=access_context,
+            layer_coverage_audit=layer_audit_rows,
+            coverage_summary=coverage_summary,
         )

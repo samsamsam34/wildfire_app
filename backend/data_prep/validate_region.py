@@ -38,6 +38,7 @@ RUNTIME_LAYER_MAP = {
 }
 
 VECTOR_KEYS = {"fire_perimeters", "building_footprints"}
+OPTIONAL_REGION_LAYER_KEYS = {"whp", "mtbs_severity", "gridmet_dryness", "roads", "fema_structures"}
 
 
 def _now() -> str:
@@ -163,7 +164,13 @@ def _run_sample_smoke_test(
         )
         return errors, warnings
 
-    for layer_key in REQUIRED_REGION_FILES:
+    files_map = manifest.get("files") if isinstance(manifest, dict) else {}
+    configured_optional = []
+    if isinstance(files_map, dict):
+        configured_optional = [k for k in OPTIONAL_REGION_LAYER_KEYS if files_map.get(k)]
+    sample_layers = list(REQUIRED_REGION_FILES) + configured_optional
+
+    for layer_key in sample_layers:
         resolved_path = resolve_region_file(manifest, layer_key, base_dir=base_dir)
         if not resolved_path:
             errors.append(f"Sample smoke test missing runtime layer mapping for '{layer_key}'.")
@@ -281,8 +288,14 @@ def validate_prepared_region(
     runtime_mapping_issues = _runtime_layer_mapping_issues(manifest, base_dir=base_dir)
     errors.extend(runtime_mapping_issues)
 
+    files_map = manifest.get("files")
+    configured_optional_layers: list[str] = []
+    if isinstance(files_map, dict):
+        configured_optional_layers = [k for k in OPTIONAL_REGION_LAYER_KEYS if files_map.get(k)]
+    checked_layers = list(REQUIRED_REGION_FILES) + configured_optional_layers
+
     if bounds is not None:
-        for layer_key in REQUIRED_REGION_FILES:
+        for layer_key in checked_layers:
             resolved = resolve_region_file(manifest, layer_key, base_dir=base_dir)
             if not resolved:
                 continue
@@ -315,7 +328,35 @@ def validate_prepared_region(
             }
 
     footprint_path = resolve_region_file(manifest, "building_footprints", base_dir=base_dir)
-    ring_support = "available" if footprint_path else "missing"
+    ring_support = "missing"
+    if footprint_path:
+        ring_support = "available"
+        if sample_lat is not None and sample_lon is not None and box is not None and shape is not None:
+            try:
+                with open(footprint_path, "r", encoding="utf-8") as f:
+                    fp_payload = json.load(f)
+                features = fp_payload.get("features", []) if isinstance(fp_payload, dict) else []
+                has_intersection = False
+                sample_pt = box(float(sample_lon), float(sample_lat), float(sample_lon), float(sample_lat))
+                for feat in features:
+                    geom = feat.get("geometry") if isinstance(feat, dict) else None
+                    if not geom:
+                        continue
+                    try:
+                        shp = shape(geom)
+                    except Exception:
+                        continue
+                    if shp.is_valid and shp.intersects(sample_pt):
+                        has_intersection = True
+                        break
+                if not has_intersection:
+                    ring_support = "partial"
+                    warnings.append(
+                        "Building footprints exist but do not intersect sample point; structure rings may fallback to point-based mode."
+                    )
+            except Exception:
+                ring_support = "partial"
+                warnings.append("Could not evaluate footprint/sample intersection for ring readiness.")
 
     unique_errors = sorted(set(errors))
     unique_warnings = sorted(set(warnings))
@@ -350,7 +391,7 @@ def validate_prepared_region(
         "scoring_readiness": scoring_readiness,
         "blockers": unique_errors,
         "warnings": unique_warnings,
-        "required_layers_checked": list(REQUIRED_REGION_FILES),
+        "required_layers_checked": checked_layers,
         "footprint_ring_support": ring_support,
         "sample_test": sample_summary,
     }

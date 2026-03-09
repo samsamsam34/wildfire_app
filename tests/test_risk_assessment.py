@@ -190,6 +190,8 @@ def _assert_core_contract(body: dict) -> None:
         "insurance_readiness_input_quality",
         "score_evidence_ledger",
         "evidence_quality_summary",
+        "layer_coverage_audit",
+        "coverage_summary",
         "site_hazard_eligibility",
         "home_vulnerability_eligibility",
         "insurance_readiness_eligibility",
@@ -346,6 +348,45 @@ def _assert_core_contract(body: dict) -> None:
         assert key in summary
     assert summary["use_restriction"] in {"consumer_estimate", "screening_only", "review_required"}
     assert 0.0 <= float(summary["evidence_quality_score"]) <= 100.0
+    coverage_rows = body["layer_coverage_audit"]
+    assert isinstance(coverage_rows, list)
+    for row in coverage_rows:
+        for key in [
+            "layer_key",
+            "display_name",
+            "required_for",
+            "configured",
+            "present_in_region",
+            "sample_attempted",
+            "sample_succeeded",
+            "coverage_status",
+            "source_type",
+            "notes",
+        ]:
+            assert key in row
+        assert row["coverage_status"] in {
+            "observed",
+            "missing_file",
+            "not_configured",
+            "outside_extent",
+            "sampling_failed",
+            "fallback_used",
+            "partial",
+        }
+        assert row["source_type"] in {"prepared_region", "runtime_env", "derived", "open_data"}
+    coverage_summary = body["coverage_summary"]
+    for key in [
+        "total_layers_checked",
+        "observed_count",
+        "partial_count",
+        "fallback_count",
+        "failed_count",
+        "not_configured_count",
+        "critical_missing_layers",
+        "recommended_actions",
+    ]:
+        assert key in coverage_summary
+    assert coverage_summary["total_layers_checked"] == len(coverage_rows)
     diagnostics = body["assessment_diagnostics"]
     for key in [
         "critical_inputs_present",
@@ -1157,7 +1198,146 @@ def test_debug_endpoint_includes_evidence_ledger_and_summary(monkeypatch, tmp_pa
     payload = res.json()
     assert "score_evidence_ledger" in payload
     assert "evidence_quality_summary" in payload
+    assert "layer_coverage_audit" in payload
+    assert "coverage_summary" in payload
     assert payload["evidence_quality_summary"]["observed_factor_count"] >= 0
+
+
+def test_layer_diagnostics_endpoint_returns_layer_audit(monkeypatch, tmp_path):
+    _setup(monkeypatch, tmp_path, _ctx(env=58.0, wildland=52.0, historic=43.0, ring_metrics={}))
+
+    res = client.post(
+        "/risk/layer-diagnostics",
+        json={
+            "address": "Layer Diagnostics Way",
+            "attributes": {},
+            "confirmed_fields": [],
+            "audience": "homeowner",
+            "tags": [],
+        },
+    )
+    assert res.status_code == 200
+    payload = res.json()
+    assert "coordinates" in payload
+    assert "region" in payload
+    assert "structure_footprint" in payload
+    assert "layer_coverage_audit" in payload
+    assert "coverage_summary" in payload
+    assert isinstance(payload["layer_coverage_audit"], list)
+    assert isinstance(payload["coverage_summary"], dict)
+    assert isinstance(payload["fallback_decisions"], dict)
+    assert isinstance(payload["warnings"], list)
+
+
+def test_layer_coverage_sampling_failure_penalty_and_restriction(monkeypatch, tmp_path):
+    degraded = _ctx(env=52.0, wildland=48.0, historic=40.0, ring_metrics={})
+    degraded.property_level_context = {
+        "footprint_used": False,
+        "footprint_status": "provider_unavailable",
+        "fallback_mode": "point_based",
+        "ring_metrics": None,
+        "layer_coverage_audit": [
+            {
+                "layer_key": "fuel",
+                "display_name": "Fuel Model",
+                "required_for": ["site_hazard"],
+                "configured": True,
+                "present_in_region": True,
+                "sample_attempted": True,
+                "sample_succeeded": False,
+                "coverage_status": "sampling_failed",
+                "source_type": "prepared_region",
+                "failure_reason": "raster read error",
+                "notes": [],
+            },
+            {
+                "layer_key": "building_footprints",
+                "display_name": "Building Footprints",
+                "required_for": ["home_ignition_vulnerability"],
+                "configured": True,
+                "present_in_region": True,
+                "sample_attempted": True,
+                "sample_succeeded": False,
+                "coverage_status": "outside_extent",
+                "source_type": "prepared_region",
+                "failure_reason": "outside extent",
+                "notes": ["Point-based fallback used."],
+            },
+        ],
+        "coverage_summary": {
+            "total_layers_checked": 2,
+            "observed_count": 0,
+            "partial_count": 0,
+            "fallback_count": 0,
+            "failed_count": 2,
+            "not_configured_count": 0,
+            "critical_missing_layers": ["fuel", "building_footprints"],
+            "recommended_actions": ["fuel sampling failed; validate raster integrity."],
+        },
+    }
+    _setup(monkeypatch, tmp_path, degraded)
+
+    assessed = _run(_payload("Layer Failure Ct", {}, confirmed=[]))
+    assert assessed["use_restriction"] == "not_for_underwriting_or_binding"
+    penalties = assessed["evidence_quality_summary"]["confidence_penalties"]
+    penalty_keys = {p["penalty_key"] for p in penalties}
+    assert "layer_sampling_failures" in penalty_keys
+    assert "critical_layer_gaps" in penalty_keys
+    assert any(r["layer_key"] == "building_footprints" and r["coverage_status"] == "outside_extent" for r in assessed["layer_coverage_audit"])
+
+
+def test_optional_layer_not_configured_is_explicit_and_nonfatal(monkeypatch, tmp_path):
+    partial = _ctx(env=55.0, wildland=51.0, historic=44.0, ring_metrics={})
+    partial.property_level_context = {
+        "footprint_used": False,
+        "footprint_status": "not_found",
+        "fallback_mode": "point_based",
+        "ring_metrics": None,
+        "layer_coverage_audit": [
+            {
+                "layer_key": "dem",
+                "display_name": "Digital Elevation Model",
+                "required_for": ["site_hazard"],
+                "configured": True,
+                "present_in_region": True,
+                "sample_attempted": True,
+                "sample_succeeded": True,
+                "coverage_status": "observed",
+                "source_type": "prepared_region",
+                "notes": [],
+            },
+            {
+                "layer_key": "gridmet_dryness",
+                "display_name": "gridMET Dryness",
+                "required_for": ["site_hazard"],
+                "configured": False,
+                "present_in_region": False,
+                "sample_attempted": False,
+                "sample_succeeded": False,
+                "coverage_status": "not_configured",
+                "source_type": "open_data",
+                "failure_reason": "No configured source path.",
+                "notes": [],
+            },
+        ],
+        "coverage_summary": {
+            "total_layers_checked": 2,
+            "observed_count": 1,
+            "partial_count": 0,
+            "fallback_count": 0,
+            "failed_count": 0,
+            "not_configured_count": 1,
+            "critical_missing_layers": [],
+            "recommended_actions": ["gridmet_dryness is not configured; add a source path or keep optional."],
+        },
+    }
+    _setup(monkeypatch, tmp_path, partial)
+
+    assessed = _run(_payload("Optional Layer Way", {"defensible_space_ft": 20}, confirmed=["defensible_space_ft"]))
+    assert assessed["assessment_status"] in {"fully_scored", "partially_scored"}
+    assert assessed["coverage_summary"]["not_configured_count"] == 1
+    assert any(r["layer_key"] == "gridmet_dryness" and r["coverage_status"] == "not_configured" for r in assessed["layer_coverage_audit"])
+    assert any("not configured" in n.lower() for n in assessed["scoring_notes"])
 
 
 def test_portfolio_batch_and_partial_failure(monkeypatch, tmp_path):
@@ -2427,6 +2607,10 @@ def test_assessment_diagnostics_and_report_persistence(monkeypatch, tmp_path):
     body = report.json()
     assert "assessment_diagnostics" in body
     assert set(body["assessment_diagnostics"].keys()) == set(diagnostics.keys())
+    assert "layer_coverage_audit" in body
+    assert "coverage_summary" in body
+    assert isinstance(body["layer_coverage_audit"], list)
+    assert isinstance(body["coverage_summary"], dict)
 
 
 def test_provenance_freshness_status_classification(monkeypatch, tmp_path):

@@ -32,6 +32,7 @@ Runtime scoring reads prepared local data. Large GIS download/prep is handled of
   - score availability flags (distinguish “not scored” from real low scores)
   - confidence tier and use restriction
   - score eligibility, blockers, diagnostics, and provenance metadata
+  - per-layer coverage audit (`layer_coverage_audit`) and coverage summary (`coverage_summary`) to explain data gaps vs sampling/config issues
   - factor-level score evidence ledger (`score_evidence_ledger`) with weight/contribution/evidence status per factor
   - evidence-quality summary (`evidence_quality_summary`) with observed/inferred/missing/fallback counts and confidence penalties
 - Persists assessment/report payloads in SQLite with compatibility handling for older rows.
@@ -46,6 +47,7 @@ Core assessment:
 - `POST /risk/reassess/{assessment_id}`
 - `POST /risk/simulate`
 - `POST /risk/debug`
+- `POST /risk/layer-diagnostics`
 
 Reports:
 - `GET /report/{assessment_id}`
@@ -62,6 +64,23 @@ Review and operations:
 - annotations, review status, assignment, workflow, comparison, scenario history
 - organizations and underwriting rulesets
 - audit and summary endpoints (`/audit/events`, `/admin/summary`)
+
+## Layer Diagnostics / Coverage Audit
+
+Use `POST /risk/layer-diagnostics` (or `POST /risk/debug`) to inspect runtime data coverage before tuning scores.
+
+Key response blocks:
+- `layer_coverage_audit`: per-layer status (`configured`, `present_in_region`, `sample_attempted`, `sample_succeeded`, `coverage_status`, and failure notes)
+- `coverage_summary`: totals plus `critical_missing_layers` and actionable `recommended_actions`
+
+`coverage_status` interpretation:
+- `observed`: sampled successfully
+- `not_configured`: no source configured for that layer
+- `missing_file`: configured path is missing
+- `outside_extent`: point/ring is outside layer coverage or sampled nodata
+- `sampling_failed`: read/CRS/runtime sampling failure
+- `fallback_used`: scoring fallback path was used
+- `partial`: layer exists but only partial evidence is available
 
 ## Local Development / Setup
 
@@ -228,6 +247,7 @@ Trust/transparency behavior:
 - score families may be unavailable (`null`) when evidence is insufficient
 - availability flags are included for each score
 - confidence/provenance fields explain missing, inferred, stale, or provisional inputs
+- layer diagnostics distinguish `not_configured`, `missing_file`, `outside_extent`, `sampling_failed`, `fallback_used`, and `observed`
 - each score family can be audited through factor-level ledger entries (inputs, weights, contributions, evidence status, source references)
 - evidence quality summary exposes confidence penalties and insurer-facing interpretation guardrails
 - access exposure uses observable OSM road-network features when available and remains advisory (not part of weighted wildfire total)

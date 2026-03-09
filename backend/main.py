@@ -15,6 +15,7 @@ from fastapi.responses import HTMLResponse, PlainTextResponse
 from backend.auth import require_api_key
 from backend.database import AssessmentStore, DEFAULT_ORG_ID
 from backend.geocoding import Geocoder
+from backend.layer_diagnostics import LAYER_SPECS
 from backend.mitigation import build_mitigation_plan
 from backend.models import (
     AssessmentDiagnostics,
@@ -76,6 +77,8 @@ from backend.models import (
     ScoreEligibility,
     ScoreEvidenceFactor,
     ScoreEvidenceLedger,
+    LayerCoverageAuditItem,
+    LayerCoverageSummary,
     ScoreSummaries,
     ScoreSectionSummary,
     SubmodelScore,
@@ -646,6 +649,7 @@ def _derive_confidence_penalties(
     property_level_context: dict[str, Any],
     environmental_layer_status: dict[str, str],
     data_provenance: DataProvenanceBlock | None = None,
+    coverage_summary: LayerCoverageSummary | None = None,
 ) -> list[ConfidencePenalty]:
     penalties: list[ConfidencePenalty] = []
     missing_inputs_set = set(assumptions.missing_inputs)
@@ -659,6 +663,9 @@ def _derive_confidence_penalties(
     has_ring_metrics = isinstance(ring_metrics, dict) and bool(ring_metrics)
     stale_share = float((data_provenance.summary.stale_data_share if data_provenance else 0.0) or 0.0)
     heuristic_count = int((data_provenance.summary.heuristic_input_count if data_provenance else 0) or 0)
+    coverage_failed_count = int((coverage_summary.failed_count if coverage_summary else 0) or 0)
+    critical_missing_count = int(len((coverage_summary.critical_missing_layers if coverage_summary else []) or []))
+    not_configured_count = int((coverage_summary.not_configured_count if coverage_summary else 0) or 0)
 
     if not geocode_verified:
         penalties.append(
@@ -722,6 +729,30 @@ def _derive_confidence_penalties(
                 penalty_key="heuristic_inputs",
                 reason="Heuristic inputs were used where direct evidence was unavailable.",
                 amount=round(min(6.0, heuristic_count * 1.2), 1),
+            )
+        )
+    if coverage_failed_count > 0:
+        penalties.append(
+            ConfidencePenalty(
+                penalty_key="layer_sampling_failures",
+                reason="One or more runtime layers failed extent/sampling checks.",
+                amount=round(min(18.0, coverage_failed_count * 4.0), 1),
+            )
+        )
+    if critical_missing_count > 0:
+        penalties.append(
+            ConfidencePenalty(
+                penalty_key="critical_layer_gaps",
+                reason="Required prepared-region layers are missing or unusable.",
+                amount=round(min(20.0, critical_missing_count * 5.0), 1),
+            )
+        )
+    if not_configured_count > 0:
+        penalties.append(
+            ConfidencePenalty(
+                penalty_key="unconfigured_layers",
+                reason="Some optional/open-data layers were not configured.",
+                amount=round(min(6.0, not_configured_count * 1.0), 1),
             )
         )
 
@@ -1138,6 +1169,138 @@ def _normalize_property_level_context(raw_context: object) -> dict[str, Any]:
     else:
         normalized["ring_metrics"] = None
     return normalized
+
+
+def _normalize_layer_coverage(
+    property_level_context: dict[str, Any],
+    *,
+    environmental_layer_status: dict[str, str],
+) -> tuple[list[LayerCoverageAuditItem], LayerCoverageSummary]:
+    raw_rows = property_level_context.get("layer_coverage_audit")
+    rows: list[LayerCoverageAuditItem] = []
+    if isinstance(raw_rows, list):
+        for item in raw_rows:
+            try:
+                rows.append(LayerCoverageAuditItem.model_validate(item))
+            except Exception:
+                continue
+
+    if not rows:
+        fallback_rows: list[LayerCoverageAuditItem] = []
+        footprint_used = bool(property_level_context.get("footprint_used"))
+        footprint_status = str(property_level_context.get("footprint_status") or "not_found")
+        has_hazard_context = isinstance(property_level_context.get("hazard_context"), dict) and bool(
+            property_level_context.get("hazard_context")
+        )
+        has_moisture_context = isinstance(property_level_context.get("moisture_context"), dict) and bool(
+            property_level_context.get("moisture_context")
+        )
+        has_historical_context = isinstance(property_level_context.get("historical_fire_context"), dict) and bool(
+            property_level_context.get("historical_fire_context")
+        )
+        has_access_context = isinstance(property_level_context.get("access_context"), dict) and bool(
+            property_level_context.get("access_context")
+        )
+        inferred_layer_states = {
+            "dem": "ok" if environmental_layer_status else "missing",
+            "slope": str(environmental_layer_status.get("slope") or "missing"),
+            "fuel": str(environmental_layer_status.get("fuel") or "missing"),
+            "canopy": str(environmental_layer_status.get("canopy") or "missing"),
+            "fire_perimeters": str(environmental_layer_status.get("fire_history") or "missing"),
+            "building_footprints": "ok" if footprint_used else "missing",
+            "whp": "ok" if has_hazard_context else "missing",
+            "mtbs_severity": "ok" if has_historical_context else "missing",
+            "gridmet_dryness": "ok" if has_moisture_context else "missing",
+            "roads": "ok" if has_access_context else "missing",
+        }
+        for key in [
+            "dem",
+            "slope",
+            "fuel",
+            "canopy",
+            "fire_perimeters",
+            "building_footprints",
+            "whp",
+            "mtbs_severity",
+            "gridmet_dryness",
+            "roads",
+        ]:
+            layer_state = inferred_layer_states.get(key, "missing")
+            if layer_state == "ok":
+                coverage_status = "observed"
+            elif layer_state == "error":
+                coverage_status = "sampling_failed"
+            elif key in {"whp", "mtbs_severity", "gridmet_dryness", "roads"}:
+                coverage_status = "not_configured"
+            else:
+                coverage_status = "fallback_used"
+            spec = LAYER_SPECS.get(key, {"display_name": key.replace("_", " "), "required_for": []})
+            fallback_rows.append(
+                LayerCoverageAuditItem(
+                    layer_key=key,
+                    display_name=str(spec.get("display_name") or key.replace("_", " ")),
+                    required_for=[str(x) for x in (spec.get("required_for") or [])],
+                    configured=layer_state != "missing",
+                    present_in_region=layer_state != "missing",
+                    sample_attempted=layer_state in {"ok", "error"},
+                    sample_succeeded=layer_state == "ok",
+                    coverage_status=coverage_status,
+                    source_type="open_data" if key in {"whp", "mtbs_severity", "gridmet_dryness", "roads"} else "runtime_env",
+                    failure_reason=(
+                        f"footprint_status={footprint_status}"
+                        if key == "building_footprints" and not footprint_used
+                        else None
+                    ),
+                    notes=["Generated fallback diagnostics from legacy status fields."],
+                )
+            )
+        rows = fallback_rows
+
+    raw_summary = property_level_context.get("coverage_summary")
+    if isinstance(raw_summary, dict):
+        try:
+            summary = LayerCoverageSummary.model_validate(raw_summary)
+            return rows, summary
+        except Exception:
+            pass
+
+    observed_count = sum(1 for row in rows if row.coverage_status == "observed")
+    partial_count = sum(1 for row in rows if row.coverage_status == "partial")
+    fallback_count = sum(1 for row in rows if row.coverage_status == "fallback_used")
+    failed_count = sum(1 for row in rows if row.coverage_status in {"missing_file", "outside_extent", "sampling_failed"})
+    not_configured_count = sum(1 for row in rows if row.coverage_status == "not_configured")
+    critical_missing_layers = sorted(
+        {
+            row.layer_key
+            for row in rows
+            if row.layer_key in {"dem", "slope", "fuel", "canopy", "fire_perimeters", "building_footprints"}
+            and row.coverage_status not in {"observed", "partial"}
+        }
+    )
+    recommended_actions: list[str] = []
+    for row in rows:
+        if row.coverage_status == "missing_file":
+            recommended_actions.append(f"{row.layer_key} file is missing; verify prepared region files.")
+        elif row.coverage_status == "not_configured":
+            recommended_actions.append(f"{row.layer_key} is not configured; add a data source or treat it as optional.")
+        elif row.coverage_status == "outside_extent":
+            recommended_actions.append(f"{row.layer_key} does not cover this property location; prepare correct regional coverage.")
+        elif row.coverage_status == "sampling_failed":
+            recommended_actions.append(f"{row.layer_key} sampling failed; validate layer integrity and CRS.")
+        elif row.coverage_status == "fallback_used":
+            recommended_actions.append(f"{row.layer_key} used fallback behavior; improve data coverage for stronger confidence.")
+    dedup_actions = list(dict.fromkeys(recommended_actions))[:10]
+    summary = LayerCoverageSummary(
+        total_layers_checked=len(rows),
+        observed_count=observed_count,
+        partial_count=partial_count,
+        fallback_count=fallback_count,
+        failed_count=failed_count,
+        not_configured_count=not_configured_count,
+        critical_missing_layers=critical_missing_layers,
+        recommended_actions=dedup_actions,
+    )
+    return rows, summary
 
 
 def _build_data_provenance(
@@ -1718,6 +1881,7 @@ def _apply_hard_trust_guardrails(
     home_eligibility: ScoreEligibility,
     readiness_eligibility: ScoreEligibility,
     assessment_status: AssessmentStatus,
+    coverage_summary: LayerCoverageSummary | None = None,
 ) -> tuple[ConfidenceBlock, list[str], list[str]]:
     updated = confidence.model_copy(deep=True)
     downgrade_reasons: list[str] = []
@@ -1756,6 +1920,21 @@ def _apply_hard_trust_guardrails(
         if updated.use_restriction == "shareable":
             updated.use_restriction = "homeowner_review_recommended"
         downgrade_reasons.append("Property-level footprint/ring context unavailable; point-based fallback used.")
+
+    if coverage_summary:
+        if coverage_summary.failed_count > 0:
+            if updated.use_restriction == "shareable":
+                updated.use_restriction = "agent_or_inspector_review_recommended"
+            downgrade_reasons.append("One or more layers failed sampling/extent checks.")
+            trust_tier_blockers.append("Layer sampling failures detected.")
+        if coverage_summary.critical_missing_layers:
+            updated.use_restriction = "not_for_underwriting_or_binding"
+            if updated.confidence_tier != "preliminary":
+                updated.confidence_tier = "low"
+            downgrade_reasons.append("Critical required layers are missing or not usable.")
+            trust_tier_blockers.append(
+                "Critical missing layers: " + ", ".join(coverage_summary.critical_missing_layers[:6])
+            )
 
     if readiness_eligibility.eligibility_status == "insufficient":
         updated.use_restriction = "not_for_underwriting_or_binding"
@@ -2139,6 +2318,12 @@ def _run_assessment(
     )
 
     property_level_context = _normalize_property_level_context(context.property_level_context)
+    layer_coverage_audit, coverage_summary = _normalize_layer_coverage(
+        property_level_context,
+        environmental_layer_status=context.environmental_layer_status,
+    )
+    property_level_context["layer_coverage_audit"] = [row.model_dump() for row in layer_coverage_audit]
+    property_level_context["coverage_summary"] = coverage_summary.model_dump()
     factors = EnvironmentalFactors(
         burn_probability=context.burn_probability,
         wildfire_hazard=context.wildfire_hazard,
@@ -2209,6 +2394,7 @@ def _run_assessment(
         home_eligibility=home_vulnerability_eligibility,
         readiness_eligibility=insurance_readiness_eligibility,
         assessment_status=assessment_status,
+        coverage_summary=coverage_summary,
     )
     confidence_penalties = _derive_confidence_penalties(
         assumptions_block,
@@ -2217,6 +2403,7 @@ def _run_assessment(
         property_level_context=property_level_context,
         environmental_layer_status=context.environmental_layer_status,
         data_provenance=data_provenance,
+        coverage_summary=coverage_summary,
     )
     assessment_diagnostics = _build_assessment_diagnostics(
         data_provenance=data_provenance,
@@ -2332,6 +2519,12 @@ def _run_assessment(
         scoring_notes.append(
             f"{data_provenance.summary.stale_data_share:.1f}% of tracked inputs are stale per freshness policy."
         )
+    if coverage_summary.critical_missing_layers:
+        scoring_notes.append(
+            "Critical layer gaps: " + ", ".join(coverage_summary.critical_missing_layers[:6]) + "."
+        )
+    for recommendation in coverage_summary.recommended_actions[:5]:
+        scoring_notes.append(recommendation)
     if normalization_changes:
         notes = ", ".join(
             f"{field}: '{change['input']}' -> '{change['normalized']}'"
@@ -2464,6 +2657,8 @@ def _run_assessment(
         insurance_readiness_input_quality=insurance_readiness_input_quality,
         score_evidence_ledger=score_evidence_ledger,
         evidence_quality_summary=evidence_quality_summary,
+        layer_coverage_audit=layer_coverage_audit,
+        coverage_summary=coverage_summary,
         site_hazard_eligibility=site_hazard_eligibility,
         home_vulnerability_eligibility=home_vulnerability_eligibility,
         insurance_readiness_eligibility=insurance_readiness_eligibility,
@@ -2568,6 +2763,8 @@ def _run_assessment(
             "stale_data_share": result.data_provenance.summary.stale_data_share,
             "heuristic_input_count": result.data_provenance.summary.heuristic_input_count,
         },
+        "layer_coverage_audit": [row.model_dump() for row in result.layer_coverage_audit],
+        "coverage_summary": result.coverage_summary.model_dump(),
         "score_evidence_ledger": result.score_evidence_ledger.model_dump(),
         "evidence_quality_summary": result.evidence_quality_summary.model_dump(),
         "score_family_input_quality": {
@@ -2741,6 +2938,8 @@ def _build_report_export(
             "data_provenance": result.data_provenance.model_dump(),
             "property_level_context": result.property_level_context,
             "assessment_diagnostics": result.assessment_diagnostics.model_dump(),
+            "layer_coverage_audit": [row.model_dump() for row in result.layer_coverage_audit],
+            "coverage_summary": result.coverage_summary.model_dump(),
         },
         wildfire_risk_summary={
             "wildfire_risk_score": result.wildfire_risk_score,
@@ -2805,6 +3004,8 @@ def _build_report_export(
         },
         score_evidence_ledger=result.score_evidence_ledger,
         evidence_quality_summary=result.evidence_quality_summary,
+        layer_coverage_audit=result.layer_coverage_audit,
+        coverage_summary=result.coverage_summary,
         mitigation_recommendations=result.mitigation_plan,
     )
 
@@ -3483,6 +3684,39 @@ def debug_risk(payload: AddressRequest, ctx: ActorContext = Depends(get_actor_co
     ruleset = _get_ruleset_or_default(payload.ruleset_id)
     _, debug_payload = _run_assessment(payload, organization_id=organization_id, ruleset=ruleset)
     return debug_payload
+
+
+@app.post("/risk/layer-diagnostics", dependencies=[Depends(require_api_key)])
+def layer_diagnostics(payload: AddressRequest, ctx: ActorContext = Depends(get_actor_context)) -> dict:
+    organization_id = _resolve_org_id(payload.organization_id, ctx)
+    _enforce_org_scope(ctx, organization_id)
+    ruleset = _get_ruleset_or_default(payload.ruleset_id)
+    _, debug_payload = _run_assessment(payload, organization_id=organization_id, ruleset=ruleset)
+    return {
+        "address": debug_payload.get("address"),
+        "organization_id": debug_payload.get("organization_id"),
+        "ruleset_id": debug_payload.get("ruleset_id"),
+        "coordinates": debug_payload.get("coordinates"),
+        "region": {
+            "region_id": (debug_payload.get("property_level_context") or {}).get("region_id"),
+            "region_status": (debug_payload.get("property_level_context") or {}).get("region_status"),
+            "manifest_path": (debug_payload.get("property_level_context") or {}).get("region_manifest_path"),
+        },
+        "structure_footprint": {
+            "footprint_used": (debug_payload.get("property_level_context") or {}).get("footprint_used"),
+            "footprint_status": (debug_payload.get("property_level_context") or {}).get("footprint_status"),
+            "footprint_source": (debug_payload.get("property_level_context") or {}).get("footprint_source"),
+            "fallback_mode": (debug_payload.get("property_level_context") or {}).get("fallback_mode"),
+        },
+        "layer_coverage_audit": debug_payload.get("layer_coverage_audit", []),
+        "coverage_summary": debug_payload.get("coverage_summary", {}),
+        "fallback_decisions": {
+            "assumptions_used": debug_payload.get("assumptions_used", []),
+            "assessment_blockers": ((debug_payload.get("eligibility") or {}).get("assessment_blockers") or []),
+            "confidence_use_restriction": ((debug_payload.get("confidence_gating") or {}).get("use_restriction")),
+        },
+        "warnings": debug_payload.get("coverage_summary", {}).get("recommended_actions", []),
+    }
 
 
 @app.post("/portfolio/assess", response_model=BatchAssessmentResponse, dependencies=[Depends(require_api_key)])

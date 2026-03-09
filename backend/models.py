@@ -51,6 +51,16 @@ LedgerDirection = Literal[
     "data_quality",
 ]
 EvidenceUseRestriction = Literal["consumer_estimate", "screening_only", "review_required"]
+LayerCoverageStatus = Literal[
+    "observed",
+    "missing_file",
+    "not_configured",
+    "outside_extent",
+    "sampling_failed",
+    "fallback_used",
+    "partial",
+]
+LayerSourceType = Literal["prepared_region", "runtime_env", "derived", "open_data"]
 
 
 class PropertyAttributes(BaseModel):
@@ -261,6 +271,33 @@ class EvidenceQualitySummary(BaseModel):
     use_restriction: EvidenceUseRestriction = "screening_only"
 
 
+class LayerCoverageAuditItem(BaseModel):
+    layer_key: str
+    display_name: str
+    required_for: List[str] = Field(default_factory=list)
+    configured: bool = False
+    present_in_region: bool = False
+    sample_attempted: bool = False
+    sample_succeeded: bool = False
+    coverage_status: LayerCoverageStatus = "not_configured"
+    source_type: LayerSourceType = "runtime_env"
+    source_path: Optional[str] = None
+    raw_value_preview: Optional[object] = None
+    failure_reason: Optional[str] = None
+    notes: List[str] = Field(default_factory=list)
+
+
+class LayerCoverageSummary(BaseModel):
+    total_layers_checked: int = 0
+    observed_count: int = 0
+    partial_count: int = 0
+    fallback_count: int = 0
+    failed_count: int = 0
+    not_configured_count: int = 0
+    critical_missing_layers: List[str] = Field(default_factory=list)
+    recommended_actions: List[str] = Field(default_factory=list)
+
+
 class ScoreEligibility(BaseModel):
     eligible: bool = False
     eligibility_status: EligibilityStatus = "insufficient"
@@ -405,6 +442,8 @@ class AssessmentResult(BaseModel):
     insurance_readiness_input_quality: ScoreFamilyInputQuality = Field(default_factory=ScoreFamilyInputQuality)
     score_evidence_ledger: ScoreEvidenceLedger = Field(default_factory=ScoreEvidenceLedger)
     evidence_quality_summary: EvidenceQualitySummary = Field(default_factory=EvidenceQualitySummary)
+    layer_coverage_audit: List[LayerCoverageAuditItem] = Field(default_factory=list)
+    coverage_summary: LayerCoverageSummary = Field(default_factory=LayerCoverageSummary)
     site_hazard_eligibility: ScoreEligibility = Field(default_factory=ScoreEligibility)
     home_vulnerability_eligibility: ScoreEligibility = Field(default_factory=ScoreEligibility)
     insurance_readiness_eligibility: ScoreEligibility = Field(default_factory=ScoreEligibility)
@@ -507,6 +546,8 @@ class ReportExport(BaseModel):
     assumptions_confidence: Dict[str, object]
     score_evidence_ledger: ScoreEvidenceLedger = Field(default_factory=ScoreEvidenceLedger)
     evidence_quality_summary: EvidenceQualitySummary = Field(default_factory=EvidenceQualitySummary)
+    layer_coverage_audit: List[LayerCoverageAuditItem] = Field(default_factory=list)
+    coverage_summary: LayerCoverageSummary = Field(default_factory=LayerCoverageSummary)
     mitigation_recommendations: List[MitigationAction]
     simulation: Optional[Dict[str, object]] = None
 
