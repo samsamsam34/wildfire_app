@@ -201,19 +201,35 @@ Common runtime settings:
 - Geocoding trust controls:
   - `WF_GEOCODE_ALLOW_LOW_CONFIDENCE_FALLBACK` (default: `true`, allows medium-confidence fallback when a candidate has usable coordinates)
   - `WF_GEOCODE_ALLOW_AMBIGUOUS_FALLBACK` (default: `false`)
+  - `WF_GEOCODE_SECONDARY_ENABLED` + `WF_GEOCODE_SECONDARY_SEARCH_URL` (optional secondary provider stage)
+  - `WF_GEOCODE_SECONDARY_PROVIDER_NAME`, `WF_GEOCODE_SECONDARY_USER_AGENT` (secondary provider metadata)
+  - `WF_GEOCODE_ENABLE_PROVIDER_BACKOFF_QUERY` (default: `true`, enables street/locality backoff queries when full-address lookup returns no match)
+  - `WF_LOCAL_ADDRESS_FALLBACK_PATH` (optional local alias/address-point file, default: `config/local_address_fallbacks.json`)
+  - `WF_LOCAL_ADDRESS_MATCH_MIN_SCORE` (default: `0.76`, fuzzy-match threshold for local fallback candidates)
   - `WF_REGION_EDGE_TOLERANCE_M` (default: `0`, optional region-boundary tolerance for near-edge points)
 - `WILDFIRE_APP_CACHE_ROOT`, `WILDFIRE_APP_DATA_ROOT`, `WILDFIRE_APP_TMP_ROOT` (offline prep script paths)
 
 Legacy direct-layer paths are still supported via `WF_LAYER_*` env vars (`DEM`, `SLOPE`, `FUEL`, `CANOPY`, fire perimeters, building footprints, etc.), but prepared-region runtime is the primary path.
 
-Geocoding uses OpenStreetMap Nominatim (`backend/geocoding.py`). Geocode outcomes are now explicit:
-- `geocode_failed`: no usable provider candidate
-- `geocode_succeeded_untrusted`: provider returned a candidate but trust checks were weak; runtime can continue with diagnostics
-- `geocode_succeeded_trusted`: accepted trusted match
+Address resolution uses a staged pipeline:
+1. Primary geocoder
+2. Optional secondary geocoder
+3. Local fallback (configured address-point/parcel datasets and local alias file)
+4. User-selected `property_anchor_point` fallback (for assessment routes)
+
+Geocode outcomes remain explicit:
+- `geocode_failed`: no usable location after all enabled stages
+- `geocode_succeeded_untrusted`: fallback location was used (secondary/local/user point)
+- `geocode_succeeded_trusted`: accepted trusted match from a geocoder/local authoritative source
+
+`/risk/assess`, `/risk/debug`, and `/regions/coverage-check` now share this same canonical resolution flow and expose:
+- `resolution_status`, `resolution_method`, `fallback_used`
+- `provider_attempts`, `provider_statuses`
+- `local_fallback_attempted`, `local_fallback_result`
 
 For local geocode/trust troubleshooting (including Winthrop edge cases), use:
 - `POST /risk/geocode-debug` (or `/debug/geocode`) for candidate/trust/region diagnostics
-- `python scripts/debug_geocode_trust_pipeline.py --address "104 Riverside Ave, Winthrop, WA 98862" --pretty`
+- `python scripts/debug_geocode_trust_pipeline.py --address "6 Pineview Rd, Winthrop, WA 98862" --pretty`
 
 ## Data / Storage Notes
 
@@ -501,7 +517,7 @@ Governance guidance:
 
 Homeowner assessments now prioritize graceful degradation when a usable geocode and supported prepared region are available.
 
-- Hard blockers (assessment may return `insufficient_data`): no usable geocode candidate, no prepared-region coverage, or total absence of enough core evidence to score both site hazard and home vulnerability.
+- Hard blockers (assessment may return `insufficient_data`): no usable location after all enabled resolution stages, no prepared-region coverage, or total absence of enough core evidence to score both site hazard and home vulnerability.
 - Soft blockers (assessment still returns): missing/partial layers, nodata/outside-extent sampling, missing structure fields, and footprint/ring gaps.
 - Low-confidence geocode candidates can continue as `geocode_succeeded_untrusted` with `trusted_match_status=untrusted_fallback`, explicit diagnostics, and confidence penalties.
 

@@ -80,7 +80,13 @@ class GeocodingError(Exception):
 
 
 class Geocoder:
-    def __init__(self, user_agent: str = "WildfireRiskAdvisor/0.1") -> None:
+    def __init__(
+        self,
+        user_agent: str = "WildfireRiskAdvisor/0.1",
+        *,
+        provider_name: str | None = None,
+        search_url: str | None = None,
+    ) -> None:
         self.user_agent = user_agent
         timeout_raw = os.getenv("WF_GEOCODE_TIMEOUT_SECONDS", "8")
         runtime_env = str(os.getenv("WF_ENV") or os.getenv("APP_ENV") or "").strip().lower()
@@ -118,6 +124,9 @@ class Geocoder:
             "off",
         }
 
+        self.provider_name = str(provider_name or os.getenv("WF_GEOCODE_PROVIDER_NAME") or "OpenStreetMap Nominatim")
+        configured_search_url = str(search_url or os.getenv("WF_GEOCODE_SEARCH_URL") or "").strip()
+        self.search_url = configured_search_url or "https://nominatim.openstreetmap.org/search"
         self.last_result: dict[str, Any] | None = None
 
     @staticmethod
@@ -179,6 +188,11 @@ class Geocoder:
         return " ".join(expanded.split())
 
     @staticmethod
+    def _strip_leading_house_number(normalized_address: str) -> str:
+        value = str(normalized_address or "").strip()
+        return re.sub(r"^\d+[a-zA-Z0-9-]*\s+", "", value, count=1).strip()
+
+    @staticmethod
     def _address_similarity_ratio(submitted: str, candidate: str | None) -> float:
         submitted_norm = _normalize_for_similarity(submitted)
         candidate_norm = _normalize_for_similarity(candidate or "")
@@ -207,10 +221,22 @@ class Geocoder:
             expanded_stripped = normalize_address(self._expand_common_abbreviations(stripped_unit))
             if expanded_stripped and expanded_stripped not in variants and len(expanded_stripped) >= 5:
                 variants.append(expanded_stripped)
+        no_house = normalize_address(self._strip_leading_house_number(base))
+        if no_house and no_house not in variants and len(no_house) >= 5:
+            variants.append(no_house)
+        no_house_stripped = normalize_address(self._strip_leading_house_number(stripped_unit))
+        if no_house_stripped and no_house_stripped not in variants and len(no_house_stripped) >= 5:
+            variants.append(no_house_stripped)
+        if "," in base:
+            parts = [part.strip() for part in base.split(",") if part.strip()]
+            if len(parts) >= 2:
+                street_and_locality = normalize_address(", ".join(parts[:2]))
+                if street_and_locality and street_and_locality not in variants and len(street_and_locality) >= 5:
+                    variants.append(street_and_locality)
         return variants[:4]
 
     def _fetch_candidates(self, query_address: str) -> list[dict[str, Any]]:
-        provider = "OpenStreetMap Nominatim"
+        provider = self.provider_name
         query = urllib.parse.urlencode(
             {
                 "q": query_address,
@@ -219,7 +245,7 @@ class Geocoder:
                 "limit": self.max_candidates,
             }
         )
-        url = f"https://nominatim.openstreetmap.org/search?{query}"
+        url = f"{self.search_url.rstrip('/')}?{query}"
         req = urllib.request.Request(url, headers={"User-Agent": self.user_agent})
         try:
             with urllib.request.urlopen(req, timeout=self.timeout_seconds) as response:
@@ -320,7 +346,7 @@ class Geocoder:
     def geocode_with_diagnostics(self, address: str) -> GeocodeResult:
         submitted_address = str(address or "")
         normalized_address = normalize_address(submitted_address)
-        provider = "OpenStreetMap Nominatim"
+        provider = self.provider_name
 
         if len(normalized_address) < 5:
             raise GeocodingError(

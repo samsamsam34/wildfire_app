@@ -1,0 +1,14 @@
+{
+  "addresses": [
+    {
+      "address": "6 Pineview Rd, Winthrop, WA 98862",
+      "city": "Winthrop",
+      "state": "WA",
+      "postal": "98862",
+      "latitude": 48.4772,
+      "longitude": -120.1864,
+      "region_id": "winthrop_pilot",
+      "source_name": "Seed local fallback"
+    }
+  ]
+}

@@ -154,3 +154,45 @@ def test_geocoder_retries_with_unit_stripped_query_variant(monkeypatch):
     preview = result.raw_response_preview or {}
     assert preview.get("selected_query")
     assert any((attempt or {}).get("candidate_count") == 0 for attempt in preview.get("query_attempts", []))
+
+
+def test_geocoder_retries_with_house_number_stripped_variant(monkeypatch):
+    first_payload: list[dict[str, Any]] = []
+    second_payload = [
+        {
+            "display_name": "Pineview Rd, Winthrop, WA 98862, USA",
+            "lat": "48.4772",
+            "lon": "-120.1864",
+            "importance": 0.04,
+            "class": "highway",
+            "type": "residential",
+            "address": {
+                "road": "Pineview Rd",
+                "town": "Winthrop",
+                "state": "Washington",
+                "postcode": "98862",
+                "country_code": "us",
+            },
+        }
+    ]
+
+    def _fake_urlopen(req, timeout=None):  # noqa: ARG001
+        parsed = urllib.parse.urlparse(req.full_url)
+        q = urllib.parse.parse_qs(parsed.query).get("q", [""])[0]
+        if q.startswith("6 "):
+            return _FakeHTTPResponse(first_payload)
+        if q.startswith("Pineview Rd"):
+            return _FakeHTTPResponse(second_payload)
+        return _FakeHTTPResponse(first_payload)
+
+    monkeypatch.setenv("WF_GEOCODE_MIN_IMPORTANCE", "0.0")
+    monkeypatch.setattr("backend.geocoding.urllib.request.urlopen", _fake_urlopen)
+    geocoder = Geocoder(user_agent="test-suite")
+    result = geocoder.geocode_with_diagnostics("6 Pineview Rd, Winthrop, WA 98862")
+    assert result.geocode_status == "accepted"
+    assert result.latitude == pytest.approx(48.4772)
+    preview = result.raw_response_preview or {}
+    attempts = preview.get("query_attempts") or []
+    assert attempts
+    assert any((attempt or {}).get("query", "").startswith("6 Pineview Rd") for attempt in attempts)
+    assert any((attempt or {}).get("query", "").startswith("Pineview Rd") for attempt in attempts)

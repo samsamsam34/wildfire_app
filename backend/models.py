@@ -210,6 +210,14 @@ class RegionCoverageStatus(BaseModel):
     geocode_source: Optional[str] = None
     geocode_precision: Optional[str] = None
     geocode_location_type: Optional[str] = None
+    resolution_status: Optional[str] = None
+    resolution_method: Optional[str] = None
+    fallback_used: Optional[bool] = None
+    final_location_confidence: Optional[str] = None
+    provider_attempts: Optional[List[Dict[str, Any]]] = None
+    provider_statuses: Optional[Dict[str, str]] = None
+    local_fallback_attempted: Optional[bool] = None
+    local_fallback_result: Optional[Dict[str, Any]] = None
     region_distance_to_boundary_m: Optional[float] = None
     nearest_region_id: Optional[str] = None
     edge_tolerance_m: Optional[float] = None
@@ -230,6 +238,10 @@ class GeocodingDetails(BaseModel):
     geocoded_point: Optional[Dict[str, float]] = None
     geocode_location_type: Optional[str] = None
     geocode_precision: Optional[str] = None
+    resolution_status: Optional[str] = None
+    resolution_method: Optional[str] = None
+    fallback_used: Optional[bool] = None
+    final_location_confidence: Optional[str] = None
     trusted_match_status: Optional[TrustedMatchStatus] = None
     trusted_match_failure_reason: Optional[str] = None
     trusted_match_subchecks: Optional[Dict[str, Any]] = None
@@ -240,6 +252,10 @@ class GeocodingDetails(BaseModel):
     resolved_latitude: Optional[float] = None
     resolved_longitude: Optional[float] = None
     rejection_reason: Optional[str] = None
+    provider_attempts: Optional[List[Dict[str, Any]]] = None
+    provider_statuses: Optional[Dict[str, str]] = None
+    local_fallback_attempted: Optional[bool] = None
+    local_fallback_result: Optional[Dict[str, Any]] = None
 
 
 class RegionResolution(BaseModel):

@@ -1541,6 +1541,264 @@ def test_low_confidence_with_candidate_fallback_reaches_uncovered_response(monke
     assert detail["reason"] == "no_prepared_region_for_location"
 
 
+def test_primary_no_match_can_resolve_via_secondary_geocoder(monkeypatch, tmp_path):
+    auth.API_KEYS = set()
+    monkeypatch.setattr(app_main, "store", AssessmentStore(str(tmp_path / "secondary_geocoder_fallback.db")))
+    monkeypatch.setattr(app_main.wildfire_data, "collect_context", lambda _lat, _lon: _ctx(env=41.0, wildland=50.0, historic=36.0))
+    monkeypatch.setenv("WF_GEOCODE_SECONDARY_ENABLED", "true")
+    monkeypatch.setenv("WF_GEOCODE_SECONDARY_SEARCH_URL", "https://example.test/geocode")
+    monkeypatch.setattr(
+        app_main.geocoder,
+        "geocode",
+        lambda _addr: (_ for _ in ()).throw(
+            GeocodingError(
+                status="no_match",
+                message="No geocoding result found.",
+                submitted_address="6 Pineview Rd, Winthrop, WA 98862",
+                normalized_address="6 Pineview Rd, Winthrop, WA 98862",
+                rejection_reason="provider returned no candidates",
+            )
+        ),
+    )
+
+    class _Secondary:
+        provider_name = "Secondary Test Geocoder"
+        last_result = {
+            "geocode_status": "accepted",
+            "provider": "Secondary Test Geocoder",
+            "matched_address": "6 Pineview Rd, Winthrop, WA 98862, USA",
+            "confidence_score": 0.22,
+            "candidate_count": 1,
+            "geocode_precision": "parcel_or_address_point",
+            "raw_response_preview": {"candidate_count": 1},
+        }
+
+        def geocode(self, _address):
+            return (48.4772, -120.1864, "Secondary Test Geocoder")
+
+    monkeypatch.setattr(app_main, "secondary_geocoder", _Secondary())
+    monkeypatch.setattr(
+        app_main,
+        "lookup_region_for_point",
+        lambda lat, lon, regions_root=None: {
+            "covered": True,
+            "region_id": "winthrop_pilot",
+            "display_name": "Winthrop Pilot",
+            "diagnostics": [],
+        },
+    )
+
+    response = client.post(
+        "/risk/assess",
+        json={
+            "address": "6 Pineview Rd, Winthrop, WA 98862",
+            "attributes": {"roof_type": "class a"},
+            "confirmed_fields": ["roof_type"],
+            "audience": "homeowner",
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    geocode = body["geocoding"]
+    assert geocode["geocode_status"] == "accepted"
+    assert geocode["resolution_method"] == "secondary_geocoder"
+    assert geocode["fallback_used"] is True
+    assert body["resolved_region_id"] == "winthrop_pilot"
+
+
+def test_no_match_on_providers_can_resolve_via_local_region_fallback(monkeypatch, tmp_path):
+    auth.API_KEYS = set()
+    monkeypatch.setattr(app_main, "store", AssessmentStore(str(tmp_path / "local_fallback_geocoder.db")))
+    monkeypatch.setattr(app_main.wildfire_data, "collect_context", lambda _lat, _lon: _ctx(env=43.0, wildland=48.0, historic=40.0))
+    monkeypatch.setenv("WF_GEOCODE_SECONDARY_ENABLED", "true")
+    monkeypatch.setenv("WF_GEOCODE_SECONDARY_SEARCH_URL", "https://example.test/geocode")
+    monkeypatch.setattr(
+        app_main.geocoder,
+        "geocode",
+        lambda _addr: (_ for _ in ()).throw(
+            GeocodingError(
+                status="no_match",
+                message="No geocoding result found.",
+                submitted_address="6 Pineview Rd, Winthrop, WA 98862",
+                normalized_address="6 Pineview Rd, Winthrop, WA 98862",
+                rejection_reason="provider returned no candidates",
+            )
+        ),
+    )
+
+    class _SecondaryNoMatch:
+        provider_name = "Secondary Test Geocoder"
+        last_result = {
+            "geocode_status": "no_match",
+            "provider": "Secondary Test Geocoder",
+            "matched_address": None,
+            "candidate_count": 0,
+        }
+
+        def geocode(self, _address):
+            raise GeocodingError(
+                status="no_match",
+                message="No geocoding result found.",
+                submitted_address="6 Pineview Rd, Winthrop, WA 98862",
+                normalized_address="6 Pineview Rd, Winthrop, WA 98862",
+                provider="Secondary Test Geocoder",
+                rejection_reason="provider returned no candidates",
+            )
+
+    monkeypatch.setattr(app_main, "secondary_geocoder", _SecondaryNoMatch())
+    monkeypatch.setattr(
+        app_main,
+        "_resolve_local_fallback_coordinates",
+        lambda _addr: {
+            "matched": True,
+            "confidence": "medium",
+            "candidate_count": 1,
+            "best_match": {
+                "latitude": 48.4772,
+                "longitude": -120.1864,
+                "match_score": 0.84,
+                "matched_address": "6 Pineview Rd, Winthrop, WA 98862",
+                "source": "address_points",
+            },
+            "top_candidates": [],
+            "normalized_address": "6 pineview rd winthrop wa 98862",
+            "diagnostics": ["resolved via test local fallback"],
+        },
+    )
+    monkeypatch.setattr(
+        app_main,
+        "lookup_region_for_point",
+        lambda lat, lon, regions_root=None: {
+            "covered": True,
+            "region_id": "winthrop_pilot",
+            "display_name": "Winthrop Pilot",
+            "diagnostics": [],
+        },
+    )
+
+    response = client.post(
+        "/risk/assess",
+        json={
+            "address": "6 Pineview Rd, Winthrop, WA 98862",
+            "attributes": {"roof_type": "class a"},
+            "confirmed_fields": ["roof_type"],
+            "audience": "homeowner",
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    geocode = body["geocoding"]
+    assert geocode["geocode_status"] == "accepted"
+    assert geocode["resolution_method"] == "local_region_fallback"
+    assert geocode["fallback_used"] is True
+    assert geocode["local_fallback_attempted"] is True
+    assert geocode["local_fallback_result"]["matched"] is True
+
+
+def test_no_match_can_still_assess_with_user_selected_point(monkeypatch, tmp_path):
+    auth.API_KEYS = set()
+    monkeypatch.setattr(app_main, "store", AssessmentStore(str(tmp_path / "user_selected_point_fallback.db")))
+    monkeypatch.setattr(app_main.wildfire_data, "collect_context", lambda _lat, _lon: _ctx(env=42.0, wildland=47.0, historic=39.0))
+    monkeypatch.setenv("WF_GEOCODE_SECONDARY_ENABLED", "false")
+    monkeypatch.setenv("WF_GEOCODE_ENABLE_PROVIDER_BACKOFF_QUERY", "false")
+    monkeypatch.setattr(
+        app_main.geocoder,
+        "geocode",
+        lambda _addr: (_ for _ in ()).throw(
+            GeocodingError(
+                status="no_match",
+                message="No geocoding result found.",
+                submitted_address="6 Pineview Rd, Winthrop, WA 98862",
+                normalized_address="6 Pineview Rd, Winthrop, WA 98862",
+                rejection_reason="provider returned no candidates",
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        app_main,
+        "_resolve_local_fallback_coordinates",
+        lambda _addr: {
+            "matched": False,
+            "candidate_count": 0,
+            "top_candidates": [],
+            "diagnostics": ["no local match"],
+        },
+    )
+    monkeypatch.setattr(
+        app_main,
+        "lookup_region_for_point",
+        lambda lat, lon, regions_root=None: {
+            "covered": True,
+            "region_id": "winthrop_pilot",
+            "display_name": "Winthrop Pilot",
+            "diagnostics": [],
+        },
+    )
+
+    response = client.post(
+        "/risk/assess",
+        json={
+            "address": "6 Pineview Rd, Winthrop, WA 98862",
+            "attributes": {"roof_type": "class a"},
+            "confirmed_fields": ["roof_type"],
+            "audience": "homeowner",
+            "selection_mode": "point",
+            "property_anchor_point": {"latitude": 48.4772, "longitude": -120.1864},
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    geocode = body["geocoding"]
+    assert geocode["resolution_method"] == "user_selected_point"
+    assert geocode["fallback_used"] is True
+    assert body["coverage_available"] is True
+
+
+def test_winthrop_known_address_no_primary_match_uses_fallback_pipeline(monkeypatch, tmp_path):
+    auth.API_KEYS = set()
+    monkeypatch.setattr(app_main, "store", AssessmentStore(str(tmp_path / "winthrop_known_address_fallback.db")))
+    monkeypatch.setattr(app_main.wildfire_data, "collect_context", lambda _lat, _lon: _ctx(env=44.0, wildland=52.0, historic=41.0))
+    monkeypatch.setenv("WF_GEOCODE_SECONDARY_ENABLED", "false")
+    monkeypatch.setattr(
+        app_main.geocoder,
+        "geocode",
+        lambda _addr: (_ for _ in ()).throw(
+            GeocodingError(
+                status="no_match",
+                message="No geocoding result found.",
+                submitted_address="6 Pineview Rd, Winthrop, WA 98862",
+                normalized_address="6 Pineview Rd, Winthrop, WA 98862",
+                rejection_reason="provider returned no candidates",
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        app_main,
+        "lookup_region_for_point",
+        lambda lat, lon, regions_root=None: {
+            "covered": True,
+            "region_id": "winthrop_pilot",
+            "display_name": "Winthrop Pilot",
+            "diagnostics": [],
+        },
+    )
+
+    response = client.post(
+        "/risk/assess",
+        json={
+            "address": "6 Pineview Rd, Winthrop, WA 98862",
+            "attributes": {"roof_type": "class a"},
+            "confirmed_fields": ["roof_type"],
+            "audience": "homeowner",
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["geocoding"]["resolution_method"] in {"local_region_fallback", "provider_backoff_query"}
+    assert body["geocoding"]["fallback_used"] is True
+    assert body["coverage_available"] is True
+
+
 def test_geocode_debug_returns_structured_accepted_payload_with_region_resolution(monkeypatch, tmp_path):
     auth.API_KEYS = set()
     monkeypatch.setattr(app_main, "store", AssessmentStore(str(tmp_path / "geocode_debug_ok.db")))
@@ -1773,6 +2031,10 @@ def test_route_geocode_and_coverage_are_consistent_for_invalid_address(monkeypat
         assert detail["error"] == "geocoding_failed"
         assert detail["geocode_status"] == "no_match"
         assert detail["normalized_address"] == "Invalid Input"
+        assert detail["resolution_status"] == "unresolved"
+        assert detail["resolution_method"] == "none"
+        assert isinstance(detail.get("provider_attempts"), list)
+        assert detail.get("local_fallback_attempted") is True
 
 
 def test_structure_resolution_failure_is_not_reported_as_geocoding_failure(monkeypatch, tmp_path):

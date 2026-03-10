@@ -1631,9 +1631,9 @@
         document.getElementById("riskLabel").textContent = "Address could not be resolved";
         document.getElementById("summaryText").textContent = detail?.message || "Geocoding failed before region coverage could be checked.";
         document.getElementById("propertyFindings").innerHTML = "<li class='muted'>No geocode match was accepted for this address.</li>";
-        document.getElementById("drivers").innerHTML = "<li class='muted'>Scoring requires a trusted location match.</li>";
+        document.getElementById("drivers").innerHTML = "<li class='muted'>Scoring requires a usable property location (trusted geocode or user-selected point).</li>";
         document.getElementById("protective").innerHTML = "<li class='muted'>No protective factors can be evaluated until geocoding succeeds.</li>";
-        document.getElementById("nextStepsText").textContent = "Check street, city, state, and ZIP format, then retry.";
+        document.getElementById("nextStepsText").textContent = detail?.recommended_action || "Check street, city, state, and ZIP format, then retry.";
         document.getElementById("mitigations").innerHTML = `<li>${rejection}</li>`;
         document.getElementById("confidenceText").textContent = "Confidence score: not available until geocoding succeeds.";
         document.getElementById("assumptions").innerHTML = `<li>Geocode status: ${geocodeStatus}</li>`;
