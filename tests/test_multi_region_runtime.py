@@ -37,7 +37,7 @@ def test_multi_region_regression_fixture_has_required_city_coverage() -> None:
 
     assert len(missoula) >= 5
     assert len(bozeman) >= 5
-    assert uncovered
+    assert len(uncovered) >= 2
 
 
 def _require_region_prep_deps() -> None:

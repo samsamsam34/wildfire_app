@@ -122,6 +122,17 @@
       "expected_coverage": false,
       "attributes": {},
       "confirmed_fields": []
+    },
+    {
+      "sample_id": "bend_uncovered_2",
+      "city": "Bend",
+      "address": "200 SW Century Dr, Bend, OR 97702",
+      "latitude": 44.0345,
+      "longitude": -121.3574,
+      "expected_region_prefix": null,
+      "expected_coverage": false,
+      "attributes": {},
+      "confirmed_fields": []
     }
   ]
 }
