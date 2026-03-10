@@ -465,3 +465,6 @@ Use `CHANGELOG.md` for structured release notes. Each release should record:
 - reason for bump
 - expected output impact
 - interpretation/comparability notes
+
+## License
+This project is licensed under the MIT License – see the LICENSE file for details.
