@@ -542,6 +542,45 @@ class WildfireDataClient:
             metrics[zone_aliases[ring_key]] = dict(zone)
         return metrics
 
+    @staticmethod
+    def _extract_structure_id_from_payload(raw: dict[str, Any] | None) -> str | None:
+        if not isinstance(raw, dict):
+            return None
+        for container_key in ("properties",):
+            props = raw.get(container_key)
+            if not isinstance(props, dict):
+                continue
+            for key in ("structure_id", "building_id", "id", "objectid", "OBJECTID", "globalid", "GlobalID"):
+                value = props.get(key)
+                if value is not None and str(value).strip():
+                    return str(value).strip()
+        for key in ("structure_id", "building_id", "id"):
+            value = raw.get(key)
+            if value is not None and str(value).strip():
+                return str(value).strip()
+        return None
+
+    @staticmethod
+    def _coerce_selected_structure_geometry(
+        raw_geometry: dict[str, Any] | None,
+    ) -> tuple[Any | None, str | None]:
+        if not isinstance(raw_geometry, dict):
+            return None, "User-selected structure geometry payload is missing or invalid."
+        if not shape:
+            return None, "Shapely is unavailable; cannot parse user-selected structure geometry."
+        geometry_obj = raw_geometry.get("geometry") if raw_geometry.get("type") == "Feature" else raw_geometry
+        if not isinstance(geometry_obj, dict):
+            return None, "User-selected structure payload is missing a GeoJSON geometry object."
+        try:
+            geom = shape(geometry_obj)
+        except Exception as exc:
+            return None, f"User-selected structure geometry could not be parsed: {exc}"
+        if geom.is_empty:
+            return None, "User-selected structure geometry is empty."
+        if geom.geom_type not in {"Polygon", "MultiPolygon"}:
+            return None, "User-selected structure must be a polygon footprint."
+        return geom, None
+
     def _compute_structure_ring_metrics(
         self,
         lat: float,
@@ -554,6 +593,9 @@ class WildfireDataClient:
         fallback_footprint_path: str | None = None,
         parcel_polygon: Any | None = None,
         anchor_precision: str | None = None,
+        structure_geometry_source: str | None = None,
+        selected_structure_id: str | None = None,
+        selected_structure_geometry: dict[str, Any] | None = None,
     ) -> tuple[dict[str, Any], list[str], list[str]]:
         assumptions: list[str] = []
         sources: list[str] = []
@@ -566,39 +608,73 @@ class WildfireDataClient:
         if source_paths:
             footprint_client = BuildingFootprintClient(path=source_paths[0], extra_paths=source_paths[1:])
 
-        try:
+        normalized_geometry_source = str(structure_geometry_source or "auto_detected").strip().lower()
+        if normalized_geometry_source not in {"auto_detected", "user_selected", "user_modified"}:
+            normalized_geometry_source = "auto_detected"
+
+        selected_geom: Any | None = None
+        if normalized_geometry_source in {"user_selected", "user_modified"}:
+            selected_geom, geometry_error = self._coerce_selected_structure_geometry(selected_structure_geometry)
+            if selected_geom is None:
+                assumptions.append(geometry_error or "User-selected structure geometry was invalid.")
+                assumptions.append("Falling back to automatic building footprint detection.")
+
+        if selected_geom is not None:
+            centroid = selected_geom.centroid
+            selected_id = selected_structure_id or self._extract_structure_id_from_payload(selected_structure_geometry)
+            assumptions.append("Structure footprint was confirmed by the user on the map.")
+            result = BuildingFootprintResult(
+                found=True,
+                footprint=selected_geom,
+                centroid=(float(centroid.y), float(centroid.x)),
+                source="user_selected_structure",
+                confidence=1.0,
+                match_status="matched",
+                match_method=normalized_geometry_source,
+                matched_structure_id=selected_id,
+                match_distance_m=0.0,
+                candidate_count=1,
+                candidate_summaries=[],
+                assumptions=[],
+            )
+            sources.append("User-selected structure footprint")
+        else:
             try:
-                result = footprint_client.get_building_footprint(
-                    lat,
-                    lon,
-                    parcel_polygon=parcel_polygon,
-                    anchor_precision=anchor_precision,
-                )
-            except TypeError:
-                # Backward-compatible path for tests/mocks that still expose (lat, lon) signature.
-                result = footprint_client.get_building_footprint(lat, lon)
-        except Exception as exc:  # pragma: no cover - defensive guard for malformed sources
-            assumptions.append(f"Building footprint lookup failed: {exc}")
-            assumptions.append("Building footprint analysis unavailable; using point-based vegetation context.")
-            return {
-                "footprint_used": False,
-                "footprint_found": False,
-                "footprint_status": "error",
-                "footprint_source": None,
-                "footprint_confidence": 0.0,
-                "structure_match_status": "error",
-                "structure_match_method": None,
-                "matched_structure_id": None,
-                "structure_match_confidence": 0.0,
-                "structure_match_distance_m": None,
-                "candidate_structure_count": 0,
-                "structure_match_candidates": [],
-                "display_point_source": "property_anchor_point",
-                "fallback_mode": "point_based",
-                "ring_metrics": None,
-                "nearest_vegetation_distance_ft": None,
-                "neighboring_structure_metrics": None,
-            }, assumptions, sources
+                try:
+                    result = footprint_client.get_building_footprint(
+                        lat,
+                        lon,
+                        parcel_polygon=parcel_polygon,
+                        anchor_precision=anchor_precision,
+                    )
+                except TypeError:
+                    # Backward-compatible path for tests/mocks that still expose (lat, lon) signature.
+                    result = footprint_client.get_building_footprint(lat, lon)
+            except Exception as exc:  # pragma: no cover - defensive guard for malformed sources
+                assumptions.append(f"Building footprint lookup failed: {exc}")
+                assumptions.append("Building footprint analysis unavailable; using point-based vegetation context.")
+                return {
+                    "footprint_used": False,
+                    "footprint_found": False,
+                    "footprint_status": "error",
+                    "footprint_source": None,
+                    "footprint_confidence": 0.0,
+                    "structure_match_status": "error",
+                    "structure_match_method": None,
+                    "matched_structure_id": None,
+                    "structure_match_confidence": 0.0,
+                    "structure_match_distance_m": None,
+                    "candidate_structure_count": 0,
+                    "structure_match_candidates": [],
+                    "structure_geometry_source": "auto_detected",
+                    "selected_structure_id": selected_structure_id,
+                    "selected_structure_geometry": selected_structure_geometry if isinstance(selected_structure_geometry, dict) else None,
+                    "display_point_source": "property_anchor_point",
+                    "fallback_mode": "point_based",
+                    "ring_metrics": None,
+                    "nearest_vegetation_distance_ft": None,
+                    "neighboring_structure_metrics": None,
+                }, assumptions, sources
 
         assumptions.extend(result.assumptions)
         match_status = str(
@@ -660,6 +736,9 @@ class WildfireDataClient:
                 "structure_match_distance_m": match_distance,
                 "candidate_structure_count": candidate_count,
                 "structure_match_candidates": candidate_summaries,
+                "structure_geometry_source": "auto_detected",
+                "selected_structure_id": selected_structure_id,
+                "selected_structure_geometry": selected_structure_geometry if isinstance(selected_structure_geometry, dict) else None,
                 "display_point_source": "property_anchor_point",
                 "fallback_mode": "point_based",
                 "ring_metrics": point_proxy_metrics if point_proxy_metrics else None,
@@ -766,6 +845,17 @@ class WildfireDataClient:
             "structure_match_distance_m": match_distance,
             "candidate_structure_count": candidate_count,
             "structure_match_candidates": candidate_summaries,
+            "structure_geometry_source": (
+                normalized_geometry_source if normalized_geometry_source in {"user_selected", "user_modified"} and selected_geom is not None else "auto_detected"
+            ),
+            "selected_structure_id": (
+                selected_structure_id
+                or getattr(result, "matched_structure_id", None)
+                or self._extract_structure_id_from_payload(selected_structure_geometry)
+            ),
+            "selected_structure_geometry": (
+                selected_structure_geometry if isinstance(selected_structure_geometry, dict) else None
+            ),
             "display_point_source": display_point_source,
             "fallback_mode": "footprint" if ring_metrics else "point_based",
             "ring_metrics": ring_metrics,
@@ -972,9 +1062,22 @@ class WildfireDataClient:
         score = near_1km * 22.0 + near_5km * 6.0
         return nearest_km, round(max(0.0, min(100.0, score)), 1), "ok"
 
-    def collect_context(self, lat: float, lon: float) -> WildfireContext:
+    def collect_context(
+        self,
+        lat: float,
+        lon: float,
+        *,
+        geocode_precision: str | None = None,
+        structure_geometry_source: str | None = None,
+        selected_structure_id: str | None = None,
+        selected_structure_geometry: dict[str, Any] | None = None,
+    ) -> WildfireContext:
         assumptions: List[str] = []
         sources: List[str] = []
+        normalized_geocode_precision = str(geocode_precision or "unknown").strip().lower() or "unknown"
+        normalized_structure_geometry_source = str(structure_geometry_source or "auto_detected").strip().lower()
+        if normalized_structure_geometry_source not in {"auto_detected", "user_selected", "user_modified"}:
+            normalized_structure_geometry_source = "auto_detected"
         runtime_paths, region_context, runtime_assumptions, runtime_sources = self._resolve_runtime_layer_paths(lat, lon)
         assumptions.extend(runtime_assumptions)
         sources.extend(runtime_sources)
@@ -1010,6 +1113,9 @@ class WildfireDataClient:
             "property_anchor_precision": "unknown",
             "geocoded_address_point": {"latitude": float(lat), "longitude": float(lon)},
             "assessed_property_display_point": {"latitude": float(lat), "longitude": float(lon)},
+            "structure_geometry_source": normalized_structure_geometry_source,
+            "selected_structure_id": selected_structure_id,
+            "selected_structure_geometry": selected_structure_geometry if isinstance(selected_structure_geometry, dict) else None,
             "region_status": region_context.get("region_status"),
             "region_id": region_context.get("region_id"),
             "region_display_name": region_context.get("region_display_name"),
@@ -1078,7 +1184,7 @@ class WildfireDataClient:
             geocoded_lat=float(lat),
             geocoded_lon=float(lon),
             geocode_provider=None,
-            geocode_precision="unknown",
+            geocode_precision=normalized_geocode_precision,
             geocoded_address=None,
         )
         property_level_context.update(anchor.to_context())
@@ -1137,7 +1243,10 @@ class WildfireDataClient:
             footprint_path=runtime_paths.get("footprints"),
             fallback_footprint_path=runtime_paths.get("fema_structures"),
             parcel_polygon=anchor.parcel_polygon,
-            anchor_precision=anchor.anchor_precision,
+            anchor_precision=anchor.anchor_precision or normalized_geocode_precision,
+            structure_geometry_source=normalized_structure_geometry_source,
+            selected_structure_id=selected_structure_id,
+            selected_structure_geometry=selected_structure_geometry if isinstance(selected_structure_geometry, dict) else None,
         )
         property_level_context = ring_context
         property_level_context.update(
@@ -1148,6 +1257,17 @@ class WildfireDataClient:
                 "region_display_name": region_context.get("region_display_name"),
                 "region_manifest_path": region_context.get("manifest_path"),
                 "building_sources": list(region_context.get("building_sources") or []),
+                "structure_geometry_source": str(
+                    ring_context.get("structure_geometry_source")
+                    or normalized_structure_geometry_source
+                    or "auto_detected"
+                ),
+                "selected_structure_id": ring_context.get("selected_structure_id") or selected_structure_id,
+                "selected_structure_geometry": (
+                    ring_context.get("selected_structure_geometry")
+                    if isinstance(ring_context.get("selected_structure_geometry"), dict)
+                    else (selected_structure_geometry if isinstance(selected_structure_geometry, dict) else None)
+                ),
             }
         )
         display_point_source = str(property_level_context.get("display_point_source") or "property_anchor_point")

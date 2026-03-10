@@ -83,6 +83,19 @@ def test_frontend_includes_assessment_map_panel_and_layer_controls() -> None:
     assert "candidate_summaries" in html
     assert "property_anchor_point" in html
     assert "parcel_polygon" in html
+    assert "selectable_structure_footprints" in html
+    assert "auto_detected_structure" in html
+    assert "user_selected_structure" in html
+
+
+def test_frontend_includes_home_confirmation_step_and_selection_payload_fields() -> None:
+    html = _frontend_html()
+    assert "We detected this building as your home. Is this correct?" in html
+    assert "Yes — Continue" in html
+    assert "No — Select My Home" in html
+    assert "structure_geometry_source" in html
+    assert "selected_structure_id" in html
+    assert "selected_structure_geometry" in html
 
 
 def test_frontend_map_degrades_gracefully_for_uncovered_or_geocode_failure() -> None:

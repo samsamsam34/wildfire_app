@@ -137,6 +137,20 @@ def _setup(monkeypatch, tmp_path, context: WildfireContext) -> None:
     monkeypatch.setattr(app_main, "store", AssessmentStore(str(tmp_path / "test_assessments.db")))
 
 
+def _setup_with_collect_capture(monkeypatch, tmp_path, context: WildfireContext, captured: dict[str, object]) -> None:
+    auth.API_KEYS = set()
+    monkeypatch.setattr(app_main.geocoder, "geocode", lambda _: (39.7392, -104.9903, "test-geocoder"))
+
+    def _collect(lat, lon, **kwargs):
+        captured["lat"] = lat
+        captured["lon"] = lon
+        captured["kwargs"] = dict(kwargs)
+        return context
+
+    monkeypatch.setattr(app_main.wildfire_data, "collect_context", _collect)
+    monkeypatch.setattr(app_main, "store", AssessmentStore(str(tmp_path / "test_assessments.db")))
+
+
 def _payload(address: str, attrs: dict, confirmed: list[str] | None = None, tags: list[str] | None = None) -> dict:
     return {
         "address": address,
@@ -443,6 +457,59 @@ def _assert_core_contract(body: dict) -> None:
     ]:
         assert key in body["confidence"]
     assert body["confidence"]["confidence_score"] == body["confidence_score"]
+
+
+def test_assessment_passes_user_selected_structure_override_to_context(monkeypatch, tmp_path):
+    context = _ctx(
+        52.0,
+        40.0,
+        34.0,
+        ring_metrics={
+            "ring_0_5_ft": {"vegetation_density": 22.0},
+            "ring_5_30_ft": {"vegetation_density": 35.0},
+            "ring_30_100_ft": {"vegetation_density": 48.0},
+            "ring_100_300_ft": {"vegetation_density": 50.0},
+        },
+    )
+    captured: dict[str, object] = {}
+    _setup_with_collect_capture(monkeypatch, tmp_path, context, captured)
+
+    selected_geometry = {
+        "type": "Feature",
+        "properties": {"structure_id": "home-42"},
+        "geometry": {
+            "type": "Polygon",
+            "coordinates": [[
+                [-104.9910, 39.7390],
+                [-104.9907, 39.7390],
+                [-104.9907, 39.7393],
+                [-104.9910, 39.7393],
+                [-104.9910, 39.7390],
+            ]],
+        },
+    }
+    response = client.post(
+        "/risk/assess",
+        json={
+            **_payload("1500 Market St, Denver, CO 80202", {"roof_type": "metal"}),
+            "structure_geometry_source": "user_selected",
+            "selected_structure_id": "home-42",
+            "selected_structure_geometry": selected_geometry,
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+
+    kwargs = captured.get("kwargs")
+    assert isinstance(kwargs, dict)
+    assert kwargs.get("structure_geometry_source") == "user_selected"
+    assert kwargs.get("selected_structure_id") == "home-42"
+    assert kwargs.get("selected_structure_geometry") == selected_geometry
+
+    plc = body.get("property_level_context") or {}
+    assert plc.get("structure_geometry_source") == "user_selected"
+    assert plc.get("selected_structure_id") == "home-42"
+    assert plc.get("selected_structure_geometry", {}).get("geometry", {}).get("type") == "Polygon"
 
 
 def test_property_findings_from_ring_metrics_surface_in_assessment(monkeypatch, tmp_path):

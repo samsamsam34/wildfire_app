@@ -74,6 +74,7 @@ GeocodeStatus = Literal[
     "provider_error",
     "parser_error",
 ]
+StructureGeometrySource = Literal["auto_detected", "user_selected", "user_modified"]
 
 
 class PropertyAttributes(BaseModel):
@@ -92,6 +93,9 @@ class AddressRequest(BaseModel):
     address: str = Field(..., min_length=5)
     attributes: PropertyAttributes = Field(default_factory=PropertyAttributes)
     confirmed_fields: List[str] = Field(default_factory=list)
+    structure_geometry_source: StructureGeometrySource = "auto_detected"
+    selected_structure_id: Optional[str] = None
+    selected_structure_geometry: Optional[Dict[str, Any]] = None
     audience: Audience = "homeowner"
     tags: List[str] = Field(default_factory=list)
     organization_id: Optional[str] = None

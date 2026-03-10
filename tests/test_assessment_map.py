@@ -188,8 +188,11 @@ def test_map_endpoint_returns_point_footprint_rings_and_overlays(monkeypatch, tm
         "geocoded_address_point",
         "matched_structure_centroid",
         "building_footprint",
+        "auto_detected_structure",
+        "user_selected_structure",
         "defensible_space_rings",
         "fire_perimeters",
+        "selectable_structure_footprints",
     }.issubset(layer_keys)
 
     assert payload["data"].get("defensible_space_rings", {}).get("features")

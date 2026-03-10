@@ -110,6 +110,24 @@
         background: #fafaf9;
         white-space: pre-line;
       }
+      .map-confirm {
+        margin-top: 0.7rem;
+        border: 1px solid #e5dbc9;
+        border-radius: 10px;
+        padding: 0.65rem 0.75rem;
+        background: #fffef9;
+      }
+      .map-confirm .actions {
+        margin-top: 0.55rem;
+      }
+      .map-confirm .actions button {
+        font-size: 0.86rem;
+      }
+      .map-confirm-status {
+        margin-top: 0.5rem;
+        font-size: 0.82rem;
+        color: #6b7280;
+      }
       .score { font-size: 2rem; font-weight: 700; line-height: 1; margin: 0.25rem 0; }
       .score.good { color: var(--good); }
       .score.warn { color: var(--warn); }
@@ -279,6 +297,14 @@
         <p id="mapEmptyText" class="map-empty">Run an assessment to load map layers.</p>
         <div id="mapLayerToggles" class="map-toggles"></div>
         <p id="mapLimitationsText" class="muted" style="margin-top:0.5rem;">Map limitations will appear here when needed.</p>
+        <div id="homeConfirmPanel" class="map-confirm" style="display:none;">
+          <p id="homeConfirmPrompt" class="muted">We detected this building as your home. Is this correct?</p>
+          <div class="actions">
+            <button id="confirmHomeYesBtn" type="button">Yes — Continue</button>
+            <button id="confirmHomeSelectBtn" type="button" class="secondary">No — Select My Home</button>
+          </div>
+          <p id="homeConfirmStatus" class="map-confirm-status">Confirmation status will appear here.</p>
+        </div>
         <div id="mapDebugPanel" class="map-debug" style="display:none;"></div>
       </section>
 
@@ -438,9 +464,13 @@
       apiKeyInput.value = storedApiKey;
 
       let latestAssessment = null;
+      let latestMapPayload = null;
       let assessmentMap = null;
       let mapBaseLayer = null;
       let mapLayerInstances = {};
+      let homeSelectionMode = false;
+      let selectedStructureOverride = null;
+      let selectedStructureId = null;
 
       const mapLayerStyle = {
         property_anchor_point: {
@@ -484,6 +514,18 @@
           fillColor: "#60a5fa",
           fillOpacity: 0.24,
         },
+        auto_detected_structure: {
+          color: "#1d4ed8",
+          weight: 2,
+          fillColor: "#60a5fa",
+          fillOpacity: 0.18,
+        },
+        user_selected_structure: {
+          color: "#0f766e",
+          weight: 3,
+          fillColor: "#14b8a6",
+          fillOpacity: 0.26,
+        },
         parcel_polygon: {
           color: "#334155",
           weight: 2,
@@ -517,6 +559,16 @@
           weight: 1,
           fillColor: "#94a3b8",
           fillOpacity: 0.06,
+        },
+        selectable_structure_footprints: (feature) => {
+          const featureId = extractStructureId(feature?.properties || {}) || "";
+          const isSelected = !!selectedStructureId && featureId && selectedStructureId === featureId;
+          return {
+            color: isSelected ? "#0f766e" : "#64748b",
+            weight: isSelected ? 3 : 1.5,
+            fillColor: isSelected ? "#14b8a6" : "#94a3b8",
+            fillOpacity: isSelected ? 0.32 : 0.08,
+          };
         },
       };
 
@@ -621,6 +673,68 @@
         return meters * 3.28084;
       }
 
+      function extractStructureId(props) {
+        if (!props || typeof props !== "object") return null;
+        const keys = ["structure_id", "building_id", "id", "objectid", "OBJECTID", "globalid", "GlobalID"];
+        for (const key of keys) {
+          const value = props[key];
+          if (value !== null && value !== undefined && String(value).trim()) {
+            return String(value).trim();
+          }
+        }
+        return null;
+      }
+
+      function selectedStructureFromAssessment(data) {
+        const ctx = data?.property_level_context || {};
+        const geometrySource = String(ctx?.structure_geometry_source || "auto_detected").toLowerCase();
+        const selectedGeometry = ctx?.selected_structure_geometry;
+        const selectedId = ctx?.selected_structure_id || ctx?.matched_structure_id || null;
+        if ((geometrySource === "user_selected" || geometrySource === "user_modified") && selectedGeometry) {
+          return {
+            id: selectedId ? String(selectedId) : null,
+            geometry: selectedGeometry,
+            source: geometrySource,
+          };
+        }
+        return null;
+      }
+
+      function setHomeConfirmationState({ mode = null, status = null } = {}) {
+        if (mode === "select") {
+          homeSelectionMode = true;
+        } else if (mode === "confirm") {
+          homeSelectionMode = false;
+        } else if (mode === "reset") {
+          homeSelectionMode = false;
+          selectedStructureOverride = null;
+          selectedStructureId = null;
+        }
+
+        const panel = document.getElementById("homeConfirmPanel");
+        const statusEl = document.getElementById("homeConfirmStatus");
+        const yesBtn = document.getElementById("confirmHomeYesBtn");
+        const selectBtn = document.getElementById("confirmHomeSelectBtn");
+        if (!panel || !statusEl || !yesBtn || !selectBtn) return;
+
+        if (!latestMapPayload || latestMapPayload.coverage_available !== true) {
+          panel.style.display = "none";
+          return;
+        }
+
+        panel.style.display = "block";
+        yesBtn.disabled = false;
+        selectBtn.disabled = false;
+
+        if (homeSelectionMode) {
+          statusEl.textContent = status || "Selection mode is on. Click a building polygon in “Selectable Structures”.";
+        } else if (selectedStructureOverride?.id) {
+          statusEl.textContent = status || `Using user-selected structure (${selectedStructureOverride.id}).`;
+        } else {
+          statusEl.textContent = status || "Auto-detected structure will be used unless you select a different one.";
+        }
+      }
+
       function renderMapDebugPanel(payload) {
         const panel = document.getElementById("mapDebugPanel");
         if (!panel) return;
@@ -648,6 +762,9 @@
         const parcelLookupDistanceM = payload?.parcel_lookup_distance_m ?? payload?.metadata?.property_anchor?.parcel_lookup_distance_m;
         const structureMatchStatus = payload?.structure_match_status || payload?.metadata?.structure_match?.status || "none";
         const structureMatchMethod = payload?.structure_match_method || payload?.metadata?.structure_match?.method || "none";
+        const structureGeometrySource = (latestAssessment?.property_level_context?.structure_geometry_source)
+          || payload?.metadata?.structure_match?.geometry_source
+          || "auto_detected";
         const matchedStructureId = payload?.matched_structure_id || payload?.metadata?.structure_match?.matched_structure_id || "n/a";
         const structureMatchConfidence = payload?.structure_match_confidence ?? payload?.metadata?.structure_match?.confidence;
         const structureMatchDistanceM = payload?.structure_match_distance_m ?? payload?.metadata?.structure_match?.distance_m;
@@ -692,6 +809,7 @@
           `display_point_source: ${displayPointSource}`,
           `structure_match_status: ${structureMatchStatus}`,
           `structure_match_method: ${structureMatchMethod}`,
+          `structure_geometry_source: ${structureGeometrySource}`,
           `matched_structure_id: ${matchedStructureId}`,
           `structure_match_confidence: ${Number.isFinite(Number(structureMatchConfidence)) ? Number(structureMatchConfidence).toFixed(2) : "n/a"}`,
           `structure_match_distance_m: ${Number.isFinite(Number(structureMatchDistanceM)) ? Number(structureMatchDistanceM).toFixed(2) : "n/a"}`,
@@ -737,6 +855,61 @@
             },
           });
         }
+        if (layerKey === "selectable_structure_footprints") {
+          return L.geoJSON(fc, {
+            style: (feature) => {
+              const styleDef = geoJsonStyle(layerKey);
+              return typeof styleDef === "function" ? styleDef(feature) : styleDef;
+            },
+            onEachFeature: (feature, layer) => {
+              const props = feature?.properties || {};
+              const structureId = extractStructureId(props) || `feature_${Math.random().toString(36).slice(2, 8)}`;
+              const popup = [
+                `<strong>Selectable structure</strong>`,
+                `structure_id: ${structureId}`,
+                props?.source ? `source: ${props.source}` : "",
+                Number.isFinite(Number(props?.distance_m)) ? `distance_m: ${Number(props.distance_m).toFixed(2)}` : "",
+              ].filter(Boolean).join("<br>");
+              layer.bindPopup(popup);
+
+              layer.on("mouseover", () => {
+                if (!homeSelectionMode) return;
+                layer.setStyle({ weight: 3, fillOpacity: 0.22 });
+              });
+              layer.on("mouseout", () => {
+                if (!homeSelectionMode) return;
+                const styleDef = geoJsonStyle(layerKey);
+                const style = typeof styleDef === "function" ? styleDef(feature) : styleDef;
+                layer.setStyle(style);
+              });
+              layer.on("click", async () => {
+                if (!homeSelectionMode) return;
+                selectedStructureId = structureId;
+                selectedStructureOverride = {
+                  id: structureId,
+                  geometry: {
+                    type: "Feature",
+                    properties: { ...props, structure_id: structureId },
+                    geometry: feature?.geometry || null,
+                  },
+                  source: "user_selected",
+                };
+                setHomeConfirmationState({
+                  mode: "confirm",
+                  status: `Selected structure ${structureId}. Updating assessment...`,
+                });
+                try {
+                  await runAssessment(false);
+                } catch (_err) {
+                  setHomeConfirmationState({
+                    mode: "confirm",
+                    status: `Selected structure ${structureId}, but reassessment failed. You can retry.`,
+                  });
+                }
+              });
+            },
+          });
+        }
         return L.geoJSON(fc, {
           style: (feature) => {
             const styleDef = geoJsonStyle(layerKey);
@@ -767,21 +940,27 @@
 
       async function renderAssessmentMap(assessmentId) {
         if (!assessmentId) {
+          latestMapPayload = null;
           setMapStatus("Run an assessment to load map layers.");
+          setHomeConfirmationState({ mode: "reset" });
           return;
         }
         if (!window.L) {
+          latestMapPayload = null;
           setMapStatus("Map library unavailable in this browser context.");
           setMapLimitations(["Leaflet could not be loaded; map rendering is unavailable."]);
+          setHomeConfirmationState({ mode: "reset" });
           return;
         }
 
         try {
           setMapStatus("Loading map layers...");
           const payload = await fetchAssessmentMap(assessmentId);
+          latestMapPayload = payload;
           const map = ensureMap(payload.center || {});
           if (!map) {
             setMapStatus("Map unavailable.");
+            setHomeConfirmationState({ mode: "reset" });
             return;
           }
 
@@ -808,6 +987,14 @@
           setMapLimitations(payload.limitations || []);
           renderMapDebugPanel(payload);
           setMapStatus("Map loaded.");
+          if (selectedStructureOverride?.id) {
+            setHomeConfirmationState({
+              mode: "confirm",
+              status: `Using user-selected structure (${selectedStructureOverride.id}).`,
+            });
+          } else {
+            setHomeConfirmationState({ mode: "confirm" });
+          }
 
           if (bounds.length > 0) {
             let merged = bounds[0];
@@ -818,9 +1005,11 @@
           }
         } catch (err) {
           console.error("Map payload failed:", err);
+          latestMapPayload = null;
           setMapStatus("Map could not be loaded for this assessment.");
           setMapLimitations([`Map error: ${err.message || "unknown error"}`]);
           renderMapDebugPanel(null);
+          setHomeConfirmationState({ mode: "reset" });
         }
       }
 
@@ -1048,6 +1237,14 @@
         }
 
         latestAssessment = data;
+        const selectedFromAssessment = selectedStructureFromAssessment(data);
+        if (selectedFromAssessment) {
+          selectedStructureOverride = selectedFromAssessment;
+          selectedStructureId = selectedFromAssessment.id;
+        } else if (!homeSelectionMode) {
+          selectedStructureOverride = null;
+          selectedStructureId = null;
+        }
 
         const scoreEl = document.getElementById("riskScore");
         const riskAvailable = data.wildfire_risk_score_available !== false && data.wildfire_risk_score !== null && data.wildfire_risk_score !== undefined;
@@ -1187,6 +1384,10 @@
 
       function renderUncoveredLocationState(detail) {
         latestAssessment = null;
+        latestMapPayload = null;
+        selectedStructureOverride = null;
+        selectedStructureId = null;
+        homeSelectionMode = false;
         const reasonText = detail?.reason || "no_prepared_region_for_location";
         const recommendation = detail?.recommended_action || "Prepare and validate a region for this location, then retry assessment.";
         const diagnostics = Array.isArray(detail?.diagnostics) ? detail.diagnostics : [];
@@ -1253,6 +1454,7 @@
         ]);
         renderMapLayerToggles([]);
         renderMapDebugPanel(null);
+        setHomeConfirmationState({ mode: "reset" });
       }
 
       function renderGeocodeFailureState(detail, submittedAddress) {
@@ -1262,6 +1464,10 @@
         const rejection = detail?.rejection_reason || detail?.message || "Address lookup failed.";
 
         latestAssessment = null;
+        latestMapPayload = null;
+        selectedStructureOverride = null;
+        selectedStructureId = null;
+        homeSelectionMode = false;
         const scoreEl = document.getElementById("riskScore");
         scoreEl.textContent = "—";
         scoreEl.className = "score warn";
@@ -1316,6 +1522,7 @@
         ]);
         renderMapLayerToggles([]);
         renderMapDebugPanel(null);
+        setHomeConfirmationState({ mode: "reset" });
       }
 
       async function fetchCoverageForAddress(address) {
@@ -1323,12 +1530,22 @@
       }
 
       function buildAssessmentPayload() {
-        return {
+        const payload = {
           address: String(document.getElementById("address").value || "").trim(),
           attributes: collectAttributes(""),
           confirmed_fields: parseCSV(document.getElementById("confirmed_fields").value),
           audience: "homeowner"
         };
+        if (selectedStructureOverride?.geometry) {
+          payload.structure_geometry_source = selectedStructureOverride.source || "user_selected";
+          payload.selected_structure_id = selectedStructureOverride.id || null;
+          payload.selected_structure_geometry = selectedStructureOverride.geometry;
+        } else {
+          payload.structure_geometry_source = "auto_detected";
+          payload.selected_structure_id = null;
+          payload.selected_structure_geometry = null;
+        }
+        return payload;
       }
 
       function setRequestStatus(message, tone = "muted") {
@@ -1342,6 +1559,43 @@
         } else {
           el.style.color = "var(--muted)";
         }
+      }
+
+      function ensureMapLayerVisible(layerKey) {
+        const layer = mapLayerInstances[layerKey];
+        if (assessmentMap && layer && !assessmentMap.hasLayer(layer)) {
+          layer.addTo(assessmentMap);
+        }
+        const toggle = document.querySelector(`#mapLayerToggles input[data-layer-key="${layerKey}"]`);
+        if (toggle) toggle.checked = true;
+      }
+
+      async function confirmAutoDetectedStructure() {
+        const currentSource = String(latestAssessment?.property_level_context?.structure_geometry_source || "auto_detected").toLowerCase();
+        selectedStructureOverride = null;
+        selectedStructureId = null;
+        setHomeConfirmationState({
+          mode: "confirm",
+          status: "Using auto-detected structure for scoring.",
+        });
+        if (currentSource === "user_selected" || currentSource === "user_modified") {
+          try {
+            await runAssessment(false);
+          } catch (_err) {
+            setHomeConfirmationState({
+              mode: "confirm",
+              status: "Switched to auto-detected structure, but reassessment failed. You can retry.",
+            });
+          }
+        }
+      }
+
+      function startManualStructureSelection() {
+        ensureMapLayerVisible("selectable_structure_footprints");
+        setHomeConfirmationState({
+          mode: "select",
+          status: "Selection mode enabled. Click a building polygon to choose your home.",
+        });
       }
 
       async function runAssessment(reassess = false) {
@@ -1562,6 +1816,8 @@
       document.getElementById("openReportBtn").addEventListener("click", openReportView);
       document.getElementById("exportReportBtn").addEventListener("click", exportReport);
       document.getElementById("downloadPdfBtn").addEventListener("click", downloadHomeownerPdf);
+      document.getElementById("confirmHomeYesBtn")?.addEventListener("click", confirmAutoDetectedStructure);
+      document.getElementById("confirmHomeSelectBtn")?.addEventListener("click", startManualStructureSelection);
     </script>
   </body>
 </html>

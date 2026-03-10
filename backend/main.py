@@ -1360,6 +1360,9 @@ def _normalize_property_level_context(raw_context: object) -> dict[str, Any]:
             "structure_match_distance_m": None,
             "candidate_structure_count": 0,
             "structure_match_candidates": [],
+            "structure_geometry_source": "auto_detected",
+            "selected_structure_id": None,
+            "selected_structure_geometry": None,
             "display_point_source": "property_anchor_point",
             "property_anchor_point": None,
             "property_anchor_source": "geocoded_address_point",
@@ -1401,6 +1404,18 @@ def _normalize_property_level_context(raw_context: object) -> dict[str, Any]:
     normalized.setdefault("candidate_structure_count", 1 if footprint_used else 0)
     candidates = normalized.get("structure_match_candidates")
     normalized["structure_match_candidates"] = candidates if isinstance(candidates, list) else []
+    geometry_source = str(normalized.get("structure_geometry_source") or "").strip().lower()
+    if geometry_source not in {"auto_detected", "user_selected", "user_modified"}:
+        geometry_source = "auto_detected"
+    normalized["structure_geometry_source"] = geometry_source
+    selected_structure_id = normalized.get("selected_structure_id")
+    normalized["selected_structure_id"] = (
+        str(selected_structure_id).strip() if selected_structure_id is not None and str(selected_structure_id).strip() else None
+    )
+    selected_structure_geometry = normalized.get("selected_structure_geometry")
+    normalized["selected_structure_geometry"] = (
+        selected_structure_geometry if isinstance(selected_structure_geometry, dict) else None
+    )
     normalized.setdefault("display_point_source", "matched_structure_centroid" if footprint_used else "property_anchor_point")
     normalized.setdefault(
         "property_anchor_point",
@@ -2726,12 +2741,32 @@ def _run_assessment(
     lon = float(geocode_resolution.longitude)
     geocode_source = geocode_resolution.geocode_source
     geocode_meta = dict(geocode_resolution.geocode_meta or {})
-
-    context = wildfire_data.collect_context(lat, lon)
+    geocode_precision = str(geocode_meta.get("geocode_precision") or "unknown")
+    requested_structure_source = str(payload.structure_geometry_source or "auto_detected").strip().lower()
+    if requested_structure_source not in {"auto_detected", "user_selected", "user_modified"}:
+        requested_structure_source = "auto_detected"
+    requested_structure_id = (
+        str(payload.selected_structure_id).strip()
+        if payload.selected_structure_id is not None and str(payload.selected_structure_id).strip()
+        else None
+    )
+    requested_structure_geometry = (
+        payload.selected_structure_geometry if isinstance(payload.selected_structure_geometry, dict) else None
+    )
+    collect_kwargs = {
+        "geocode_precision": geocode_precision,
+        "structure_geometry_source": requested_structure_source,
+        "selected_structure_id": requested_structure_id,
+        "selected_structure_geometry": requested_structure_geometry,
+    }
+    try:
+        context = wildfire_data.collect_context(lat, lon, **collect_kwargs)
+    except TypeError:
+        # Backward-compatible for tests/mocks still using collect_context(lat, lon).
+        context = wildfire_data.collect_context(lat, lon)
     scoring_attrs = normalize_property_attributes(payload.attributes)
     normalization_changes = normalized_attribute_changes(payload.attributes, scoring_attrs)
     property_level_context = _normalize_property_level_context(context.property_level_context)
-    geocode_precision = str(geocode_meta.get("geocode_precision") or "unknown")
     geocode_provider = str(geocode_meta.get("geocode_provider") or geocode_meta.get("provider") or geocode_source or "")
     property_level_context["geocode_provider"] = geocode_provider or None
     property_level_context["geocoded_address"] = geocode_meta.get("geocoded_address") or geocode_meta.get("matched_address")
@@ -2752,6 +2787,20 @@ def _run_assessment(
         property_level_context["assessed_property_display_point"] = dict(
             property_level_context.get("property_anchor_point") or {"latitude": lat, "longitude": lon}
         )
+    resolved_structure_geometry_source = str(
+        property_level_context.get("structure_geometry_source") or "auto_detected"
+    ).strip().lower()
+    if requested_structure_source in {"user_selected", "user_modified"}:
+        resolved_structure_geometry_source = requested_structure_source
+    property_level_context["structure_geometry_source"] = (
+        resolved_structure_geometry_source
+        if resolved_structure_geometry_source in {"auto_detected", "user_selected", "user_modified"}
+        else "auto_detected"
+    )
+    if requested_structure_id:
+        property_level_context["selected_structure_id"] = requested_structure_id
+    if requested_structure_geometry is not None:
+        property_level_context["selected_structure_geometry"] = requested_structure_geometry
     context.property_level_context = property_level_context
     scoring_attrs, attribute_fallbacks = _apply_attribute_fallbacks(
         scoring_attrs,
@@ -3491,10 +3540,22 @@ def _compute_assessment(
 
 
 def _payload_from_assessment(existing: AssessmentResult) -> AddressRequest:
+    property_ctx = existing.property_level_context if isinstance(existing.property_level_context, dict) else {}
     return AddressRequest(
         address=existing.address,
         attributes=PropertyAttributes.model_validate(existing.property_facts or {}),
         confirmed_fields=list(existing.confirmed_fields),
+        structure_geometry_source=str(property_ctx.get("structure_geometry_source") or "auto_detected"),
+        selected_structure_id=(
+            str(property_ctx.get("selected_structure_id"))
+            if property_ctx.get("selected_structure_id")
+            else None
+        ),
+        selected_structure_geometry=(
+            property_ctx.get("selected_structure_geometry")
+            if isinstance(property_ctx.get("selected_structure_geometry"), dict)
+            else None
+        ),
         audience=existing.audience,
         tags=list(existing.tags),
         organization_id=existing.organization_id,
@@ -5511,6 +5572,9 @@ def layer_diagnostics(payload: AddressRequest, ctx: ActorContext = Depends(get_a
             "structure_match_distance_m": (debug_payload.get("property_level_context") or {}).get("structure_match_distance_m"),
             "candidate_structure_count": (debug_payload.get("property_level_context") or {}).get("candidate_structure_count"),
             "structure_match_candidates": (debug_payload.get("property_level_context") or {}).get("structure_match_candidates"),
+            "structure_geometry_source": (debug_payload.get("property_level_context") or {}).get("structure_geometry_source"),
+            "selected_structure_id": (debug_payload.get("property_level_context") or {}).get("selected_structure_id"),
+            "selected_structure_geometry": (debug_payload.get("property_level_context") or {}).get("selected_structure_geometry"),
             "display_point_source": (debug_payload.get("property_level_context") or {}).get("display_point_source"),
             "assessed_property_display_point": (debug_payload.get("property_level_context") or {}).get("assessed_property_display_point"),
             "source_conflict_flag": (debug_payload.get("property_level_context") or {}).get("source_conflict_flag"),

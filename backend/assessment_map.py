@@ -409,6 +409,9 @@ def build_assessment_map_payload(
             else None
         )
     )
+    structure_geometry_source = str(property_ctx.get("structure_geometry_source") or "auto_detected").strip().lower()
+    if structure_geometry_source not in {"auto_detected", "user_selected", "user_modified"}:
+        structure_geometry_source = "auto_detected"
     matched_structure_id = str(
         property_ctx.get("matched_structure_id") or result.matched_structure_id or ""
     ) or None
@@ -745,6 +748,44 @@ def build_assessment_map_payload(
             reason_unavailable=None if footprint_features else "No building footprint was resolved for this property.",
         )
     )
+    if footprint_features and structure_geometry_source in {"user_selected", "user_modified"}:
+        data["user_selected_structure"] = _feature_collection(footprint_features)
+    layers.append(
+        AssessmentMapLayer(
+            layer_key="user_selected_structure",
+            display_name="User-Selected Structure",
+            available=bool(footprint_features and structure_geometry_source in {"user_selected", "user_modified"}),
+            default_visible=bool(footprint_features and structure_geometry_source in {"user_selected", "user_modified"}),
+            description="Structure footprint confirmed by user selection.",
+            legend_label="Confirmed structure",
+            geometry_type="polygon",
+            feature_count=len(footprint_features) if structure_geometry_source in {"user_selected", "user_modified"} else 0,
+            reason_unavailable=(
+                None
+                if (footprint_features and structure_geometry_source in {"user_selected", "user_modified"})
+                else "No user-selected structure footprint is active for this assessment."
+            ),
+        )
+    )
+    if footprint_features and structure_geometry_source == "auto_detected":
+        data["auto_detected_structure"] = _feature_collection(footprint_features)
+    layers.append(
+        AssessmentMapLayer(
+            layer_key="auto_detected_structure",
+            display_name="Auto-Detected Structure",
+            available=bool(footprint_features and structure_geometry_source == "auto_detected"),
+            default_visible=False,
+            description="Automatically matched structure footprint before user confirmation.",
+            legend_label="Auto-detected structure",
+            geometry_type="polygon",
+            feature_count=len(footprint_features) if structure_geometry_source == "auto_detected" else 0,
+            reason_unavailable=(
+                None
+                if (footprint_features and structure_geometry_source == "auto_detected")
+                else "No auto-detected structure footprint is active for this assessment."
+            ),
+        )
+    )
 
     if ring_features:
         data["defensible_space_rings"] = _feature_collection(ring_features)
@@ -803,6 +844,7 @@ def build_assessment_map_payload(
 
     if nearby_structures:
         data["nearby_structures"] = _feature_collection(nearby_structures)
+        data["selectable_structure_footprints"] = _feature_collection(nearby_structures)
     layers.append(
         AssessmentMapLayer(
             layer_key="nearby_structures",
@@ -814,6 +856,21 @@ def build_assessment_map_payload(
             geometry_type="polygon",
             feature_count=len(nearby_structures),
             reason_unavailable=None if nearby_structures else "No nearby structures were available in configured footprint data.",
+        )
+    )
+    layers.append(
+        AssessmentMapLayer(
+            layer_key="selectable_structure_footprints",
+            display_name="Selectable Structures",
+            available=bool(nearby_structures),
+            default_visible=False,
+            description="Nearby structure footprints available for manual home selection.",
+            legend_label="Selectable structure footprints",
+            geometry_type="polygon",
+            feature_count=len(nearby_structures),
+            reason_unavailable=(
+                None if nearby_structures else "No selectable structure footprints were available near this location."
+            ),
         )
     )
 
@@ -898,6 +955,7 @@ def build_assessment_map_payload(
             "structure_match": {
                 "status": structure_match_status,
                 "method": structure_match_method,
+                "geometry_source": structure_geometry_source,
                 "matched_structure_id": matched_structure_id,
                 "confidence": structure_match_confidence,
                 "distance_m": structure_match_distance_m,
