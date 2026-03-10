@@ -3,8 +3,8 @@ from __future__ import annotations
 from typing import Any, Mapping
 
 # Product/runtime semantic versions.
-PRODUCT_VERSION = "0.12.0"
-API_VERSION = "1.0.0"
+PRODUCT_VERSION = "0.13.0"
+API_VERSION = "1.1.0"
 
 # Scoring and governance dimensions.
 SCORING_MODEL_VERSION = "1.7.0"

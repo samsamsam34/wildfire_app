@@ -708,6 +708,32 @@ class ReportExport(BaseModel):
     simulation: Optional[Dict[str, object]] = None
 
 
+class HomeownerReportAction(BaseModel):
+    title: str
+    priority: int = 5
+    target_zone: Optional[str] = None
+    why_it_matters: str = ""
+    expected_impact_category: Literal["low", "medium", "high"] = "medium"
+    evidence_status: Literal["observed", "inferred", "missing", "unknown"] = "unknown"
+    explanation: str = ""
+
+
+class HomeownerReport(BaseModel):
+    assessment_id: str
+    report_format_version: str = "1.0.0"
+    generated_at: str
+    report_header: Dict[str, object] = Field(default_factory=dict)
+    property_summary: Dict[str, object] = Field(default_factory=dict)
+    score_summary: Dict[str, object] = Field(default_factory=dict)
+    key_risk_drivers: List[str] = Field(default_factory=list)
+    defensible_space_summary: Dict[str, object] = Field(default_factory=dict)
+    mitigation_plan: List[HomeownerReportAction] = Field(default_factory=list)
+    insurance_readiness_summary: Dict[str, object] = Field(default_factory=dict)
+    confidence_and_limitations: Dict[str, object] = Field(default_factory=dict)
+    metadata: Dict[str, object] = Field(default_factory=dict)
+    professional_debug_metadata: Optional[Dict[str, object]] = None
+
+
 class BatchAssessmentItem(BaseModel):
     row_id: Optional[str] = None
     address: str

@@ -60,6 +60,8 @@ Reports:
 - `GET /report/{assessment_id}`
 - `GET /report/{assessment_id}/export`
 - `GET /report/{assessment_id}/view`
+- `GET /report/{assessment_id}/homeowner`
+- `GET /report/{assessment_id}/homeowner/pdf`
 
 Portfolio and batch:
 - `POST /portfolio/assess`
@@ -490,10 +492,29 @@ Response transparency is preserved in existing structures:
 
 When one component is unavailable, `wildfire_risk_score` can still be computed from available component evidence, with explicit scoring notes and confidence penalties.
 
+## Homeowner Reports
+
+Completed assessments can be transformed into a homeowner-facing report and downloaded as PDF.
+
+- JSON report view: `GET /report/{assessment_id}/homeowner`
+- PDF download: `GET /report/{assessment_id}/homeowner/pdf`
+
+Homeowner report sections include:
+- property summary
+- wildfire risk and insurance readiness score summary
+- key risk drivers
+- defensible-space zone findings and vegetation actions
+- prioritized mitigation plan
+- confidence and limitations summary
+- model/region metadata
+
+Use `include_professional_debug_metadata=true` on the homeowner JSON endpoint when you need internal diagnostics alongside consumer-facing content.
+See `docs/homeowner_report.md` for details.
+
 ## Limitations
 
 - Scoring and readiness are deterministic heuristics; this is not a carrier-approved underwriting model.
-- Report export is JSON/HTML oriented (no built-in PDF generator).
+- Report outputs are decision-support guidance and do not guarantee insurability or wildfire outcomes.
 - Open-data enrichment depends on local prepared layers and configured sources; missing datasets still trigger partial/fallback paths.
 
 ## Release Notes

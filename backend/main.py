@@ -13,7 +13,7 @@ from uuid import uuid4
 
 from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, PlainTextResponse
+from fastapi.responses import HTMLResponse, PlainTextResponse, Response
 
 from backend.auth import require_api_key
 from backend.benchmarking import (
@@ -29,6 +29,7 @@ from backend.data_prep.region_lookup import (
     find_region_for_point as lookup_region_for_point,
 )
 from backend.geocoding import Geocoder, GeocodingError, normalize_address
+from backend.homeowner_report import build_homeowner_report, render_homeowner_report_pdf
 from backend.layer_diagnostics import LAYER_SPECS
 from backend.mitigation import build_mitigation_plan
 from backend.models import (
@@ -70,6 +71,7 @@ from backend.models import (
     InputSourceMetadata,
     GeocodeDebugRequest,
     GeocodingDetails,
+    HomeownerReport,
     ModelGovernanceInfo,
     NearStructureAction,
     FactorBreakdown,
@@ -5439,6 +5441,45 @@ def view_report(
         metadata={"audience": audience or audience_mode or _default_audience_for_role(ctx.user_role)},
     )
     return HTMLResponse(html)
+
+
+@app.get("/report/{assessment_id}/homeowner", response_model=HomeownerReport, dependencies=[Depends(require_api_key)])
+def get_homeowner_report(
+    assessment_id: str,
+    include_professional_debug_metadata: bool = Query(default=False),
+    ctx: ActorContext = Depends(get_actor_context),
+) -> HomeownerReport:
+    result = store.get(assessment_id)
+    if not result:
+        raise HTTPException(status_code=404, detail="Assessment not found")
+    _enforce_org_scope(ctx, result.organization_id)
+    return build_homeowner_report(
+        _refresh_result_governance(result),
+        include_professional_debug_metadata=include_professional_debug_metadata,
+    )
+
+
+@app.get("/report/{assessment_id}/homeowner/pdf", dependencies=[Depends(require_api_key)])
+def download_homeowner_report_pdf(
+    assessment_id: str,
+    include_professional_debug_metadata: bool = Query(default=False),
+    ctx: ActorContext = Depends(get_actor_context),
+) -> Response:
+    result = store.get(assessment_id)
+    if not result:
+        raise HTTPException(status_code=404, detail="Assessment not found")
+    _enforce_org_scope(ctx, result.organization_id)
+    report = build_homeowner_report(
+        _refresh_result_governance(result),
+        include_professional_debug_metadata=include_professional_debug_metadata,
+    )
+    pdf_bytes = render_homeowner_report_pdf(report)
+    filename = f"wildfire_homeowner_report_{assessment_id}.pdf"
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @app.get("/portfolio", response_model=PortfolioResponse, dependencies=[Depends(require_api_key)])

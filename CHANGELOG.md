@@ -2,6 +2,36 @@
 
 This file tracks release-level governance changes for `WildfireRisk Advisor`.
 
+## [0.13.0] - 2026-03-10
+### Version changes
+- `product_version`: `0.13.0` (minor)
+- `api_version`: `1.1.0` (minor; homeowner report/PDF endpoints added)
+- `scoring_model_version`: `1.7.0` (unchanged)
+- `ruleset_version`: tracked per assessment ruleset
+- `rules_logic_version`: `1.1.0` (unchanged)
+- `factor_schema_version`: `1.2.0` (unchanged)
+- `benchmark_pack_version`: `1.0.0` (unchanged)
+- `calibration_version`: `0.1.0` (unchanged)
+- `region_data_version`: tracked per assessment/region build
+- `data_bundle_version`: `unversioned` default unless overridden
+
+### Reason
+- Add a homeowner-facing report view-model and downloadable PDF export so completed assessments can be shared as consumer-ready documents.
+
+### Expected effect on outputs
+- New endpoints: `GET /report/{assessment_id}/homeowner` and `GET /report/{assessment_id}/homeowner/pdf`.
+- Existing report/export endpoints remain backward-compatible.
+- No scoring formula changes in this release.
+
+### Migration/interpretation notes
+- Homeowner report payload is additive and separate from technical report export payloads.
+- Clients can opt into `include_professional_debug_metadata=true` for advanced diagnostics in homeowner report JSON.
+
+### Historical comparison validity
+- `not_directly_comparable` when scoring/rules/schema dimensions differ.
+- `comparable_with_review` when data/calibration dimensions differ.
+- `directly_comparable` when governance dimensions match.
+
 ## [0.12.0] - 2026-03-10
 ### Version changes
 - `product_version`: `0.12.0` (minor)

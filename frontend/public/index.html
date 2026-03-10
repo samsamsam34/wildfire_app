@@ -335,6 +335,7 @@
         <div class="actions">
           <button id="openReportBtn" type="button" class="secondary">Open Printable Report</button>
           <button id="exportReportBtn" type="button" class="secondary">Open Export JSON</button>
+          <button id="downloadPdfBtn" type="button" class="secondary">Download Homeowner PDF</button>
         </div>
       </section>
 
@@ -1021,6 +1022,51 @@
         }
       }
 
+      async function downloadHomeownerPdf() {
+        if (!latestAssessment) return alert("Run an assessment first.");
+
+        const key = apiKeyInput.value.trim();
+        try {
+          localStorage.setItem("wildfire_api_key", key);
+        } catch (_err) {
+          // Non-fatal in restricted browser contexts.
+        }
+
+        try {
+          const res = await fetch(`${apiBase}/report/${latestAssessment.assessment_id}/homeowner/pdf`, {
+            method: "GET",
+            headers: { "X-API-Key": key },
+          });
+          if (!res.ok) {
+            let message = `API ${res.status}`;
+            const contentType = res.headers.get("content-type") || "";
+            if (contentType.includes("application/json")) {
+              const payload = await res.json();
+              const detail = payload?.detail;
+              message = (detail && typeof detail === "object" && detail.message)
+                ? detail.message
+                : (typeof detail === "string" ? detail : message);
+            } else {
+              const text = await res.text();
+              if (text) message = text;
+            }
+            throw new Error(message);
+          }
+
+          const blob = await res.blob();
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement("a");
+          a.href = url;
+          a.download = `wildfire_homeowner_report_${latestAssessment.assessment_id}.pdf`;
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+          URL.revokeObjectURL(url);
+        } catch (err) {
+          alert(err.message);
+        }
+      }
+
       bindOtherInput("roof_type", "roof_type_other");
       bindOtherInput("vent_type", "vent_type_other");
       bindOtherInput("siding_type", "siding_type_other");
@@ -1038,6 +1084,7 @@
       document.getElementById("simulateBtn").addEventListener("click", runSimulation);
       document.getElementById("openReportBtn").addEventListener("click", openReportView);
       document.getElementById("exportReportBtn").addEventListener("click", exportReport);
+      document.getElementById("downloadPdfBtn").addEventListener("click", downloadHomeownerPdf);
     </script>
   </body>
 </html>
