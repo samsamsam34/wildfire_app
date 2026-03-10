@@ -32,6 +32,13 @@ def test_frontend_does_not_require_manual_region_selection() -> None:
     assert "outside the currently prepared region set" in html
 
 
+def test_frontend_trims_address_and_probes_coverage_on_geocode_failures() -> None:
+    html = _frontend_html()
+    assert 'address: String(document.getElementById("address").value || "").trim()' in html
+    assert "fetchCoverageForAddress(document.getElementById(\"address\")?.value || \"\")" in html
+    assert "String(coverage.geocode_status || \"\").toLowerCase() === \"accepted\"" in html
+
+
 def test_frontend_region_debug_metadata_is_dev_mode_only() -> None:
     html = _frontend_html()
     assert "window.WILDFIRE_DEBUG_MODE" in html

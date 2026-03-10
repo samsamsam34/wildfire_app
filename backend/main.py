@@ -2654,11 +2654,18 @@ def _run_assessment(
     assessment_id: str | None = None,
     portfolio_name: str | None = None,
     tags: list[str] | None = None,
+    geocode_resolution: GeocodeResolution | None = None,
+    coverage_resolution: RegionCoverageResolution | None = None,
 ) -> tuple[AssessmentResult, dict]:
-    lat, lon, geocode_source, geocode_meta = _geocode_address_or_raise(
-        address=payload.address,
+    geocode_resolution = geocode_resolution or _resolve_trusted_geocode(
+        address_input=payload.address,
         purpose="assessment",
+        route_name="assessment_core",
     )
+    lat = float(geocode_resolution.latitude)
+    lon = float(geocode_resolution.longitude)
+    geocode_source = geocode_resolution.geocode_source
+    geocode_meta = dict(geocode_resolution.geocode_meta or {})
 
     context = wildfire_data.collect_context(lat, lon)
     scoring_attrs = normalize_property_attributes(payload.attributes)
@@ -2704,7 +2711,13 @@ def _run_assessment(
         readiness.readiness_blockers,
     )
 
-    coverage_lookup = _region_coverage_for_coordinates(lat=lat, lon=lon)
+    coverage_resolution = coverage_resolution or _resolve_prepared_region(
+        latitude=lat,
+        longitude=lon,
+        route_name="assessment_core",
+        address_input=payload.address,
+    )
+    coverage_lookup = dict(coverage_resolution.coverage or {})
     layer_coverage_audit, coverage_summary = _normalize_layer_coverage(
         property_level_context,
         environmental_layer_status=context.environmental_layer_status,
@@ -3295,6 +3308,8 @@ def _compute_assessment(
     ruleset: UnderwritingRuleset,
     portfolio_name: str | None = None,
     tags: list[str] | None = None,
+    geocode_resolution: GeocodeResolution | None = None,
+    coverage_resolution: RegionCoverageResolution | None = None,
 ) -> AssessmentResult:
     result, _ = _run_assessment(
         payload,
@@ -3302,6 +3317,8 @@ def _compute_assessment(
         ruleset=ruleset,
         portfolio_name=portfolio_name,
         tags=tags,
+        geocode_resolution=geocode_resolution,
+        coverage_resolution=coverage_resolution,
     )
     return result
 
@@ -3838,6 +3855,30 @@ def _log_geocode_event(
     LOGGER.log(level, "assessment_geocoding %s", json.dumps(payload, sort_keys=True))
 
 
+@dataclass(frozen=True)
+class GeocodeResolution:
+    raw_input: str
+    normalized_address: str
+    geocode_status: str
+    candidate_count: int
+    selected_candidate: dict[str, Any] | None
+    confidence_score: float | None
+    latitude: float
+    longitude: float
+    geocode_source: str
+    geocode_meta: dict[str, Any]
+    rejection_reason: str | None = None
+
+
+@dataclass(frozen=True)
+class RegionCoverageResolution:
+    coverage_available: bool
+    resolved_region_id: str | None
+    reason: str
+    diagnostics: list[str]
+    coverage: dict[str, Any]
+
+
 def _geocode_address_or_raise(*, address: str, purpose: str) -> tuple[float, float, str, dict[str, Any]]:
     submitted_address = str(address or "")
     normalized_address = normalize_address(submitted_address)
@@ -3966,6 +4007,116 @@ def _geocode_address_or_raise(*, address: str, purpose: str) -> tuple[float, flo
         raw_response_preview=geocode_meta.get("raw_response_preview"),
     )
     return float(lat), float(lon), geocode_source, geocode_meta
+
+
+def _resolve_trusted_geocode(
+    *,
+    address_input: str,
+    purpose: str,
+    route_name: str,
+) -> GeocodeResolution:
+    try:
+        lat, lon, source, geocode_meta = _geocode_address_or_raise(address=address_input, purpose=purpose)
+    except HTTPException as exc:
+        detail = exc.detail if isinstance(exc.detail, dict) else {}
+        if _is_dev_mode():
+            LOGGER.warning(
+                "route_geocode_resolution %s",
+                json.dumps(
+                    {
+                        "event": "route_geocode_resolution",
+                        "route_name": route_name,
+                        "status_code": exc.status_code,
+                        "submitted_address": str(detail.get("submitted_address") or address_input or ""),
+                        "normalized_address": str(detail.get("normalized_address") or normalize_address(address_input or "")),
+                        "geocode_status": detail.get("geocode_status") or "provider_error",
+                        "rejection_reason": detail.get("rejection_reason"),
+                    },
+                    sort_keys=True,
+                ),
+            )
+        raise
+
+    selected_candidate = {
+        "display_name": geocode_meta.get("matched_address"),
+        "confidence_score": geocode_meta.get("confidence_score"),
+        "provider": geocode_meta.get("provider"),
+    }
+    if not selected_candidate["display_name"] and not selected_candidate["confidence_score"]:
+        selected_candidate = None
+
+    resolution = GeocodeResolution(
+        raw_input=str(geocode_meta.get("submitted_address") or address_input or ""),
+        normalized_address=str(geocode_meta.get("normalized_address") or normalize_address(address_input or "")),
+        geocode_status=str(geocode_meta.get("geocode_status") or "accepted"),
+        candidate_count=int(geocode_meta.get("candidate_count") or 1),
+        selected_candidate=selected_candidate,
+        confidence_score=(
+            float(geocode_meta["confidence_score"])
+            if geocode_meta.get("confidence_score") is not None
+            else None
+        ),
+        latitude=float(lat),
+        longitude=float(lon),
+        geocode_source=str(source),
+        geocode_meta=dict(geocode_meta or {}),
+        rejection_reason=geocode_meta.get("rejection_reason"),
+    )
+    if _is_dev_mode():
+        LOGGER.info(
+            "route_geocode_resolution %s",
+            json.dumps(
+                {
+                    "event": "route_geocode_resolution",
+                    "route_name": route_name,
+                    "submitted_address": resolution.raw_input,
+                    "normalized_address": resolution.normalized_address,
+                    "geocode_status": resolution.geocode_status,
+                    "candidate_count": resolution.candidate_count,
+                    "confidence_score": resolution.confidence_score,
+                    "latitude": round(resolution.latitude, 6),
+                    "longitude": round(resolution.longitude, 6),
+                },
+                sort_keys=True,
+            ),
+        )
+    return resolution
+
+
+def _resolve_prepared_region(
+    *,
+    latitude: float,
+    longitude: float,
+    route_name: str,
+    address_input: str = "",
+) -> RegionCoverageResolution:
+    coverage = _region_coverage_for_coordinates(lat=float(latitude), lon=float(longitude))
+    resolution = RegionCoverageResolution(
+        coverage_available=bool(coverage.get("coverage_available", False)),
+        resolved_region_id=coverage.get("resolved_region_id"),
+        reason=str(coverage.get("reason") or "unknown"),
+        diagnostics=list(coverage.get("diagnostics") or []),
+        coverage=dict(coverage),
+    )
+    if _is_dev_mode():
+        LOGGER.info(
+            "route_region_resolution %s",
+            json.dumps(
+                {
+                    "event": "route_region_resolution",
+                    "route_name": route_name,
+                    "submitted_address": address_input,
+                    "latitude": round(float(latitude), 6),
+                    "longitude": round(float(longitude), 6),
+                    "coverage_available": resolution.coverage_available,
+                    "resolved_region_id": resolution.resolved_region_id,
+                    "reason": resolution.reason,
+                    "diagnostics": resolution.diagnostics[:4],
+                },
+                sort_keys=True,
+            ),
+        )
+    return resolution
 
 
 def _build_geocode_debug_payload(address: str) -> dict[str, Any]:
@@ -4182,17 +4333,15 @@ def _build_region_resolution(
     region_status = str(property_level_context.get("region_status") or "")
     region_id = property_level_context.get("region_id")
     region_display_name = property_level_context.get("region_display_name")
-    diagnostics = list((coverage_lookup or {}).get("diagnostics") or [])
+    coverage_lookup = dict(coverage_lookup or {})
+    diagnostics = list(coverage_lookup.get("diagnostics") or [])
+    lookup_covered = bool(
+        coverage_lookup.get("coverage_available")
+        or coverage_lookup.get("covered")
+    )
+    lookup_region_id = coverage_lookup.get("resolved_region_id") or coverage_lookup.get("region_id")
+    lookup_display_name = coverage_lookup.get("resolved_region_display_name") or coverage_lookup.get("display_name")
 
-    if region_status == "prepared":
-        return RegionResolution(
-            coverage_available=True,
-            resolved_region_id=str(region_id) if region_id else None,
-            resolved_region_display_name=str(region_display_name) if region_display_name else None,
-            reason="prepared_region_found",
-            recommended_action=None,
-            diagnostics=diagnostics,
-        )
     if region_status == "invalid_manifest":
         return RegionResolution(
             coverage_available=False,
@@ -4200,6 +4349,20 @@ def _build_region_resolution(
             resolved_region_display_name=str(region_display_name) if region_display_name else None,
             reason="prepared_region_manifest_invalid",
             recommended_action="Run scripts/validate_prepared_region.py for this region and repair missing files.",
+            diagnostics=diagnostics,
+        )
+
+    if lookup_covered or region_status == "prepared":
+        return RegionResolution(
+            coverage_available=True,
+            resolved_region_id=str(lookup_region_id or region_id) if (lookup_region_id or region_id) else None,
+            resolved_region_display_name=(
+                str(lookup_display_name or region_display_name)
+                if (lookup_display_name or region_display_name)
+                else None
+            ),
+            reason="prepared_region_found",
+            recommended_action=None,
             diagnostics=diagnostics,
         )
     if region_status == "legacy_fallback":
@@ -4679,16 +4842,27 @@ def check_region_coverage(
         )
     lat = payload.latitude
     lon = payload.longitude
-    geocode_meta: dict[str, Any] | None = None
+    geocode_resolution: GeocodeResolution | None = None
     if lat is None or lon is None:
         if not payload.address or len(payload.address.strip()) < 5:
             raise HTTPException(status_code=400, detail="Provide either latitude/longitude or a valid address.")
-        lat, lon, _source, geocode_meta = _geocode_address_or_raise(
-            address=payload.address,
+        geocode_resolution = _resolve_trusted_geocode(
+            address_input=payload.address,
             purpose="region_coverage_check",
+            route_name="/regions/coverage-check",
         )
-    coverage = _region_coverage_for_coordinates(float(lat), float(lon))
-    if geocode_meta:
+        lat = geocode_resolution.latitude
+        lon = geocode_resolution.longitude
+
+    coverage_resolution = _resolve_prepared_region(
+        latitude=float(lat),
+        longitude=float(lon),
+        route_name="/regions/coverage-check",
+        address_input=str(payload.address or ""),
+    )
+    coverage = dict(coverage_resolution.coverage)
+    if geocode_resolution:
+        geocode_meta = geocode_resolution.geocode_meta
         coverage["geocode_status"] = geocode_meta.get("geocode_status")
         coverage["normalized_address"] = geocode_meta.get("normalized_address")
         coverage["geocode_source"] = geocode_meta.get("geocode_source")
@@ -4724,80 +4898,53 @@ def assess_risk(
 
     auto_queue_on_uncovered = _env_flag("WF_AUTO_QUEUE_REGION_PREP_ON_MISS", False)
     require_prepared_region = _env_flag("WF_REQUIRE_PREPARED_REGION_COVERAGE", False)
-    if auto_queue_on_uncovered or require_prepared_region:
-        lat, lon, _source, geocode_meta = _geocode_address_or_raise(
-            address=payload.address,
-            purpose="assessment",
-        )
-
-        coverage = _region_coverage_for_coordinates(lat=float(lat), lon=float(lon))
-        if not coverage.get("covered"):
-            if auto_queue_on_uncovered:
-                requested_bbox = _derive_region_bbox_from_point(lat=lat, lon=lon)
-                region_id = _auto_region_id_for_bbox(requested_bbox)
-                display_name = f"Auto Prepared Region {region_id.replace('auto_', '').upper()}"
-                request_payload = _build_region_prepare_request_payload(
-                    region_id=region_id,
-                    display_name=display_name,
-                    bbox=requested_bbox,
-                )
-                status = _enqueue_region_prep_job(
-                    region_id=region_id,
-                    display_name=display_name,
-                    bbox=requested_bbox,
-                    requested_address=payload.address,
-                    point_lat=lat,
-                    point_lon=lon,
-                    request_payload=request_payload,
-                )
-                _log_audit(
-                    ctx=ctx,
-                    entity_type="region_prep_job",
-                    entity_id=status.job_id,
-                    action="region_prep_job_auto_enqueued",
-                    organization_id=organization_id,
-                    metadata={
-                        "address": payload.address,
-                        "region_id": region_id,
-                        "requested_bbox": requested_bbox,
-                        "reused_existing_job": status.reused_existing_job,
-                    },
-                )
-                _log_region_resolution_event(
-                    address=payload.address,
-                    latitude=lat,
-                    longitude=lon,
-                    region_resolution={
-                        "coverage_available": False,
-                        "resolved_region_id": None,
-                        "reason": "no_prepared_region_for_location",
-                        "diagnostics": coverage.get("diagnostics", []),
-                    },
-                    manifest_path=None,
-                )
-                raise HTTPException(
-                    status_code=409,
-                    detail={
-                        "region_not_ready": True,
-                        "geocode_status": geocode_meta.get("geocode_status"),
-                        "submitted_address": geocode_meta.get("submitted_address"),
-                        "normalized_address": geocode_meta.get("normalized_address"),
-                        "resolved_latitude": geocode_meta.get("resolved_latitude"),
-                        "resolved_longitude": geocode_meta.get("resolved_longitude"),
-                        "coverage_available": False,
-                        "resolved_region_id": None,
-                        "reason": "no_prepared_region_for_location",
-                        "prep_job_id": status.job_id,
-                        "prep_job_status": status.status,
-                        "requested_bbox": requested_bbox,
-                        "message": (
-                            "No prepared region currently covers this address. A region prep job has been queued; "
-                            "retry assessment after the job completes."
-                        ),
-                        "recommended_action": "Retry assessment after prep job completion.",
-                        "diagnostics": coverage.get("diagnostics", []),
-                    },
-                )
+    geocode_resolution = _resolve_trusted_geocode(
+        address_input=payload.address,
+        purpose="assessment",
+        route_name="/risk/assess",
+    )
+    coverage_resolution = _resolve_prepared_region(
+        latitude=geocode_resolution.latitude,
+        longitude=geocode_resolution.longitude,
+        route_name="/risk/assess",
+        address_input=payload.address,
+    )
+    if not coverage_resolution.coverage_available and (auto_queue_on_uncovered or require_prepared_region):
+        lat = geocode_resolution.latitude
+        lon = geocode_resolution.longitude
+        geocode_meta = geocode_resolution.geocode_meta
+        coverage = coverage_resolution.coverage
+        if auto_queue_on_uncovered:
+            requested_bbox = _derive_region_bbox_from_point(lat=lat, lon=lon)
+            region_id = _auto_region_id_for_bbox(requested_bbox)
+            display_name = f"Auto Prepared Region {region_id.replace('auto_', '').upper()}"
+            request_payload = _build_region_prepare_request_payload(
+                region_id=region_id,
+                display_name=display_name,
+                bbox=requested_bbox,
+            )
+            status = _enqueue_region_prep_job(
+                region_id=region_id,
+                display_name=display_name,
+                bbox=requested_bbox,
+                requested_address=payload.address,
+                point_lat=lat,
+                point_lon=lon,
+                request_payload=request_payload,
+            )
+            _log_audit(
+                ctx=ctx,
+                entity_type="region_prep_job",
+                entity_id=status.job_id,
+                action="region_prep_job_auto_enqueued",
+                organization_id=organization_id,
+                metadata={
+                    "address": payload.address,
+                    "region_id": region_id,
+                    "requested_bbox": requested_bbox,
+                    "reused_existing_job": status.reused_existing_job,
+                },
+            )
             _log_region_resolution_event(
                 address=payload.address,
                 latitude=lat,
@@ -4822,24 +4969,61 @@ def assess_risk(
                     "coverage_available": False,
                     "resolved_region_id": None,
                     "reason": "no_prepared_region_for_location",
-                    "prep_job_id": None,
-                    "prep_job_status": None,
-                    "requested_bbox": _derive_region_bbox_from_point(lat=lat, lon=lon),
+                    "prep_job_id": status.job_id,
+                    "prep_job_status": status.status,
+                    "requested_bbox": requested_bbox,
                     "message": (
-                        "Prepared region coverage is required for assessment, but this address is outside "
-                        "current prepared regions. Run the offline region-prep command, validate, then retry."
+                        "No prepared region currently covers this address. A region prep job has been queued; "
+                        "retry assessment after the job completes."
                     ),
-                    "recommended_action": (
-                        "Run scripts/prepare_region_from_catalog_or_sources.py for this bbox, validate, then retry."
-                    ),
+                    "recommended_action": "Retry assessment after prep job completion.",
                     "diagnostics": coverage.get("diagnostics", []),
                 },
             )
+        _log_region_resolution_event(
+            address=payload.address,
+            latitude=lat,
+            longitude=lon,
+            region_resolution={
+                "coverage_available": False,
+                "resolved_region_id": None,
+                "reason": "no_prepared_region_for_location",
+                "diagnostics": coverage.get("diagnostics", []),
+            },
+            manifest_path=None,
+        )
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "region_not_ready": True,
+                "geocode_status": geocode_meta.get("geocode_status"),
+                "submitted_address": geocode_meta.get("submitted_address"),
+                "normalized_address": geocode_meta.get("normalized_address"),
+                "resolved_latitude": geocode_meta.get("resolved_latitude"),
+                "resolved_longitude": geocode_meta.get("resolved_longitude"),
+                "coverage_available": False,
+                "resolved_region_id": None,
+                "reason": "no_prepared_region_for_location",
+                "prep_job_id": None,
+                "prep_job_status": None,
+                "requested_bbox": _derive_region_bbox_from_point(lat=lat, lon=lon),
+                "message": (
+                    "Prepared region coverage is required for assessment, but this address is outside "
+                    "current prepared regions. Run the offline region-prep command, validate, then retry."
+                ),
+                "recommended_action": (
+                    "Run scripts/prepare_region_from_catalog_or_sources.py for this bbox, validate, then retry."
+                ),
+                "diagnostics": coverage.get("diagnostics", []),
+            },
+        )
 
     result = _compute_assessment(
         payload,
         organization_id=organization_id,
         ruleset=ruleset,
+        geocode_resolution=geocode_resolution,
+        coverage_resolution=coverage_resolution,
     )
     store.save(result)
     _log_audit(
@@ -5043,10 +5227,41 @@ def debug_risk(
     include_benchmark_hints: bool = Query(default=False),
     ctx: ActorContext = Depends(get_actor_context),
 ) -> dict:
+    if _is_dev_mode():
+        LOGGER.info(
+            "debug_assessment_request %s",
+            json.dumps(
+                {
+                    "event": "debug_assessment_request",
+                    "route_name": "/risk/debug",
+                    "address_raw": payload.address,
+                    "address_normalized": normalize_address(payload.address or ""),
+                    "payload_shape": sorted(list(payload.model_dump(exclude_none=True).keys())),
+                },
+                sort_keys=True,
+            ),
+        )
     organization_id = _resolve_org_id(payload.organization_id, ctx)
     _enforce_org_scope(ctx, organization_id)
     ruleset = _get_ruleset_or_default(payload.ruleset_id)
-    result, debug_payload = _run_assessment(payload, organization_id=organization_id, ruleset=ruleset)
+    geocode_resolution = _resolve_trusted_geocode(
+        address_input=payload.address,
+        purpose="assessment",
+        route_name="/risk/debug",
+    )
+    coverage_resolution = _resolve_prepared_region(
+        latitude=geocode_resolution.latitude,
+        longitude=geocode_resolution.longitude,
+        route_name="/risk/debug",
+        address_input=payload.address,
+    )
+    result, debug_payload = _run_assessment(
+        payload,
+        organization_id=organization_id,
+        ruleset=ruleset,
+        geocode_resolution=geocode_resolution,
+        coverage_resolution=coverage_resolution,
+    )
     if include_benchmark_hints:
         debug_payload["benchmark_hints"] = build_benchmark_hints_for_assessment(result)
     return debug_payload
@@ -5057,7 +5272,24 @@ def layer_diagnostics(payload: AddressRequest, ctx: ActorContext = Depends(get_a
     organization_id = _resolve_org_id(payload.organization_id, ctx)
     _enforce_org_scope(ctx, organization_id)
     ruleset = _get_ruleset_or_default(payload.ruleset_id)
-    _, debug_payload = _run_assessment(payload, organization_id=organization_id, ruleset=ruleset)
+    geocode_resolution = _resolve_trusted_geocode(
+        address_input=payload.address,
+        purpose="assessment",
+        route_name="/risk/layer-diagnostics",
+    )
+    coverage_resolution = _resolve_prepared_region(
+        latitude=geocode_resolution.latitude,
+        longitude=geocode_resolution.longitude,
+        route_name="/risk/layer-diagnostics",
+        address_input=payload.address,
+    )
+    _, debug_payload = _run_assessment(
+        payload,
+        organization_id=organization_id,
+        ruleset=ruleset,
+        geocode_resolution=geocode_resolution,
+        coverage_resolution=coverage_resolution,
+    )
     return {
         "address": debug_payload.get("address"),
         "organization_id": debug_payload.get("organization_id"),

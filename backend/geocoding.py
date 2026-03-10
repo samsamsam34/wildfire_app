@@ -140,7 +140,11 @@ class Geocoder:
         ).strip()
         state = str(address.get("state") or "").strip()
         postcode = str(address.get("postcode") or "").strip()
-        return bool(house and road and locality and (state or postcode))
+        # Treat house+road+locality as strongest precision, but also accept road/locality/postcode
+        # because some valid provider matches omit house_number while still returning precise coordinates.
+        has_precise_street_context = bool(road and locality and (house or postcode))
+        has_regional_anchor = bool(state or postcode)
+        return has_precise_street_context and has_regional_anchor
 
     def geocode_with_diagnostics(self, address: str) -> GeocodeResult:
         submitted_address = str(address or "")

@@ -1128,12 +1128,12 @@
       }
 
       async function fetchCoverageForAddress(address) {
-        return api("/regions/coverage-check", { address }, "POST");
+        return api("/regions/coverage-check", { address: String(address || "").trim() }, "POST");
       }
 
       function buildAssessmentPayload() {
         return {
-          address: document.getElementById("address").value,
+          address: String(document.getElementById("address").value || "").trim(),
           attributes: collectAttributes(""),
           confirmed_fields: parseCSV(document.getElementById("confirmed_fields").value),
           audience: "homeowner"
@@ -1209,6 +1209,30 @@
           }
           const isGeocodeFailure = !!(detail && detail.error === "geocoding_failed");
           if (isGeocodeFailure) {
+            try {
+              const coverage = await fetchCoverageForAddress(document.getElementById("address")?.value || "");
+              if (
+                coverage
+                && (coverage.coverage_available === false || coverage.covered === false)
+                && String(coverage.geocode_status || "").toLowerCase() === "accepted"
+              ) {
+                renderUncoveredLocationState({
+                  region_not_ready: true,
+                  coverage_available: false,
+                  resolved_region_id: coverage?.resolved_region_id ?? coverage?.region_id ?? null,
+                  reason: coverage?.reason || "no_prepared_region_for_location",
+                  diagnostics: coverage?.diagnostics || [],
+                  message: coverage?.message,
+                  recommended_action: coverage?.recommended_action,
+                  geocode_status: "accepted",
+                  normalized_address: coverage?.normalized_address,
+                });
+                setRequestStatus(coverage?.message || "This location is outside currently prepared regions.", "error");
+                return;
+              }
+            } catch (_coverageErr) {
+              // Ignore: keep geocode failure rendering if coverage-check probe also fails.
+            }
             renderGeocodeFailureState(detail, document.getElementById("address")?.value || "");
           }
           setRequestStatus(`Assessment failed: ${err.message}`, "error");

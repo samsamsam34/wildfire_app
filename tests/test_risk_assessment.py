@@ -1145,6 +1145,147 @@ def test_geocode_debug_returns_structured_rejection_for_parser_error(monkeypatch
     assert body["region_resolution"] is None
 
 
+def test_route_geocode_and_coverage_are_consistent_for_valid_covered_address(monkeypatch, tmp_path):
+    auth.API_KEYS = set()
+    monkeypatch.setattr(app_main, "store", AssessmentStore(str(tmp_path / "route_consistency_covered.db")))
+    monkeypatch.setattr(app_main.wildfire_data, "collect_context", lambda _lat, _lon: _ctx(env=48.0, wildland=42.0, historic=35.0))
+    monkeypatch.setattr(
+        app_main.geocoder,
+        "geocode",
+        lambda _addr: (46.8721, -113.9940, "test-geocoder"),
+    )
+    monkeypatch.setattr(
+        app_main,
+        "lookup_region_for_point",
+        lambda lat, lon, regions_root=None: {
+            "covered": True,
+            "region_id": "missoula_pilot",
+            "display_name": "Missoula Pilot",
+            "diagnostics": [],
+        },
+    )
+
+    payload = {
+        "address": "201 W Front St, Missoula, MT 59802",
+        "attributes": {"roof_type": "class a"},
+        "confirmed_fields": ["roof_type"],
+        "audience": "homeowner",
+    }
+
+    coverage = client.post("/regions/coverage-check", json={"address": payload["address"]})
+    debug = client.post("/risk/debug", json=payload)
+    assess = client.post("/risk/assess", json=payload)
+
+    assert coverage.status_code == 200
+    assert debug.status_code == 200
+    assert assess.status_code == 200
+
+    coverage_body = coverage.json()
+    debug_body = debug.json()
+    assess_body = assess.json()
+
+    assert coverage_body["geocode_status"] == "accepted"
+    assert coverage_body["coverage_available"] is True
+    assert coverage_body["resolved_region_id"] == "missoula_pilot"
+    assert debug_body["geocoding"]["geocode_status"] == "accepted"
+    assert debug_body["region_resolution"]["coverage_available"] is True
+    assert debug_body["region_resolution"]["resolved_region_id"] == "missoula_pilot"
+    assert assess_body["geocoding"]["geocode_status"] == "accepted"
+    assert assess_body["coverage_available"] is True
+    assert assess_body["resolved_region_id"] == "missoula_pilot"
+
+
+def test_route_geocode_and_coverage_are_consistent_for_valid_uncovered_address(monkeypatch, tmp_path):
+    auth.API_KEYS = set()
+    monkeypatch.setattr(app_main, "store", AssessmentStore(str(tmp_path / "route_consistency_uncovered.db")))
+    monkeypatch.setenv("WF_REQUIRE_PREPARED_REGION_COVERAGE", "true")
+    monkeypatch.setenv("WF_AUTO_QUEUE_REGION_PREP_ON_MISS", "false")
+    monkeypatch.setattr(app_main.wildfire_data, "collect_context", lambda _lat, _lon: _ctx(env=45.0, wildland=45.0, historic=45.0))
+    monkeypatch.setattr(
+        app_main.geocoder,
+        "geocode",
+        lambda _addr: (44.0839, -121.3153, "test-geocoder"),
+    )
+    monkeypatch.setattr(
+        app_main,
+        "lookup_region_for_point",
+        lambda lat, lon, regions_root=None: {
+            "covered": False,
+            "diagnostics": ["No prepared region bounds contain point."],
+        },
+    )
+
+    payload = {
+        "address": "62910 O B Riley Rd, Bend, OR 97703",
+        "attributes": {"roof_type": "class a"},
+        "confirmed_fields": ["roof_type"],
+        "audience": "homeowner",
+    }
+
+    coverage = client.post("/regions/coverage-check", json={"address": payload["address"]})
+    debug = client.post("/risk/debug", json=payload)
+    assess = client.post("/risk/assess", json=payload)
+
+    assert coverage.status_code == 200
+    assert debug.status_code == 200
+    assert assess.status_code == 409
+
+    coverage_body = coverage.json()
+    debug_body = debug.json()
+    assess_detail = assess.json()["detail"]
+
+    assert coverage_body["geocode_status"] == "accepted"
+    assert coverage_body["coverage_available"] is False
+    assert coverage_body["reason"] == "no_prepared_region_for_location"
+    assert debug_body["geocoding"]["geocode_status"] == "accepted"
+    assert debug_body["region_resolution"]["coverage_available"] is False
+    assert debug_body["region_resolution"]["reason"] == "no_prepared_region_for_location"
+    assert assess_detail["region_not_ready"] is True
+    assert assess_detail["geocode_status"] == "accepted"
+    assert assess_detail["coverage_available"] is False
+    assert assess_detail["reason"] == "no_prepared_region_for_location"
+    assert "error" not in assess_detail
+
+
+def test_route_geocode_and_coverage_are_consistent_for_invalid_address(monkeypatch, tmp_path):
+    auth.API_KEYS = set()
+    monkeypatch.setattr(app_main, "store", AssessmentStore(str(tmp_path / "route_consistency_invalid.db")))
+    monkeypatch.setattr(
+        app_main.geocoder,
+        "geocode",
+        lambda _addr: (_ for _ in ()).throw(
+            GeocodingError(
+                status="no_match",
+                message="No geocoding result found.",
+                submitted_address="Invalid Input",
+                normalized_address="Invalid Input",
+                rejection_reason="provider returned no candidates",
+            )
+        ),
+    )
+
+    payload = {
+        "address": "Invalid Input",
+        "attributes": {"roof_type": "class a"},
+        "confirmed_fields": [],
+        "audience": "homeowner",
+    }
+
+    coverage = client.post("/regions/coverage-check", json={"address": payload["address"]})
+    debug = client.post("/risk/debug", json=payload)
+    assess = client.post("/risk/assess", json=payload)
+
+    assert coverage.status_code == 422
+    assert debug.status_code == 422
+    assert assess.status_code == 422
+
+    for response in (coverage, debug, assess):
+        detail = response.json()["detail"]
+        assert detail["error"] == "geocoding_failed"
+        assert detail["geocode_status"] == "no_match"
+        assert detail["normalized_address"] == "Invalid Input"
+
+
 def _run(payload: dict) -> dict:
     res = client.post("/risk/assess", json=payload)
     assert res.status_code == 200
