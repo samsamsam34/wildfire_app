@@ -1364,6 +1364,8 @@ def _normalize_property_level_context(raw_context: object) -> dict[str, Any]:
             "geocoded_address_point": None,
             "assessed_property_display_point": None,
             "parcel_id": None,
+            "parcel_lookup_method": None,
+            "parcel_lookup_distance_m": None,
             "parcel_geometry": None,
             "parcel_address_point": None,
             "alignment_notes": [],
@@ -1380,7 +1382,14 @@ def _normalize_property_level_context(raw_context: object) -> dict[str, Any]:
         normalized["footprint_status"] = "provider_unavailable"
     normalized.setdefault("fallback_mode", "footprint" if footprint_used else "point_based")
     normalized.setdefault("structure_match_status", "matched" if footprint_used else "none")
-    normalized.setdefault("structure_match_method", "point_in_polygon" if footprint_used else None)
+    normalized.setdefault(
+        "structure_match_method",
+        (
+            "parcel_intersection"
+            if (footprint_used and normalized.get("parcel_id"))
+            else ("nearest_building_fallback" if footprint_used else None)
+        ),
+    )
     normalized.setdefault("structure_match_confidence", float(normalized.get("footprint_confidence") or (0.9 if footprint_used else 0.0)))
     normalized.setdefault("structure_match_distance_m", 0.0 if footprint_used else None)
     normalized.setdefault("candidate_structure_count", 1 if footprint_used else 0)
@@ -1399,8 +1408,11 @@ def _normalize_property_level_context(raw_context: object) -> dict[str, Any]:
     normalized.setdefault("geocoded_address_point", {"latitude": None, "longitude": None})
     normalized.setdefault("assessed_property_display_point", normalized.get("property_anchor_point"))
     normalized.setdefault("parcel_id", None)
+    normalized.setdefault("parcel_lookup_method", None)
+    normalized.setdefault("parcel_lookup_distance_m", None)
     normalized.setdefault("parcel_geometry", None)
     normalized.setdefault("parcel_address_point", None)
+    normalized.setdefault("matched_structure_id", None)
     notes = normalized.get("alignment_notes")
     normalized["alignment_notes"] = notes if isinstance(notes, list) else []
     normalized.setdefault("source_conflict_flag", False)
@@ -3235,6 +3247,16 @@ def _run_assessment(
             if property_level_context.get("parcel_id")
             else None
         ),
+        parcel_lookup_method=(
+            str(property_level_context.get("parcel_lookup_method"))
+            if property_level_context.get("parcel_lookup_method")
+            else None
+        ),
+        parcel_lookup_distance_m=(
+            float(property_level_context.get("parcel_lookup_distance_m"))
+            if property_level_context.get("parcel_lookup_distance_m") is not None
+            else None
+        ),
         source_conflict_flag=bool(property_level_context.get("source_conflict_flag")),
         alignment_notes=[
             str(note) for note in (property_level_context.get("alignment_notes") or []) if str(note).strip()
@@ -3244,6 +3266,11 @@ def _run_assessment(
         structure_match_method=(
             str(property_level_context.get("structure_match_method"))
             if property_level_context.get("structure_match_method")
+            else None
+        ),
+        matched_structure_id=(
+            str(property_level_context.get("matched_structure_id"))
+            if property_level_context.get("matched_structure_id")
             else None
         ),
         structure_match_confidence=(
@@ -5449,10 +5476,13 @@ def layer_diagnostics(payload: AddressRequest, ctx: ActorContext = Depends(get_a
             "property_anchor_source": (debug_payload.get("property_level_context") or {}).get("property_anchor_source"),
             "property_anchor_precision": (debug_payload.get("property_level_context") or {}).get("property_anchor_precision"),
             "parcel_id": (debug_payload.get("property_level_context") or {}).get("parcel_id"),
+            "parcel_lookup_method": (debug_payload.get("property_level_context") or {}).get("parcel_lookup_method"),
+            "parcel_lookup_distance_m": (debug_payload.get("property_level_context") or {}).get("parcel_lookup_distance_m"),
             "parcel_source_name": (debug_payload.get("property_level_context") or {}).get("parcel_source_name"),
             "parcel_source_vintage": (debug_payload.get("property_level_context") or {}).get("parcel_source_vintage"),
             "structure_match_status": (debug_payload.get("property_level_context") or {}).get("structure_match_status"),
             "structure_match_method": (debug_payload.get("property_level_context") or {}).get("structure_match_method"),
+            "matched_structure_id": (debug_payload.get("property_level_context") or {}).get("matched_structure_id"),
             "structure_match_confidence": (debug_payload.get("property_level_context") or {}).get("structure_match_confidence"),
             "structure_match_distance_m": (debug_payload.get("property_level_context") or {}).get("structure_match_distance_m"),
             "candidate_structure_count": (debug_payload.get("property_level_context") or {}).get("candidate_structure_count"),

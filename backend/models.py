@@ -593,11 +593,14 @@ class AssessmentResult(BaseModel):
     property_anchor_precision: Optional[str] = None
     assessed_property_display_point: Optional[Dict[str, float]] = None
     parcel_id: Optional[str] = None
+    parcel_lookup_method: Optional[str] = None
+    parcel_lookup_distance_m: Optional[float] = None
     source_conflict_flag: bool = False
     alignment_notes: List[str] = Field(default_factory=list)
     display_point_source: Optional[str] = None
     structure_match_status: Optional[str] = None
     structure_match_method: Optional[str] = None
+    matched_structure_id: Optional[str] = None
     structure_match_confidence: Optional[float] = None
     structure_match_distance_m: Optional[float] = None
     candidate_structure_count: Optional[int] = None
@@ -782,6 +785,8 @@ class AssessmentMapPayload(BaseModel):
     parcel_address_point: Optional[Dict[str, object]] = None
     parcel_polygon: Optional[Dict[str, object]] = None
     parcel_id: Optional[str] = None
+    parcel_lookup_method: Optional[str] = None
+    parcel_lookup_distance_m: Optional[float] = None
     parcel_source_name: Optional[str] = None
     parcel_source_vintage: Optional[str] = None
     footprint_source_name: Optional[str] = None
@@ -790,6 +795,7 @@ class AssessmentMapPayload(BaseModel):
     alignment_notes: List[str] = Field(default_factory=list)
     structure_match_status: Optional[str] = None
     structure_match_method: Optional[str] = None
+    matched_structure_id: Optional[str] = None
     structure_match_confidence: Optional[float] = None
     structure_match_distance_m: Optional[float] = None
     candidate_structure_count: Optional[int] = None

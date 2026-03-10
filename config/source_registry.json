@@ -57,6 +57,32 @@
       "expected_output_format": "geojson",
       "notes": "Public USA structures feature-service default (fallback for building-footprint context)."
     },
+    "parcel_polygons": {
+      "provider_type": "local_file",
+      "source_path": "${WF_DEFAULT_PARCEL_POLYGONS_PATH:-}",
+      "source_endpoint": "${WF_DEFAULT_PARCEL_POLYGONS_ENDPOINT:-}",
+      "source_url": "${WF_DEFAULT_PARCEL_POLYGONS_URL:-}",
+      "supports_bbox_export": true,
+      "allow_full_download_fallback": true,
+      "query_format": "json",
+      "supports_geojson_direct": false,
+      "require_return_geometry": true,
+      "expected_output_format": "geojson",
+      "notes": "Optional parcel boundaries. Prefer local county/assessor parcel GeoJSON per region."
+    },
+    "parcel_address_points": {
+      "provider_type": "local_file",
+      "source_path": "${WF_DEFAULT_PARCEL_ADDRESS_POINTS_PATH:-}",
+      "source_endpoint": "${WF_DEFAULT_PARCEL_ADDRESS_POINTS_ENDPOINT:-}",
+      "source_url": "${WF_DEFAULT_PARCEL_ADDRESS_POINTS_URL:-}",
+      "supports_bbox_export": true,
+      "allow_full_download_fallback": true,
+      "query_format": "json",
+      "supports_geojson_direct": false,
+      "require_return_geometry": true,
+      "expected_output_format": "geojson",
+      "notes": "Optional authoritative address/parcel points used to improve property anchors."
+    },
     "roads": {
       "provider_type": "arcgis_feature_service",
       "source_endpoint": "${WF_DEFAULT_ROADS_ENDPOINT:-https://services.arcgis.com/xOi1kZaI0eWDREZv/ArcGIS/rest/services/NTAD_North_American_Roads/FeatureServer/0}",

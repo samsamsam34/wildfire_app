@@ -63,7 +63,9 @@ def test_building_match_prefers_point_in_polygon(tmp_path: Path) -> None:
 
     assert result.found is True
     assert result.match_status == "matched"
-    assert result.match_method == "point_in_polygon"
+    assert result.match_method == "nearest_building_fallback"
+    assert result.matched_structure_id == "subject"
+    assert result.confidence < 0.9
     assert result.match_distance_m == 0.0
     assert result.candidate_count >= 1
     assert result.centroid is not None
@@ -113,7 +115,7 @@ def test_building_match_rejects_ambiguous_cross_street_candidates(tmp_path: Path
 
     assert result.found is False
     assert result.match_status == "ambiguous"
-    assert result.match_method in {"distance_ranked", "point_in_polygon"}
+    assert result.match_method in {"nearest_building_fallback", "parcel_intersection"}
     assert result.candidate_count >= 2
     assert any("similarly plausible" in note.lower() for note in result.assumptions)
 
@@ -145,7 +147,7 @@ def test_interpolated_like_road_point_does_not_force_distant_match(tmp_path: Pat
 
     assert result.found is False
     assert result.match_status == "none"
-    assert result.match_method == "distance_ranked"
+    assert result.match_method == "nearest_building_fallback"
     assert result.match_distance_m is not None
     assert result.match_distance_m > 0
     assert any("too far" in note.lower() for note in result.assumptions)
@@ -207,5 +209,7 @@ def test_parcel_overlap_bias_prefers_structure_on_parcel(tmp_path: Path) -> None
 
     assert result.found is True
     assert result.match_status == "matched"
-    assert result.match_method in {"distance_ranked", "point_in_polygon"}
+    assert result.match_method == "parcel_intersection"
+    assert result.matched_structure_id == "on_parcel"
+    assert result.confidence >= 0.9
     assert any("parcel" in note.lower() for note in result.assumptions)

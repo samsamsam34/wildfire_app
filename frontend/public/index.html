@@ -644,8 +644,11 @@
         const anchorPrecision = payload?.property_anchor_precision || payload?.metadata?.property_anchor?.precision || "unknown";
         const sourceConflict = !!(payload?.source_conflict_flag ?? payload?.metadata?.property_anchor?.source_conflict_flag);
         const parcelId = payload?.parcel_id || payload?.metadata?.property_anchor?.parcel_id || "n/a";
+        const parcelLookupMethod = payload?.parcel_lookup_method || payload?.metadata?.property_anchor?.parcel_lookup_method || "none";
+        const parcelLookupDistanceM = payload?.parcel_lookup_distance_m ?? payload?.metadata?.property_anchor?.parcel_lookup_distance_m;
         const structureMatchStatus = payload?.structure_match_status || payload?.metadata?.structure_match?.status || "none";
         const structureMatchMethod = payload?.structure_match_method || payload?.metadata?.structure_match?.method || "none";
+        const matchedStructureId = payload?.matched_structure_id || payload?.metadata?.structure_match?.matched_structure_id || "n/a";
         const structureMatchConfidence = payload?.structure_match_confidence ?? payload?.metadata?.structure_match?.confidence;
         const structureMatchDistanceM = payload?.structure_match_distance_m ?? payload?.metadata?.structure_match?.distance_m;
         const candidateStructureCount = payload?.candidate_structure_count ?? payload?.metadata?.structure_match?.candidate_count;
@@ -684,9 +687,12 @@
           `property_anchor_precision: ${anchorPrecision}`,
           `source_conflict_flag: ${sourceConflict ? "true" : "false"}`,
           `parcel_id: ${parcelId}`,
+          `parcel_lookup_method: ${parcelLookupMethod}`,
+          `parcel_lookup_distance_m: ${Number.isFinite(Number(parcelLookupDistanceM)) ? Number(parcelLookupDistanceM).toFixed(2) : "n/a"}`,
           `display_point_source: ${displayPointSource}`,
           `structure_match_status: ${structureMatchStatus}`,
           `structure_match_method: ${structureMatchMethod}`,
+          `matched_structure_id: ${matchedStructureId}`,
           `structure_match_confidence: ${Number.isFinite(Number(structureMatchConfidence)) ? Number(structureMatchConfidence).toFixed(2) : "n/a"}`,
           `structure_match_distance_m: ${Number.isFinite(Number(structureMatchDistanceM)) ? Number(structureMatchDistanceM).toFixed(2) : "n/a"}`,
           `candidate_structure_count: ${Number.isFinite(Number(candidateStructureCount)) ? Number(candidateStructureCount) : "n/a"}`,

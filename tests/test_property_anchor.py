@@ -51,6 +51,7 @@ def test_property_anchor_prefers_nearby_address_point_over_interpolated_geocode(
     assert result.anchor_source == "authoritative_address_point"
     assert result.anchor_precision == "parcel_or_address_point"
     assert result.parcel_address_point_geojson is not None
+    assert result.parcel_lookup_method in {"contains_point", "none"}
     assert result.geocode_to_anchor_distance_m is not None
     assert result.geocode_to_anchor_distance_m > 0
 
@@ -87,6 +88,7 @@ def test_property_anchor_uses_parcel_centroid_when_parcel_available_without_addr
 
     assert result.anchor_source in {"parcel_polygon_centroid", "geocoded_address_point"}
     assert result.parcel_id == "123-456"
+    assert result.parcel_lookup_method in {"contains_point", "nearest_within_tolerance"}
     assert result.parcel_geometry_geojson is not None
     if result.anchor_source == "parcel_polygon_centroid":
         assert result.anchor_precision == "parcel_or_address_point"
@@ -106,3 +108,41 @@ def test_property_anchor_returns_geocode_when_no_auxiliary_sources(tmp_path: Pat
     assert result.anchor_source in {"approximate_geocode", "geocoded_address_point"}
     assert result.anchor_latitude == pytest.approx(44.0582)
     assert result.anchor_longitude == pytest.approx(-121.3153)
+
+
+@pytest.mark.skipif(not _geo_ready(), reason="Property anchor tests require shapely")
+def test_property_anchor_uses_nearest_parcel_within_tolerance(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("WF_PARCEL_LOOKUP_MAX_DISTANCE_M", "60")
+    parcels = _write_geojson(
+        tmp_path / "parcels_nearest.geojson",
+        [
+            {
+                "type": "Feature",
+                "properties": {"parcel_id": "nearest-1"},
+                "geometry": {
+                    "type": "Polygon",
+                    "coordinates": [[
+                        [-113.9946, 46.8724],
+                        [-113.9941, 46.8724],
+                        [-113.9941, 46.8720],
+                        [-113.9946, 46.8720],
+                        [-113.9946, 46.8724],
+                    ]],
+                },
+            }
+        ],
+    )
+    resolver = PropertyAnchorResolver(address_points_path=None, parcels_path=parcels)
+    result = resolver.resolve(
+        geocoded_lat=46.87195,
+        geocoded_lon=-113.9940,
+        geocode_provider="Test Geocoder",
+        geocode_precision="interpolated",
+        geocoded_address="Missoula Test",
+    )
+
+    assert result.parcel_id == "nearest-1"
+    assert result.parcel_lookup_method in {"nearest_within_tolerance", "contains_point"}
+    if result.parcel_lookup_method == "nearest_within_tolerance":
+        assert result.parcel_lookup_distance_m is not None
+        assert result.parcel_lookup_distance_m > 0

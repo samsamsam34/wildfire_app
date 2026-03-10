@@ -38,7 +38,15 @@ RUNTIME_LAYER_MAP = {
 }
 
 VECTOR_KEYS = {"fire_perimeters", "building_footprints"}
-OPTIONAL_REGION_LAYER_KEYS = {"whp", "mtbs_severity", "gridmet_dryness", "roads", "fema_structures"}
+OPTIONAL_REGION_LAYER_KEYS = {
+    "whp",
+    "mtbs_severity",
+    "gridmet_dryness",
+    "roads",
+    "fema_structures",
+    "parcel_polygons",
+    "parcel_address_points",
+}
 
 
 def _now() -> str:

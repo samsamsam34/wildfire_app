@@ -73,6 +73,16 @@ LAYER_SOURCE_HINTS: dict[str, dict[str, Any]] = {
         "env_vars": ["WF_DEFAULT_ROADS_ENDPOINT", "WF_DEFAULT_ROADS_FULL_URL"],
         "registry_keys": ["source_endpoint", "source_url", "source_path"],
     },
+    "parcel_polygons": {
+        "layer_type": "vector",
+        "env_vars": ["WF_DEFAULT_PARCEL_POLYGONS_ENDPOINT", "WF_DEFAULT_PARCEL_POLYGONS_PATH"],
+        "registry_keys": ["source_endpoint", "source_url", "source_path"],
+    },
+    "parcel_address_points": {
+        "layer_type": "vector",
+        "env_vars": ["WF_DEFAULT_PARCEL_ADDRESS_POINTS_ENDPOINT", "WF_DEFAULT_PARCEL_ADDRESS_POINTS_PATH"],
+        "registry_keys": ["source_endpoint", "source_url", "source_path"],
+    },
 }
 
 

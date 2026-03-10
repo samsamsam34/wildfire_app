@@ -353,6 +353,18 @@ def build_assessment_map_payload(
         if str(note).strip()
     ]
     parcel_id = str(property_ctx.get("parcel_id") or result.parcel_id or "") or None
+    parcel_lookup_method = str(
+        property_ctx.get("parcel_lookup_method") or result.parcel_lookup_method or ""
+    ) or None
+    parcel_lookup_distance_m = (
+        float(property_ctx.get("parcel_lookup_distance_m"))
+        if property_ctx.get("parcel_lookup_distance_m") is not None
+        else (
+            float(result.parcel_lookup_distance_m)
+            if result.parcel_lookup_distance_m is not None
+            else None
+        )
+    )
     structure_match_status = str(property_ctx.get("structure_match_status") or result.structure_match_status or "none")
     structure_match_method = (
         str(property_ctx.get("structure_match_method") or result.structure_match_method)
@@ -386,6 +398,9 @@ def build_assessment_map_payload(
             else None
         )
     )
+    matched_structure_id = str(
+        property_ctx.get("matched_structure_id") or result.matched_structure_id or ""
+    ) or None
     structure_match_candidates = property_ctx.get("structure_match_candidates")
     if not isinstance(structure_match_candidates, list):
         structure_match_candidates = []
@@ -534,6 +549,7 @@ def build_assessment_map_payload(
                             "confidence": fp_result.confidence,
                             "match_status": structure_match_status,
                             "match_method": structure_match_method,
+                            "matched_structure_id": fp_result.matched_structure_id,
                             "match_distance_m": structure_match_distance_m,
                             "crs": "EPSG:4326",
                         },
@@ -566,6 +582,7 @@ def build_assessment_map_payload(
                         "confidence": fp_result.confidence,
                         "match_status": structure_match_status,
                         "match_method": structure_match_method,
+                        "matched_structure_id": fp_result.matched_structure_id,
                         "match_distance_m": structure_match_distance_m,
                         "crs": "EPSG:4326",
                     },
@@ -817,6 +834,8 @@ def build_assessment_map_payload(
         parcel_address_point=parcel_address_point_feature,
         parcel_polygon=parcel_polygon_feature,
         parcel_id=parcel_id,
+        parcel_lookup_method=parcel_lookup_method,
+        parcel_lookup_distance_m=parcel_lookup_distance_m,
         parcel_source_name=parcel_source_name,
         parcel_source_vintage=parcel_source_vintage,
         footprint_source_name=footprint_source_name,
@@ -825,6 +844,7 @@ def build_assessment_map_payload(
         alignment_notes=alignment_notes[:6],
         structure_match_status=structure_match_status,
         structure_match_method=structure_match_method,
+        matched_structure_id=matched_structure_id,
         structure_match_confidence=structure_match_confidence,
         structure_match_distance_m=structure_match_distance_m,
         candidate_structure_count=candidate_structure_count,
@@ -851,6 +871,8 @@ def build_assessment_map_payload(
                 "source": property_anchor_source,
                 "precision": property_anchor_precision,
                 "parcel_id": parcel_id,
+                "parcel_lookup_method": parcel_lookup_method,
+                "parcel_lookup_distance_m": parcel_lookup_distance_m,
                 "source_conflict_flag": source_conflict_flag,
                 "alignment_notes": alignment_notes[:6],
                 "parcel_source_name": parcel_source_name,
@@ -859,6 +881,7 @@ def build_assessment_map_payload(
             "structure_match": {
                 "status": structure_match_status,
                 "method": structure_match_method,
+                "matched_structure_id": matched_structure_id,
                 "confidence": structure_match_confidence,
                 "distance_m": structure_match_distance_m,
                 "candidate_count": candidate_structure_count,

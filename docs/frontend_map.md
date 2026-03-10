@@ -22,14 +22,17 @@ Response includes:
 - explicit geometry anchors (WGS84 GeoJSON):
   - `geocoded_address_point`
   - `property_anchor_point`
+  - `parcel_address_point` (when configured)
+  - `parcel_polygon` (when configured)
   - `matched_structure_centroid` (when a footprint match exists)
   - `matched_structure_footprint` (when a footprint match exists)
   - `display_point_source` (`matched_structure_centroid` for high-confidence matches, else `property_anchor_point`)
 - geocode + structure-match diagnostics for map debugging:
   - `geocode_provider`, `geocoded_address`, `geocode_location_type`, `geocode_precision`
   - `property_anchor_source`, `property_anchor_precision`, `source_conflict_flag`
-  - `structure_match_status`, `structure_match_method`, `structure_match_confidence`,
-    `structure_match_distance_m`, `candidate_structure_count`
+  - `parcel_id`, `parcel_lookup_method`, `parcel_lookup_distance_m`
+  - `structure_match_status`, `structure_match_method`, `matched_structure_id`,
+    `structure_match_confidence`, `structure_match_distance_m`, `candidate_structure_count`
 - layer definitions (display name, availability, default visibility, legend text)
 - compact GeoJSON feature collections by layer key
 - limitations/warnings when geometry or overlays are missing/partial

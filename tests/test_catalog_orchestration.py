@@ -183,6 +183,8 @@ def test_prepare_any_region_plan_only_no_name_error_and_policy_structure(tmp_pat
     assert "slope" in policy["derived_core_layers"]
     assert "slope" not in policy["required_core_layers"]
     assert "dem" in policy["required_core_layers"]
+    assert "parcel_polygons" in policy["optional_layers"]
+    assert "parcel_address_points" in policy["optional_layers"]
 
 
 def test_required_layer_source_validation_raster_and_vector():

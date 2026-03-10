@@ -172,6 +172,7 @@ def test_map_endpoint_returns_point_footprint_rings_and_overlays(monkeypatch, tm
     assert payload["geocode_provider"]
     assert payload["geocode_precision"] in {"rooftop", "parcel_or_address_point", "interpolated", "approximate", "unknown", None}
     assert payload["structure_match_status"] in {"matched", "ambiguous", "none", "provider_unavailable", "error"}
+    assert payload.get("parcel_lookup_method") in {"contains_point", "nearest_within_tolerance", "none", None}
     assert payload["geocoded_address_point"]["geometry"]["type"] == "Point"
     assert payload["property_anchor_point"]["geometry"]["type"] == "Point"
     assert payload["assessed_property_display_point"]["geometry"]["type"] == "Point"
@@ -202,6 +203,7 @@ def test_map_endpoint_returns_point_footprint_rings_and_overlays(monkeypatch, tm
     assert -90.0 <= property_coords[1] <= 90.0
     assert payload["metadata"]["geometry_contract"]["coordinate_order"] == "[longitude, latitude]"
     assert "structure_match" in payload["metadata"]
+    assert "matched_structure_id" in payload["metadata"]["structure_match"]
 
     matched_centroid = payload.get("matched_structure_centroid")
     footprint = payload.get("matched_structure_footprint")

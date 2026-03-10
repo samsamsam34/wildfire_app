@@ -526,12 +526,13 @@ After a successful assessment, the frontend shows a map card with property and w
 - Map payload endpoint: `GET /report/{assessment_id}/map`
 - Geometry contract:
   - map geometries are GeoJSON in WGS84 (`EPSG:4326`) with `[longitude, latitude]` coordinates
-  - map payload separates `geocoded_address_point`, `property_anchor_point`, and
-    `matched_structure_centroid`
+  - map payload separates `geocoded_address_point`, `property_anchor_point`,
+    optional `parcel_polygon`/`parcel_address_point`, and `matched_structure_centroid`
   - `display_point_source` identifies whether the main marker is from
     `matched_structure_centroid` (high-confidence only) or `property_anchor_point`
   - map payload includes geocode/structure-match diagnostics (`geocode_precision`,
-    `structure_match_status`, `structure_match_method`, `structure_match_distance_m`,
+    `parcel_lookup_method`, `parcel_lookup_distance_m`, `structure_match_status`,
+    `structure_match_method`, `matched_structure_id`, `structure_match_distance_m`,
     `candidate_structure_count`) for routing/alignment QA
 - Graceful degradation:
   - if footprint geometry is unavailable, rings use point-proxy geometry

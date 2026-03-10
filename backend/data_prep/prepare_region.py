@@ -52,6 +52,12 @@ STANDARD_LAYER_FILENAMES = {
     "wildfire_hazard": "wildfire_hazard.tif",
     "moisture": "moisture.tif",
     "aspect": "aspect.tif",
+    "whp": "whp.tif",
+    "mtbs_severity": "mtbs_severity.tif",
+    "gridmet_dryness": "gridmet_dryness.tif",
+    "roads": "roads.geojson",
+    "parcel_polygons": "parcel_polygons.geojson",
+    "parcel_address_points": "parcel_address_points.geojson",
 }
 
 LAYER_TYPES = {
@@ -63,8 +69,14 @@ LAYER_TYPES = {
     "wildfire_hazard": "raster",
     "moisture": "raster",
     "aspect": "raster",
+    "whp": "raster",
+    "mtbs_severity": "raster",
+    "gridmet_dryness": "raster",
     "fire_perimeters": "vector",
     "building_footprints": "vector",
+    "roads": "vector",
+    "parcel_polygons": "vector",
+    "parcel_address_points": "vector",
 }
 
 AUTOMATION_NOTES = {
@@ -73,9 +85,26 @@ AUTOMATION_NOTES = {
     "building_footprints": "Supports local GeoJSON or URL source. Direct Microsoft tile index sync is deferred.",
     "fuel": "Supports local/URL source prep. Full LANDFIRE discovery/download automation is deferred.",
     "canopy": "Supports local/URL source prep. Full LANDFIRE discovery/download automation is deferred.",
+    "roads": "Supports local file or URL source. Automated regional road extraction is optional.",
+    "whp": "Supports local file or URL source. WHP is optional enrichment for hazard context.",
+    "mtbs_severity": "Supports local file or URL source. MTBS severity is optional enrichment.",
+    "gridmet_dryness": "Supports local file or URL source. gridMET dryness is optional enrichment.",
+    "parcel_polygons": "Supports local file or URL source. Parcel polygons improve structure matching confidence.",
+    "parcel_address_points": "Supports local file or URL source. Address/parcel points improve property anchors.",
 }
 
-OPTIONAL_LAYER_KEYS = ("burn_probability", "wildfire_hazard", "moisture", "aspect")
+OPTIONAL_LAYER_KEYS = (
+    "burn_probability",
+    "wildfire_hazard",
+    "moisture",
+    "aspect",
+    "roads",
+    "whp",
+    "mtbs_severity",
+    "gridmet_dryness",
+    "parcel_polygons",
+    "parcel_address_points",
+)
 BASE_REQUIRED_KEYS = ("dem", "fuel", "canopy", "fire_perimeters", "building_footprints")
 MINIMUM_REQUIRED_KEYS = ("dem", "slope")
 

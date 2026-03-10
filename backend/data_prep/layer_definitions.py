@@ -8,5 +8,11 @@ REQUIRED_CORE_VECTOR_LAYERS = ("fire_perimeters", "building_footprints")
 DERIVED_RASTER_LAYERS = ("slope",)
 
 # Optional enrichment layers; absence should warn, not hard-fail.
-OPTIONAL_LAYERS = ("roads", "whp", "mtbs_severity", "gridmet_dryness")
-
+OPTIONAL_LAYERS = (
+    "roads",
+    "whp",
+    "mtbs_severity",
+    "gridmet_dryness",
+    "parcel_polygons",
+    "parcel_address_points",
+)

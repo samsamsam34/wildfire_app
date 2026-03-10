@@ -33,6 +33,7 @@ class BuildingFootprintResult:
     confidence: float = 0.0
     match_status: str = "none"
     match_method: str | None = None
+    matched_structure_id: str | None = None
     match_distance_m: float | None = None
     candidate_count: int = 0
     candidate_summaries: list[dict[str, Any]] = field(default_factory=list)
@@ -104,12 +105,12 @@ class BuildingFootprintClient:
         return bool(path) and Path(path).exists()
 
     @lru_cache(maxsize=4)
-    def _load_features(self, path: str) -> list[Any]:
+    def _load_features(self, path: str) -> list[dict[str, Any]]:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
 
         features = data.get("features", []) if isinstance(data, dict) else []
-        geoms = []
+        rows: list[dict[str, Any]] = []
         for feature in features:
             geometry = feature.get("geometry") if isinstance(feature, dict) else None
             if not geometry:
@@ -121,8 +122,33 @@ class BuildingFootprintClient:
             if geom.is_empty:
                 continue
             if geom.geom_type in {"Polygon", "MultiPolygon"}:
-                geoms.append(geom)
-        return geoms
+                props = dict(feature.get("properties") or {}) if isinstance(feature, dict) else {}
+                rows.append(
+                    {
+                        "geometry": geom,
+                        "properties": props,
+                        "structure_id": self._extract_structure_id(props),
+                    }
+                )
+        return rows
+
+    @staticmethod
+    def _extract_structure_id(props: dict[str, Any]) -> str | None:
+        for key in (
+            "structure_id",
+            "building_id",
+            "id",
+            "objectid",
+            "OBJECTID",
+            "globalid",
+            "GlobalID",
+            "fid",
+            "FID",
+        ):
+            value = props.get(key)
+            if value is not None and str(value).strip():
+                return str(value).strip()
+        return None
 
     @staticmethod
     def _primary_polygon(geom: Any) -> Any:
@@ -150,23 +176,32 @@ class BuildingFootprintClient:
         score = 1.0 - min(1.0, abs(area_m2 - target) / spread)
         return max(0.0, score)
 
-    def _all_source_features(self) -> list[tuple[Any, str]]:
-        features: list[tuple[Any, str]] = []
+    def _all_source_features(self) -> list[dict[str, Any]]:
+        features: list[dict[str, Any]] = []
         for source_path in self.paths:
             if not self._file_exists(source_path):
                 continue
-            for geom in self._load_features(source_path):
-                features.append((self._primary_polygon(geom), source_path))
+            for row in self._load_features(source_path):
+                geom = self._primary_polygon(row["geometry"])
+                features.append(
+                    {
+                        "geometry": geom,
+                        "source": source_path,
+                        "properties": dict(row.get("properties") or {}),
+                        "structure_id": row.get("structure_id"),
+                    }
+                )
         return features
 
     def _candidate_summary(
         self,
         *,
-        geom: Any,
-        source: str,
+        row: dict[str, Any],
         point_wgs84: Any,
         to_3857: Any,
     ) -> dict[str, Any]:
+        geom = row["geometry"]
+        source = str(row.get("source") or "")
         geom_m = shapely_transform(to_3857, geom)
         point_m = shapely_transform(to_3857, point_wgs84)
         distance_m = float(max(0.0, geom_m.distance(point_m)))
@@ -176,6 +211,7 @@ class BuildingFootprintClient:
         contains_point = bool(getattr(geom, "covers", lambda _p: False)(point_wgs84))
         centroid = geom.centroid
         return {
+            "structure_id": row.get("structure_id"),
             "source": source,
             "distance_m": round(distance_m, 2),
             "centroid_distance_m": round(centroid_distance_m, 2),
@@ -223,19 +259,33 @@ class BuildingFootprintClient:
         point_wgs84 = Point(lon, lat)
         to_3857 = Transformer.from_crs("EPSG:4326", "EPSG:3857", always_xy=True).transform
 
-        containing = [(geom, src) for geom, src in features if self._inside_polygon(geom, point_wgs84)]
+        containing = [row for row in features if self._inside_polygon(row["geometry"], point_wgs84)]
+        parcel_overlap_available = parcel_polygon is not None and not getattr(parcel_polygon, "is_empty", True)
+        if containing and parcel_overlap_available:
+            parcel_containing = [
+                row
+                for row in containing
+                if bool(getattr(row["geometry"], "intersects", lambda _p: False)(parcel_polygon))
+            ]
+            if parcel_containing:
+                containing = parcel_containing
+                assumptions.append("Structure matching prioritized footprints intersecting the matched parcel.")
         if containing:
             # Deterministically pick best residential-sized containing polygon.
-            def _contain_score(item: tuple[Any, str]) -> float:
-                geom, _src = item
+            def _contain_score(item: dict[str, Any]) -> float:
+                geom = item["geometry"]
                 area_m2 = self._geom_area_m2(geom)
                 return self._residential_area_score(area_m2) + min(1.0, area_m2 / 10_000.0) * 0.05
 
             ranked = sorted(containing, key=_contain_score, reverse=True)
-            geom, source = ranked[0]
+            top_row = ranked[0]
+            geom = top_row["geometry"]
+            source = str(top_row.get("source") or self.path)
+            match_method = "parcel_intersection" if parcel_overlap_available else "nearest_building_fallback"
+            base_confidence = 0.97 if match_method == "parcel_intersection" else 0.86
             candidate_summaries = [
-                self._candidate_summary(geom=g, source=s, point_wgs84=point_wgs84, to_3857=to_3857)
-                for g, s in ranked[: self.max_candidate_summaries]
+                self._candidate_summary(row=row, point_wgs84=point_wgs84, to_3857=to_3857)
+                for row in ranked[: self.max_candidate_summaries]
             ]
             if len(ranked) > 1:
                 top_score = _contain_score(ranked[0])
@@ -247,7 +297,8 @@ class BuildingFootprintClient:
                         source=source,
                         confidence=0.0,
                         match_status="ambiguous",
-                        match_method="point_in_polygon",
+                        match_method=match_method,
+                        matched_structure_id=None,
                         match_distance_m=0.0,
                         candidate_count=len(ranked),
                         candidate_summaries=candidate_summaries,
@@ -259,9 +310,10 @@ class BuildingFootprintClient:
                 footprint=geom,
                 centroid=(float(c.y), float(c.x)),
                 source=source,
-                confidence=0.97,
+                confidence=base_confidence,
                 match_status="matched",
-                match_method="point_in_polygon",
+                match_method=match_method,
+                matched_structure_id=top_row.get("structure_id"),
                 match_distance_m=0.0,
                 candidate_count=len(ranked),
                 candidate_summaries=candidate_summaries,
@@ -271,18 +323,35 @@ class BuildingFootprintClient:
         point_m = shapely_transform(to_3857, point_wgs84)
 
         candidates: list[dict[str, Any]] = []
-        parcel_overlap_available = parcel_polygon is not None and not getattr(parcel_polygon, "is_empty", True)
-        for candidate, source in features:
-            candidate_m = shapely_transform(to_3857, candidate)
+        parcel_centroid_m = None
+        if parcel_overlap_available:
+            try:
+                parcel_centroid_m = shapely_transform(to_3857, parcel_polygon).centroid
+            except Exception:
+                parcel_centroid_m = None
+        for candidate in features:
+            candidate_geom = candidate["geometry"]
+            source = str(candidate.get("source") or "")
+            candidate_m = shapely_transform(to_3857, candidate_geom)
             distance = float(max(0.0, candidate_m.distance(point_m)))
             if distance > float(self.max_search_m):
                 continue
             centroid_distance = float(max(0.0, candidate_m.centroid.distance(point_m)))
-            area_score = self._residential_area_score(self._geom_area_m2(candidate))
+            footprint_area_m2 = self._geom_area_m2(candidate_geom)
+            area_score = self._residential_area_score(footprint_area_m2)
             parcel_overlap = False
+            parcel_intersection_area_m2 = 0.0
+            parcel_centroid_distance_m = centroid_distance
             if parcel_overlap_available:
                 try:
-                    parcel_overlap = bool(candidate.intersects(parcel_polygon))
+                    parcel_overlap = bool(candidate_geom.intersects(parcel_polygon))
+                    if parcel_overlap:
+                        parcel_intersection = candidate_geom.intersection(parcel_polygon)
+                        parcel_intersection_area_m2 = self._geom_area_m2(parcel_intersection)
+                    if parcel_centroid_m is not None:
+                        parcel_centroid_distance_m = float(
+                            max(0.0, candidate_m.centroid.distance(parcel_centroid_m))
+                        )
                 except Exception:
                     parcel_overlap = False
             score = (
@@ -293,12 +362,16 @@ class BuildingFootprintClient:
             )
             candidates.append(
                 {
-                    "geom": candidate,
+                    "geom": candidate_geom,
                     "source": source,
+                    "structure_id": candidate.get("structure_id"),
                     "distance_m": distance,
                     "centroid_distance_m": centroid_distance,
                     "area_score": area_score,
+                    "footprint_area_m2": footprint_area_m2,
                     "parcel_overlap": parcel_overlap,
+                    "parcel_intersection_area_m2": parcel_intersection_area_m2,
+                    "parcel_centroid_distance_m": parcel_centroid_distance_m,
                     "score": score,
                 }
             )
@@ -313,26 +386,48 @@ class BuildingFootprintClient:
                 assumptions=assumptions,
             )
 
+        match_method = "nearest_building_fallback"
         if parcel_overlap_available:
             parcel_candidates = [row for row in candidates if row.get("parcel_overlap")]
             if parcel_candidates:
                 candidates = parcel_candidates
                 assumptions.append("Structure matching prioritized candidates intersecting the matched parcel.")
+                match_method = "parcel_intersection"
 
-        candidates.sort(key=lambda row: (row["distance_m"], row["centroid_distance_m"], -row["score"]))
+        if match_method == "parcel_intersection":
+            candidates.sort(
+                key=lambda row: (
+                    -float(row.get("parcel_intersection_area_m2") or 0.0),
+                    float(row.get("parcel_centroid_distance_m") or 0.0),
+                    -float(row.get("footprint_area_m2") or 0.0),
+                    float(row.get("distance_m") or 0.0),
+                )
+            )
+        else:
+            candidates.sort(key=lambda row: (row["distance_m"], row["centroid_distance_m"], -row["score"]))
         top = candidates[0]
         top_distance = float(top["distance_m"])
         normalized_precision = str(anchor_precision or "unknown").strip().lower()
-        if normalized_precision in {"interpolated", "approximate", "unknown"}:
+        if match_method == "parcel_intersection":
+            effective_max_match_distance_m = max(self.max_match_distance_m * 2.5, 60.0)
+        elif normalized_precision in {"interpolated", "approximate", "unknown"}:
             effective_max_match_distance_m = min(self.max_match_distance_m, 18.0)
         else:
             effective_max_match_distance_m = self.max_match_distance_m
         candidate_summaries = [
-            self._candidate_summary(geom=row["geom"], source=row["source"], point_wgs84=point_wgs84, to_3857=to_3857)
+            self._candidate_summary(
+                row={
+                    "geometry": row["geom"],
+                    "source": row["source"],
+                    "structure_id": row.get("structure_id"),
+                },
+                point_wgs84=point_wgs84,
+                to_3857=to_3857,
+            )
             for row in candidates[: self.max_candidate_summaries]
         ]
 
-        if top_distance > effective_max_match_distance_m:
+        if match_method != "parcel_intersection" and top_distance > effective_max_match_distance_m:
             assumptions.append(
                 "Nearest structure footprint is too far from the geocoded point; using geocoded point fallback."
             )
@@ -341,7 +436,8 @@ class BuildingFootprintClient:
                 source=str(top.get("source") or self.path),
                 confidence=0.0,
                 match_status="none",
-                match_method="distance_ranked",
+                match_method=match_method,
+                matched_structure_id=None,
                 match_distance_m=round(top_distance, 2),
                 candidate_count=len(candidates),
                 candidate_summaries=candidate_summaries,
@@ -349,29 +445,56 @@ class BuildingFootprintClient:
             )
 
         if len(candidates) > 1:
-            second_distance = float(candidates[1]["distance_m"])
-            if (second_distance - top_distance) <= float(self.ambiguity_gap_m):
-                assumptions.append(
-                    "Multiple nearby structures were similarly plausible; using geocoded point fallback."
-                )
-                return BuildingFootprintResult(
-                    found=False,
-                    source=str(top.get("source") or self.path),
-                    confidence=0.0,
-                    match_status="ambiguous",
-                    match_method="distance_ranked",
-                    match_distance_m=round(top_distance, 2),
-                    candidate_count=len(candidates),
-                    candidate_summaries=candidate_summaries,
-                    assumptions=assumptions,
-                )
+            if match_method == "parcel_intersection":
+                top_area = float(top.get("parcel_intersection_area_m2") or 0.0)
+                second = candidates[1]
+                second_area = float(second.get("parcel_intersection_area_m2") or 0.0)
+                top_centroid_d = float(top.get("parcel_centroid_distance_m") or 0.0)
+                second_centroid_d = float(second.get("parcel_centroid_distance_m") or 0.0)
+                if abs(top_area - second_area) <= 15.0 and abs(top_centroid_d - second_centroid_d) <= 4.0:
+                    assumptions.append(
+                        "Multiple parcel-intersecting structures were similarly plausible; using geocoded point fallback."
+                    )
+                    return BuildingFootprintResult(
+                        found=False,
+                        source=str(top.get("source") or self.path),
+                        confidence=0.0,
+                        match_status="ambiguous",
+                        match_method=match_method,
+                        matched_structure_id=None,
+                        match_distance_m=round(top_distance, 2),
+                        candidate_count=len(candidates),
+                        candidate_summaries=candidate_summaries,
+                        assumptions=assumptions,
+                    )
+            else:
+                second_distance = float(candidates[1]["distance_m"])
+                if (second_distance - top_distance) <= float(self.ambiguity_gap_m):
+                    assumptions.append(
+                        "Multiple nearby structures were similarly plausible; using geocoded point fallback."
+                    )
+                    return BuildingFootprintResult(
+                        found=False,
+                        source=str(top.get("source") or self.path),
+                        confidence=0.0,
+                        match_status="ambiguous",
+                        match_method=match_method,
+                        matched_structure_id=None,
+                        match_distance_m=round(top_distance, 2),
+                        candidate_count=len(candidates),
+                        candidate_summaries=candidate_summaries,
+                        assumptions=assumptions,
+                    )
 
         distance_component = max(0.0, 1.0 - (top_distance / max(effective_max_match_distance_m, 1.0)))
-        confidence = max(0.45, min(0.9, 0.45 + (distance_component * 0.4) + (float(top["area_score"]) * 0.1)))
-        if normalized_precision in {"interpolated", "approximate"}:
-            confidence = min(confidence, 0.74)
-        if normalized_precision == "unknown":
-            confidence = min(confidence, 0.7)
+        if match_method == "parcel_intersection":
+            confidence = max(0.65, min(0.96, 0.62 + (distance_component * 0.22) + (float(top["area_score"]) * 0.12)))
+        else:
+            confidence = max(0.4, min(0.78, 0.4 + (distance_component * 0.28) + (float(top["area_score"]) * 0.1)))
+            if normalized_precision in {"interpolated", "approximate"}:
+                confidence = min(confidence, 0.68)
+            if normalized_precision == "unknown":
+                confidence = min(confidence, 0.64)
         nearest_geom = top["geom"]
         nearest_source = top["source"]
         c = nearest_geom.centroid
@@ -382,7 +505,8 @@ class BuildingFootprintClient:
             source=nearest_source or self.path,
             confidence=round(confidence, 2),
             match_status="matched",
-            match_method="distance_ranked",
+            match_method=match_method,
+            matched_structure_id=top.get("structure_id"),
             match_distance_m=round(top_distance, 2),
             candidate_count=len(candidates),
             candidate_summaries=candidate_summaries,
@@ -414,7 +538,7 @@ class BuildingFootprintClient:
             }
 
         try:
-            geoms = [self._primary_polygon(g) for g in self._load_features(path_to_use)]
+            geoms = [self._primary_polygon(row["geometry"]) for row in self._load_features(path_to_use)]
         except Exception:
             geoms = []
         if not geoms:

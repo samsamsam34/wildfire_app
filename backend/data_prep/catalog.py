@@ -58,6 +58,8 @@ LAYER_TYPES: dict[str, str] = {
     "fire_perimeters": "vector",
     "building_footprints": "vector",
     "roads": "vector",
+    "parcel_polygons": "vector",
+    "parcel_address_points": "vector",
 }
 
 
