@@ -425,6 +425,7 @@ class AssessmentDiagnostics(BaseModel):
     heuristic_inputs: List[str] = Field(default_factory=list)
     confidence_downgrade_reasons: List[str] = Field(default_factory=list)
     trust_tier_blockers: List[str] = Field(default_factory=list)
+    fallback_decisions: List[Dict[str, object]] = Field(default_factory=list)
 
 
 class ScoreSectionSummary(BaseModel):
@@ -566,6 +567,7 @@ class AssessmentResult(BaseModel):
     insurance_readiness_eligibility: ScoreEligibility = Field(default_factory=ScoreEligibility)
     assessment_status: AssessmentStatus = "insufficient_data"
     assessment_blockers: List[str] = Field(default_factory=list)
+    assessment_limitations_summary: List[str] = Field(default_factory=list)
     assessment_diagnostics: AssessmentDiagnostics = Field(default_factory=AssessmentDiagnostics)
     property_level_context: Dict[str, object] = Field(default_factory=dict)
     mitigation_plan: List[MitigationAction]

@@ -452,6 +452,29 @@ Governance guidance:
 - promote parameter changes only after benchmark + backtest review
 - bump governance versions (`scoring_model_version`, `calibration_version`, etc.) when accepted tuning changes materially affect outputs
 
+## Scoring Completeness And Fallbacks
+
+Homeowner assessments now prioritize graceful degradation when a trusted geocode and supported prepared region are available.
+
+- Hard blockers (assessment may return `insufficient_data`): no trusted geocode, no prepared-region coverage, or total absence of enough core evidence to score both site hazard and home vulnerability.
+- Soft blockers (assessment still returns): missing/partial layers, nodata/outside-extent sampling, missing structure fields, and footprint/ring gaps.
+
+Fallback hierarchy is deterministic and explicit:
+- observed value
+- derived proxy (for example ring-based defensible-space estimate)
+- conservative or neutral default
+- component exclusion with transparent note if evidence is still insufficient
+
+Response transparency is preserved in existing structures:
+- `score_*_available` flags
+- `assessment_status` and `assessment_blockers`
+- `layer_coverage_audit` / `coverage_summary`
+- `score_evidence_ledger` / `evidence_quality_summary`
+- `assessment_diagnostics.fallback_decisions`
+- `assessment_limitations_summary`
+
+When one component is unavailable, `wildfire_risk_score` can still be computed from available component evidence, with explicit scoring notes and confidence penalties.
+
 ## Limitations
 
 - Scoring and readiness are deterministic heuristics; this is not a carrier-approved underwriting model.

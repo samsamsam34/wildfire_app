@@ -377,6 +377,134 @@ def _merge_attributes(base: PropertyAttributes, overrides: PropertyAttributes) -
     return PropertyAttributes.model_validate(merged)
 
 
+def _ring_density_value(property_level_context: dict[str, Any], *keys: str) -> float | None:
+    rings = property_level_context.get("ring_metrics") if isinstance(property_level_context, dict) else None
+    if not isinstance(rings, dict):
+        return None
+    for key in keys:
+        zone = rings.get(key) or rings.get(key.replace("ring_", "zone_"))
+        if isinstance(zone, dict):
+            value = zone.get("vegetation_density")
+            try:
+                if value is not None:
+                    return float(value)
+            except (TypeError, ValueError):
+                continue
+    return None
+
+
+def _estimate_defensible_space_proxy(property_level_context: dict[str, Any]) -> float | None:
+    near = _ring_density_value(property_level_context, "ring_0_5_ft")
+    zone1 = _ring_density_value(property_level_context, "ring_5_30_ft")
+    if near is None and zone1 is None:
+        return None
+    samples = [v for v in [near, zone1] if v is not None]
+    mean_density = sum(samples) / max(1, len(samples))
+    if mean_density >= 75:
+        return 5.0
+    if mean_density >= 60:
+        return 12.0
+    if mean_density >= 45:
+        return 24.0
+    return 40.0
+
+
+def _apply_attribute_fallbacks(
+    attrs: PropertyAttributes,
+    *,
+    property_level_context: dict[str, Any],
+    context: object,
+) -> tuple[PropertyAttributes, list[dict[str, object]]]:
+    updated = attrs.model_copy(deep=True)
+    fallback_decisions: list[dict[str, object]] = []
+
+    if updated.defensible_space_ft is None:
+        proxy = _estimate_defensible_space_proxy(property_level_context)
+        if proxy is not None:
+            updated.defensible_space_ft = round(proxy, 1)
+            fallback_decisions.append(
+                {
+                    "fallback_type": "derived_proxy",
+                    "missing_input": "defensible_space_ft",
+                    "substitute_input": "structure_ring_vegetation_density",
+                    "confidence_penalty_hint": 3.0,
+                    "quality_label": "inferred",
+                    "note": (
+                        "Defensible space was estimated from near-structure vegetation rings to keep vulnerability/readiness "
+                        "scoring available."
+                    ),
+                }
+            )
+        else:
+            updated.defensible_space_ft = 15.0
+            fallback_decisions.append(
+                {
+                    "fallback_type": "conservative_default",
+                    "missing_input": "defensible_space_ft",
+                    "substitute_input": "default_15ft_proxy",
+                    "confidence_penalty_hint": 4.0,
+                    "quality_label": "conservative",
+                    "note": "Defensible space defaulted to a conservative baseline because no ring proxy was available.",
+                }
+            )
+
+    if updated.roof_type is None:
+        updated.roof_type = "composite"
+        fallback_decisions.append(
+            {
+                "fallback_type": "neutral_default",
+                "missing_input": "roof_type",
+                "substitute_input": "composite_baseline",
+                "confidence_penalty_hint": 2.0,
+                "quality_label": "inferred",
+                "note": "Roof type missing; neutral composite baseline used for structure vulnerability scoring.",
+            }
+        )
+
+    if updated.vent_type is None:
+        updated.vent_type = "standard"
+        fallback_decisions.append(
+            {
+                "fallback_type": "neutral_default",
+                "missing_input": "vent_type",
+                "substitute_input": "standard_vent_baseline",
+                "confidence_penalty_hint": 2.0,
+                "quality_label": "inferred",
+                "note": "Vent type missing; standard vent baseline used for structure vulnerability scoring.",
+            }
+        )
+
+    if updated.vegetation_condition is None:
+        ring_mean = _ring_density_value(property_level_context, "ring_5_30_ft")
+        if ring_mean is not None:
+            updated.vegetation_condition = "dense" if ring_mean >= 60 else ("moderate" if ring_mean >= 40 else "managed")
+            fallback_decisions.append(
+                {
+                    "fallback_type": "derived_proxy",
+                    "missing_input": "vegetation_condition",
+                    "substitute_input": "ring_5_30_ft_vegetation_density",
+                    "confidence_penalty_hint": 1.5,
+                    "quality_label": "inferred",
+                    "note": "Vegetation condition inferred from ring vegetation density.",
+                }
+            )
+        elif getattr(context, "fuel_index", None) is not None:
+            fuel_idx = float(getattr(context, "fuel_index"))
+            updated.vegetation_condition = "dense" if fuel_idx >= 65 else ("moderate" if fuel_idx >= 45 else "managed")
+            fallback_decisions.append(
+                {
+                    "fallback_type": "derived_proxy",
+                    "missing_input": "vegetation_condition",
+                    "substitute_input": "fuel_index_proxy",
+                    "confidence_penalty_hint": 1.5,
+                    "quality_label": "inferred",
+                    "note": "Vegetation condition inferred from regional fuel context.",
+                }
+            )
+
+    return updated, fallback_decisions
+
+
 def _build_assumption_tracking(
     payload: AddressRequest,
     assumptions_used: list[str],
@@ -406,7 +534,17 @@ def _build_assumption_tracking(
         inferred_inputs["vent_type"] = "standard"
         missing_inputs.append("vent_type")
     if attrs.defensible_space_ft is None:
-        inferred_inputs["defensible_space_ft"] = 15
+        defensible_proxy = _estimate_defensible_space_proxy(property_level_context)
+        if defensible_proxy is not None:
+            inferred_inputs["defensible_space_ft"] = round(defensible_proxy, 1)
+            assumptions_used.append(
+                "Defensible space was inferred from structure-ring vegetation context."
+            )
+        else:
+            inferred_inputs["defensible_space_ft"] = 15
+            assumptions_used.append(
+                "Defensible space missing; conservative default baseline was used."
+            )
         missing_inputs.append("defensible_space_ft")
     if attrs.construction_year is None:
         inferred_inputs["construction_year"] = "pre_2008_proxy"
@@ -1819,26 +1957,29 @@ def _build_score_eligibility(
         site_blockers.append("Region not prepared for this location; initialize regional layers.")
         site_caveats.append("Site Hazard is unavailable until regional layers are prepared.")
     elif region_status == "invalid_manifest":
-        site_blockers.append("Prepared region manifest is invalid or incomplete.")
+        site_caveats.append("Prepared region manifest is invalid or incomplete; using partial environmental evidence.")
         site_caveats.append("Site Hazard is limited by incomplete prepared-region files.")
     elif region_status == "legacy_fallback":
         site_caveats.append("Site Hazard used legacy direct layer paths instead of prepared region data.")
     if not burn_or_hazard:
-        site_blockers.append("Burn probability and hazard layers unavailable")
+        site_caveats.append("Burn probability/hazard unavailable; using conservative environmental proxy behavior.")
     if not slope_ok:
-        site_blockers.append("Slope layer missing")
+        site_caveats.append("Slope layer missing; topography contribution is partially inferred.")
     if not fuel_or_canopy:
-        site_blockers.append("Fuel and canopy context unavailable")
+        site_caveats.append("Fuel/canopy context unavailable; vegetation pressure uses conservative fallback.")
 
     available_site_evidence = sum([burn_or_hazard, slope_ok, fuel_or_canopy])
     site_status: EligibilityStatus
-    if geocode_verified and burn_or_hazard and slope_ok and fuel_or_canopy:
+    if not geocode_verified or region_status == "region_not_prepared":
+        site_status = "insufficient"
+    elif geocode_verified and burn_or_hazard and slope_ok and fuel_or_canopy:
         site_status = "full"
-    elif geocode_verified and available_site_evidence >= 2:
+    elif geocode_verified and available_site_evidence >= 1:
         site_status = "partial"
         site_caveats.append("Site Hazard is based on partial environmental coverage.")
     else:
         site_status = "insufficient"
+        site_blockers.append("No usable environmental evidence was available for Site Hazard scoring.")
 
     site_eligibility = ScoreEligibility(
         eligible=site_status != "insufficient",
@@ -1872,20 +2013,26 @@ def _build_score_eligibility(
     if region_status == "region_not_prepared":
         home_blockers.append("Region not prepared for this location; property-level context unavailable")
     if not structure_context and not ring_signal:
-        home_blockers.append("Structure context unavailable and footprint/ring context unavailable")
+        home_caveats.append("Structure details and ring context are limited; vulnerability uses conservative defaults.")
     if not near_structure_signal:
-        home_blockers.append("No near-structure vegetation/fuel signal available")
+        home_caveats.append("No near-structure vegetation/fuel signal; vulnerability relies on limited context.")
     if not footprint_used:
-        home_blockers.append("Building footprint not found; using point-based fallback")
+        home_caveats.append("Building footprint not found; using point-based fallback")
         home_caveats.append("Home Ignition Vulnerability used point-based fallback instead of footprint rings.")
 
     home_status: EligibilityStatus
-    if geocode_verified and near_structure_signal and (structure_context or ring_signal) and footprint_used and ring_signal:
+    if not geocode_verified or region_status == "region_not_prepared":
+        home_status = "insufficient"
+    elif geocode_verified and near_structure_signal and (structure_context or ring_signal) and footprint_used and ring_signal:
         home_status = "full"
     elif geocode_verified and near_structure_signal and (structure_context or ring_signal):
         home_status = "partial"
+    elif geocode_verified and (near_structure_signal or ring_signal) and (structure_context or ring_signal):
+        home_status = "partial"
+        home_caveats.append("Home Ignition Vulnerability used fallback structure/ring evidence.")
     else:
         home_status = "insufficient"
+        home_blockers.append("No usable structure or near-structure context was available for Home Ignition Vulnerability.")
 
     home_eligibility = ScoreEligibility(
         eligible=home_status != "insufficient",
@@ -1907,15 +2054,15 @@ def _build_score_eligibility(
         readiness_blockers.append("Home Ignition Vulnerability evidence is insufficient")
     if region_status == "region_not_prepared":
         readiness_blockers.append("Region not prepared for this location")
-    if known_structure_count < 2:
+    if known_structure_count < 1:
         readiness_blockers.append("Too many unknown structure facts for readiness rules")
     elif known_structure_count < 3:
         readiness_caveats.append("Insurance Readiness is limited by unknown roof/vent/defensible-space attributes.")
 
     readiness_status: EligibilityStatus
-    if site_status != "insufficient" and home_status != "insufficient" and known_structure_count >= 3:
+    if site_status == "full" and home_status == "full" and known_structure_count >= 2:
         readiness_status = "full"
-    elif site_status != "insufficient" and home_status != "insufficient" and known_structure_count >= 2:
+    elif site_status != "insufficient" and home_status != "insufficient" and known_structure_count >= 1:
         readiness_status = "partial"
     else:
         readiness_status = "insufficient"
@@ -1927,8 +2074,12 @@ def _build_score_eligibility(
         caveats=sorted(set(readiness_caveats)),
     )
 
-    if "insufficient" in {site_status, home_status, readiness_status}:
+    if (not geocode_verified) or region_status == "region_not_prepared":
         assessment_status: AssessmentStatus = "insufficient_data"
+    elif site_status == "insufficient" and home_status == "insufficient":
+        assessment_status = "insufficient_data"
+    elif "insufficient" in {site_status, home_status, readiness_status}:
+        assessment_status = "partially_scored"
     elif {site_status, home_status, readiness_status} == {"full"}:
         assessment_status = "fully_scored"
     else:
@@ -2017,6 +2168,7 @@ def _build_assessment_diagnostics(
     data_provenance: DataProvenanceBlock,
     confidence_downgrade_reasons: list[str],
     trust_tier_blockers: list[str],
+    fallback_decisions: list[dict[str, object]] | None = None,
 ) -> AssessmentDiagnostics:
     critical_present: list[str] = []
     critical_missing: list[str] = []
@@ -2045,7 +2197,128 @@ def _build_assessment_diagnostics(
         heuristic_inputs=sorted(set(heuristic_inputs)),
         confidence_downgrade_reasons=sorted(set(confidence_downgrade_reasons)),
         trust_tier_blockers=sorted(set(trust_tier_blockers)),
+        fallback_decisions=list(fallback_decisions or []),
     )
+
+
+def _build_fallback_decisions(
+    *,
+    attribute_fallbacks: list[dict[str, object]],
+    environmental_layer_status: dict[str, str],
+    property_level_context: dict[str, Any],
+    confidence_penalties: list[ConfidencePenalty],
+    score_availability_notes: list[str],
+) -> list[dict[str, object]]:
+    decisions: list[dict[str, object]] = list(attribute_fallbacks)
+    penalty_by_key = {p.penalty_key: float(p.amount) for p in confidence_penalties}
+
+    env_proxy_map = {
+        "burn_probability": "hazard/wildland proxy",
+        "hazard": "burn probability/wildland proxy",
+        "slope": "terrain default weighting",
+        "fuel": "ring/canopy proxy",
+        "canopy": "fuel/ring proxy",
+        "fire_history": "regional recurrence baseline",
+    }
+    for layer, status in (environmental_layer_status or {}).items():
+        if status == "ok":
+            continue
+        confidence_penalty = 0.0
+        if status == "error":
+            confidence_penalty = penalty_by_key.get("provider_errors", 0.0)
+        else:
+            confidence_penalty = penalty_by_key.get("missing_environmental_layers", 0.0)
+        decisions.append(
+            {
+                "fallback_type": "layer_proxy" if status in {"missing", "error"} else "partial_layer",
+                "missing_input": f"{layer}_layer",
+                "substitute_input": env_proxy_map.get(layer, "conservative_layer_proxy"),
+                "confidence_penalty_hint": round(confidence_penalty, 1),
+                "quality_label": "conservative",
+                "note": f"{layer.replace('_', ' ').title()} layer status is '{status}', so scoring used fallback behavior.",
+            }
+        )
+
+    if not bool(property_level_context.get("footprint_used")):
+        decisions.append(
+            {
+                "fallback_type": "point_based_context",
+                "missing_input": "building_footprint",
+                "substitute_input": "point_neighborhood_context",
+                "confidence_penalty_hint": round(penalty_by_key.get("missing_ring_context", 6.0), 1),
+                "quality_label": "inferred",
+                "note": "Building footprint rings unavailable; point-based near-structure context was used.",
+            }
+        )
+
+    for note in score_availability_notes:
+        lowered = str(note).lower()
+        if "component only" in lowered:
+            decisions.append(
+                {
+                    "fallback_type": "partial_component_blend",
+                    "missing_input": "one_score_component_unavailable",
+                    "substitute_input": "available_component_reweighted",
+                    "confidence_penalty_hint": 2.5,
+                    "quality_label": "neutral",
+                    "note": str(note),
+                }
+            )
+
+    unique: list[dict[str, object]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for row in decisions:
+        key = (
+            str(row.get("fallback_type") or ""),
+            str(row.get("missing_input") or ""),
+            str(row.get("substitute_input") or ""),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(row)
+    return unique
+
+
+def _build_assessment_limitations_summary(
+    *,
+    fallback_decisions: list[dict[str, object]],
+    score_availability_notes: list[str],
+    coverage_summary: LayerCoverageSummary,
+) -> list[str]:
+    summary: list[str] = []
+    for decision in fallback_decisions:
+        note = str(decision.get("note") or "").strip()
+        quality = str(decision.get("quality_label") or "").strip()
+        if not note:
+            continue
+        if quality:
+            summary.append(f"{note} ({quality}).")
+        else:
+            summary.append(note)
+    for note in score_availability_notes:
+        summary.append(str(note))
+    if coverage_summary.critical_missing_layers:
+        summary.append(
+            "Critical layers still missing: "
+            + ", ".join(coverage_summary.critical_missing_layers[:6])
+            + "."
+        )
+    if coverage_summary.not_configured_count > 0:
+        summary.append(
+            f"{coverage_summary.not_configured_count} optional layer(s) are not configured; assessment used core data and fallbacks."
+        )
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for item in summary:
+        trimmed = item.strip()
+        if not trimmed:
+            continue
+        if trimmed in seen:
+            continue
+        seen.add(trimmed)
+        deduped.append(trimmed)
+    return deduped[:6]
 
 
 def _apply_score_availability(
@@ -2062,7 +2335,7 @@ def _apply_score_availability(
     site_available = site_hazard_eligibility.eligibility_status != "insufficient"
     home_available = home_vulnerability_eligibility.eligibility_status != "insufficient"
     readiness_available = insurance_readiness_eligibility.eligibility_status != "insufficient"
-    wildfire_available = site_available and home_available
+    wildfire_available = site_available or home_available
 
     notes: list[str] = []
     if not site_available:
@@ -2075,14 +2348,35 @@ def _apply_score_availability(
         notes.append(
             "Insurance readiness score not computed because site hazard and structure evidence were insufficient."
         )
+    if site_available and home_available:
+        wildfire_score = blended_wildfire_risk_score
+        legacy_score = legacy_weighted_wildfire_risk_score
+    elif site_available:
+        wildfire_score = round(site_hazard_score, 1)
+        legacy_score = round(site_hazard_score, 1)
+        notes.append(
+            "Wildfire score used Site Hazard component only because Home Ignition Vulnerability evidence was insufficient."
+        )
+    elif home_available:
+        wildfire_score = round(home_ignition_vulnerability_score, 1)
+        legacy_score = round(home_ignition_vulnerability_score, 1)
+        notes.append(
+            "Wildfire score used Home Ignition Vulnerability component only because Site Hazard evidence was insufficient."
+        )
+    else:
+        wildfire_score = None
+        legacy_score = None
+        notes.append(
+            "Wildfire score not computed because both Site Hazard and Home Ignition Vulnerability lacked minimum evidence."
+        )
 
     return (
         {
             "site_hazard_score": site_hazard_score if site_available else None,
             "home_ignition_vulnerability_score": home_ignition_vulnerability_score if home_available else None,
             "insurance_readiness_score": insurance_readiness_score if readiness_available else None,
-            "wildfire_risk_score": blended_wildfire_risk_score if wildfire_available else None,
-            "legacy_weighted_wildfire_risk_score": legacy_weighted_wildfire_risk_score if wildfire_available else None,
+            "wildfire_risk_score": wildfire_score if wildfire_available else None,
+            "legacy_weighted_wildfire_risk_score": legacy_score if wildfire_available else None,
             "site_hazard_score_available": site_available,
             "home_ignition_vulnerability_score_available": home_available,
             "insurance_readiness_score_available": readiness_available,
@@ -2338,10 +2632,15 @@ def _run_assessment(
         purpose="assessment",
     )
 
+    context = wildfire_data.collect_context(lat, lon)
     scoring_attrs = normalize_property_attributes(payload.attributes)
     normalization_changes = normalized_attribute_changes(payload.attributes, scoring_attrs)
-
-    context = wildfire_data.collect_context(lat, lon)
+    property_level_context = _normalize_property_level_context(context.property_level_context)
+    scoring_attrs, attribute_fallbacks = _apply_attribute_fallbacks(
+        scoring_attrs,
+        property_level_context=property_level_context,
+        context=context,
+    )
     risk: RiskComputation = risk_engine.score(scoring_attrs, lat, lon, context)
     readiness = risk_engine.compute_insurance_readiness(scoring_attrs, context, risk)
 
@@ -2377,7 +2676,6 @@ def _run_assessment(
         readiness.readiness_blockers,
     )
 
-    property_level_context = _normalize_property_level_context(context.property_level_context)
     coverage_lookup = _region_coverage_for_coordinates(lat=lat, lon=lon)
     layer_coverage_audit, coverage_summary = _normalize_layer_coverage(
         property_level_context,
@@ -2470,12 +2768,6 @@ def _run_assessment(
         data_provenance=data_provenance,
         coverage_summary=coverage_summary,
     )
-    assessment_diagnostics = _build_assessment_diagnostics(
-        data_provenance=data_provenance,
-        confidence_downgrade_reasons=confidence_downgrade_reasons,
-        trust_tier_blockers=trust_tier_blockers + assessment_blockers,
-    )
-
     property_findings = _build_property_findings(property_level_context)
     top_risk_drivers = _merge_property_drivers(_build_top_risk_drivers(submodel_scores), property_findings)
     top_protective_factors = _build_top_protective_factors(scoring_attrs, submodel_scores)
@@ -2501,6 +2793,24 @@ def _run_assessment(
     insurance_readiness_score = score_outputs["insurance_readiness_score"]
     blended_wildfire_risk_score = score_outputs["wildfire_risk_score"]
     legacy_weighted_wildfire_risk_score = score_outputs["legacy_weighted_wildfire_risk_score"]
+    fallback_decisions = _build_fallback_decisions(
+        attribute_fallbacks=attribute_fallbacks,
+        environmental_layer_status=context.environmental_layer_status,
+        property_level_context=property_level_context,
+        confidence_penalties=confidence_penalties,
+        score_availability_notes=score_availability_notes,
+    )
+    assessment_diagnostics = _build_assessment_diagnostics(
+        data_provenance=data_provenance,
+        confidence_downgrade_reasons=confidence_downgrade_reasons,
+        trust_tier_blockers=trust_tier_blockers + assessment_blockers,
+        fallback_decisions=fallback_decisions,
+    )
+    assessment_limitations_summary = _build_assessment_limitations_summary(
+        fallback_decisions=fallback_decisions,
+        score_availability_notes=score_availability_notes,
+        coverage_summary=coverage_summary,
+    )
     readiness_factors = [
         ReadinessFactor(name=f["name"], status=f["status"], score_impact=f["score_impact"], detail=f["detail"])
         for f in readiness.readiness_factors
@@ -2546,6 +2856,10 @@ def _run_assessment(
         "Submodel/weight framework and readiness rules are deterministic MVP heuristics for calibration and explainability.",
         "Scores are advisory heuristics and not carrier-approved underwriting or premium predictions.",
     ]
+    for fallback in attribute_fallbacks:
+        note = str(fallback.get("note") or "").strip()
+        if note:
+            scoring_notes.append(note)
     if any("fallback" in a.lower() or "unavailable" in a.lower() for a in all_assumptions):
         scoring_notes.append("One or more providers/layers required fallback assumptions.")
     for layer, status in (context.environmental_layer_status or {}).items():
@@ -2760,6 +3074,7 @@ def _run_assessment(
         insurance_readiness_eligibility=insurance_readiness_eligibility,
         assessment_status=assessment_status,
         assessment_blockers=assessment_blockers,
+        assessment_limitations_summary=assessment_limitations_summary,
         assessment_diagnostics=assessment_diagnostics,
         property_level_context=property_level_context,
         mitigation_plan=mitigation_plan,
@@ -2870,7 +3185,9 @@ def _run_assessment(
             "insurance_readiness": result.insurance_readiness_eligibility.model_dump(),
             "assessment_status": result.assessment_status,
             "assessment_blockers": result.assessment_blockers,
+            "assessment_limitations_summary": result.assessment_limitations_summary,
         },
+        "assessment_limitations_summary": list(result.assessment_limitations_summary),
         "coverage": {
             "direct_data_coverage_score": result.direct_data_coverage_score,
             "inferred_data_coverage_score": result.inferred_data_coverage_score,

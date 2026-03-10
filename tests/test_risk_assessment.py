@@ -2913,6 +2913,132 @@ def test_assessment_diagnostics_and_report_persistence(monkeypatch, tmp_path):
     assert isinstance(body["coverage_summary"], dict)
 
 
+def test_missing_burn_probability_and_defensible_space_use_fallback_with_confidence_penalty(monkeypatch, tmp_path):
+    full_ctx = _ctx(env=58.0, wildland=52.0, historic=47.0)
+    full_ctx.burn_probability_index = 58.0
+    full_ctx.environmental_layer_status["burn_probability"] = "ok"
+    _setup(monkeypatch, tmp_path, full_ctx)
+    full = _run(
+        _payload(
+            "Fallback Baseline Full",
+            {
+                "roof_type": "class_a_asphalt_composition",
+                "vent_type": "ember_resistant_vents",
+                "defensible_space_ft": 30,
+            },
+            confirmed=["roof_type", "vent_type", "defensible_space_ft"],
+        )
+    )
+
+    fallback_ctx = _ctx(env=58.0, wildland=52.0, historic=47.0)
+    fallback_ctx.burn_probability_index = None
+    fallback_ctx.burn_probability = None
+    fallback_ctx.environmental_layer_status["burn_probability"] = "missing"
+    fallback_ctx.hazard_severity_index = 56.0
+    fallback_ctx.wildfire_hazard = 56.0
+    fallback_ctx.property_level_context["ring_metrics"] = {
+        "ring_0_5_ft": {"vegetation_density": 62.0},
+        "ring_5_30_ft": {"vegetation_density": 58.0},
+        "ring_30_100_ft": {"vegetation_density": 50.0},
+    }
+    fallback_ctx.property_level_context["footprint_used"] = True
+    fallback_ctx.structure_ring_metrics = fallback_ctx.property_level_context["ring_metrics"]
+    _setup(monkeypatch, tmp_path, fallback_ctx)
+
+    assessed = _run(
+        _payload(
+            "Fallback Missing Burn Defensible",
+            {
+                "roof_type": "class_a_asphalt_composition",
+                "vent_type": "ember_resistant_vents",
+            },
+            confirmed=["roof_type", "vent_type"],
+        )
+    )
+    assert assessed["wildfire_risk_score_available"] is True
+    assert assessed["site_hazard_score_available"] is True
+    assert assessed["assessment_status"] in {"fully_scored", "partially_scored"}
+    assert assessed["confidence_score"] < full["confidence_score"]
+    diagnostics = assessed["assessment_diagnostics"]
+    fallback_decisions = diagnostics.get("fallback_decisions") or []
+    assert any(str(d.get("missing_input")) == "defensible_space_ft" for d in fallback_decisions)
+    assert any(str(d.get("missing_input")) == "burn_probability_layer" for d in fallback_decisions)
+    assert assessed["assessment_limitations_summary"]
+
+
+def test_missing_structure_specific_fields_still_scores_home_with_fallbacks(monkeypatch, tmp_path):
+    ctx = _ctx(env=54.0, wildland=50.0, historic=46.0)
+    ctx.property_level_context["ring_metrics"] = {
+        "ring_0_5_ft": {"vegetation_density": 48.0},
+        "ring_5_30_ft": {"vegetation_density": 55.0},
+        "ring_30_100_ft": {"vegetation_density": 45.0},
+    }
+    ctx.property_level_context["footprint_used"] = True
+    ctx.structure_ring_metrics = ctx.property_level_context["ring_metrics"]
+    _setup(monkeypatch, tmp_path, ctx)
+
+    assessed = _run(_payload("Missing Structure Fields", {}, confirmed=[]))
+    assert assessed["home_ignition_vulnerability_score_available"] is True
+    assert assessed["wildfire_risk_score_available"] is True
+    assert assessed["assessment_status"] in {"fully_scored", "partially_scored"}
+    fallback_decisions = (assessed["assessment_diagnostics"] or {}).get("fallback_decisions") or []
+    assert any(str(d.get("missing_input")) == "roof_type" for d in fallback_decisions)
+    assert any(str(d.get("missing_input")) == "vent_type" for d in fallback_decisions)
+
+
+def test_partial_noncritical_layer_coverage_degrades_without_fatal_failure(monkeypatch, tmp_path):
+    ctx = _ctx(env=53.0, wildland=49.0, historic=43.0)
+    ctx.environmental_layer_status["fire_history"] = "missing"
+    ctx.historic_fire_index = None
+    ctx.historic_fire_distance = None
+    _setup(monkeypatch, tmp_path, ctx)
+
+    assessed = _run(
+        _payload(
+            "Partial Layer Coverage",
+            {"roof_type": "class_a_asphalt_composition", "vent_type": "ember_resistant_vents", "defensible_space_ft": 22},
+            confirmed=["roof_type", "vent_type", "defensible_space_ft"],
+        )
+    )
+    assert assessed["wildfire_risk_score_available"] is True
+    assert assessed["assessment_status"] in {"fully_scored", "partially_scored"}
+    assert "unexpected_hard_failure" not in " ".join(assessed["assessment_blockers"]).lower()
+    notes = " ".join(assessed["scoring_notes"]).lower()
+    assert "fire history layer missing" in notes or "historical fire perimeter layer" in notes
+
+
+def test_blended_wildfire_score_available_when_one_component_unavailable(monkeypatch, tmp_path):
+    ctx = _ctx(env=55.0, wildland=58.0, historic=41.0)
+    ctx.fuel_index = None
+    ctx.canopy_index = None
+    ctx.fuel_model = None
+    ctx.canopy_cover = None
+    ctx.environmental_layer_status["fuel"] = "missing"
+    ctx.environmental_layer_status["canopy"] = "missing"
+    ctx.structure_ring_metrics = {}
+    ctx.property_level_context = {
+        "footprint_used": False,
+        "footprint_status": "not_found",
+        "fallback_mode": "point_based",
+        "ring_metrics": {},
+    }
+    _setup(monkeypatch, tmp_path, ctx)
+
+    assessed = _run(
+        _payload(
+            "Single Component Blend",
+            {"roof_type": "class_a_asphalt_composition", "vent_type": "ember_resistant_vents"},
+            confirmed=["roof_type", "vent_type"],
+        )
+    )
+    assert assessed["site_hazard_score_available"] is True
+    assert assessed["home_ignition_vulnerability_score_available"] is False
+    assert assessed["wildfire_risk_score_available"] is True
+    assert assessed["wildfire_risk_score"] is not None
+    assert assessed["assessment_status"] == "partially_scored"
+    assert any("component only" in str(note).lower() for note in assessed["scoring_notes"])
+
+
 def test_provenance_freshness_status_classification(monkeypatch, tmp_path):
     monkeypatch.setenv("WF_LAYER_BURN_PROB_DATE", "2099-01-01")
     monkeypatch.setenv("WF_LAYER_HAZARD_SEVERITY_DATE", "2010-01-01")
