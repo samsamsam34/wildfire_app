@@ -1362,6 +1362,7 @@ def _normalize_property_level_context(raw_context: object) -> dict[str, Any]:
             "structure_match_candidates": [],
             "structure_geometry_source": "auto_detected",
             "selection_mode": "polygon",
+            "property_anchor_point": None,
             "user_selected_point": None,
             "selected_structure_id": None,
             "selected_structure_geometry": None,
@@ -1370,11 +1371,12 @@ def _normalize_property_level_context(raw_context: object) -> dict[str, Any]:
             "snapped_structure_distance_m": None,
             "user_selected_point_in_footprint": False,
             "display_point_source": "property_anchor_point",
-            "property_anchor_point": None,
             "property_anchor_source": "geocoded_address_point",
             "property_anchor_precision": "unknown",
             "geocoded_address_point": None,
             "assessed_property_display_point": None,
+            "matched_structure_centroid": None,
+            "matched_structure_footprint": None,
             "parcel_id": None,
             "parcel_lookup_method": None,
             "parcel_lookup_distance_m": None,
@@ -1476,6 +1478,24 @@ def _normalize_property_level_context(raw_context: object) -> dict[str, Any]:
     normalized.setdefault("property_anchor_precision", "unknown")
     normalized.setdefault("geocoded_address_point", {"latitude": None, "longitude": None})
     normalized.setdefault("assessed_property_display_point", normalized.get("property_anchor_point"))
+    matched_structure_centroid = normalized.get("matched_structure_centroid")
+    if isinstance(matched_structure_centroid, dict):
+        try:
+            centroid_lat = float(matched_structure_centroid.get("latitude"))
+            centroid_lon = float(matched_structure_centroid.get("longitude"))
+            if -90.0 <= centroid_lat <= 90.0 and -180.0 <= centroid_lon <= 180.0:
+                normalized["matched_structure_centroid"] = {"latitude": centroid_lat, "longitude": centroid_lon}
+            else:
+                normalized["matched_structure_centroid"] = None
+        except (TypeError, ValueError):
+            normalized["matched_structure_centroid"] = None
+    else:
+        normalized["matched_structure_centroid"] = None
+    normalized["matched_structure_footprint"] = (
+        normalized.get("matched_structure_footprint")
+        if isinstance(normalized.get("matched_structure_footprint"), dict)
+        else None
+    )
     normalized.setdefault("parcel_id", None)
     normalized.setdefault("parcel_lookup_method", None)
     normalized.setdefault("parcel_lookup_distance_m", None)
@@ -2804,6 +2824,21 @@ def _run_assessment(
     requested_selection_mode = str(payload.selection_mode or "polygon").strip().lower()
     if requested_selection_mode not in {"polygon", "point"}:
         requested_selection_mode = "polygon"
+    requested_property_anchor_point: dict[str, float] | None = None
+    raw_property_anchor_point = payload.property_anchor_point or payload.user_selected_point
+    if raw_property_anchor_point is not None:
+        try:
+            requested_property_anchor_point = {
+                "latitude": float(raw_property_anchor_point.latitude),
+                "longitude": float(raw_property_anchor_point.longitude),
+            }
+            if not (
+                -90.0 <= requested_property_anchor_point["latitude"] <= 90.0
+                and -180.0 <= requested_property_anchor_point["longitude"] <= 180.0
+            ):
+                requested_property_anchor_point = None
+        except (TypeError, ValueError):
+            requested_property_anchor_point = None
     requested_user_selected_point: dict[str, float] | None = None
     if payload.user_selected_point is not None:
         try:
@@ -2822,6 +2857,7 @@ def _run_assessment(
         "geocode_precision": geocode_precision,
         "structure_geometry_source": requested_structure_source,
         "selection_mode": requested_selection_mode,
+        "property_anchor_point": requested_property_anchor_point,
         "user_selected_point": requested_user_selected_point,
         "selected_structure_id": requested_structure_id,
         "selected_structure_geometry": requested_structure_geometry,
@@ -2871,6 +2907,8 @@ def _run_assessment(
     property_level_context["selection_mode"] = str(
         property_level_context.get("selection_mode") or requested_selection_mode
     )
+    if requested_property_anchor_point is not None:
+        property_level_context["property_anchor_point"] = requested_property_anchor_point
     if requested_user_selected_point is not None:
         property_level_context["user_selected_point"] = requested_user_selected_point
     if _is_dev_mode():
@@ -3298,6 +3336,9 @@ def _run_assessment(
             return None
         return {"latitude": lat_v, "longitude": lon_v}
 
+    def _clean_feature_dict(raw: object) -> dict[str, Any] | None:
+        return raw if isinstance(raw, dict) else None
+
     region_data_version = str(property_level_context.get("region_manifest_path") or "") or None
     governance = _build_result_governance(
         ruleset_version=ruleset.ruleset_version,
@@ -3470,6 +3511,8 @@ def _run_assessment(
             if property_level_context.get("selection_mode") in {"polygon", "point"}
             else "polygon"
         ),
+        matched_structure_centroid=_clean_point_dict(property_level_context.get("matched_structure_centroid")),
+        matched_structure_footprint=_clean_feature_dict(property_level_context.get("matched_structure_footprint")),
         user_selected_point=_clean_point_dict(property_level_context.get("user_selected_point")),
         site_hazard_eligibility=site_hazard_eligibility,
         home_vulnerability_eligibility=home_vulnerability_eligibility,
@@ -3673,6 +3716,7 @@ def _payload_from_assessment(existing: AssessmentResult) -> AddressRequest:
         confirmed_fields=list(existing.confirmed_fields),
         structure_geometry_source=str(property_ctx.get("structure_geometry_source") or "auto_detected"),
         selection_mode=selection_mode,
+        property_anchor_point=selected_point_payload,
         user_selected_point=selected_point_payload,
         selected_structure_id=(
             str(property_ctx.get("selected_structure_id"))

@@ -545,15 +545,20 @@ After a successful assessment, the frontend shows a map card with property and w
 - Geometry contract:
   - map geometries are GeoJSON in WGS84 (`EPSG:4326`) with `[longitude, latitude]` coordinates
   - map payload separates `geocoded_address_point`, `property_anchor_point`,
-    optional `parcel_polygon`/`parcel_address_point`, and `matched_structure_centroid`
+    optional `parcel_polygon`/`parcel_address_point`, optional `user_selected_point`,
+    and `matched_structure_centroid`
   - `display_point_source` identifies whether the main marker is from
     `matched_structure_centroid` (high-confidence only) or `property_anchor_point`
+  - selection fallback fields include `selection_mode`, `final_structure_geometry_source`,
+    `structure_geometry_confidence`, and `snapped_structure_distance_m`
   - map payload includes geocode/structure-match diagnostics (`geocode_precision`,
     `parcel_lookup_method`, `parcel_lookup_distance_m`, `structure_match_status`,
     `structure_match_method`, `matched_structure_id`, `structure_match_distance_m`,
     `candidate_structure_count`) for routing/alignment QA
 - Graceful degradation:
   - if footprint geometry is unavailable, rings use point-proxy geometry
+  - if selectable polygons are unavailable or weakly matched, user point selection can be
+    used as the property anchor without forcing an incorrect building snap
   - if overlays are unavailable, map still renders available layers with limitations text
 
 See `docs/frontend_map.md` for payload details and layer behavior.

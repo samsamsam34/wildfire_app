@@ -891,6 +891,13 @@
         const candidateSummaries = Array.isArray(payload?.metadata?.structure_match?.candidate_summaries)
           ? payload.metadata.structure_match.candidate_summaries
           : [];
+        const selectableFeatures = Array.isArray(payload?.data?.selectable_structure_footprints?.features)
+          ? payload.data.selectable_structure_footprints.features
+          : [];
+        const selectedStructureInCandidates = !!(
+          selectedStructureId
+          && selectableFeatures.some(feature => extractStructureId(feature?.properties || {}) === selectedStructureId)
+        );
         const geocodedCoords = parsePointCoordinates(geocoded);
         const anchorCoords = parsePointCoordinates(anchor);
         const userSelectedPoint = payload?.user_selected_point;
@@ -937,6 +944,7 @@
           `interactive_layer_loaded: ${interactiveLayerLoaded === true ? "true" : "false"}`,
           `user_selected_point_in_footprint: ${userSelectedPointInFootprint === true ? "true" : "false"}`,
           `selected_structure_id: ${selectedStructureId || "n/a"}`,
+          `selected_structure_in_candidates: ${selectedStructureInCandidates ? "true" : "false"}`,
           `match_thresholds_m: max=${Number.isFinite(Number(maxMatchDistanceM)) ? Number(maxMatchDistanceM).toFixed(1) : "n/a"}, ambiguity_gap=${Number.isFinite(Number(ambiguityGapM)) ? Number(ambiguityGapM).toFixed(1) : "n/a"}`,
           `footprint_source: ${footprintSourceName} (vintage=${footprintSourceVintage})`,
           `parcel_source: ${parcelSourceName} (vintage=${parcelSourceVintage})`,

@@ -310,14 +310,34 @@ class PropertyAnchorResolver:
         geocode_provider: str | None = None,
         geocode_precision: str | None = None,
         geocoded_address: str | None = None,
+        property_anchor_override: tuple[float, float] | None = None,
+        property_anchor_override_source: str | None = None,
+        property_anchor_override_precision: str | None = None,
     ) -> PropertyAnchorResolution:
         fallback_precision = str(geocode_precision or "unknown")
+        override_anchor = None
+        if property_anchor_override is not None:
+            try:
+                override_lat = float(property_anchor_override[0])
+                override_lon = float(property_anchor_override[1])
+                if -90.0 <= override_lat <= 90.0 and -180.0 <= override_lon <= 180.0:
+                    override_anchor = (override_lat, override_lon)
+            except (TypeError, ValueError, IndexError):
+                override_anchor = None
         if not self._geo_ready():
             return PropertyAnchorResolution(
-                anchor_latitude=float(geocoded_lat),
-                anchor_longitude=float(geocoded_lon),
-                anchor_source=self._anchor_source_from_geocode_precision(fallback_precision),
-                anchor_precision=fallback_precision,
+                anchor_latitude=float(override_anchor[0] if override_anchor is not None else geocoded_lat),
+                anchor_longitude=float(override_anchor[1] if override_anchor is not None else geocoded_lon),
+                anchor_source=(
+                    str(property_anchor_override_source or "user_selected_point")
+                    if override_anchor is not None
+                    else self._anchor_source_from_geocode_precision(fallback_precision)
+                ),
+                anchor_precision=(
+                    str(property_anchor_override_precision or "user_selected_point")
+                    if override_anchor is not None
+                    else fallback_precision
+                ),
                 geocoded_latitude=float(geocoded_lat),
                 geocoded_longitude=float(geocoded_lon),
                 geocode_provider=geocode_provider,
@@ -327,6 +347,11 @@ class PropertyAnchorResolver:
             )
 
         geocode_point = Point(float(geocoded_lon), float(geocoded_lat))
+        requested_anchor_point = (
+            Point(float(override_anchor[1]), float(override_anchor[0]))
+            if override_anchor is not None
+            else geocode_point
+        )
         address_feature, address_distance_m = self._best_address_point(geocode_point=geocode_point)
         address_point = None
         if address_feature is not None:
@@ -338,7 +363,14 @@ class PropertyAnchorResolver:
         parcel_geom = None
         parcel_lookup_method: str | None = None
         parcel_lookup_distance_m: float | None = None
-        if address_point is not None:
+        if override_anchor is not None:
+            (
+                parcel_feature,
+                parcel_geom,
+                parcel_lookup_method,
+                parcel_lookup_distance_m,
+            ) = self._best_parcel_for_point(anchor_point=requested_anchor_point)
+        elif address_point is not None:
             (
                 parcel_feature,
                 parcel_geom,
@@ -359,7 +391,13 @@ class PropertyAnchorResolver:
         anchor_precision = fallback_precision
         diagnostics: list[str] = []
 
-        if address_feature is not None and address_point is not None and "address_point" in self.source_priority:
+        if override_anchor is not None:
+            anchor_lat = float(override_anchor[0])
+            anchor_lon = float(override_anchor[1])
+            anchor_source = str(property_anchor_override_source or "user_selected_point")
+            anchor_precision = str(property_anchor_override_precision or "user_selected_point")
+            diagnostics.append("Property anchor uses the user-selected home point.")
+        elif address_feature is not None and address_point is not None and "address_point" in self.source_priority:
             anchor_lat = float(address_point.y)
             anchor_lon = float(address_point.x)
             anchor_source = "authoritative_address_point"

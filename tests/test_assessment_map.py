@@ -104,6 +104,11 @@ def _ctx() -> WildfireContext:
             "footprint_status": "not_found",
             "fallback_mode": "point_based",
             "ring_metrics": None,
+            "selection_mode": "polygon",
+            "user_selected_point": None,
+            "final_structure_geometry_source": "auto_detected",
+            "structure_geometry_confidence": 0.0,
+            "snapped_structure_distance_m": None,
             "region_id": "missoula_pilot",
             "region_status": "prepared",
         },
@@ -216,6 +221,13 @@ def test_map_endpoint_returns_point_footprint_rings_and_overlays(monkeypatch, tm
     assert -180.0 <= payload["center"]["longitude"] <= 180.0
     assert payload["basis_geometry_type"] in {"building_footprint", "point_proxy"}
     assert payload["display_point_source"] in {"property_anchor_point", "matched_structure_centroid"}
+    assert payload["selection_mode"] in {"polygon", "point"}
+    assert payload["final_structure_geometry_source"] in {
+        "auto_detected",
+        "user_selected_polygon",
+        "user_selected_point_snapped",
+        "user_selected_point_unsnapped",
+    }
     assert payload["geocode_provider"]
     assert payload["geocode_precision"] in {"rooftop", "parcel_or_address_point", "interpolated", "approximate", "unknown", None}
     assert payload["structure_match_status"] in {"matched", "ambiguous", "none", "provider_unavailable", "error"}
@@ -268,6 +280,8 @@ def test_map_endpoint_returns_point_footprint_rings_and_overlays(monkeypatch, tm
     assert payload["metadata"]["geometry_contract"]["coordinate_order"] == "[longitude, latitude]"
     assert "structure_match" in payload["metadata"]
     assert "matched_structure_id" in payload["metadata"]["structure_match"]
+    assert "final_structure_geometry_source" in payload["metadata"]["structure_match"]
+    assert "structure_geometry_confidence" in payload["metadata"]["structure_match"]
 
     matched_centroid = payload.get("matched_structure_centroid")
     footprint = payload.get("matched_structure_footprint")
@@ -416,6 +430,33 @@ def test_map_endpoint_uses_geocoded_point_when_structure_match_is_ambiguous(monk
     assert payload["matched_structure_centroid"] is None
     assert payload["data"]["property_point"]["features"][0]["geometry"]["coordinates"] == payload["property_anchor_point"]["geometry"]["coordinates"]
     assert any("similarly plausible" in str(note).lower() for note in payload.get("limitations") or [])
+
+
+@pytest.mark.skipif(not _geo_ready(), reason="Map geometry tests require shapely/pyproj")
+def test_map_endpoint_includes_user_selected_point_layer_when_point_mode_used(monkeypatch, tmp_path: Path):
+    context = _ctx()
+    context.property_level_context.update(
+        {
+            "selection_mode": "point",
+            "user_selected_point": {"latitude": 46.87225, "longitude": -113.99395},
+            "final_structure_geometry_source": "user_selected_point_unsnapped",
+            "structure_geometry_confidence": 0.42,
+            "snapped_structure_distance_m": None,
+            "display_point_source": "property_anchor_point",
+            "property_anchor_point": {"latitude": 46.87225, "longitude": -113.99395},
+        }
+    )
+    _setup(monkeypatch, tmp_path, footprints_path=None, perimeters_path=None)
+    monkeypatch.setattr(app_main.wildfire_data, "collect_context", lambda _lat, _lon: context)
+    assessed = _assess()
+
+    map_response = client.get(f"/report/{assessed['assessment_id']}/map")
+    assert map_response.status_code == 200
+    payload = map_response.json()
+    assert payload["selection_mode"] == "point"
+    assert payload["final_structure_geometry_source"] == "user_selected_point_unsnapped"
+    assert payload["data"].get("user_selected_point", {}).get("features")
+    assert payload["metadata"]["structure_match"]["selection_mode"] == "point"
 
 
 @pytest.mark.skipif(not _geo_ready(), reason="Map geometry tests require shapely/pyproj")

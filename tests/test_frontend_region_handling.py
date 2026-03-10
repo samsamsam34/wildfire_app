@@ -120,10 +120,17 @@ def test_frontend_selectable_structure_layer_has_click_and_selection_logic() -> 
 def test_frontend_point_selection_fallback_places_user_selected_point_and_reassesses() -> None:
     html = _frontend_html()
     assert 'mode: "point"' in html
+    assert "confirmHomePointBtn" in html
     assert "Point selection mode enabled. Click directly on your home location in the map." in html
     assert "Using your selected map point. Updating assessment..." in html
     assert "renderManualSelectedPointMarker" in html
     assert 'source: "user_selected_point"' in html
+    assert "selected_structure_in_candidates" in html
+
+
+def test_frontend_shows_honest_unsnapped_fallback_language() -> None:
+    html = _frontend_html()
+    assert "Exact building outline unavailable here; using your selected location instead." in html
 
 
 def test_frontend_map_degrades_gracefully_for_uncovered_or_geocode_failure() -> None:

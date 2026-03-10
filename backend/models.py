@@ -96,6 +96,7 @@ class AddressRequest(BaseModel):
     confirmed_fields: List[str] = Field(default_factory=list)
     structure_geometry_source: StructureGeometrySource = "auto_detected"
     selection_mode: SelectionMode = "polygon"
+    property_anchor_point: Optional[Coordinates] = None
     user_selected_point: Optional[Coordinates] = None
     selected_structure_id: Optional[str] = None
     selected_structure_geometry: Optional[Dict[str, Any]] = None
@@ -618,6 +619,8 @@ class AssessmentResult(BaseModel):
     structure_geometry_confidence: Optional[float] = None
     snapped_structure_distance_m: Optional[float] = None
     selection_mode: Optional[SelectionMode] = None
+    matched_structure_centroid: Optional[Dict[str, float]] = None
+    matched_structure_footprint: Optional[Dict[str, Any]] = None
     user_selected_point: Optional[Dict[str, float]] = None
     site_hazard_eligibility: ScoreEligibility = Field(default_factory=ScoreEligibility)
     home_vulnerability_eligibility: ScoreEligibility = Field(default_factory=ScoreEligibility)

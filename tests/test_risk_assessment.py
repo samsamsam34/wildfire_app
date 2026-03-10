@@ -774,6 +774,8 @@ def test_wildfire_data_point_selection_snaps_to_nearby_footprint(monkeypatch):
     assert context_blob["snapped_structure_distance_m"] == pytest.approx(4.2)
     assert context_blob["user_selected_point_in_footprint"] is False
     assert context_blob["matched_structure_id"] == "snap-home"
+    # Even when snapped, display marker should remain the selected anchor unless confidence is high.
+    assert context_blob["display_point_source"] == "property_anchor_point"
     assert any("user-selected map point" in note.lower() for note in assumptions)
 
 
@@ -830,6 +832,63 @@ def test_wildfire_data_point_selection_detects_point_inside_footprint(monkeypatc
     assert context_blob["final_structure_geometry_source"] == "user_selected_point_snapped"
     assert context_blob["user_selected_point_in_footprint"] is True
     assert context_blob["snapped_structure_distance_m"] == pytest.approx(0.0)
+    assert context_blob["display_point_source"] == "matched_structure_centroid"
+
+
+def test_wildfire_data_point_selection_weak_match_remains_unsnapped(monkeypatch):
+    _require_shapely()
+    client = WildfireDataClient()
+    monkeypatch.setenv("WF_POINT_SELECTION_MIN_SNAP_CONFIDENCE", "0.70")
+    weak_footprint = Polygon(
+        [
+            (-105.00010, 40.00010),
+            (-104.99992, 40.00010),
+            (-104.99992, 39.99992),
+            (-105.00010, 39.99992),
+            (-105.00010, 40.00010),
+        ]
+    )
+    monkeypatch.setattr(
+        client.footprints,
+        "get_building_footprint",
+        lambda _lat, _lon, **_kwargs: BuildingFootprintResult(
+            found=True,
+            footprint=weak_footprint,
+            centroid=(40.0, -105.0),
+            source="fixture",
+            confidence=0.58,
+            match_status="matched",
+            match_method="nearest_building_fallback",
+            matched_structure_id="weak-home",
+            match_distance_m=6.0,
+            candidate_count=2,
+            candidate_summaries=[],
+            assumptions=[],
+        ),
+    )
+    proxy = {
+        "zone_0_5_ft": {"vegetation_density": 52.0, "coverage_pct": 55.0, "fuel_presence_proxy": 49.0},
+        "zone_5_30_ft": {"vegetation_density": 48.0, "coverage_pct": 52.0, "fuel_presence_proxy": 44.0},
+        "zone_30_100_ft": {"vegetation_density": 43.0, "coverage_pct": 47.0, "fuel_presence_proxy": 40.0},
+        "ring_0_5_ft": {"vegetation_density": 52.0, "coverage_pct": 55.0, "fuel_presence_proxy": 49.0},
+        "ring_5_30_ft": {"vegetation_density": 48.0, "coverage_pct": 52.0, "fuel_presence_proxy": 44.0},
+        "ring_30_100_ft": {"vegetation_density": 43.0, "coverage_pct": 47.0, "fuel_presence_proxy": 40.0},
+    }
+    monkeypatch.setattr(client, "_build_point_proxy_ring_metrics", lambda **_kwargs: proxy)
+
+    context_blob, assumptions, _sources = client._compute_structure_ring_metrics(
+        40.0,
+        -105.0,
+        canopy_path="",
+        fuel_path="",
+        selection_mode="point",
+        user_selected_point={"latitude": 40.0, "longitude": -105.0},
+    )
+    assert context_blob["footprint_used"] is False
+    assert context_blob["final_structure_geometry_source"] == "user_selected_point_unsnapped"
+    assert context_blob["display_point_source"] == "property_anchor_point"
+    assert context_blob["snapped_structure_distance_m"] is None
+    assert any("low confidence" in note.lower() for note in assumptions)
 
 
 def test_wildfire_data_point_selection_unsnapped_falls_back_to_selected_anchor(monkeypatch):

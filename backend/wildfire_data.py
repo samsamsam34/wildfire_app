@@ -607,6 +607,7 @@ class WildfireDataClient:
         footprint_path: str | None = None,
         fallback_footprint_path: str | None = None,
         parcel_polygon: Any | None = None,
+        property_anchor_point: dict[str, Any] | None = None,
         anchor_precision: str | None = None,
         structure_geometry_source: str | None = None,
         selection_mode: str | None = None,
@@ -633,7 +634,8 @@ class WildfireDataClient:
             normalized_selection_mode = "polygon"
         user_selected_point_coords: tuple[float, float] | None = None
         if normalized_selection_mode == "point":
-            user_selected_point_coords, user_point_error = self._coerce_user_selected_point(user_selected_point)
+            point_payload = property_anchor_point if isinstance(property_anchor_point, dict) else user_selected_point
+            user_selected_point_coords, user_point_error = self._coerce_user_selected_point(point_payload)
             if user_selected_point_coords is None:
                 assumptions.append(user_point_error or "User-selected point was invalid.")
                 assumptions.append("Falling back to polygon/auto structure matching.")
@@ -705,6 +707,11 @@ class WildfireDataClient:
                     "structure_match_candidates": [],
                     "structure_geometry_source": "auto_detected",
                     "selection_mode": normalized_selection_mode,
+                    "property_anchor_point": (
+                        {"latitude": query_lat, "longitude": query_lon}
+                        if normalized_selection_mode == "point"
+                        else {"latitude": lat, "longitude": lon}
+                    ),
                     "user_selected_point": (
                         {"latitude": query_lat, "longitude": query_lon}
                         if normalized_selection_mode == "point"
@@ -721,6 +728,8 @@ class WildfireDataClient:
                     "snapped_structure_distance_m": None,
                     "user_selected_point_in_footprint": False,
                     "display_point_source": "property_anchor_point",
+                    "matched_structure_centroid": None,
+                    "matched_structure_footprint": None,
                     "fallback_mode": "point_based",
                     "ring_metrics": None,
                     "nearest_vegetation_distance_ft": None,
@@ -740,9 +749,49 @@ class WildfireDataClient:
         match_distance = getattr(result, "match_distance_m", None)
         candidate_count = int(getattr(result, "candidate_count", 0) or 0)
         candidate_summaries = list(getattr(result, "candidate_summaries", []) or [])
+        force_unsnapped_point = False
+        if normalized_selection_mode == "point" and result.found and result.footprint is not None:
+            try:
+                point_snap_min_confidence = float(
+                    str(
+                        os.getenv(
+                            "WF_POINT_SELECTION_MIN_SNAP_CONFIDENCE",
+                            "0.62",
+                        )
+                    ).strip()
+                )
+            except ValueError:
+                point_snap_min_confidence = 0.62
+            point_snap_min_confidence = max(0.0, min(1.0, point_snap_min_confidence))
 
-        if not result.found or result.footprint is None:
-            assumptions.append("Building footprint analysis unavailable; using point-based vegetation context.")
+            try:
+                point_snap_max_distance_m = float(
+                    str(
+                        os.getenv(
+                            "WF_POINT_SELECTION_MAX_SNAP_DISTANCE_M",
+                            str(getattr(footprint_client, "max_match_distance_m", 25.0) or 25.0),
+                        )
+                    ).strip()
+                )
+            except ValueError:
+                point_snap_max_distance_m = float(getattr(footprint_client, "max_match_distance_m", 25.0) or 25.0)
+            point_snap_max_distance_m = max(1.0, point_snap_max_distance_m)
+
+            inside_selected_point = bool(match_distance is not None and float(match_distance) <= 0.5)
+            weak_confidence = match_confidence < point_snap_min_confidence
+            too_far = match_distance is None or float(match_distance) > point_snap_max_distance_m
+            if not inside_selected_point and (weak_confidence or too_far):
+                force_unsnapped_point = True
+                match_status = "none"
+                assumptions.append(
+                    "Nearest footprint match from selected point was low confidence; using selected point as anchor instead of forcing a structure snap."
+                )
+
+        if not result.found or result.footprint is None or force_unsnapped_point:
+            if force_unsnapped_point:
+                assumptions.append("Using point-based vegetation context because structure snap confidence was weak.")
+            else:
+                assumptions.append("Building footprint analysis unavailable; using point-based vegetation context.")
             point_proxy_metrics = self._build_point_proxy_ring_metrics(
                 lat=query_lat,
                 lon=query_lon,
@@ -1377,7 +1426,11 @@ class WildfireDataClient:
             footprint_path=runtime_paths.get("footprints"),
             fallback_footprint_path=runtime_paths.get("fema_structures"),
             parcel_polygon=parcel_for_matching,
-            anchor_precision=anchor.anchor_precision or normalized_geocode_precision,
+            anchor_precision=(
+                "user_selected_point"
+                if (normalized_selection_mode == "point" and user_selected_point_coords is not None)
+                else (anchor.anchor_precision or normalized_geocode_precision)
+            ),
             structure_geometry_source=normalized_structure_geometry_source,
             selection_mode=normalized_selection_mode,
             user_selected_point=(
