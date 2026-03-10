@@ -19,6 +19,11 @@ from backend.auth import require_api_key
 from backend.benchmarking import (
     build_benchmark_hints_for_assessment,
 )
+from backend.defensible_space import (
+    build_defensible_space_analysis,
+    build_prioritized_vegetation_actions,
+    build_top_near_structure_risk_drivers,
+)
 from backend.database import AssessmentStore, DEFAULT_ORG_ID
 from backend.data_prep.region_lookup import (
     find_region_for_point as lookup_region_for_point,
@@ -66,6 +71,7 @@ from backend.models import (
     GeocodeDebugRequest,
     GeocodingDetails,
     ModelGovernanceInfo,
+    NearStructureAction,
     FactorBreakdown,
     Organization,
     OrganizationCreate,
@@ -1796,17 +1802,34 @@ def _build_data_provenance(
     )
 
     rings = property_level_context.get("ring_metrics") if isinstance(property_level_context, dict) else None
+    ring_basis = str(property_level_context.get("fallback_mode") or "point_based") if isinstance(property_level_context, dict) else "point_based"
     for zone_key in ["zone_0_5_ft", "zone_5_30_ft", "zone_30_100_ft", "zone_100_300_ft"]:
         zone_data = rings.get(zone_key) if isinstance(rings, dict) else None
         density = zone_data.get("vegetation_density") if isinstance(zone_data, dict) else None
-        source_type = "footprint_derived" if density is not None else "missing"
-        details = "Measured from building-footprint buffer ring." if density is not None else "Ring metric unavailable."
+        if density is not None and footprint_used:
+            source_type: SourceType = "footprint_derived"
+            source_name = "building_footprint_ring_analysis"
+            source_class = "footprint_derived"
+            details = "Measured from building-footprint buffer ring."
+            provider_status = "ok"
+        elif density is not None:
+            source_type = "heuristic"
+            source_name = "point_proxy_ring_analysis"
+            source_class = "heuristic"
+            details = "Approximated from point-based annulus vegetation/fuel sampling."
+            provider_status = "ok"
+        else:
+            source_type = "missing"
+            source_name = "building_footprint_ring_analysis"
+            source_class = "footprint_derived"
+            details = "Ring metric unavailable."
+            provider_status = footprint_provider_status
         property_sources[zone_key] = _metadata(
             field_name=zone_key,
             source_type=source_type,
-            source_name="building_footprint_ring_analysis",
-            provider_status=footprint_provider_status if density is None else "ok",
-            source_class="footprint_derived",
+            source_name=source_name,
+            provider_status=provider_status,  # type: ignore[arg-type]
+            source_class=source_class,
             dataset_version=os.getenv("WF_BUILDING_FOOTPRINT_VERSION"),
             observed_at=os.getenv("WF_BUILDING_FOOTPRINT_DATE") or (now_iso if density is not None else None),
             used_in_scoring=True,
@@ -1816,7 +1839,7 @@ def _build_data_provenance(
                 "zone_30_100_ft": 30.5,
                 "zone_100_300_ft": 91.4,
             }[zone_key],
-            details=details,
+            details=f"{details} basis={ring_basis}",
         )
 
     access_context = getattr(context, "access_context", {}) or {}
@@ -2682,8 +2705,19 @@ def _run_assessment(
         property_level_context,
         environmental_layer_status=context.environmental_layer_status,
     )
+    defensible_space_analysis = build_defensible_space_analysis(
+        property_level_context=property_level_context,
+        layer_coverage_audit=[row.model_dump() for row in layer_coverage_audit],
+    )
+    top_near_structure_risk_drivers = build_top_near_structure_risk_drivers(defensible_space_analysis)
+    prioritized_vegetation_actions_raw = build_prioritized_vegetation_actions(defensible_space_analysis)
+    prioritized_vegetation_actions = [NearStructureAction.model_validate(row) for row in prioritized_vegetation_actions_raw]
+    defensible_space_limitations_summary = list(
+        (defensible_space_analysis.get("data_quality") or {}).get("limitations") or []
+    )[:4]
     property_level_context["layer_coverage_audit"] = [row.model_dump() for row in layer_coverage_audit]
     property_level_context["coverage_summary"] = coverage_summary.model_dump()
+    property_level_context["defensible_space_analysis"] = defensible_space_analysis
     region_resolution = _build_region_resolution(
         property_level_context=property_level_context,
         coverage_lookup=coverage_lookup,
@@ -2771,6 +2805,10 @@ def _run_assessment(
     )
     property_findings = _build_property_findings(property_level_context)
     top_risk_drivers = _merge_property_drivers(_build_top_risk_drivers(submodel_scores), property_findings)
+    for driver in top_near_structure_risk_drivers:
+        if driver not in top_risk_drivers:
+            top_risk_drivers.insert(0, driver)
+    top_risk_drivers = top_risk_drivers[:3]
     top_protective_factors = _build_top_protective_factors(scoring_attrs, submodel_scores)
 
     raw_site_hazard_score, raw_home_ignition_vulnerability_score = _build_score_decomposition(risk=risk)
@@ -2885,6 +2923,18 @@ def _run_assessment(
         scoring_notes.append(
             "Heuristic inputs used: " + ", ".join(data_provenance.heuristic_inputs_used[:6]) + "."
         )
+    if prioritized_vegetation_actions:
+        scoring_notes.append(
+            "Near-structure vegetation analysis identified prioritized zone actions: "
+            + ", ".join(a.title for a in prioritized_vegetation_actions[:3])
+            + "."
+        )
+    elif defensible_space_limitations_summary:
+        scoring_notes.append(
+            "Near-structure vegetation analysis limitations: "
+            + "; ".join(defensible_space_limitations_summary[:2])
+            + "."
+        )
     access_context = getattr(context, "access_context", {}) or {}
     access_status = str(access_context.get("status") or "missing")
     if access_status == "ok":
@@ -2971,7 +3021,8 @@ def _run_assessment(
         f"{_score_phrase('Site Hazard', site_hazard_score)}. "
         f"{_score_phrase('Home Ignition Vulnerability', home_ignition_vulnerability_score)}. "
         f"{_score_phrase('Insurance Readiness', insurance_readiness_score)}. "
-        f"Primary drivers: {', '.join(top_risk_drivers[:2])}."
+        f"Primary drivers: {', '.join(top_risk_drivers[:2])}. "
+        f"Near-structure summary: {str(defensible_space_analysis.get('summary') or 'Not available')}."
     )
 
     risk_scores = RiskScores(
@@ -3039,6 +3090,10 @@ def _run_assessment(
         weighted_contributions=weighted_contributions,
         submodel_explanations=submodel_explanations,
         property_findings=property_findings,
+        defensible_space_analysis=defensible_space_analysis,
+        top_near_structure_risk_drivers=top_near_structure_risk_drivers,
+        prioritized_vegetation_actions=prioritized_vegetation_actions,
+        defensible_space_limitations_summary=defensible_space_limitations_summary,
         top_risk_drivers=top_risk_drivers,
         top_protective_factors=top_protective_factors,
         explanation_summary=explanation_summary,
@@ -3198,6 +3253,10 @@ def _run_assessment(
         },
         "layer_coverage_audit": [row.model_dump() for row in result.layer_coverage_audit],
         "coverage_summary": result.coverage_summary.model_dump(),
+        "defensible_space_analysis": result.defensible_space_analysis,
+        "top_near_structure_risk_drivers": result.top_near_structure_risk_drivers,
+        "prioritized_vegetation_actions": [a.model_dump() for a in result.prioritized_vegetation_actions],
+        "defensible_space_limitations_summary": result.defensible_space_limitations_summary,
         "region_resolution": result.region_resolution.model_dump(),
         "score_evidence_ledger": result.score_evidence_ledger.model_dump(),
         "evidence_quality_summary": result.evidence_quality_summary.model_dump(),
@@ -3282,6 +3341,8 @@ def _audience_focus(result: AssessmentResult, audience_mode: Audience) -> dict[s
         return {
             "next_steps": [m.model_dump() for m in result.mitigation_plan[:3]],
             "plain_language_summary": result.explanation_summary,
+            "near_structure_summary": result.defensible_space_analysis.get("summary"),
+            "prioritized_vegetation_actions": [a.model_dump() for a in result.prioritized_vegetation_actions[:3]],
         }
     if audience_mode == "agent":
         return {
@@ -3446,6 +3507,10 @@ def _build_report_export(
             "readiness_penalties": result.readiness_penalties,
             "readiness_summary": result.readiness_summary,
         },
+        defensible_space_analysis=result.defensible_space_analysis,
+        top_near_structure_risk_drivers=result.top_near_structure_risk_drivers,
+        prioritized_vegetation_actions=result.prioritized_vegetation_actions,
+        defensible_space_limitations_summary=result.defensible_space_limitations_summary,
         top_risk_drivers=result.top_risk_drivers,
         top_protective_factors=result.top_protective_factors,
         assumptions_confidence=assumptions_confidence,
@@ -3476,6 +3541,11 @@ def _build_report_html(
         f" <em>(risk: {m.estimated_risk_reduction_band}, readiness: {m.estimated_readiness_improvement_band})</em></li>"
         for m in result.mitigation_plan
     )
+    near_structure_drivers = "".join(f"<li>{d}</li>" for d in result.top_near_structure_risk_drivers) or "<li>None</li>"
+    vegetation_actions = "".join(
+        f"<li><strong>{a.title}</strong> ({a.target_zone}): {a.explanation}</li>"
+        for a in result.prioritized_vegetation_actions
+    ) or "<li>None</li>"
     drivers = "".join(f"<li>{d}</li>" for d in result.top_risk_drivers)
     protective = "".join(f"<li>{p}</li>" for p in result.top_protective_factors)
     audience_notes = "".join(f"<li>{n}</li>" for n in highlights)
@@ -3500,9 +3570,11 @@ pre {{ white-space: pre-wrap; }}
 <div class=\"card\"><h3>Insurance Readiness Score</h3><p>{_score_html(result.insurance_readiness_score)}</p></div>
 </div>
 <div class=\"card\"><h3>Top Risk Drivers</h3><ul>{drivers}</ul></div>
+<div class=\"card\"><h3>Near-Structure Drivers</h3><ul>{near_structure_drivers}</ul></div>
 <div class=\"card\"><h3>Top Protective Factors</h3><ul>{protective}</ul></div>
 <div class=\"card\"><h3>Readiness Blockers</h3><ul>{blockers}</ul></div>
 <div class=\"card\"><h3>Mitigation Recommendations</h3><ul>{mitigations}</ul></div>
+<div class=\"card\"><h3>Prioritized Vegetation Actions</h3><ul>{vegetation_actions}</ul></div>
 <div class=\"card\"><h3>Audience-Specific Highlights ({mode})</h3><ul>{audience_notes}</ul></div>
 <div class=\"card\"><h3>Audience Focus Payload</h3><pre>{focus}</pre></div>
 <div class=\"card\"><h3>Assumptions & Confidence</h3>
@@ -4921,7 +4993,11 @@ def layer_diagnostics(payload: AddressRequest, ctx: ActorContext = Depends(get_a
             "footprint_status": (debug_payload.get("property_level_context") or {}).get("footprint_status"),
             "footprint_source": (debug_payload.get("property_level_context") or {}).get("footprint_source"),
             "fallback_mode": (debug_payload.get("property_level_context") or {}).get("fallback_mode"),
+            "defensible_space_analysis": (debug_payload.get("property_level_context") or {}).get("defensible_space_analysis"),
         },
+        "top_near_structure_risk_drivers": debug_payload.get("top_near_structure_risk_drivers", []),
+        "prioritized_vegetation_actions": debug_payload.get("prioritized_vegetation_actions", []),
+        "defensible_space_limitations_summary": debug_payload.get("defensible_space_limitations_summary", []),
         "layer_coverage_audit": debug_payload.get("layer_coverage_audit", []),
         "coverage_summary": debug_payload.get("coverage_summary", {}),
         "fallback_decisions": {

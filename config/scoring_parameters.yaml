@@ -25,6 +25,12 @@
     "zone_30_100_ft": {
       "threshold": 65.0,
       "slope": 0.08
+    },
+    "nearest_vegetation_distance_ft": {
+      "critical_max_ft": 5.0,
+      "watch_max_ft": 15.0,
+      "critical_penalty": 6.0,
+      "watch_penalty": 3.0
     }
   },
   "readiness_penalties": {
@@ -61,7 +67,11 @@
     "ember_exposure_fail_score": 80.0,
     "ember_exposure_watch_score": 65.0,
     "severe_environment_fail_score": 85.0,
-    "severe_environment_watch_score": 70.0
+    "severe_environment_watch_score": 70.0,
+    "zone_0_5_fail_density": 60.0,
+    "zone_0_5_watch_density": 45.0,
+    "zone_5_30_fail_density": 70.0,
+    "zone_5_30_watch_density": 55.0
   },
   "risk_bucket_thresholds": {
     "low_max": 33.0,

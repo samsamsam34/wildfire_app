@@ -494,6 +494,16 @@ class MitigationAction(BaseModel):
     effort: Optional[Literal["low", "medium", "high"]] = None
 
 
+class NearStructureAction(BaseModel):
+    title: str = ""
+    explanation: str = ""
+    target_zone: str = ""
+    why_it_matters: str = ""
+    impact_category: Literal["low", "medium", "high"] = "low"
+    priority: int = 5
+    evidence_status: Literal["observed", "inferred", "missing", "unknown"] = "unknown"
+
+
 class AssessmentResult(BaseModel):
     assessment_id: str
     address: str
@@ -536,6 +546,10 @@ class AssessmentResult(BaseModel):
     weighted_contributions: Dict[str, WeightedContribution] = Field(default_factory=dict)
     submodel_explanations: Dict[str, str] = Field(default_factory=dict)
     property_findings: List[str] = Field(default_factory=list)
+    defensible_space_analysis: Dict[str, object] = Field(default_factory=dict)
+    top_near_structure_risk_drivers: List[str] = Field(default_factory=list)
+    prioritized_vegetation_actions: List[NearStructureAction] = Field(default_factory=list)
+    defensible_space_limitations_summary: List[str] = Field(default_factory=list)
     top_risk_drivers: List[str]
     top_protective_factors: List[str]
     explanation_summary: str
@@ -678,6 +692,10 @@ class ReportExport(BaseModel):
     location_summary: Dict[str, object]
     wildfire_risk_summary: Dict[str, object]
     insurance_readiness_summary: Dict[str, object]
+    defensible_space_analysis: Dict[str, object] = Field(default_factory=dict)
+    top_near_structure_risk_drivers: List[str] = Field(default_factory=list)
+    prioritized_vegetation_actions: List[NearStructureAction] = Field(default_factory=list)
+    defensible_space_limitations_summary: List[str] = Field(default_factory=list)
     top_risk_drivers: List[str]
     top_protective_factors: List[str]
     assumptions_confidence: Dict[str, object]

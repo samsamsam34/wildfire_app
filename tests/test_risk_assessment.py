@@ -168,6 +168,10 @@ def _assert_core_contract(body: dict) -> None:
         "factor_breakdown",
         "score_summaries",
         "property_findings",
+        "defensible_space_analysis",
+        "top_near_structure_risk_drivers",
+        "prioritized_vegetation_actions",
+        "defensible_space_limitations_summary",
         "top_risk_drivers",
         "top_protective_factors",
         "explanation_summary",
@@ -464,7 +468,12 @@ def test_property_findings_from_ring_metrics_surface_in_assessment(monkeypatch, 
     assert any("within 5 feet" in f.lower() for f in assessed["property_findings"])
     assert any("30 feet" in f.lower() for f in assessed["property_findings"])
     assert any("defensible space" in f.lower() for f in assessed["property_findings"])
-    assert any("dense vegetation close to the home" == d for d in assessed["top_risk_drivers"])
+    assert any(
+        d == "dense vegetation close to the home"
+        or "0-5 ft zone" in d.lower()
+        or "within 5 ft" in d.lower()
+        for d in assessed["top_risk_drivers"]
+    )
     assert assessed["property_level_context"]["footprint_used"] is True
     assert assessed["property_level_context"]["fallback_mode"] == "footprint"
     assert isinstance(assessed["property_level_context"]["ring_metrics"], dict)
@@ -479,6 +488,118 @@ def test_property_findings_fallback_empty_when_ring_data_missing(monkeypatch, tm
     assert assessed["property_level_context"]["footprint_used"] is False
     assert assessed["property_level_context"]["fallback_mode"] == "point_based"
     assert assessed["property_level_context"]["ring_metrics"] in (None, {})
+
+
+def test_defensible_space_analysis_present_with_footprint_ring_metrics(monkeypatch, tmp_path):
+    ring_metrics = {
+        "ring_0_5_ft": {"vegetation_density": 78.0, "coverage_pct": 82.0, "fuel_presence_proxy": 71.0},
+        "ring_5_30_ft": {"vegetation_density": 69.0, "coverage_pct": 74.0, "fuel_presence_proxy": 66.0},
+        "ring_30_100_ft": {"vegetation_density": 61.0, "coverage_pct": 63.0, "fuel_presence_proxy": 58.0},
+    }
+    _setup(monkeypatch, tmp_path, _ctx(env=58.0, wildland=62.0, historic=50.0, ring_metrics=ring_metrics))
+
+    assessed = _run(
+        _payload(
+            "312 Defensible Analysis Ave",
+            {"roof_type": "class a", "vent_type": "ember-resistant", "defensible_space_ft": 16},
+        )
+    )
+    analysis = assessed["defensible_space_analysis"]
+    assert analysis["basis_geometry_type"] == "building_footprint"
+    assert analysis["data_quality"]["analysis_status"] in {"complete", "partial"}
+    assert analysis["zones"]["zone_0_5_ft"]["vegetation_density"] == pytest.approx(78.0)
+    assert len(assessed["top_near_structure_risk_drivers"]) >= 1
+    assert isinstance(assessed["prioritized_vegetation_actions"], list)
+    assert any(action.get("target_zone") in {"0-5 ft", "5-30 ft", "30-100 ft"} for action in assessed["prioritized_vegetation_actions"])
+
+
+def test_point_proxy_ring_analysis_runs_without_footprint_and_reduces_confidence(monkeypatch, tmp_path):
+    proxy_rings = {
+        "zone_0_5_ft": {"vegetation_density": 72.0, "coverage_pct": 76.0, "fuel_presence_proxy": 68.0},
+        "zone_5_30_ft": {"vegetation_density": 66.0, "coverage_pct": 69.0, "fuel_presence_proxy": 62.0},
+        "zone_30_100_ft": {"vegetation_density": 60.0, "coverage_pct": 61.0, "fuel_presence_proxy": 57.0},
+    }
+    proxy_ctx = _ctx(env=56.0, wildland=60.0, historic=47.0, ring_metrics=proxy_rings)
+    proxy_ctx.property_level_context.update(
+        {
+            "footprint_used": False,
+            "footprint_found": False,
+            "footprint_status": "not_found",
+            "fallback_mode": "point_based",
+            "ring_metrics": proxy_rings,
+        }
+    )
+    _setup(monkeypatch, tmp_path, proxy_ctx)
+    proxy_assessed = _run(_payload("313 Point Proxy Ln", {"roof_type": "class a", "vent_type": "ember-resistant"}))
+
+    observed_ctx = _ctx(env=56.0, wildland=60.0, historic=47.0, ring_metrics=proxy_rings)
+    observed_ctx.property_level_context.update({"footprint_used": True, "footprint_status": "used", "fallback_mode": "footprint"})
+    _setup(monkeypatch, tmp_path, observed_ctx)
+    observed_assessed = _run(_payload("313 Point Proxy Ln", {"roof_type": "class a", "vent_type": "ember-resistant"}))
+
+    proxy_analysis = proxy_assessed["defensible_space_analysis"]
+    assert proxy_analysis["basis_geometry_type"] == "point_proxy"
+    assert proxy_analysis["basis_quality"] in {"derived_proxy", "unavailable"}
+    assert any("approximated" in s.lower() for s in proxy_assessed["defensible_space_limitations_summary"])
+    assert proxy_assessed["confidence_score"] < observed_assessed["confidence_score"]
+
+
+def test_partial_or_missing_zone_metrics_are_non_blocking_and_reported(monkeypatch, tmp_path):
+    partial_rings = {
+        "zone_0_5_ft": {"vegetation_density": 64.0, "coverage_pct": 68.0, "fuel_presence_proxy": 60.0},
+        "zone_5_30_ft": {"vegetation_density": None, "coverage_pct": None, "fuel_presence_proxy": None},
+        "zone_30_100_ft": {"vegetation_density": None, "coverage_pct": None, "fuel_presence_proxy": None},
+    }
+    partial_ctx = _ctx(env=50.0, wildland=55.0, historic=45.0, ring_metrics=partial_rings)
+    partial_ctx.property_level_context.update({"footprint_used": False, "fallback_mode": "point_based", "ring_metrics": partial_rings})
+    _setup(monkeypatch, tmp_path, partial_ctx)
+    assessed = _run(_payload("314 Partial Ring Dr", {"roof_type": "composite"}))
+    assert assessed["wildfire_risk_score_available"] is True
+    analysis = assessed["defensible_space_analysis"]
+    assert analysis["data_quality"]["analysis_status"] == "partial"
+    assert analysis["data_quality"]["unavailable_zone_count"] >= 1
+
+    missing_ctx = _ctx(env=49.0, wildland=53.0, historic=44.0, ring_metrics={})
+    _setup(monkeypatch, tmp_path, missing_ctx)
+    missing = _run(_payload("315 Missing Veg Dr", {"roof_type": "composite"}))
+    assert missing["wildfire_risk_score_available"] is True
+    assert missing["defensible_space_analysis"]["data_quality"]["analysis_status"] == "unavailable"
+    assert missing["prioritized_vegetation_actions"] == []
+
+
+def test_wildfire_data_builds_point_proxy_ring_metrics_when_footprint_unavailable(monkeypatch):
+    client = WildfireDataClient()
+
+    class _NoFootprint:
+        found = False
+        footprint = None
+        source = "fixture"
+        confidence = 0.0
+        assumptions = ["No nearby building footprint found for this location."]
+
+    monkeypatch.setattr(client.footprints, "get_building_footprint", lambda _lat, _lon: _NoFootprint())
+    proxy = {
+        "zone_0_5_ft": {"vegetation_density": 70.0, "coverage_pct": 74.0, "fuel_presence_proxy": 65.0},
+        "zone_5_30_ft": {"vegetation_density": 62.0, "coverage_pct": 66.0, "fuel_presence_proxy": 58.0},
+        "zone_30_100_ft": {"vegetation_density": 55.0, "coverage_pct": 60.0, "fuel_presence_proxy": 50.0},
+        "ring_0_5_ft": {"vegetation_density": 70.0, "coverage_pct": 74.0, "fuel_presence_proxy": 65.0},
+        "ring_5_30_ft": {"vegetation_density": 62.0, "coverage_pct": 66.0, "fuel_presence_proxy": 58.0},
+        "ring_30_100_ft": {"vegetation_density": 55.0, "coverage_pct": 60.0, "fuel_presence_proxy": 50.0},
+    }
+    monkeypatch.setattr(client, "_build_point_proxy_ring_metrics", lambda **_kwargs: proxy)
+
+    ring_context, assumptions, sources = client._compute_structure_ring_metrics(
+        lat=46.87,
+        lon=-113.99,
+        canopy_path="",
+        fuel_path="",
+    )
+    assert ring_context["footprint_used"] is False
+    assert ring_context["fallback_mode"] == "point_based"
+    assert isinstance(ring_context["ring_metrics"], dict)
+    assert ring_context["ring_metrics"]["zone_0_5_ft"]["vegetation_density"] == pytest.approx(70.0)
+    assert any("point-based annulus" in note.lower() for note in assumptions)
+    assert any("point-proxy ring vegetation summaries" in s.lower() for s in sources)
 
 
 def test_score_decomposition_and_blended_wildfire_score(monkeypatch, tmp_path):

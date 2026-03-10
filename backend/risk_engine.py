@@ -114,6 +114,13 @@ class RiskEngine:
         ring_0_5_density = ring_density("ring_0_5_ft")
         ring_5_30_density = ring_density("ring_5_30_ft")
         ring_30_100_density = ring_density("ring_30_100_ft")
+        nearest_vegetation_distance_ft = None
+        try:
+            raw_distance = (context.property_level_context or {}).get("nearest_vegetation_distance_ft")
+            if raw_distance is not None:
+                nearest_vegetation_distance_ft = float(raw_distance)
+        except (TypeError, ValueError, AttributeError):
+            nearest_vegetation_distance_ft = None
 
         available_ring_densities = [
             density
@@ -238,6 +245,7 @@ class RiskEngine:
                 "defensible_space_ft": defensible_ft,
                 "ring_0_5_ft_vegetation_density": ring_0_5_density,
                 "ring_5_30_ft_vegetation_density": ring_5_30_density,
+                "nearest_vegetation_distance_ft": nearest_vegetation_distance_ft,
             },
             assumptions=flame_assumptions + context_assumptions,
         )
@@ -383,6 +391,7 @@ class RiskEngine:
                 "fuel_index": fuel_index,
                 "ring_0_5_ft_vegetation_density": ring_0_5_density,
                 "ring_5_30_ft_vegetation_density": ring_5_30_density,
+                "nearest_vegetation_distance_ft": nearest_vegetation_distance_ft,
             },
             assumptions=defensible_assumptions + context_assumptions,
         )
@@ -464,10 +473,14 @@ class RiskEngine:
 
         defensible_inputs = risk.submodel_scores.get("defensible_space_risk", SubmodelResult(0.0, "", {})).key_inputs
         fuel_inputs = risk.submodel_scores.get("fuel_proximity_risk", SubmodelResult(0.0, "", {})).key_inputs
+        flame_inputs = risk.submodel_scores.get("flame_contact_risk", SubmodelResult(0.0, "", {})).key_inputs
 
         zone_0_5 = _to_float(defensible_inputs.get("ring_0_5_ft_vegetation_density"))
         zone_5_30 = _to_float(defensible_inputs.get("ring_5_30_ft_vegetation_density"))
         zone_30_100 = _to_float(fuel_inputs.get("ring_30_100_ft_vegetation_density"))
+        nearest_vegetation_distance_ft = _to_float(
+            defensible_inputs.get("nearest_vegetation_distance_ft") or flame_inputs.get("nearest_vegetation_distance_ft")
+        )
 
         ring_cfg = self.config.vulnerability_ring_penalties or {}
 
@@ -489,6 +502,29 @@ class RiskEngine:
         ring_penalty += _penalty("zone_0_5_ft", zone_0_5, 55.0, 0.18)
         ring_penalty += _penalty("zone_5_30_ft", zone_5_30, 60.0, 0.12)
         ring_penalty += _penalty("zone_30_100_ft", zone_30_100, 65.0, 0.08)
+
+        distance_cfg = ring_cfg.get("nearest_vegetation_distance_ft") if isinstance(ring_cfg.get("nearest_vegetation_distance_ft"), dict) else {}
+        try:
+            critical_max_ft = float(distance_cfg.get("critical_max_ft", 5.0))
+        except (TypeError, ValueError, AttributeError):
+            critical_max_ft = 5.0
+        try:
+            watch_max_ft = float(distance_cfg.get("watch_max_ft", 15.0))
+        except (TypeError, ValueError, AttributeError):
+            watch_max_ft = 15.0
+        try:
+            critical_penalty = float(distance_cfg.get("critical_penalty", 6.0))
+        except (TypeError, ValueError, AttributeError):
+            critical_penalty = 6.0
+        try:
+            watch_penalty = float(distance_cfg.get("watch_penalty", 3.0))
+        except (TypeError, ValueError, AttributeError):
+            watch_penalty = 3.0
+        if nearest_vegetation_distance_ft is not None:
+            if nearest_vegetation_distance_ft <= critical_max_ft:
+                ring_penalty += critical_penalty
+            elif nearest_vegetation_distance_ft <= watch_max_ft:
+                ring_penalty += watch_penalty
 
         return round(max(0.0, min(100.0, base + ring_penalty)), 1)
 
@@ -592,6 +628,61 @@ class RiskEngine:
             bonus += 1.0
 
         fuel_score = risk.submodel_scores["fuel_proximity_risk"].score
+        defensible_inputs = risk.submodel_scores.get("defensible_space_risk", SubmodelResult(0.0, "", {})).key_inputs
+        zone_0_5_density = defensible_inputs.get("ring_0_5_ft_vegetation_density")
+        zone_5_30_density = defensible_inputs.get("ring_5_30_ft_vegetation_density")
+        try:
+            zone_0_5_density = float(zone_0_5_density) if zone_0_5_density is not None else None
+        except (TypeError, ValueError):
+            zone_0_5_density = None
+        try:
+            zone_5_30_density = float(zone_5_30_density) if zone_5_30_density is not None else None
+        except (TypeError, ValueError):
+            zone_5_30_density = None
+
+        if zone_0_5_density is not None and zone_0_5_density >= _threshold("zone_0_5_fail_density", 60.0):
+            factors.append(
+                {
+                    "name": "immediate_zone_0_5_ft",
+                    "status": "fail",
+                    "score_impact": -6.0,
+                    "detail": "Dense vegetation in the 0-5 ft zone is a direct home-ignition concern.",
+                }
+            )
+            add_penalty("immediate_zone_0_5_ft", 6.0)
+            blockers.append("Dense vegetation within 5 ft of structure")
+        elif zone_0_5_density is not None and zone_0_5_density >= _threshold("zone_0_5_watch_density", 45.0):
+            factors.append(
+                {
+                    "name": "immediate_zone_0_5_ft",
+                    "status": "watch",
+                    "score_impact": -3.0,
+                    "detail": "Some combustible vegetation is present in the 0-5 ft zone.",
+                }
+            )
+            add_penalty("immediate_zone_0_5_ft", 3.0)
+
+        if zone_5_30_density is not None and zone_5_30_density >= _threshold("zone_5_30_fail_density", 70.0):
+            factors.append(
+                {
+                    "name": "intermediate_zone_5_30_ft",
+                    "status": "fail",
+                    "score_impact": -5.0,
+                    "detail": "Vegetation pressure in the 5-30 ft zone may sustain flame spread to the structure.",
+                }
+            )
+            add_penalty("intermediate_zone_5_30_ft", 5.0)
+        elif zone_5_30_density is not None and zone_5_30_density >= _threshold("zone_5_30_watch_density", 55.0):
+            factors.append(
+                {
+                    "name": "intermediate_zone_5_30_ft",
+                    "status": "watch",
+                    "score_impact": -2.5,
+                    "detail": "Moderate vegetation pressure in the 5-30 ft zone should be mitigated.",
+                }
+            )
+            add_penalty("intermediate_zone_5_30_ft", 2.5)
+
         if fuel_score >= _threshold("adjacent_fuel_fail_score", 75.0):
             factors.append({"name": "adjacent_fuel_pressure", "status": "fail", "score_impact": -p["fuel_fail"], "detail": "Very high adjacent fuel pressure reduces readiness."})
             add_penalty("adjacent_fuel_pressure", p["fuel_fail"])

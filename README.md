@@ -23,6 +23,11 @@ Runtime scoring reads prepared local data. Large GIS download/prep is handled of
 - Computes insurance readiness through a separate rules path with blockers and penalties.
 - Supports homeowner inputs (`roof_type`, `vent_type`, `defensible_space_ft`, etc.), reassessment, and what-if simulation.
 - Uses structure-based ring metrics (`0-5 ft`, `5-30 ft`, `30-100 ft`, `100-300 ft`) when footprint data is available.
+- Adds defensible-space zone analysis for near-structure vegetation/fuel context:
+  - `defensible_space_analysis` (zone metrics, basis geometry, quality/limitations, mitigation flags)
+  - `top_near_structure_risk_drivers`
+  - `prioritized_vegetation_actions`
+  - `defensible_space_limitations_summary`
 - Enriches context from open datasets when configured:
   - USFS WHP for hazard/burn context
   - MTBS perimeter/severity context for historical fire exposure
@@ -135,6 +140,7 @@ Key response blocks:
 Region resolution fields:
 - Assessment responses include `region_resolution` with `coverage_available`, `resolved_region_id`, `reason`, and `recommended_action`.
 - Uncovered locations can return `region_not_ready` details (HTTP 409 when prepared coverage is required) or `insufficient_data` with `region_resolution.reason=no_prepared_region_for_location`.
+- When footprint geometry is unavailable, defensible-space zone metrics can still run in point-proxy mode, and responses include explicit limitations.
 
 ## Local Development / Setup
 
@@ -464,6 +470,15 @@ Fallback hierarchy is deterministic and explicit:
 - derived proxy (for example ring-based defensible-space estimate)
 - conservative or neutral default
 - component exclusion with transparent note if evidence is still insufficient
+
+Near-structure defensible-space behavior:
+- Preferred geometry basis: building footprint rings (`0-5 ft`, `5-30 ft`, `30-100 ft`, `100-300 ft`).
+- Fallback geometry basis: point-proxy annulus sampling when footprint geometry is unavailable.
+- New response fields:
+  - `defensible_space_analysis` (zone metrics, basis geometry, mitigation flags, quality)
+  - `top_near_structure_risk_drivers`
+  - `prioritized_vegetation_actions`
+  - `defensible_space_limitations_summary`
 
 Response transparency is preserved in existing structures:
 - `score_*_available` flags

@@ -352,9 +352,11 @@ class WildfireDataClient:
 
     def _summarize_ring_fuel_presence(self, ring_geometry: Any, fuel_path: str) -> float | None:
         fuel_vals = self._polygon_raster_values(fuel_path, ring_geometry)
+        return self._fuel_presence_proxy_from_values(fuel_vals)
+
+    def _fuel_presence_proxy_from_values(self, fuel_vals: list[float]) -> float | None:
         if not fuel_vals:
             return None
-
         wildland_cells = 0
         for raw in fuel_vals:
             code = int(round(raw))
@@ -362,6 +364,121 @@ class WildfireDataClient:
                 wildland_cells += 1
 
         return round((wildland_cells / len(fuel_vals)) * 100.0, 1)
+
+    def _sample_annulus(
+        self,
+        path: str,
+        lat: float,
+        lon: float,
+        *,
+        inner_radius_m: float,
+        outer_radius_m: float,
+        radial_step_m: float = 12.0,
+        angular_step_m: float = 12.0,
+    ) -> list[float]:
+        if not (rasterio and self._file_exists(path)):
+            return []
+        if outer_radius_m <= 0 or outer_radius_m <= inner_radius_m:
+            return []
+
+        values: list[float] = []
+        radial = max(inner_radius_m + radial_step_m, inner_radius_m)
+        while radial <= outer_radius_m + 1e-6:
+            points = max(12, int(2 * math.pi * radial / max(1.0, angular_step_m)))
+            for i in range(points):
+                theta = 2.0 * math.pi * i / points
+                d_lat = self._meters_to_lat_deg(radial * math.sin(theta))
+                d_lon = self._meters_to_lon_deg(radial * math.cos(theta), lat)
+                sample = self._sample_raster_point(path, lat + d_lat, lon + d_lon)
+                if sample is not None:
+                    values.append(sample)
+            radial += radial_step_m
+        return values
+
+    def _build_point_proxy_ring_metrics(
+        self,
+        *,
+        lat: float,
+        lon: float,
+        canopy_path: str,
+        fuel_path: str,
+    ) -> dict[str, dict[str, float | None]]:
+        zone_bounds_ft = {
+            "ring_0_5_ft": (0.0, 5.0),
+            "ring_5_30_ft": (5.0, 30.0),
+            "ring_30_100_ft": (30.0, 100.0),
+            "ring_100_300_ft": (100.0, 300.0),
+        }
+        zone_aliases = {
+            "ring_0_5_ft": "zone_0_5_ft",
+            "ring_5_30_ft": "zone_5_30_ft",
+            "ring_30_100_ft": "zone_30_100_ft",
+            "ring_100_300_ft": "zone_100_300_ft",
+        }
+        metrics: dict[str, dict[str, float | None]] = {}
+        for ring_key, (inner_ft, outer_ft) in zone_bounds_ft.items():
+            inner_m = inner_ft * 0.3048
+            outer_m = outer_ft * 0.3048
+            canopy_vals = self._sample_annulus(
+                canopy_path,
+                lat,
+                lon,
+                inner_radius_m=inner_m,
+                outer_radius_m=outer_m,
+            )
+            fuel_vals = self._sample_annulus(
+                fuel_path,
+                lat,
+                lon,
+                inner_radius_m=inner_m,
+                outer_radius_m=outer_m,
+            )
+            canopy_stats: dict[str, float] | None = None
+            if canopy_vals:
+                canopy_mean = float(sum(canopy_vals) / len(canopy_vals))
+                canopy_max = float(max(canopy_vals))
+                coverage_pct = float(sum(1 for v in canopy_vals if v >= 20.0) / len(canopy_vals) * 100.0)
+                canopy_stats = {
+                    "canopy_mean": round(canopy_mean, 1),
+                    "canopy_max": round(canopy_max, 1),
+                    "coverage_pct": round(coverage_pct, 1),
+                    "vegetation_density": round(float(self._to_index(canopy_mean, 0.0, 100.0)), 1),
+                }
+
+            fuel_presence = self._fuel_presence_proxy_from_values(fuel_vals)
+            if canopy_stats is None and fuel_presence is None:
+                zone = {
+                    "canopy_mean": None,
+                    "canopy_max": None,
+                    "vegetation_density": None,
+                    "coverage_pct": None,
+                    "fuel_presence_proxy": None,
+                    "basis": "point_proxy",
+                }
+            elif canopy_stats is None:
+                zone = {
+                    "canopy_mean": None,
+                    "canopy_max": None,
+                    "vegetation_density": fuel_presence,
+                    "coverage_pct": fuel_presence,
+                    "fuel_presence_proxy": fuel_presence,
+                    "basis": "point_proxy",
+                }
+            else:
+                vegetation_density = canopy_stats["vegetation_density"]
+                if fuel_presence is not None:
+                    vegetation_density = round((vegetation_density + fuel_presence) / 2.0, 1)
+                zone = {
+                    "canopy_mean": canopy_stats["canopy_mean"],
+                    "canopy_max": canopy_stats["canopy_max"],
+                    "vegetation_density": vegetation_density,
+                    "coverage_pct": canopy_stats["coverage_pct"],
+                    "fuel_presence_proxy": fuel_presence,
+                    "basis": "point_proxy",
+                }
+            metrics[ring_key] = zone
+            metrics[zone_aliases[ring_key]] = dict(zone)
+        return metrics
 
     def _compute_structure_ring_metrics(
         self,
@@ -401,6 +518,29 @@ class WildfireDataClient:
 
         if not result.found or result.footprint is None:
             assumptions.append("Building footprint analysis unavailable; using point-based vegetation context.")
+            point_proxy_metrics = self._build_point_proxy_ring_metrics(
+                lat=lat,
+                lon=lon,
+                canopy_path=canopy_path,
+                fuel_path=fuel_path,
+            )
+            nearest_vegetation_distance_ft: float | None = None
+            for ring_key, approx_ft in [
+                ("ring_0_5_ft", 3.0),
+                ("ring_5_30_ft", 18.0),
+                ("ring_30_100_ft", 65.0),
+                ("ring_100_300_ft", 180.0),
+            ]:
+                density = (point_proxy_metrics.get(ring_key) or {}).get("vegetation_density")
+                if density is not None and float(density) >= 40.0:
+                    nearest_vegetation_distance_ft = approx_ft
+                    break
+            if any(
+                (point_proxy_metrics.get(zone) or {}).get("vegetation_density") is not None
+                for zone in ("ring_0_5_ft", "ring_5_30_ft", "ring_30_100_ft")
+            ):
+                assumptions.append("Structure ring metrics were approximated from point-based annulus sampling.")
+                sources.append("Point-proxy ring vegetation summaries")
             status = "not_found"
             assumptions_blob = " ".join(result.assumptions).lower()
             if "not configured" in assumptions_blob or "missing" in assumptions_blob:
@@ -412,8 +552,8 @@ class WildfireDataClient:
                 "footprint_source": result.source,
                 "footprint_confidence": result.confidence,
                 "fallback_mode": "point_based",
-                "ring_metrics": None,
-                "nearest_vegetation_distance_ft": None,
+                "ring_metrics": point_proxy_metrics if point_proxy_metrics else None,
+                "nearest_vegetation_distance_ft": nearest_vegetation_distance_ft,
                 "neighboring_structure_metrics": None,
             }, assumptions, sources
 

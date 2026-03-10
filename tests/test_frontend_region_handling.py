@@ -49,3 +49,11 @@ def test_frontend_renders_geocode_failure_debug_state_in_dev_mode() -> None:
     assert "function renderGeocodeFailureState(detail, submittedAddress)" in html
     assert 'detail.error === "geocoding_failed"' in html
     assert "Region: unresolved" in html
+
+
+def test_frontend_surfaces_defensible_space_zone_outputs() -> None:
+    html = _frontend_html()
+    assert "top_near_structure_risk_drivers" in html
+    assert "prioritized_vegetation_actions" in html
+    assert "defensible_space_analysis" in html
+    assert "defensible_space_limitations_summary" in html

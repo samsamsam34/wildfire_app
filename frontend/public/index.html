@@ -640,7 +640,14 @@
 
         document.getElementById("summaryText").textContent = data.explanation_summary || "No summary available yet.";
         const propertyFindings = getPropertyFindings(data);
-        document.getElementById("propertyFindings").innerHTML = propertyFindings
+        const nearStructureDrivers = Array.isArray(data?.top_near_structure_risk_drivers)
+          ? data.top_near_structure_risk_drivers
+          : [];
+        const combinedFindings = propertyFindings
+          .concat(nearStructureDrivers)
+          .filter((v, i, arr) => arr.indexOf(v) === i)
+          .slice(0, 4);
+        document.getElementById("propertyFindings").innerHTML = combinedFindings
           .map(v => `<li>${v}</li>`)
           .join("") || "<li class='muted'>No structure-specific findings available for this assessment.</li>";
 
@@ -650,10 +657,20 @@
           .join("") || "<li class='muted'>No factors listed.</li>";
         document.getElementById("protective").innerHTML = (data.top_protective_factors || []).slice(0, 3).map(v => `<li>${v}</li>`).join("") || "<li class='muted'>No factors listed.</li>";
 
-        document.getElementById("nextStepsText").textContent = buildNextStepsHint(propertyFindings);
+        document.getElementById("nextStepsText").textContent = buildNextStepsHint(combinedFindings);
 
-        document.getElementById("mitigations").innerHTML = (data.mitigation_plan || []).slice(0, 3)
-          .map(m => `<li><strong>${m.title}</strong>: ${m.reason}</li>`)
+        const mitigationRows = (data.mitigation_plan || []).slice(0, 3)
+          .map(m => `<li><strong>${m.title}</strong>: ${m.reason}</li>`);
+        const prioritizedVegetationActions = Array.isArray(data?.prioritized_vegetation_actions)
+          ? data.prioritized_vegetation_actions
+          : [];
+        prioritizedVegetationActions.slice(0, 2).forEach(action => {
+          const zone = action?.target_zone ? ` (${action.target_zone})` : "";
+          mitigationRows.push(
+            `<li><strong>${action?.title || "Vegetation action"}${zone}</strong>: ${action?.explanation || action?.why_it_matters || ""}</li>`
+          );
+        });
+        document.getElementById("mitigations").innerHTML = mitigationRows
           .join("") || "<li class='muted'>No recommendations yet.</li>";
 
         const confidenceRaw = Number(data?.confidence_score);
@@ -691,7 +708,15 @@
         } else {
           document.getElementById("readinessText").textContent = "Insurance readiness score: not computed (insufficient evidence)";
         }
-        document.getElementById("propertyContextText").textContent = buildPropertyContextSummary(data, propertyFindings);
+        const dsSummary = data?.defensible_space_analysis?.summary;
+        const dsLimitations = Array.isArray(data?.defensible_space_limitations_summary)
+          ? data.defensible_space_limitations_summary
+          : [];
+        const baseContext = buildPropertyContextSummary(data, combinedFindings);
+        const contextParts = [baseContext];
+        if (dsSummary) contextParts.push(dsSummary);
+        if (dsLimitations.length > 0) contextParts.push(dsLimitations[0]);
+        document.getElementById("propertyContextText").textContent = contextParts.filter(Boolean).join(" ");
         const regionResolutionEl = document.getElementById("regionResolutionText");
         const geocodeDebugEl = document.getElementById("geocodeDebugText");
         if (regionResolutionEl) {
