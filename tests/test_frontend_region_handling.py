@@ -57,3 +57,20 @@ def test_frontend_surfaces_defensible_space_zone_outputs() -> None:
     assert "prioritized_vegetation_actions" in html
     assert "defensible_space_analysis" in html
     assert "defensible_space_limitations_summary" in html
+
+
+def test_frontend_includes_assessment_map_panel_and_layer_controls() -> None:
+    html = _frontend_html()
+    assert 'id="assessmentMap"' in html
+    assert 'id="mapLayerToggles"' in html
+    assert 'id="mapLimitationsText"' in html
+    assert "function renderAssessmentMap(assessmentId)" in html
+    assert "/report/${assessmentId}/map" in html
+    assert "defensible_space_rings" in html
+
+
+def test_frontend_map_degrades_gracefully_for_uncovered_or_geocode_failure() -> None:
+    html = _frontend_html()
+    assert "clearMapLayers();" in html
+    assert "setMapStatus(\"Map unavailable until this location has prepared-region coverage.\");" in html
+    assert "setMapStatus(\"Map unavailable until geocoding succeeds.\");" in html

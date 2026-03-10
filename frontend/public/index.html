@@ -4,6 +4,10 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>WildfireRisk Advisor</title>
+    <link
+      rel="stylesheet"
+      href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    />
     <style>
       :root {
         --bg: #f6f3ec;
@@ -70,6 +74,32 @@
       button.secondary { background: #374151; }
       .actions { display: flex; flex-wrap: wrap; gap: 0.6rem; margin-top: 0.8rem; }
       .actions button { width: auto; padding-inline: 1rem; }
+      #assessmentMap {
+        height: 360px;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        overflow: hidden;
+        margin-top: 0.6rem;
+      }
+      .map-toggles {
+        margin-top: 0.7rem;
+        display: grid;
+        gap: 0.4rem;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      }
+      .map-toggle {
+        display: flex;
+        align-items: flex-start;
+        gap: 0.45rem;
+        font-size: 0.86rem;
+        color: var(--text);
+      }
+      .map-toggle input { width: auto; margin-top: 0.15rem; }
+      .map-empty {
+        margin-top: 0.6rem;
+        color: var(--muted);
+        font-size: 0.9rem;
+      }
       .score { font-size: 2rem; font-weight: 700; line-height: 1; margin: 0.25rem 0; }
       .score.good { color: var(--good); }
       .score.warn { color: var(--warn); }
@@ -233,7 +263,16 @@
       </section>
 
       <section class="card">
-        <h2>6. See How Upgrades Could Help</h2>
+        <h2>6. Property Map</h2>
+        <p class="muted">See your home in geographic context with defensible-space zones and nearby wildfire layers.</p>
+        <div id="assessmentMap"></div>
+        <p id="mapEmptyText" class="map-empty">Run an assessment to load map layers.</p>
+        <div id="mapLayerToggles" class="map-toggles"></div>
+        <p id="mapLimitationsText" class="muted" style="margin-top:0.5rem;">Map limitations will appear here when needed.</p>
+      </section>
+
+      <section class="card">
+        <h2>7. See How Upgrades Could Help</h2>
         <p>Try a few changes to see how they could lower risk.</p>
 
         <div class="row" style="margin-top:0.6rem;">
@@ -330,7 +369,7 @@
       </section>
 
       <section class="card">
-        <h2>7. Report</h2>
+        <h2>8. Report</h2>
         <p class="muted">Optional: open a printable report or exported JSON.</p>
         <div class="actions">
           <button id="openReportBtn" type="button" class="secondary">Open Printable Report</button>
@@ -371,6 +410,7 @@
       </section>
     </div>
 
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <script>
       const apiBase = (window.WILDFIRE_API_BASE || "http://127.0.0.1:8000").replace(/\/$/, "");
       const isDebugMode = !!window.WILDFIRE_DEBUG_MODE
@@ -387,6 +427,213 @@
       apiKeyInput.value = storedApiKey;
 
       let latestAssessment = null;
+      let assessmentMap = null;
+      let mapBaseLayer = null;
+      let mapLayerInstances = {};
+
+      const mapLayerStyle = {
+        building_footprint: {
+          color: "#1d4ed8",
+          weight: 2,
+          fillColor: "#60a5fa",
+          fillOpacity: 0.24,
+        },
+        defensible_space_rings: (feature) => {
+          const zone = feature?.properties?.zone_key;
+          const palette = {
+            zone_0_5_ft: { color: "#b91c1c", fillColor: "#ef4444", fillOpacity: 0.16 },
+            zone_5_30_ft: { color: "#d97706", fillColor: "#f59e0b", fillOpacity: 0.12 },
+            zone_30_100_ft: { color: "#15803d", fillColor: "#22c55e", fillOpacity: 0.08 },
+            zone_100_300_ft: { color: "#0f766e", fillColor: "#2dd4bf", fillOpacity: 0.06 },
+          };
+          return {
+            weight: 2,
+            ...palette[zone],
+            color: (palette[zone] || {}).color || "#374151",
+            fillColor: (palette[zone] || {}).fillColor || "#9ca3af",
+            fillOpacity: (palette[zone] || {}).fillOpacity ?? 0.07,
+          };
+        },
+        fire_perimeters: {
+          color: "#7c2d12",
+          weight: 2,
+          fillColor: "#f97316",
+          fillOpacity: 0.1,
+        },
+        nearby_structures: {
+          color: "#475569",
+          weight: 1,
+          fillColor: "#94a3b8",
+          fillOpacity: 0.06,
+        },
+      };
+
+      function ensureMap(center) {
+        if (!window.L) return null;
+        if (!assessmentMap) {
+          assessmentMap = L.map("assessmentMap", { zoomControl: true });
+          mapBaseLayer = L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+            attribution: "&copy; OpenStreetMap contributors",
+            maxZoom: 19,
+          });
+          mapBaseLayer.addTo(assessmentMap);
+        }
+        if (center && Number.isFinite(center.latitude) && Number.isFinite(center.longitude)) {
+          assessmentMap.setView([center.latitude, center.longitude], 16);
+        }
+        return assessmentMap;
+      }
+
+      function clearMapLayers() {
+        if (!assessmentMap) return;
+        Object.values(mapLayerInstances).forEach(layer => {
+          if (layer && assessmentMap.hasLayer(layer)) {
+            assessmentMap.removeLayer(layer);
+          }
+        });
+        mapLayerInstances = {};
+      }
+
+      function setMapStatus(message) {
+        const el = document.getElementById("mapEmptyText");
+        if (!el) return;
+        el.textContent = message || "";
+      }
+
+      function setMapLimitations(items) {
+        const el = document.getElementById("mapLimitationsText");
+        if (!el) return;
+        if (!Array.isArray(items) || items.length === 0) {
+          el.textContent = "Map layers are based on available prepared-region data for this location.";
+          return;
+        }
+        el.textContent = items.slice(0, 4).join(" ");
+      }
+
+      function renderMapLayerToggles(layerDefs) {
+        const root = document.getElementById("mapLayerToggles");
+        if (!root) return;
+        root.innerHTML = "";
+        (layerDefs || []).forEach(layer => {
+          const row = document.createElement("label");
+          row.className = "map-toggle";
+
+          const input = document.createElement("input");
+          input.type = "checkbox";
+          input.checked = !!layer.default_visible && !!layer.available;
+          input.disabled = !layer.available;
+          input.dataset.layerKey = layer.layer_key;
+
+          const text = document.createElement("span");
+          const unavailable = !layer.available && layer.reason_unavailable
+            ? ` (${layer.reason_unavailable})`
+            : "";
+          text.innerHTML = `<strong>${layer.display_name}</strong><br>${layer.description || ""}${unavailable}`;
+
+          input.addEventListener("change", () => {
+            const layerKey = input.dataset.layerKey;
+            const mapLayer = mapLayerInstances[layerKey];
+            if (!assessmentMap || !mapLayer) return;
+            if (input.checked) {
+              mapLayer.addTo(assessmentMap);
+            } else if (assessmentMap.hasLayer(mapLayer)) {
+              assessmentMap.removeLayer(mapLayer);
+            }
+          });
+
+          row.appendChild(input);
+          row.appendChild(text);
+          root.appendChild(row);
+        });
+      }
+
+      function geoJsonStyle(layerKey) {
+        const style = mapLayerStyle[layerKey];
+        if (!style) return { color: "#374151", weight: 2, fillOpacity: 0.08 };
+        return style;
+      }
+
+      function buildLeafletLayer(layerKey, fc) {
+        if (!window.L || !fc || !Array.isArray(fc.features)) return null;
+        if (layerKey === "property_point") {
+          return L.geoJSON(fc, {
+            pointToLayer: (_feature, latlng) => L.circleMarker(latlng, {
+              radius: 7,
+              color: "#b91c1c",
+              weight: 2,
+              fillColor: "#ef4444",
+              fillOpacity: 0.75,
+            }),
+          });
+        }
+        return L.geoJSON(fc, {
+          style: (feature) => {
+            const styleDef = geoJsonStyle(layerKey);
+            return typeof styleDef === "function" ? styleDef(feature) : styleDef;
+          },
+        });
+      }
+
+      async function fetchAssessmentMap(assessmentId) {
+        return api(`/report/${assessmentId}/map`);
+      }
+
+      async function renderAssessmentMap(assessmentId) {
+        if (!assessmentId) {
+          setMapStatus("Run an assessment to load map layers.");
+          return;
+        }
+        if (!window.L) {
+          setMapStatus("Map library unavailable in this browser context.");
+          setMapLimitations(["Leaflet could not be loaded; map rendering is unavailable."]);
+          return;
+        }
+
+        try {
+          setMapStatus("Loading map layers...");
+          const payload = await fetchAssessmentMap(assessmentId);
+          const map = ensureMap(payload.center || {});
+          if (!map) {
+            setMapStatus("Map unavailable.");
+            return;
+          }
+
+          clearMapLayers();
+          const bounds = [];
+          const data = payload.data || {};
+          (payload.layers || []).forEach(layer => {
+            const fc = data[layer.layer_key];
+            const leafletLayer = layer.available ? buildLeafletLayer(layer.layer_key, fc) : null;
+            if (!leafletLayer) return;
+            mapLayerInstances[layer.layer_key] = leafletLayer;
+            if (layer.default_visible) {
+              leafletLayer.addTo(map);
+            }
+            try {
+              const lb = leafletLayer.getBounds && leafletLayer.getBounds();
+              if (lb && lb.isValid && lb.isValid()) bounds.push(lb);
+            } catch (_err) {
+              // ignore bounds errors for malformed/sparse features
+            }
+          });
+
+          renderMapLayerToggles(payload.layers || []);
+          setMapLimitations(payload.limitations || []);
+          setMapStatus("Map loaded.");
+
+          if (bounds.length > 0) {
+            let merged = bounds[0];
+            for (let i = 1; i < bounds.length; i++) merged = merged.extend(bounds[i]);
+            map.fitBounds(merged.pad(0.15));
+          } else if (payload.center) {
+            map.setView([payload.center.latitude, payload.center.longitude], 16);
+          }
+        } catch (err) {
+          console.error("Map payload failed:", err);
+          setMapStatus("Map could not be loaded for this assessment.");
+          setMapLimitations([`Map error: ${err.message || "unknown error"}`]);
+        }
+      }
 
       function parseCSV(text) {
         return (text || "").split(",").map(v => v.trim()).filter(Boolean);
@@ -746,6 +993,7 @@
             geocodeDebugEl.style.display = "none";
           }
         }
+        renderAssessmentMap(data?.assessment_id);
       }
 
       function renderUncoveredLocationState(detail) {
@@ -808,6 +1056,13 @@
             geocodeDebugEl.style.display = "none";
           }
         }
+        clearMapLayers();
+        setMapStatus("Map unavailable until this location has prepared-region coverage.");
+        setMapLimitations([
+          "No prepared region currently covers this location, so property map overlays are unavailable.",
+          ...(Array.isArray(detail?.diagnostics) ? detail.diagnostics.slice(0, 2) : []),
+        ]);
+        renderMapLayerToggles([]);
       }
 
       function renderGeocodeFailureState(detail, submittedAddress) {
@@ -863,6 +1118,13 @@
             geocodeDebugEl.style.display = "none";
           }
         }
+        clearMapLayers();
+        setMapStatus("Map unavailable until geocoding succeeds.");
+        setMapLimitations([
+          "Address geocoding failed before location-specific map layers could be loaded.",
+          detail?.message || detail?.rejection_reason || "No additional geocoding detail provided.",
+        ]);
+        renderMapLayerToggles([]);
       }
 
       async function fetchCoverageForAddress(address) {

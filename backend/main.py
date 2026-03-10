@@ -16,6 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, PlainTextResponse, Response
 
 from backend.auth import require_api_key
+from backend.assessment_map import build_assessment_map_payload
 from backend.benchmarking import (
     build_benchmark_hints_for_assessment,
 )
@@ -44,6 +45,7 @@ from backend.models import (
     AssessmentComparisonResponse,
     AssessmentComparisonResult,
     AssessmentListItem,
+    AssessmentMapPayload,
     AssessmentResult,
     AssessmentReviewStatus,
     AssessmentReviewStatusUpdate,
@@ -5441,6 +5443,18 @@ def view_report(
         metadata={"audience": audience or audience_mode or _default_audience_for_role(ctx.user_role)},
     )
     return HTMLResponse(html)
+
+
+@app.get("/report/{assessment_id}/map", response_model=AssessmentMapPayload, dependencies=[Depends(require_api_key)])
+def get_assessment_map(
+    assessment_id: str,
+    ctx: ActorContext = Depends(get_actor_context),
+) -> AssessmentMapPayload:
+    result = store.get(assessment_id)
+    if not result:
+        raise HTTPException(status_code=404, detail="Assessment not found")
+    _enforce_org_scope(ctx, result.organization_id)
+    return build_assessment_map_payload(_refresh_result_governance(result), wildfire_data=wildfire_data)
 
 
 @app.get("/report/{assessment_id}/homeowner", response_model=HomeownerReport, dependencies=[Depends(require_api_key)])

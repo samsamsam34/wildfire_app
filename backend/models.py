@@ -734,6 +734,30 @@ class HomeownerReport(BaseModel):
     professional_debug_metadata: Optional[Dict[str, object]] = None
 
 
+class AssessmentMapLayer(BaseModel):
+    layer_key: str
+    display_name: str
+    available: bool = False
+    default_visible: bool = False
+    description: str = ""
+    legend_label: str = ""
+    geometry_type: str = "unknown"
+    feature_count: int = 0
+    reason_unavailable: Optional[str] = None
+
+
+class AssessmentMapPayload(BaseModel):
+    assessment_id: str
+    center: Dict[str, float] = Field(default_factory=dict)
+    resolved_region_id: Optional[str] = None
+    coverage_available: bool = False
+    basis_geometry_type: str = "point_proxy"
+    layers: List[AssessmentMapLayer] = Field(default_factory=list)
+    data: Dict[str, Dict[str, object]] = Field(default_factory=dict)
+    limitations: List[str] = Field(default_factory=list)
+    metadata: Dict[str, object] = Field(default_factory=dict)
+
+
 class BatchAssessmentItem(BaseModel):
     row_id: Optional[str] = None
     address: str

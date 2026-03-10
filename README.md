@@ -40,6 +40,11 @@ Runtime scoring reads prepared local data. Large GIS download/prep is handled of
   - per-layer coverage audit (`layer_coverage_audit`) and coverage summary (`coverage_summary`) to explain data gaps vs sampling/config issues
   - factor-level score evidence ledger (`score_evidence_ledger`) with weight/contribution/evidence status per factor
   - evidence-quality summary (`evidence_quality_summary`) with observed/inferred/missing/fallback counts and confidence penalties
+- Includes a homeowner-facing assessment map panel in the frontend:
+  - property point and building footprint (when available)
+  - defensible-space rings (`0-5 ft`, `5-30 ft`, `30-100 ft`, `100-300 ft`)
+  - nearby wildfire context overlays (historical fire perimeters and nearby structures when available)
+  - layer toggles, legends, and limitations text for missing/partial geometry
 - Persists assessment/report payloads in SQLite with compatibility handling for older rows.
 
 ## Main API Capabilities
@@ -62,6 +67,7 @@ Reports:
 - `GET /report/{assessment_id}/view`
 - `GET /report/{assessment_id}/homeowner`
 - `GET /report/{assessment_id}/homeowner/pdf`
+- `GET /report/{assessment_id}/map`
 
 Portfolio and batch:
 - `POST /portfolio/assess`
@@ -510,6 +516,17 @@ Homeowner report sections include:
 
 Use `include_professional_debug_metadata=true` on the homeowner JSON endpoint when you need internal diagnostics alongside consumer-facing content.
 See `docs/homeowner_report.md` for details.
+
+## Frontend Map
+
+After a successful assessment, the frontend shows a map card with property and wildfire-context layers.
+
+- Map payload endpoint: `GET /report/{assessment_id}/map`
+- Graceful degradation:
+  - if footprint geometry is unavailable, rings use point-proxy geometry
+  - if overlays are unavailable, map still renders available layers with limitations text
+
+See `docs/frontend_map.md` for payload details and layer behavior.
 
 ## Limitations
 
