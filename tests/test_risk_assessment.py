@@ -1775,6 +1775,49 @@ def test_route_geocode_and_coverage_are_consistent_for_invalid_address(monkeypat
         assert detail["normalized_address"] == "Invalid Input"
 
 
+def test_structure_resolution_failure_is_not_reported_as_geocoding_failure(monkeypatch, tmp_path):
+    auth.API_KEYS = set()
+    monkeypatch.setattr(app_main, "store", AssessmentStore(str(tmp_path / "structure_failure_not_geocode.db")))
+    monkeypatch.setattr(app_main.geocoder, "geocode", lambda _addr: (48.4772, -120.1864, "test-geocoder"))
+
+    def _collect_context_fail(_lat, _lon, **kwargs):  # noqa: ARG001
+        raise RuntimeError("structure matching backend unavailable")
+
+    monkeypatch.setattr(app_main.wildfire_data, "collect_context", _collect_context_fail)
+    monkeypatch.setattr(
+        app_main,
+        "lookup_region_for_point",
+        lambda lat, lon, regions_root=None: {
+            "covered": True,
+            "region_id": "winthrop_pilot",
+            "display_name": "Winthrop Pilot",
+            "diagnostics": [],
+        },
+    )
+
+    non_raising_client = TestClient(app_main.app, raise_server_exceptions=False)
+    response = non_raising_client.post(
+        "/risk/assess",
+        json={
+            "address": "104 Riverside Ave, Winthrop, WA 98862",
+            "attributes": {},
+            "confirmed_fields": [],
+            "audience": "homeowner",
+            "tags": [],
+        },
+    )
+    assert response.status_code == 500
+    try:
+        parsed = response.json()
+    except Exception:
+        parsed = {"detail": response.text}
+    detail = parsed.get("detail")
+    if isinstance(detail, dict):
+        assert detail.get("error") != "geocoding_failed"
+    elif isinstance(detail, str):
+        assert "geocoding failed" not in detail.lower()
+
+
 def _run(payload: dict) -> dict:
     res = client.post("/risk/assess", json=payload)
     assert res.status_code == 200

@@ -78,3 +78,22 @@ def test_list_region_coverages_returns_area_and_manifest_path(tmp_path: Path) ->
     assert row["region_id"] == "r1"
     assert row["area_deg2"] > 0
     assert str(row["manifest_path"]).endswith("manifest.json")
+
+
+def test_find_region_for_point_allows_small_edge_tolerance(monkeypatch, tmp_path: Path) -> None:
+    _write_manifest(
+        tmp_path,
+        "winthrop_region",
+        {"min_lon": -120.20, "min_lat": 48.45, "max_lon": -120.18, "max_lat": 48.48},
+    )
+    # Slightly outside north boundary.
+    lat, lon = 48.48025, -120.19
+    strict = find_region_for_point(lat=lat, lon=lon, regions_root=tmp_path)
+    assert strict["covered"] is False
+
+    monkeypatch.setenv("WF_REGION_EDGE_TOLERANCE_M", "40")
+    tolerant = find_region_for_point(lat=lat, lon=lon, regions_root=tmp_path)
+    assert tolerant["covered"] is True
+    assert tolerant["region_id"] == "winthrop_region"
+    assert tolerant["match_reason"] in {"within_edge_tolerance", "smallest_covering_region"}
+    monkeypatch.delenv("WF_REGION_EDGE_TOLERANCE_M", raising=False)

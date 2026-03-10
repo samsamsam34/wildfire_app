@@ -2978,8 +2978,30 @@ def _run_assessment(
         longitude=lon,
         route_name="assessment_core",
         address_input=payload.address,
+        geocode_meta=geocode_meta,
     )
     coverage_lookup = dict(coverage_resolution.coverage or {})
+    geocode_meta["trusted_match_subchecks"] = _build_trusted_match_subchecks(
+        submitted_address=payload.address,
+        geocode_meta=geocode_meta,
+        coverage=coverage_lookup,
+    )
+    if geocode_meta.get("geocode_outcome") == "geocode_succeeded_untrusted":
+        geocode_meta["geocode_decision"] = (
+            "geocode_candidate_inside_region_but_low_precision"
+            if bool(coverage_lookup.get("coverage_available"))
+            else "geocode_candidate_outside_region"
+        )
+    elif geocode_meta.get("geocode_outcome") == "geocode_succeeded_trusted":
+        geocode_meta["geocode_decision"] = "trusted_geocode_success"
+    geocode_meta["selected_region_id"] = coverage_lookup.get("resolved_region_id")
+    geocode_meta["selected_region_display_name"] = (
+        coverage_lookup.get("resolved_region_display_name")
+        or coverage_lookup.get("display_name")
+    )
+    geocode_meta["region_check_result"] = coverage_lookup.get("region_check_result")
+    geocode_meta["region_distance_to_boundary_m"] = coverage_lookup.get("region_distance_to_boundary_m")
+    geocode_meta["within_downloaded_zone_check"] = bool(coverage_lookup.get("coverage_available"))
     layer_coverage_audit, coverage_summary = _normalize_layer_coverage(
         property_level_context,
         environmental_layer_status=context.environmental_layer_status,
@@ -4201,10 +4223,10 @@ def _normalize_geocode_status(status: str | None) -> str:
 def _geocode_error_message(status: str, purpose: str) -> str:
     context = "assessment" if purpose == "assessment" else "region coverage check"
     mapping = {
-        "no_match": "No trusted location match was found. Please verify the address and try again.",
+        "no_match": "No geocoding candidates were returned. Verify street/city/state/ZIP and retry.",
         "ambiguous_match": "Address matched multiple possible locations. Add city/state or ZIP and try again.",
         "low_confidence": "Address match confidence was below policy threshold. Add more address detail and retry.",
-        "trust_filter_rejected": "Address was rejected by trust filters. Add city/state or ZIP and try again.",
+        "trust_filter_rejected": "Address candidates were found but rejected by trust filters. Add city/state or ZIP and try again.",
         "missing_coordinates": "Address matched but coordinates were missing from provider response.",
         "provider_error": "Geocoding provider is temporarily unavailable. Please retry shortly.",
         "parser_error": "Address format could not be parsed. Please correct the address and retry.",
@@ -4255,6 +4277,78 @@ def _build_address_component_comparison(submitted_address: str, candidate_addres
         "matched_tokens": overlap[:12],
         "missing_from_candidate": sorted(submitted_set - candidate_set)[:8],
         "extra_in_candidate": sorted(candidate_set - submitted_set)[:8],
+    }
+
+
+def _derive_geocode_trust_tier(
+    *,
+    geocode_precision: str | None,
+    confidence_score: float | None,
+    trusted_match_status: str | None,
+) -> str:
+    status = str(trusted_match_status or "").strip().lower()
+    precision = str(geocode_precision or "").strip().lower()
+    if status == "trusted" and precision in {"rooftop", "parcel_or_address_point"}:
+        return "high"
+    if status == "trusted":
+        return "medium"
+    if status == "untrusted_fallback":
+        if precision in {"rooftop", "parcel_or_address_point", "interpolated"}:
+            return "medium"
+        return "low"
+    if confidence_score is not None and float(confidence_score) >= 0.2:
+        return "medium"
+    return "low"
+
+
+def _build_trusted_match_subchecks(
+    *,
+    submitted_address: str,
+    geocode_meta: dict[str, Any],
+    coverage: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    matched_address = geocode_meta.get("matched_address") or geocode_meta.get("geocoded_address")
+    component_cmp = _build_address_component_comparison(submitted_address, str(matched_address or ""))
+    token_similarity = float(component_cmp.get("token_similarity_ratio") or 0.0)
+    location_type = str(geocode_meta.get("geocode_location_type") or "").lower()
+    match_count = int(geocode_meta.get("candidate_count") or 0)
+    in_region = bool((coverage or {}).get("coverage_available", False))
+    region_distance = (coverage or {}).get("region_distance_to_boundary_m")
+    top_candidate = None
+    raw_preview = geocode_meta.get("raw_response_preview")
+    if isinstance(raw_preview, dict):
+        top_candidate = raw_preview.get("top_candidate")
+    top_address = top_candidate.get("address") if isinstance(top_candidate, dict) else None
+    locality = (
+        str((top_address or {}).get("city") or "").strip().lower()
+        if isinstance(top_address, dict)
+        else ""
+    )
+    submitted_norm = _normalize_address_for_component_compare(submitted_address)
+    locality_match = bool(locality and locality in submitted_norm)
+    state = (
+        str((top_address or {}).get("state") or "").strip().lower()
+        if isinstance(top_address, dict)
+        else ""
+    )
+    state_match = bool(state and state in submitted_norm)
+    postcode = (
+        str((top_address or {}).get("postcode") or "").strip()
+        if isinstance(top_address, dict)
+        else ""
+    )
+    postal_match = bool(postcode and postcode[:5] in submitted_address)
+    return {
+        "address_string_match": bool(component_cmp.get("exact_normalized_match") or token_similarity >= 0.72),
+        "locality_match": locality_match,
+        "state_match": state_match,
+        "postal_match": postal_match,
+        "candidate_count": match_count,
+        "in_region_check": in_region,
+        "distance_to_region_m": region_distance,
+        "within_downloaded_zone_check": in_region,
+        "address_similarity_ratio": round(token_similarity, 3),
+        "location_type": location_type or None,
     }
 
 
@@ -4394,6 +4488,8 @@ def _geocode_address_or_raise(*, address: str, purpose: str) -> tuple[float, flo
                 "geocode_status": "accepted",
                 "geocode_outcome": "geocode_succeeded_untrusted",
                 "trusted_match_status": "untrusted_fallback",
+                "geocode_trust_tier": "medium",
+                "geocode_decision": "geocode_candidates_returned_but_untrusted",
                 "submitted_address": submitted_address,
                 "normalized_address": exc.normalized_address or normalized_address,
                 "geocode_source": exc.provider or provider,
@@ -4429,6 +4525,15 @@ def _geocode_address_or_raise(*, address: str, purpose: str) -> tuple[float, flo
                     geocode_meta["confidence_score"] = float(fallback_candidate.get("importance"))
                 except (TypeError, ValueError):
                     geocode_meta["confidence_score"] = None
+            geocode_meta["geocode_trust_tier"] = _derive_geocode_trust_tier(
+                geocode_precision=geocode_meta.get("geocode_precision"),
+                confidence_score=(
+                    float(geocode_meta.get("confidence_score"))
+                    if geocode_meta.get("confidence_score") is not None
+                    else None
+                ),
+                trusted_match_status=geocode_meta.get("trusted_match_status"),
+            )
             if _env_flag("WF_GEOCODE_DEBUG_LOG", False) and raw_preview:
                 geocode_meta["raw_response_preview"] = raw_preview
             _log_geocode_event(
@@ -4452,15 +4557,21 @@ def _geocode_address_or_raise(*, address: str, purpose: str) -> tuple[float, flo
             return float(fallback_lat), float(fallback_lon), str(geocode_meta.get("geocode_source") or provider), geocode_meta
 
         detail: dict[str, Any] = {
-            "error": "geocoding_failed",
-            "geocode_status": status,
-            "geocode_outcome": "geocode_failed",
-            "trusted_match_status": "rejected",
-            "rejection_category": (
-                "trust_filter_rejected"
-                if status in {"low_confidence", "ambiguous_match", "trust_filter_rejected"}
-                else status
-            ),
+                "error": "geocoding_failed",
+                "geocode_status": status,
+                "geocode_outcome": "geocode_failed",
+                "trusted_match_status": "rejected",
+                "geocode_trust_tier": "low",
+                "geocode_decision": (
+                    "geocode_candidates_returned_but_untrusted"
+                    if fallback_candidate is not None
+                    else "no_geocode_candidates"
+                ),
+                "rejection_category": (
+                    "trust_filter_rejected"
+                    if status in {"low_confidence", "ambiguous_match", "trust_filter_rejected"}
+                    else status
+                ),
             "message": _geocode_error_message(status, purpose),
             "submitted_address": submitted_address,
             "normalized_address": exc.normalized_address or normalized_address,
@@ -4491,6 +4602,21 @@ def _geocode_address_or_raise(*, address: str, purpose: str) -> tuple[float, flo
             )
             if fallback_candidate
             else None,
+            "trusted_match_subchecks": _build_trusted_match_subchecks(
+                submitted_address=submitted_address,
+                geocode_meta={
+                    "matched_address": (fallback_candidate or {}).get("display_name") if fallback_candidate else None,
+                    "candidate_count": raw_preview.get("candidate_count") or 0,
+                    "geocode_location_type": (
+                        f"{str((fallback_candidate or {}).get('class') or '').strip().lower()}:"
+                        f"{str((fallback_candidate or {}).get('type') or '').strip().lower()}"
+                    )
+                    if fallback_candidate
+                    else None,
+                    "raw_response_preview": raw_preview,
+                },
+                coverage=None,
+            ),
         }
         if _env_flag("WF_GEOCODE_DEBUG_LOG", False) and raw_preview:
             detail["raw_response_preview"] = raw_preview
@@ -4521,6 +4647,8 @@ def _geocode_address_or_raise(*, address: str, purpose: str) -> tuple[float, flo
             "geocode_status": status,
             "geocode_outcome": "geocode_failed",
             "trusted_match_status": "rejected",
+            "geocode_trust_tier": "low",
+            "geocode_decision": "no_geocode_candidates",
             "rejection_category": status,
             "message": _geocode_error_message(status, purpose),
             "submitted_address": submitted_address,
@@ -4545,6 +4673,8 @@ def _geocode_address_or_raise(*, address: str, purpose: str) -> tuple[float, flo
         "geocode_status": "accepted",
         "geocode_outcome": "geocode_succeeded_trusted",
         "trusted_match_status": "trusted",
+        "geocode_trust_tier": "high",
+        "geocode_decision": "trusted_geocode_success",
         "submitted_address": submitted_address,
         "normalized_address": normalized_address,
         "geocode_source": geocode_source,
@@ -4573,6 +4703,7 @@ def _geocode_address_or_raise(*, address: str, purpose: str) -> tuple[float, flo
                 "geocode_status": _normalize_geocode_status(str(geocoder_meta.get("geocode_status") or "accepted")),
                 "geocode_outcome": "geocode_succeeded_trusted",
                 "trusted_match_status": "trusted",
+                "geocode_decision": "trusted_geocode_success",
                 "normalized_address": geocoder_meta.get("normalized_address") or normalized_address,
                 "provider": geocoder_meta.get("provider") or provider,
                 "geocode_provider": geocoder_meta.get("provider") or provider,
@@ -4597,6 +4728,16 @@ def _geocode_address_or_raise(*, address: str, purpose: str) -> tuple[float, flo
         )
         if _env_flag("WF_GEOCODE_DEBUG_LOG", False) and geocoder_meta.get("raw_response_preview"):
             geocode_meta["raw_response_preview"] = geocoder_meta.get("raw_response_preview")
+
+    geocode_meta["geocode_trust_tier"] = _derive_geocode_trust_tier(
+        geocode_precision=geocode_meta.get("geocode_precision"),
+        confidence_score=(
+            float(geocode_meta.get("confidence_score"))
+            if geocode_meta.get("confidence_score") is not None
+            else None
+        ),
+        trusted_match_status=geocode_meta.get("trusted_match_status"),
+    )
 
     _log_geocode_event(
         purpose=purpose,
@@ -4645,6 +4786,8 @@ def _resolve_trusted_geocode(
                         "geocode_status": detail.get("geocode_status") or "provider_error",
                         "geocode_outcome": detail.get("geocode_outcome") or "geocode_failed",
                         "trusted_match_status": detail.get("trusted_match_status") or "rejected",
+                        "geocode_trust_tier": detail.get("geocode_trust_tier"),
+                        "geocode_decision": detail.get("geocode_decision"),
                         "rejection_reason": detail.get("rejection_reason"),
                         "trusted_match_failure_reason": detail.get("trusted_match_failure_reason"),
                         "fallback_eligibility": detail.get("fallback_eligibility"),
@@ -4693,6 +4836,8 @@ def _resolve_trusted_geocode(
                     "geocode_status": resolution.geocode_status,
                     "geocode_outcome": resolution.geocode_outcome,
                     "trusted_match_status": resolution.trusted_match_status,
+                    "geocode_trust_tier": geocode_meta.get("geocode_trust_tier"),
+                    "geocode_decision": geocode_meta.get("geocode_decision"),
                     "candidate_count": resolution.candidate_count,
                     "confidence_score": resolution.confidence_score,
                     "latitude": round(resolution.latitude, 6),
@@ -4712,8 +4857,20 @@ def _resolve_prepared_region(
     longitude: float,
     route_name: str,
     address_input: str = "",
+    geocode_meta: dict[str, Any] | None = None,
 ) -> RegionCoverageResolution:
     coverage = _region_coverage_for_coordinates(lat=float(latitude), lon=float(longitude))
+    if geocode_meta is not None:
+        coverage["trusted_match_subchecks"] = _build_trusted_match_subchecks(
+            submitted_address=address_input,
+            geocode_meta=geocode_meta,
+            coverage=coverage,
+        )
+        coverage["region_check_result"] = (
+            "inside_prepared_region"
+            if bool(coverage.get("coverage_available"))
+            else "outside_prepared_regions"
+        )
     resolution = RegionCoverageResolution(
         coverage_available=bool(coverage.get("coverage_available", False)),
         resolved_region_id=coverage.get("resolved_region_id"),
@@ -4737,6 +4894,8 @@ def _resolve_prepared_region(
                     "diagnostics": resolution.diagnostics[:4],
                     "region_distance_to_boundary_m": coverage.get("region_distance_to_boundary_m"),
                     "nearest_region_id": coverage.get("nearest_region_id"),
+                    "region_check_result": coverage.get("region_check_result"),
+                    "trusted_match_subchecks": coverage.get("trusted_match_subchecks"),
                 },
                 sort_keys=True,
             ),
@@ -4762,6 +4921,7 @@ def _build_geocode_debug_payload(address: str) -> dict[str, Any]:
         lon = float(geocode_resolution.longitude)
         coverage = _region_coverage_for_coordinates(lat, lon)
         return {
+            "original_input_address": submitted_address,
             "raw_input_address": submitted_address,
             "normalized_address": meta.get("normalized_address") or normalized,
             "geocode_status": meta.get("geocode_status") or "accepted",
@@ -4773,6 +4933,8 @@ def _build_geocode_debug_payload(address: str) -> dict[str, Any]:
             "match_count": int(meta.get("candidate_count") or geocode_resolution.candidate_count or 1),
             "parsed_candidates": meta.get("parsed_candidates")
             or (raw_preview or {}).get("parsed_candidates"),
+            "candidate_summaries": (meta.get("parsed_candidates") or (raw_preview or {}).get("parsed_candidates") or [])[:3],
+            "chosen_candidate_index": 0,
             "selected_match": {
                 "display_name": (geocode_resolution.selected_candidate or {}).get("display_name")
                 or meta.get("matched_address"),
@@ -4791,25 +4953,33 @@ def _build_geocode_debug_payload(address: str) -> dict[str, Any]:
                 "trust_filter_rule": meta.get("trust_filter_rule"),
                 "trust_filter_rejected": bool(meta.get("trusted_match_status") == "untrusted_fallback"),
                 "address_component_comparison": meta.get("address_component_comparison"),
+                "trusted_match_subchecks": meta.get("trusted_match_subchecks"),
             },
             "resolved_latitude": float(lat),
             "resolved_longitude": float(lon),
             "geocode_source": geocode_resolution.geocode_source,
+            "selected_region_id": coverage.get("selected_region_id") or coverage.get("resolved_region_id"),
+            "selected_region_display_name": coverage.get("selected_region_display_name") or coverage.get("display_name"),
             "rejection_reason": None,
             "rejection_category": None,
             "raw_response_preview": raw_preview,
             "region_resolution": {
                 "coverage_available": bool(coverage.get("coverage_available", False)),
                 "resolved_region_id": coverage.get("resolved_region_id"),
+                "selected_region_id": coverage.get("selected_region_id") or coverage.get("resolved_region_id"),
+                "selected_region_display_name": coverage.get("selected_region_display_name") or coverage.get("display_name"),
                 "reason": coverage.get("reason"),
                 "diagnostics": list(coverage.get("diagnostics") or []),
                 "region_distance_to_boundary_m": coverage.get("region_distance_to_boundary_m"),
                 "nearest_region_id": coverage.get("nearest_region_id"),
+                "in_region_check": bool(coverage.get("coverage_available", False)),
+                "within_downloaded_zone_check": bool(coverage.get("coverage_available", False)),
             },
         }
     except HTTPException as exc:
         detail = exc.detail if isinstance(exc.detail, dict) else {}
         return {
+            "original_input_address": submitted_address,
             "raw_input_address": submitted_address,
             "normalized_address": detail.get("normalized_address") or normalized,
             "geocode_status": detail.get("geocode_status") or "provider_error",
@@ -4820,6 +4990,8 @@ def _build_geocode_debug_payload(address: str) -> dict[str, Any]:
             "geocode_precision": "unknown",
             "match_count": int(((detail.get("raw_response_preview") or {}).get("candidate_count")) or 0),
             "parsed_candidates": (detail.get("raw_response_preview") or {}).get("parsed_candidates"),
+            "candidate_summaries": ((detail.get("raw_response_preview") or {}).get("parsed_candidates") or [])[:3],
+            "chosen_candidate_index": None,
             "selected_match": None,
             "trust": {
                 "confidence_score": None,
@@ -4831,10 +5003,13 @@ def _build_geocode_debug_payload(address: str) -> dict[str, Any]:
                 "trust_filter_rule": (detail.get("raw_response_preview") or {}).get("trust_filter_rule"),
                 "trust_filter_rejected": detail.get("rejection_category") == "trust_filter_rejected",
                 "address_component_comparison": detail.get("address_component_comparison"),
+                "trusted_match_subchecks": detail.get("trusted_match_subchecks"),
             },
             "resolved_latitude": None,
             "resolved_longitude": None,
             "geocode_source": detail.get("provider") or "OpenStreetMap Nominatim",
+            "selected_region_id": None,
+            "selected_region_display_name": None,
             "rejection_reason": detail.get("rejection_reason"),
             "rejection_category": detail.get("rejection_category") or detail.get("geocode_status"),
             "raw_response_preview": detail.get("raw_response_preview"),
@@ -4842,6 +5017,7 @@ def _build_geocode_debug_payload(address: str) -> dict[str, Any]:
         }
     except Exception as exc:
         return {
+            "original_input_address": submitted_address,
             "raw_input_address": submitted_address,
             "normalized_address": normalized,
             "geocode_status": "provider_error",
@@ -4852,6 +5028,8 @@ def _build_geocode_debug_payload(address: str) -> dict[str, Any]:
             "geocode_precision": "unknown",
             "match_count": 0,
             "parsed_candidates": None,
+            "candidate_summaries": [],
+            "chosen_candidate_index": None,
             "selected_match": None,
             "trust": {
                 "confidence_score": None,
@@ -4863,10 +5041,13 @@ def _build_geocode_debug_payload(address: str) -> dict[str, Any]:
                 "trust_filter_rule": None,
                 "trust_filter_rejected": False,
                 "address_component_comparison": None,
+                "trusted_match_subchecks": None,
             },
             "resolved_latitude": None,
             "resolved_longitude": None,
             "geocode_source": "OpenStreetMap Nominatim",
+            "selected_region_id": None,
+            "selected_region_display_name": None,
             "rejection_reason": str(exc),
             "rejection_category": "provider_error",
             "raw_response_preview": None,
@@ -4916,6 +5097,9 @@ def _region_coverage_for_coordinates(lat: float, lon: float) -> dict[str, Any]:
             "regions_root": _region_data_root(),
             "coverage_available": True,
             "resolved_region_id": resolved_region_id,
+            "resolved_region_display_name": lookup.get("display_name"),
+            "selected_region_id": resolved_region_id,
+            "selected_region_display_name": lookup.get("display_name"),
             "reason": "prepared_region_found",
             "recommended_action": None,
             "region_check_result": "inside_prepared_region",
@@ -4940,6 +5124,9 @@ def _region_coverage_for_coordinates(lat: float, lon: float) -> dict[str, Any]:
         "regions_root": _region_data_root(),
         "coverage_available": False,
         "resolved_region_id": None,
+        "resolved_region_display_name": None,
+        "selected_region_id": None,
+        "selected_region_display_name": None,
         "reason": "no_prepared_region_for_location",
         "recommended_action": (
             "Prepare and validate a region for this location using "
@@ -5519,12 +5706,15 @@ def check_region_coverage(
         longitude=float(lon),
         route_name="/regions/coverage-check",
         address_input=str(payload.address or ""),
+        geocode_meta=geocode_resolution.geocode_meta if geocode_resolution else None,
     )
     coverage = dict(coverage_resolution.coverage)
     if geocode_resolution:
         geocode_meta = geocode_resolution.geocode_meta
         coverage["geocode_status"] = geocode_meta.get("geocode_status")
         coverage["geocode_outcome"] = geocode_meta.get("geocode_outcome")
+        coverage["geocode_decision"] = geocode_meta.get("geocode_decision")
+        coverage["geocode_trust_tier"] = geocode_meta.get("geocode_trust_tier")
         coverage["trusted_match_status"] = geocode_meta.get("trusted_match_status")
         coverage["trusted_match_failure_reason"] = geocode_meta.get("trusted_match_failure_reason")
         coverage["fallback_eligibility"] = geocode_meta.get("fallback_eligibility")
@@ -5532,6 +5722,9 @@ def check_region_coverage(
         coverage["geocode_source"] = geocode_meta.get("geocode_source")
         coverage["geocode_precision"] = geocode_meta.get("geocode_precision")
         coverage["geocode_location_type"] = geocode_meta.get("geocode_location_type")
+        coverage["trusted_match_subchecks"] = coverage.get("trusted_match_subchecks") or geocode_meta.get(
+            "trusted_match_subchecks"
+        )
     return RegionCoverageStatus.model_validate(coverage)
 
 
@@ -5574,6 +5767,7 @@ def assess_risk(
         longitude=geocode_resolution.longitude,
         route_name="/risk/assess",
         address_input=payload.address,
+        geocode_meta=geocode_resolution.geocode_meta,
     )
     if not coverage_resolution.coverage_available and (auto_queue_on_uncovered or require_prepared_region):
         lat = geocode_resolution.latitude
@@ -5629,8 +5823,12 @@ def assess_risk(
                     "region_not_ready": True,
                     "geocode_status": geocode_meta.get("geocode_status"),
                     "geocode_outcome": geocode_meta.get("geocode_outcome"),
+                    "geocode_decision": geocode_meta.get("geocode_decision"),
+                    "geocode_trust_tier": geocode_meta.get("geocode_trust_tier"),
                     "trusted_match_status": geocode_meta.get("trusted_match_status"),
                     "trusted_match_failure_reason": geocode_meta.get("trusted_match_failure_reason"),
+                    "trusted_match_subchecks": coverage.get("trusted_match_subchecks")
+                    or geocode_meta.get("trusted_match_subchecks"),
                     "fallback_eligibility": geocode_meta.get("fallback_eligibility"),
                     "submitted_address": geocode_meta.get("submitted_address"),
                     "normalized_address": geocode_meta.get("normalized_address"),
@@ -5638,6 +5836,8 @@ def assess_risk(
                     "resolved_longitude": geocode_meta.get("resolved_longitude"),
                     "coverage_available": False,
                     "resolved_region_id": None,
+                    "selected_region_id": coverage.get("selected_region_id"),
+                    "selected_region_display_name": coverage.get("selected_region_display_name"),
                     "reason": "no_prepared_region_for_location",
                     "prep_job_id": status.job_id,
                     "prep_job_status": status.status,
@@ -5669,16 +5869,22 @@ def assess_risk(
             detail={
                 "region_not_ready": True,
                 "geocode_status": geocode_meta.get("geocode_status"),
-                "geocode_outcome": geocode_meta.get("geocode_outcome"),
-                "trusted_match_status": geocode_meta.get("trusted_match_status"),
-                "trusted_match_failure_reason": geocode_meta.get("trusted_match_failure_reason"),
-                "fallback_eligibility": geocode_meta.get("fallback_eligibility"),
+                    "geocode_outcome": geocode_meta.get("geocode_outcome"),
+                    "geocode_decision": geocode_meta.get("geocode_decision"),
+                    "geocode_trust_tier": geocode_meta.get("geocode_trust_tier"),
+                    "trusted_match_status": geocode_meta.get("trusted_match_status"),
+                    "trusted_match_failure_reason": geocode_meta.get("trusted_match_failure_reason"),
+                    "trusted_match_subchecks": coverage.get("trusted_match_subchecks")
+                    or geocode_meta.get("trusted_match_subchecks"),
+                    "fallback_eligibility": geocode_meta.get("fallback_eligibility"),
                 "submitted_address": geocode_meta.get("submitted_address"),
                 "normalized_address": geocode_meta.get("normalized_address"),
                 "resolved_latitude": geocode_meta.get("resolved_latitude"),
                 "resolved_longitude": geocode_meta.get("resolved_longitude"),
                 "coverage_available": False,
                 "resolved_region_id": None,
+                "selected_region_id": coverage.get("selected_region_id"),
+                "selected_region_display_name": coverage.get("selected_region_display_name"),
                 "reason": "no_prepared_region_for_location",
                 "prep_job_id": None,
                 "prep_job_status": None,
@@ -5932,6 +6138,7 @@ def debug_risk(
         longitude=geocode_resolution.longitude,
         route_name="/risk/debug",
         address_input=payload.address,
+        geocode_meta=geocode_resolution.geocode_meta,
     )
     result, debug_payload = _run_assessment(
         payload,
@@ -5960,6 +6167,7 @@ def layer_diagnostics(payload: AddressRequest, ctx: ActorContext = Depends(get_a
         longitude=geocode_resolution.longitude,
         route_name="/risk/layer-diagnostics",
         address_input=payload.address,
+        geocode_meta=geocode_resolution.geocode_meta,
     )
     _, debug_payload = _run_assessment(
         payload,

@@ -211,6 +211,10 @@ Geocoding uses OpenStreetMap Nominatim (`backend/geocoding.py`). Geocode outcome
 - `geocode_succeeded_untrusted`: provider returned a candidate but trust checks were weak; runtime can continue with diagnostics
 - `geocode_succeeded_trusted`: accepted trusted match
 
+For local geocode/trust troubleshooting (including Winthrop edge cases), use:
+- `POST /risk/geocode-debug` (or `/debug/geocode`) for candidate/trust/region diagnostics
+- `python scripts/debug_geocode_trust_pipeline.py --address "104 Riverside Ave, Winthrop, WA 98862" --pretty`
+
 ## Data / Storage Notes
 
 SQLite (`wildfire_app.db`) stores:

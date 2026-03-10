@@ -194,12 +194,17 @@ class RegionCoverageStatus(BaseModel):
     regions_root: str
     coverage_available: bool = False
     resolved_region_id: Optional[str] = None
+    selected_region_id: Optional[str] = None
+    selected_region_display_name: Optional[str] = None
     reason: str = ""
     recommended_action: Optional[str] = None
     geocode_status: Optional[GeocodeStatus] = None
     geocode_outcome: Optional[GeocodeOutcome] = None
+    geocode_decision: Optional[str] = None
+    geocode_trust_tier: Optional[str] = None
     trusted_match_status: Optional[TrustedMatchStatus] = None
     trusted_match_failure_reason: Optional[str] = None
+    trusted_match_subchecks: Optional[Dict[str, Any]] = None
     fallback_eligibility: Optional[bool] = None
     normalized_address: Optional[str] = None
     geocode_source: Optional[str] = None
@@ -213,6 +218,8 @@ class RegionCoverageStatus(BaseModel):
 class GeocodingDetails(BaseModel):
     geocode_status: GeocodeStatus = "accepted"
     geocode_outcome: Optional[GeocodeOutcome] = None
+    geocode_decision: Optional[str] = None
+    geocode_trust_tier: Optional[str] = None
     submitted_address: str = ""
     normalized_address: Optional[str] = None
     geocode_source: Optional[str] = None
@@ -225,6 +232,7 @@ class GeocodingDetails(BaseModel):
     geocode_precision: Optional[str] = None
     trusted_match_status: Optional[TrustedMatchStatus] = None
     trusted_match_failure_reason: Optional[str] = None
+    trusted_match_subchecks: Optional[Dict[str, Any]] = None
     fallback_eligibility: Optional[bool] = None
     address_component_comparison: Optional[Dict[str, Any]] = None
     confidence_score: Optional[float] = None
