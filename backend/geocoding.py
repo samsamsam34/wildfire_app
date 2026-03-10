@@ -64,6 +64,7 @@ class Geocoder:
         min_importance_raw = os.getenv("WF_GEOCODE_MIN_IMPORTANCE", default_min_importance)
         ambiguity_delta_raw = os.getenv("WF_GEOCODE_AMBIGUITY_DELTA", "0.0")
         max_candidates_raw = os.getenv("WF_GEOCODE_MAX_CANDIDATES", "5")
+        allow_precise_low_importance_raw = os.getenv("WF_GEOCODE_ALLOW_PRECISE_LOW_IMPORTANCE", "true")
 
         try:
             self.timeout_seconds = max(1.0, float(timeout_raw))
@@ -81,6 +82,12 @@ class Geocoder:
             self.max_candidates = max(1, min(10, int(max_candidates_raw)))
         except ValueError:
             self.max_candidates = 5
+        self.allow_precise_low_importance = allow_precise_low_importance_raw.strip().lower() not in {
+            "0",
+            "false",
+            "no",
+            "off",
+        }
 
         self.last_result: dict[str, Any] | None = None
 
@@ -97,6 +104,7 @@ class Geocoder:
     def _preview_candidate(candidate: Any) -> dict[str, Any] | None:
         if not isinstance(candidate, dict):
             return None
+        address = candidate.get("address") if isinstance(candidate.get("address"), dict) else {}
         return {
             "display_name": candidate.get("display_name"),
             "lat": candidate.get("lat"),
@@ -104,7 +112,35 @@ class Geocoder:
             "importance": candidate.get("importance"),
             "class": candidate.get("class"),
             "type": candidate.get("type"),
+            "address": {
+                "house_number": address.get("house_number"),
+                "road": address.get("road"),
+                "city": address.get("city") or address.get("town") or address.get("village") or address.get("hamlet"),
+                "state": address.get("state"),
+                "postcode": address.get("postcode"),
+                "country_code": address.get("country_code"),
+            },
         }
+
+    @staticmethod
+    def _candidate_has_precise_address(candidate: Any) -> bool:
+        if not isinstance(candidate, dict):
+            return False
+        address = candidate.get("address")
+        if not isinstance(address, dict):
+            return False
+        house = str(address.get("house_number") or "").strip()
+        road = str(address.get("road") or "").strip()
+        locality = str(
+            address.get("city")
+            or address.get("town")
+            or address.get("village")
+            or address.get("hamlet")
+            or ""
+        ).strip()
+        state = str(address.get("state") or "").strip()
+        postcode = str(address.get("postcode") or "").strip()
+        return bool(house and road and locality and (state or postcode))
 
     def geocode_with_diagnostics(self, address: str) -> GeocodeResult:
         submitted_address = str(address or "")
@@ -208,16 +244,28 @@ class Geocoder:
             )
 
         importance = self._to_float(first.get("importance") if isinstance(first, dict) else None)
+        trust_filter_rejected = False
+        trust_filter_rule = None
         if self.min_importance > 0.0 and (importance is None or importance < self.min_importance):
-            raise GeocodingError(
-                status="low_confidence",
-                message="Best geocoding match was below the confidence threshold.",
-                submitted_address=submitted_address,
-                normalized_address=normalized_address,
-                provider=provider,
-                rejection_reason=f"importance={importance} threshold={self.min_importance}",
-                raw_response_preview={"top_candidate": self._preview_candidate(first)},
-            )
+            precise_override = self.allow_precise_low_importance and self._candidate_has_precise_address(first)
+            if precise_override:
+                trust_filter_rule = "low_importance_but_precise_address_override"
+            else:
+                trust_filter_rejected = True
+                trust_filter_rule = "min_importance_threshold"
+                raise GeocodingError(
+                    status="low_confidence",
+                    message="Best geocoding match was below the confidence threshold.",
+                    submitted_address=submitted_address,
+                    normalized_address=normalized_address,
+                    provider=provider,
+                    rejection_reason=f"importance={importance} threshold={self.min_importance}",
+                    raw_response_preview={
+                        "top_candidate": self._preview_candidate(first),
+                        "candidate_count": len(payload),
+                        "trust_filter_rule": trust_filter_rule,
+                    },
+                )
 
         if self.ambiguity_delta > 0.0 and len(payload) > 1 and isinstance(first, dict):
             second = payload[1]
@@ -238,10 +286,13 @@ class Geocoder:
                         raw_response_preview={
                             "top_candidate": self._preview_candidate(first),
                             "second_candidate": self._preview_candidate(second),
+                            "candidate_count": len(payload),
+                            "trust_filter_rule": "ambiguity_delta_threshold",
                         },
                     )
 
         matched_address = first.get("display_name") if isinstance(first, dict) else None
+        candidate_previews = [p for p in (self._preview_candidate(c) for c in payload[: self.max_candidates]) if p]
         return GeocodeResult(
             latitude=float(lat),
             longitude=float(lon),
@@ -253,7 +304,13 @@ class Geocoder:
             matched_address=matched_address,
             confidence_score=importance,
             candidate_count=len(payload),
-            raw_response_preview={"top_candidate": self._preview_candidate(first)},
+            raw_response_preview={
+                "top_candidate": self._preview_candidate(first),
+                "parsed_candidates": candidate_previews,
+                "candidate_count": len(payload),
+                "trust_filter_rule": trust_filter_rule,
+                "trust_filter_rejected": trust_filter_rejected,
+            },
         )
 
     def geocode(self, address: str) -> Tuple[float, float, str]:

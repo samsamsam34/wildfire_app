@@ -3765,6 +3765,7 @@ def _normalize_geocode_status(status: str | None) -> str:
         "no_match",
         "ambiguous_match",
         "low_confidence",
+        "trust_filter_rejected",
         "missing_coordinates",
         "provider_error",
         "parser_error",
@@ -3779,6 +3780,7 @@ def _geocode_error_message(status: str, purpose: str) -> str:
         "no_match": "No trusted location match was found. Please verify the address and try again.",
         "ambiguous_match": "Address matched multiple possible locations. Add city/state or ZIP and try again.",
         "low_confidence": "Address match confidence was below policy threshold. Add more address detail and retry.",
+        "trust_filter_rejected": "Address was rejected by trust filters. Add city/state or ZIP and try again.",
         "missing_coordinates": "Address matched but coordinates were missing from provider response.",
         "provider_error": "Geocoding provider is temporarily unavailable. Please retry shortly.",
         "parser_error": "Address format could not be parsed. Please correct the address and retry.",
@@ -3804,6 +3806,8 @@ def _log_geocode_event(
     provider: str | None = None,
     source: str | None = None,
     reason: str | None = None,
+    candidate_count: int | None = None,
+    trust_filter_rule: str | None = None,
     raw_response_preview: dict[str, Any] | None = None,
 ) -> None:
     payload: dict[str, Any] = {
@@ -3816,6 +3820,10 @@ def _log_geocode_event(
         "source": source,
         "reason": reason,
     }
+    if candidate_count is not None:
+        payload["candidate_count"] = int(candidate_count)
+    if trust_filter_rule:
+        payload["trust_filter_rule"] = trust_filter_rule
     if latitude is not None and longitude is not None:
         payload["latitude"] = round(float(latitude), 6)
         payload["longitude"] = round(float(longitude), 6)
@@ -3838,6 +3846,11 @@ def _geocode_address_or_raise(*, address: str, purpose: str) -> tuple[float, flo
         detail: dict[str, Any] = {
             "error": "geocoding_failed",
             "geocode_status": status,
+            "rejection_category": (
+                "trust_filter_rejected"
+                if status in {"low_confidence", "ambiguous_match", "trust_filter_rejected"}
+                else status
+            ),
             "message": _geocode_error_message(status, purpose),
             "submitted_address": submitted_address,
             "normalized_address": exc.normalized_address or normalized_address,
@@ -3853,6 +3866,18 @@ def _geocode_address_or_raise(*, address: str, purpose: str) -> tuple[float, flo
             normalized_address=detail["normalized_address"],
             provider=detail["provider"],
             reason=exc.rejection_reason,
+            candidate_count=(
+                int(exc.raw_response_preview.get("candidate_count"))
+                if isinstance(exc.raw_response_preview, dict)
+                and exc.raw_response_preview.get("candidate_count") is not None
+                else None
+            ),
+            trust_filter_rule=(
+                str(exc.raw_response_preview.get("trust_filter_rule"))
+                if isinstance(exc.raw_response_preview, dict)
+                and exc.raw_response_preview.get("trust_filter_rule")
+                else None
+            ),
             raw_response_preview=exc.raw_response_preview,
         )
         raise HTTPException(status_code=_geocode_http_status_for_status(status), detail=detail) from exc
@@ -3861,6 +3886,7 @@ def _geocode_address_or_raise(*, address: str, purpose: str) -> tuple[float, flo
         detail = {
             "error": "geocoding_failed",
             "geocode_status": status,
+            "rejection_category": status,
             "message": _geocode_error_message(status, purpose),
             "submitted_address": submitted_address,
             "normalized_address": normalized_address,
@@ -3887,6 +3913,8 @@ def _geocode_address_or_raise(*, address: str, purpose: str) -> tuple[float, flo
         "matched_address": None,
         "confidence_score": None,
         "candidate_count": None,
+        "parsed_candidates": None,
+        "trust_filter_rule": None,
         "resolved_latitude": float(lat),
         "resolved_longitude": float(lon),
         "rejection_reason": None,
@@ -3901,6 +3929,12 @@ def _geocode_address_or_raise(*, address: str, purpose: str) -> tuple[float, flo
                 "confidence_score": geocoder_meta.get("confidence_score"),
                 "candidate_count": geocoder_meta.get("candidate_count"),
                 "rejection_reason": geocoder_meta.get("rejection_reason"),
+                "trust_filter_rule": geocoder_meta.get("raw_response_preview", {}).get("trust_filter_rule")
+                if isinstance(geocoder_meta.get("raw_response_preview"), dict)
+                else None,
+                "parsed_candidates": geocoder_meta.get("raw_response_preview", {}).get("parsed_candidates")
+                if isinstance(geocoder_meta.get("raw_response_preview"), dict)
+                else None,
             }
         )
         if _env_flag("WF_GEOCODE_DEBUG_LOG", False) and geocoder_meta.get("raw_response_preview"):
@@ -3915,6 +3949,16 @@ def _geocode_address_or_raise(*, address: str, purpose: str) -> tuple[float, flo
         longitude=float(lon),
         provider=str(geocode_meta.get("provider") or provider),
         source=geocode_source,
+        candidate_count=(
+            int(geocode_meta.get("candidate_count"))
+            if geocode_meta.get("candidate_count") is not None
+            else None
+        ),
+        trust_filter_rule=(
+            str(geocode_meta.get("trust_filter_rule"))
+            if geocode_meta.get("trust_filter_rule")
+            else None
+        ),
         raw_response_preview=geocode_meta.get("raw_response_preview"),
     )
     return float(lat), float(lon), geocode_source, geocode_meta
@@ -3942,16 +3986,28 @@ def _build_geocode_debug_payload(address: str) -> dict[str, Any]:
             "geocode_status": geocode_status,
             "accepted": geocode_status == "accepted",
             "match_count": int(meta.get("candidate_count") or 1),
+            "parsed_candidates": meta.get("raw_response_preview", {}).get("parsed_candidates")
+            if isinstance(meta.get("raw_response_preview"), dict)
+            else None,
             "selected_match": selected_match,
             "trust": {
                 "confidence_score": meta.get("confidence_score"),
                 "min_importance_threshold": getattr(geocoder, "min_importance", None),
                 "ambiguity_delta": getattr(geocoder, "ambiguity_delta", None),
+                "trust_filter_rule": meta.get("raw_response_preview", {}).get("trust_filter_rule")
+                if isinstance(meta.get("raw_response_preview"), dict)
+                else None,
+                "trust_filter_rejected": bool(
+                    (meta.get("raw_response_preview") or {}).get("trust_filter_rejected")
+                )
+                if isinstance(meta.get("raw_response_preview"), dict)
+                else False,
             },
             "resolved_latitude": float(lat),
             "resolved_longitude": float(lon),
             "geocode_source": source,
             "rejection_reason": None,
+            "rejection_category": None,
             "raw_response_preview": meta.get("raw_response_preview"),
             "region_resolution": {
                 "coverage_available": bool(coverage.get("coverage_available", False)),
@@ -3968,16 +4024,28 @@ def _build_geocode_debug_payload(address: str) -> dict[str, Any]:
             "geocode_status": status,
             "accepted": False,
             "match_count": 0,
+            "parsed_candidates": exc.raw_response_preview.get("parsed_candidates")
+            if isinstance(exc.raw_response_preview, dict)
+            else None,
             "selected_match": None,
             "trust": {
                 "confidence_score": None,
                 "min_importance_threshold": getattr(geocoder, "min_importance", None),
                 "ambiguity_delta": getattr(geocoder, "ambiguity_delta", None),
+                "trust_filter_rule": exc.raw_response_preview.get("trust_filter_rule")
+                if isinstance(exc.raw_response_preview, dict)
+                else None,
+                "trust_filter_rejected": status in {"low_confidence", "ambiguous_match", "trust_filter_rejected"},
             },
             "resolved_latitude": None,
             "resolved_longitude": None,
             "geocode_source": exc.provider,
             "rejection_reason": exc.rejection_reason,
+            "rejection_category": (
+                "trust_filter_rejected"
+                if status in {"low_confidence", "ambiguous_match", "trust_filter_rejected"}
+                else status
+            ),
             "raw_response_preview": exc.raw_response_preview,
             "region_resolution": None,
         }
@@ -3988,16 +4056,20 @@ def _build_geocode_debug_payload(address: str) -> dict[str, Any]:
             "geocode_status": "provider_error",
             "accepted": False,
             "match_count": 0,
+            "parsed_candidates": None,
             "selected_match": None,
             "trust": {
                 "confidence_score": None,
                 "min_importance_threshold": getattr(geocoder, "min_importance", None),
                 "ambiguity_delta": getattr(geocoder, "ambiguity_delta", None),
+                "trust_filter_rule": None,
+                "trust_filter_rejected": False,
             },
             "resolved_latitude": None,
             "resolved_longitude": None,
             "geocode_source": "OpenStreetMap Nominatim",
             "rejection_reason": str(exc),
+            "rejection_category": "provider_error",
             "raw_response_preview": None,
             "region_resolution": None,
         }
@@ -4017,6 +4089,12 @@ def geocode_debug(payload: GeocodeDebugRequest, _: ActorContext = Depends(get_ac
                 sort_keys=True,
             ),
         )
+    return _build_geocode_debug_payload(payload.address)
+
+
+@app.post("/debug/geocode", dependencies=[Depends(require_api_key)])
+def geocode_debug_alias(payload: GeocodeDebugRequest, _: ActorContext = Depends(get_actor_context)) -> dict[str, Any]:
+    # Alias for direct development debugging without risk-route naming.
     return _build_geocode_debug_payload(payload.address)
 
 

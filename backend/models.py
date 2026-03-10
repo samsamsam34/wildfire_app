@@ -69,6 +69,7 @@ GeocodeStatus = Literal[
     "no_match",
     "ambiguous_match",
     "low_confidence",
+    "trust_filter_rejected",
     "missing_coordinates",
     "provider_error",
     "parser_error",

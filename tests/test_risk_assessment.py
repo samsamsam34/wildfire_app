@@ -1051,6 +1051,7 @@ def test_low_confidence_address_returns_structured_geocode_low_confidence_error(
     detail = res.json()["detail"]
     assert detail["error"] == "geocoding_failed"
     assert detail["geocode_status"] == "low_confidence"
+    assert detail["rejection_category"] == "trust_filter_rejected"
     assert "below policy threshold" in detail["message"].lower()
 
 
@@ -1080,6 +1081,43 @@ def test_geocode_debug_returns_structured_accepted_payload_with_region_resolutio
     assert body["region_resolution"]["resolved_region_id"] == "missoula_pilot"
 
 
+def test_geocode_debug_returns_accepted_for_valid_uncovered_address(monkeypatch, tmp_path):
+    auth.API_KEYS = set()
+    monkeypatch.setattr(app_main, "store", AssessmentStore(str(tmp_path / "geocode_debug_uncovered.db")))
+
+    def _fake_geocode(_addr):
+        app_main.geocoder.last_result = {
+            "geocode_status": "accepted",
+            "normalized_address": "62910 O B Riley Rd, Bend, OR 97703",
+            "provider": "test-geocoder",
+            "matched_address": "62910 O B Riley Rd, Bend, OR 97703, USA",
+            "confidence_score": 0.03,
+            "candidate_count": 2,
+            "rejection_reason": None,
+            "raw_response_preview": {
+                "candidate_count": 2,
+                "parsed_candidates": [{"display_name": "62910 O B Riley Rd, Bend, OR 97703, USA", "importance": 0.03}],
+            },
+        }
+        return (44.0839, -121.3153, "test-geocoder")
+
+    monkeypatch.setattr(app_main.geocoder, "geocode", _fake_geocode)
+    monkeypatch.setattr(
+        app_main,
+        "lookup_region_for_point",
+        lambda lat, lon, regions_root=None: {"covered": False, "diagnostics": ["No prepared region bounds contain point."]},
+    )
+
+    res = client.post("/debug/geocode", json={"address": "62910 O B Riley Rd, Bend, OR 97703"})
+    assert res.status_code == 200
+    body = res.json()
+    assert body["geocode_status"] == "accepted"
+    assert body["accepted"] is True
+    assert body["region_resolution"]["coverage_available"] is False
+    assert body["region_resolution"]["reason"] == "no_prepared_region_for_location"
+    assert body["parsed_candidates"]
+
+
 def test_geocode_debug_returns_structured_rejection_for_parser_error(monkeypatch, tmp_path):
     auth.API_KEYS = set()
     monkeypatch.setattr(app_main, "store", AssessmentStore(str(tmp_path / "geocode_debug_parser.db")))
@@ -1102,6 +1140,7 @@ def test_geocode_debug_returns_structured_rejection_for_parser_error(monkeypatch
     body = res.json()
     assert body["accepted"] is False
     assert body["geocode_status"] == "parser_error"
+    assert body["rejection_category"] == "parser_error"
     assert body["rejection_reason"] == "input_too_short"
     assert body["region_resolution"] is None
 
