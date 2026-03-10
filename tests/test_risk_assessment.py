@@ -1193,7 +1193,7 @@ def test_route_geocode_and_coverage_are_consistent_for_valid_covered_address(mon
     assert assess_body["geocoding"]["geocode_status"] == "accepted"
     assert assess_body["coverage_available"] is True
     assert assess_body["resolved_region_id"] == "missoula_pilot"
-    assert assess_body["display_point_source"] in {"geocoded_address_point", "matched_structure_centroid"}
+    assert assess_body["display_point_source"] in {"property_anchor_point", "matched_structure_centroid"}
     assert assess_body["structure_match_status"] in {"none", "matched", "ambiguous", "provider_unavailable", "error"}
 
 

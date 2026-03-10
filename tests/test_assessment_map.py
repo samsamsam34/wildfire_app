@@ -168,11 +168,13 @@ def test_map_endpoint_returns_point_footprint_rings_and_overlays(monkeypatch, tm
     assert -90.0 <= payload["center"]["latitude"] <= 90.0
     assert -180.0 <= payload["center"]["longitude"] <= 180.0
     assert payload["basis_geometry_type"] in {"building_footprint", "point_proxy"}
-    assert payload["display_point_source"] in {"geocoded_address_point", "matched_structure_centroid"}
+    assert payload["display_point_source"] in {"property_anchor_point", "matched_structure_centroid"}
     assert payload["geocode_provider"]
     assert payload["geocode_precision"] in {"rooftop", "parcel_or_address_point", "interpolated", "approximate", "unknown", None}
     assert payload["structure_match_status"] in {"matched", "ambiguous", "none", "provider_unavailable", "error"}
     assert payload["geocoded_address_point"]["geometry"]["type"] == "Point"
+    assert payload["property_anchor_point"]["geometry"]["type"] == "Point"
+    assert payload["assessed_property_display_point"]["geometry"]["type"] == "Point"
 
     assert "property_point" in payload["data"]
     assert payload["data"]["property_point"]["type"] == "FeatureCollection"
@@ -180,6 +182,8 @@ def test_map_endpoint_returns_point_footprint_rings_and_overlays(monkeypatch, tm
     layer_keys = {row["layer_key"] for row in payload["layers"]}
     assert {
         "property_point",
+        "property_anchor_point",
+        "assessed_property_display_point",
         "geocoded_address_point",
         "matched_structure_centroid",
         "building_footprint",
@@ -222,7 +226,7 @@ def test_map_endpoint_point_only_fallback_is_graceful(monkeypatch, tmp_path: Pat
 
     assert payload["data"]["property_point"]["type"] == "FeatureCollection"
     assert payload["basis_geometry_type"] == "point_proxy"
-    assert payload["display_point_source"] == "geocoded_address_point"
+    assert payload["display_point_source"] == "property_anchor_point"
     assert payload["matched_structure_centroid"] is None
     assert payload["data"].get("defensible_space_rings", {}).get("features")
     assert any("point" in s.lower() or "footprint" in s.lower() for s in payload.get("limitations") or [])
@@ -341,10 +345,10 @@ def test_map_endpoint_uses_geocoded_point_when_structure_match_is_ambiguous(monk
     assert map_response.status_code == 200
     payload = map_response.json()
 
-    assert payload["display_point_source"] == "geocoded_address_point"
+    assert payload["display_point_source"] == "property_anchor_point"
     assert payload["structure_match_status"] == "ambiguous"
     assert payload["matched_structure_centroid"] is None
-    assert payload["data"]["property_point"]["features"][0]["geometry"]["coordinates"] == payload["geocoded_address_point"]["geometry"]["coordinates"]
+    assert payload["data"]["property_point"]["features"][0]["geometry"]["coordinates"] == payload["property_anchor_point"]["geometry"]["coordinates"]
     assert any("similarly plausible" in str(note).lower() for note in payload.get("limitations") or [])
 
 

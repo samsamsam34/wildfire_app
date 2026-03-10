@@ -179,10 +179,20 @@ def _resolve_vector_paths(
     fire_perimeters: str | None = None
     footprints: str | None = None
     fema_structures: str | None = None
+    address_points: str | None = None
+    parcels: str | None = None
 
     if manifest:
         fire_perimeters = resolve_region_file(manifest, "fire_perimeters", base_dir=region_data_dir)
         footprints = resolve_region_file(manifest, "building_footprints", base_dir=region_data_dir)
+        address_points = (
+            resolve_region_file(manifest, "address_points", base_dir=region_data_dir)
+            or resolve_region_file(manifest, "parcel_address_points", base_dir=region_data_dir)
+        )
+        parcels = (
+            resolve_region_file(manifest, "parcel_polygons", base_dir=region_data_dir)
+            or resolve_region_file(manifest, "parcels", base_dir=region_data_dir)
+        )
 
     runtime_paths = getattr(wildfire_data, "paths", {}) or {}
     base_paths = getattr(wildfire_data, "base_paths", {}) or {}
@@ -190,11 +200,15 @@ def _resolve_vector_paths(
     fire_perimeters = fire_perimeters or runtime_paths.get("perimeters") or base_paths.get("perimeters")
     footprints = footprints or runtime_paths.get("footprints") or base_paths.get("footprints")
     fema_structures = runtime_paths.get("fema_structures") or base_paths.get("fema_structures")
+    address_points = address_points or runtime_paths.get("address_points") or base_paths.get("address_points")
+    parcels = parcels or runtime_paths.get("parcels") or base_paths.get("parcels")
 
     return {
         "fire_perimeters": fire_perimeters,
         "footprints": footprints,
         "fema_structures": fema_structures,
+        "address_points": address_points,
+        "parcels": parcels,
     }
 
 
@@ -290,7 +304,11 @@ def build_assessment_map_payload(
     limitations: list[str] = []
     data: dict[str, dict[str, Any]] = {}
     layers: list[AssessmentMapLayer] = []
-    display_point_source = "geocoded_address_point"
+    display_point_source = str(
+        (result.property_level_context or {}).get("display_point_source")
+        or result.display_point_source
+        or "property_anchor_point"
+    )
     geocoding = result.geocoding if hasattr(result, "geocoding") else None
     geocode_provider = str(getattr(geocoding, "geocode_provider", "") or getattr(geocoding, "provider", "") or "") or None
     geocoded_address = str(getattr(geocoding, "geocoded_address", "") or getattr(geocoding, "matched_address", "") or "") or None
@@ -298,11 +316,57 @@ def build_assessment_map_payload(
     geocode_precision = str(getattr(geocoding, "geocode_precision", "") or "") or None
 
     property_ctx = result.property_level_context if isinstance(result.property_level_context, dict) else {}
+    property_anchor = (
+        property_ctx.get("property_anchor_point")
+        if isinstance(property_ctx.get("property_anchor_point"), dict)
+        else (result.property_anchor_point if isinstance(result.property_anchor_point, dict) else None)
+    )
+    anchor_lat = geocoded_lat
+    anchor_lon = geocoded_lon
+    if property_anchor is not None:
+        anchor_lon_lat = _canonical_wgs84_lon_lat(property_anchor.get("longitude"), property_anchor.get("latitude"))
+        if anchor_lon_lat is not None:
+            anchor_lon, anchor_lat = anchor_lon_lat
+    property_anchor_source = str(
+        property_ctx.get("property_anchor_source")
+        or result.property_anchor_source
+        or "geocoded_address_point"
+    )
+    property_anchor_precision = str(
+        property_ctx.get("property_anchor_precision")
+        or result.property_anchor_precision
+        or geocode_precision
+        or "unknown"
+    )
+    source_conflict_flag = bool(
+        property_ctx.get("source_conflict_flag")
+        if property_ctx.get("source_conflict_flag") is not None
+        else result.source_conflict_flag
+    )
+    alignment_notes = [
+        str(note)
+        for note in (
+            property_ctx.get("alignment_notes")
+            if isinstance(property_ctx.get("alignment_notes"), list)
+            else result.alignment_notes
+        )
+        if str(note).strip()
+    ]
+    parcel_id = str(property_ctx.get("parcel_id") or result.parcel_id or "") or None
     structure_match_status = str(property_ctx.get("structure_match_status") or result.structure_match_status or "none")
     structure_match_method = (
         str(property_ctx.get("structure_match_method") or result.structure_match_method)
         if (property_ctx.get("structure_match_method") or result.structure_match_method)
         else None
+    )
+    structure_match_confidence = (
+        float(property_ctx.get("structure_match_confidence"))
+        if property_ctx.get("structure_match_confidence") is not None
+        else (
+            float(result.structure_match_confidence)
+            if result.structure_match_confidence is not None
+            else None
+        )
     )
     structure_match_distance_m = (
         float(property_ctx.get("structure_match_distance_m"))
@@ -325,6 +389,20 @@ def build_assessment_map_payload(
     structure_match_candidates = property_ctx.get("structure_match_candidates")
     if not isinstance(structure_match_candidates, list):
         structure_match_candidates = []
+
+    parcel_address_point_feature = property_ctx.get("parcel_address_point") if isinstance(property_ctx.get("parcel_address_point"), dict) else None
+    parcel_polygon_feature = property_ctx.get("parcel_geometry") if isinstance(property_ctx.get("parcel_geometry"), dict) else None
+    parcel_geom_for_matching = None
+    if _geo_ready() and parcel_polygon_feature and isinstance(parcel_polygon_feature.get("geometry"), dict):
+        try:
+            parcel_geom_for_matching = shape(parcel_polygon_feature["geometry"])
+        except Exception:
+            parcel_geom_for_matching = None
+
+    footprint_source_name = str(property_ctx.get("footprint_source_name") or "") or None
+    footprint_source_vintage = str(property_ctx.get("footprint_source_vintage") or "") or None
+    parcel_source_name = str(property_ctx.get("parcel_source_name") or "") or None
+    parcel_source_vintage = str(property_ctx.get("parcel_source_vintage") or "") or None
 
     geocoded_address_point = _point_feature(
         lon=geocoded_lon,
@@ -351,6 +429,65 @@ def build_assessment_map_payload(
         )
     )
 
+    property_anchor_point_feature = _point_feature(
+        lon=anchor_lon,
+        lat=anchor_lat,
+        label="Property anchor point",
+        properties={
+            "source": "property_anchor_point",
+            "anchor_source": property_anchor_source,
+            "anchor_precision": property_anchor_precision,
+            "assessment_id": result.assessment_id,
+            "address": result.address,
+            "crs": "EPSG:4326",
+        },
+    )
+    data["property_anchor_point"] = _feature_collection([property_anchor_point_feature])
+    layers.append(
+        AssessmentMapLayer(
+            layer_key="property_anchor_point",
+            display_name="Property Anchor",
+            available=True,
+            default_visible=False,
+            description="Canonical property anchor used before structure matching (WGS84).",
+            legend_label="Property anchor point",
+            geometry_type="point",
+            feature_count=1,
+        )
+    )
+
+    if parcel_address_point_feature:
+        data["parcel_address_point"] = _feature_collection([parcel_address_point_feature])
+    layers.append(
+        AssessmentMapLayer(
+            layer_key="parcel_address_point",
+            display_name="Parcel/Address Point",
+            available=bool(parcel_address_point_feature),
+            default_visible=False,
+            description="Authoritative parcel/address point when configured.",
+            legend_label="Parcel address point",
+            geometry_type="point",
+            feature_count=1 if parcel_address_point_feature else 0,
+            reason_unavailable=None if parcel_address_point_feature else "No parcel/address point was available for this property.",
+        )
+    )
+
+    if parcel_polygon_feature:
+        data["parcel_polygon"] = _feature_collection([parcel_polygon_feature])
+    layers.append(
+        AssessmentMapLayer(
+            layer_key="parcel_polygon",
+            display_name="Parcel Boundary",
+            available=bool(parcel_polygon_feature),
+            default_visible=False,
+            description="Matched parcel polygon used for optional parcel-aware structure matching.",
+            legend_label="Parcel boundary",
+            geometry_type="polygon",
+            feature_count=1 if parcel_polygon_feature else 0,
+            reason_unavailable=None if parcel_polygon_feature else "No parcel polygon was available for this property.",
+        )
+    )
+
     paths = _resolve_vector_paths(result, wildfire_data=wildfire_data)
     footprint_paths = [p for p in [paths.get("footprints"), paths.get("fema_structures")] if p]
 
@@ -366,7 +503,12 @@ def build_assessment_map_payload(
             client = BuildingFootprintClient(path=footprint_paths[0], extra_paths=footprint_paths[1:])
             max_match_distance_m = float(getattr(client, "max_match_distance_m", 0.0) or 0.0) or None
             ambiguity_gap_m = float(getattr(client, "ambiguity_gap_m", 0.0) or 0.0) or None
-            fp_result = client.get_building_footprint(lat=lat, lon=lon)
+            fp_result = client.get_building_footprint(
+                lat=anchor_lat,
+                lon=anchor_lon,
+                parcel_polygon=parcel_geom_for_matching,
+                anchor_precision=property_anchor_precision,
+            )
         except Exception as exc:
             fp_result = None
             limitations.append(f"Building footprint lookup failed: {exc}")
@@ -374,6 +516,7 @@ def build_assessment_map_payload(
         if fp_result and fp_result.found and fp_result.footprint is not None:
             structure_match_status = str(fp_result.match_status or "matched")
             structure_match_method = fp_result.match_method or "point_in_polygon"
+            structure_match_confidence = float(fp_result.confidence or 0.0)
             structure_match_distance_m = (
                 float(fp_result.match_distance_m) if fp_result.match_distance_m is not None else 0.0
             )
@@ -428,13 +571,13 @@ def build_assessment_map_payload(
                     },
                 )
                 data["matched_structure_centroid"] = _feature_collection([matched_structure_centroid])
-                display_point_source = "matched_structure_centroid"
             rings, _assumptions = compute_structure_rings(fp_result.footprint)
             ring_features = _ring_zone_features_from_geometry(rings, basis="building_footprint")
         else:
             if fp_result:
                 structure_match_status = str(fp_result.match_status or "none")
                 structure_match_method = fp_result.match_method
+                structure_match_confidence = float(fp_result.confidence or 0.0)
                 structure_match_distance_m = (
                     float(fp_result.match_distance_m) if fp_result.match_distance_m is not None else None
                 )
@@ -447,14 +590,14 @@ def build_assessment_map_payload(
                 limitations.append(
                     "Multiple nearby structures were similarly plausible, so the map marker uses the geocoded address point."
                 )
-            ring_features = _build_proxy_rings(lat=lat, lon=lon)
+            ring_features = _build_proxy_rings(lat=anchor_lat, lon=anchor_lon)
     else:
         if not _geo_ready():
             limitations.append("Geospatial dependencies unavailable; map uses point-only rendering.")
         elif not footprint_paths:
             limitations.append("Building footprint source not configured; defensible-space zones use point-proxy geometry.")
             structure_match_status = "provider_unavailable"
-        ring_features = _build_proxy_rings(lat=lat, lon=lon)
+        ring_features = _build_proxy_rings(lat=anchor_lat, lon=anchor_lon)
 
     if matched_structure_centroid:
         layers.append(
@@ -484,8 +627,43 @@ def build_assessment_map_payload(
             )
         )
 
-    property_geometry = (
-        dict((matched_structure_centroid or geocoded_address_point).get("geometry") or {})
+    display_point_source = str(
+        property_ctx.get("display_point_source")
+        or result.display_point_source
+        or display_point_source
+        or "property_anchor_point"
+    )
+    if display_point_source == "matched_structure_centroid" and matched_structure_centroid is not None:
+        selected_display_feature = matched_structure_centroid
+    else:
+        display_point_source = "property_anchor_point"
+        selected_display_feature = property_anchor_point_feature
+
+    property_geometry = dict(selected_display_feature.get("geometry") or {})
+    assessed_display_point_feature = {
+        "type": "Feature",
+        "properties": {
+            "label": "Assessed property display point",
+            "source": display_point_source,
+            "assessment_id": result.assessment_id,
+            "address": result.address,
+            "crs": "EPSG:4326",
+        },
+        "geometry": property_geometry,
+    }
+
+    data["assessed_property_display_point"] = _feature_collection([assessed_display_point_feature])
+    layers.append(
+        AssessmentMapLayer(
+            layer_key="assessed_property_display_point",
+            display_name="Assessed Property Display Point",
+            available=True,
+            default_visible=True,
+            description="Main marker used in the homeowner map. Uses matched structure centroid only for high-confidence matches.",
+            legend_label="Assessed property",
+            geometry_type="point",
+            feature_count=1,
+        )
     )
     property_point = _feature_collection(
         [
@@ -510,8 +688,7 @@ def build_assessment_map_payload(
             available=True,
             default_visible=True,
             description=(
-                "Assessed property marker. Uses matched structure centroid when available, "
-                "otherwise geocoded address point."
+                "Backward-compatible alias of assessed property display point."
             ),
             legend_label="Assessed property",
             geometry_type="point",
@@ -551,7 +728,7 @@ def build_assessment_map_payload(
         )
     )
 
-    map_bbox = _viewport_bbox(lat, lon, radius_m=2500.0)
+    map_bbox = _viewport_bbox(anchor_lat, anchor_lon, radius_m=2500.0)
 
     fire_features: list[dict[str, Any]] = []
     fire_path = str(paths.get("fire_perimeters") or "")
@@ -585,7 +762,7 @@ def build_assessment_map_payload(
     if footprint_paths:
         nearby_structures = _filter_features_to_bbox(
             _load_geojson_features(footprint_paths[0]),
-            bbox_bounds=_viewport_bbox(lat, lon, radius_m=800.0),
+            bbox_bounds=_viewport_bbox(anchor_lat, anchor_lon, radius_m=800.0),
             max_features=250,
             clip=False,
         )
@@ -610,8 +787,11 @@ def build_assessment_map_payload(
     for note in list(result.defensible_space_limitations_summary or [])[:4]:
         if note not in limitations:
             limitations.append(str(note))
+    for note in alignment_notes[:3]:
+        if note not in limitations:
+            limitations.append(note)
 
-    center_lon, center_lat = geocoded_lon, geocoded_lat
+    center_lon, center_lat = anchor_lon, anchor_lat
     if isinstance(property_geometry.get("coordinates"), list) and len(property_geometry["coordinates"]) >= 2:
         maybe_lon = property_geometry["coordinates"][0]
         maybe_lat = property_geometry["coordinates"][1]
@@ -626,11 +806,26 @@ def build_assessment_map_payload(
         coverage_available=bool(result.coverage_available),
         basis_geometry_type=basis_geometry_type,
         geocode_provider=geocode_provider,
+        geocode_source_name=geocode_provider,
         geocoded_address=geocoded_address,
         geocode_location_type=geocode_location_type,
         geocode_precision=geocode_precision,
+        property_anchor_point=property_anchor_point_feature,
+        property_anchor_source=property_anchor_source,
+        property_anchor_precision=property_anchor_precision,
+        assessed_property_display_point=assessed_display_point_feature,
+        parcel_address_point=parcel_address_point_feature,
+        parcel_polygon=parcel_polygon_feature,
+        parcel_id=parcel_id,
+        parcel_source_name=parcel_source_name,
+        parcel_source_vintage=parcel_source_vintage,
+        footprint_source_name=footprint_source_name,
+        footprint_source_vintage=footprint_source_vintage,
+        source_conflict_flag=source_conflict_flag,
+        alignment_notes=alignment_notes[:6],
         structure_match_status=structure_match_status,
         structure_match_method=structure_match_method,
+        structure_match_confidence=structure_match_confidence,
         structure_match_distance_m=structure_match_distance_m,
         candidate_structure_count=candidate_structure_count,
         display_point_source=display_point_source,
@@ -652,14 +847,26 @@ def build_assessment_map_payload(
                 "geocode_location_type": geocode_location_type,
                 "geocode_precision": geocode_precision,
             },
+            "property_anchor": {
+                "source": property_anchor_source,
+                "precision": property_anchor_precision,
+                "parcel_id": parcel_id,
+                "source_conflict_flag": source_conflict_flag,
+                "alignment_notes": alignment_notes[:6],
+                "parcel_source_name": parcel_source_name,
+                "parcel_source_vintage": parcel_source_vintage,
+            },
             "structure_match": {
                 "status": structure_match_status,
                 "method": structure_match_method,
+                "confidence": structure_match_confidence,
                 "distance_m": structure_match_distance_m,
                 "candidate_count": candidate_structure_count,
                 "max_match_distance_m": max_match_distance_m,
                 "ambiguity_gap_m": ambiguity_gap_m,
                 "candidate_summaries": structure_match_candidates[:6] if structure_match_candidates else [],
+                "footprint_source_name": footprint_source_name,
+                "footprint_source_vintage": footprint_source_vintage,
             },
             "region_resolution": _dump_region_resolution(result),
             "model_governance": (result.model_governance.model_dump() if hasattr(result.model_governance, "model_dump") else {}),

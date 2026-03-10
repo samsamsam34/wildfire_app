@@ -13,6 +13,8 @@ LAYER_SPECS: dict[str, dict[str, Any]] = {
     "canopy": {"display_name": "Canopy Cover", "required_for": ["site_hazard", "home_ignition_vulnerability"]},
     "fire_perimeters": {"display_name": "Historical Fire Perimeters", "required_for": ["site_hazard", "insurance_readiness"]},
     "building_footprints": {"display_name": "Building Footprints", "required_for": ["home_ignition_vulnerability", "insurance_readiness"]},
+    "address_points": {"display_name": "Address/Parcel Points", "required_for": ["home_ignition_vulnerability"]},
+    "parcels": {"display_name": "Parcel Polygons", "required_for": ["home_ignition_vulnerability"]},
     "whp": {"display_name": "WHP Hazard Raster", "required_for": ["site_hazard"]},
     "mtbs_severity": {"display_name": "MTBS Severity Raster", "required_for": ["site_hazard"]},
     "gridmet_dryness": {"display_name": "gridMET Dryness", "required_for": ["site_hazard"]},
@@ -47,6 +49,8 @@ def initialize_layer_audit(runtime_paths: dict[str, str], region_context: dict[s
         "canopy": "canopy",
         "fire_perimeters": "perimeters",
         "building_footprints": "footprints",
+        "address_points": "address_points",
+        "parcels": "parcels",
         "whp": "whp",
         "mtbs_severity": "mtbs_severity",
         "gridmet_dryness": "gridmet_dryness",
@@ -183,4 +187,3 @@ def summarize_layer_audit(audit_rows: list[dict[str, Any]]) -> dict[str, Any]:
         "critical_missing_layers": sorted(set(critical_missing_layers)),
         "recommended_actions": dedup_actions[:10],
     }
-

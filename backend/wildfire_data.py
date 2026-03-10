@@ -14,6 +14,7 @@ from backend.layer_diagnostics import (
     summarize_layer_audit,
     update_layer_audit,
 )
+from backend.property_anchor import PropertyAnchorResolver
 from backend.open_data_adapters import (
     GridMETAdapter,
     MTBSAdapter,
@@ -124,6 +125,8 @@ class WildfireDataClient:
             "mtbs_severity": os.getenv("WF_LAYER_MTBS_SEVERITY_TIF", ""),
             "footprints": os.getenv("WF_LAYER_BUILDING_FOOTPRINTS_GEOJSON", ""),
             "fema_structures": os.getenv("WF_LAYER_FEMA_STRUCTURES_GEOJSON", ""),
+            "address_points": os.getenv("WF_LAYER_ADDRESS_POINTS_GEOJSON", ""),
+            "parcels": os.getenv("WF_LAYER_PARCELS_GEOJSON", ""),
             "roads": os.getenv("WF_LAYER_OSM_ROADS_GEOJSON", ""),
         }
         # Active runtime paths for the most recent collect_context() call.
@@ -173,6 +176,8 @@ class WildfireDataClient:
             configured_paths.get("canopy"),
             configured_paths.get("perimeters"),
             configured_paths.get("footprints"),
+            configured_paths.get("address_points"),
+            configured_paths.get("parcels"),
             configured_paths.get("whp"),
             configured_paths.get("gridmet_dryness"),
             configured_paths.get("roads"),
@@ -231,6 +236,8 @@ class WildfireDataClient:
                     "mtbs_severity": ("mtbs_severity", "burn_severity"),
                     "footprints": ("building_footprints", "footprints"),
                     "fema_structures": ("fema_structures",),
+                    "address_points": ("address_points", "parcel_address_points"),
+                    "parcels": ("parcel_polygons", "parcels"),
                     "roads": ("roads", "osm_roads", "road_network"),
                 }
                 for runtime_key, manifest_keys in layer_key_map.items():
@@ -489,6 +496,8 @@ class WildfireDataClient:
         fuel_path: str,
         footprint_path: str | None = None,
         fallback_footprint_path: str | None = None,
+        parcel_polygon: Any | None = None,
+        anchor_precision: str | None = None,
     ) -> tuple[dict[str, Any], list[str], list[str]]:
         assumptions: list[str] = []
         sources: list[str] = []
@@ -498,7 +507,16 @@ class WildfireDataClient:
             footprint_client = BuildingFootprintClient(path=source_paths[0], extra_paths=source_paths[1:])
 
         try:
-            result = footprint_client.get_building_footprint(lat, lon)
+            try:
+                result = footprint_client.get_building_footprint(
+                    lat,
+                    lon,
+                    parcel_polygon=parcel_polygon,
+                    anchor_precision=anchor_precision,
+                )
+            except TypeError:
+                # Backward-compatible path for tests/mocks that still expose (lat, lon) signature.
+                result = footprint_client.get_building_footprint(lat, lon)
         except Exception as exc:  # pragma: no cover - defensive guard for malformed sources
             assumptions.append(f"Building footprint lookup failed: {exc}")
             assumptions.append("Building footprint analysis unavailable; using point-based vegetation context.")
@@ -510,10 +528,11 @@ class WildfireDataClient:
                 "footprint_confidence": 0.0,
                 "structure_match_status": "error",
                 "structure_match_method": None,
+                "structure_match_confidence": 0.0,
                 "structure_match_distance_m": None,
                 "candidate_structure_count": 0,
                 "structure_match_candidates": [],
-                "display_point_source": "geocoded_address_point",
+                "display_point_source": "property_anchor_point",
                 "fallback_mode": "point_based",
                 "ring_metrics": None,
                 "nearest_vegetation_distance_ft": None,
@@ -521,6 +540,18 @@ class WildfireDataClient:
             }, assumptions, sources
 
         assumptions.extend(result.assumptions)
+        match_status = str(
+            getattr(
+                result,
+                "match_status",
+                "matched" if bool(getattr(result, "found", False) and getattr(result, "footprint", None) is not None) else "none",
+            )
+        )
+        match_method = getattr(result, "match_method", None)
+        match_confidence = float(getattr(result, "confidence", 0.0) or 0.0)
+        match_distance = getattr(result, "match_distance_m", None)
+        candidate_count = int(getattr(result, "candidate_count", 0) or 0)
+        candidate_summaries = list(getattr(result, "candidate_summaries", []) or [])
 
         if not result.found or result.footprint is None:
             assumptions.append("Building footprint analysis unavailable; using point-based vegetation context.")
@@ -551,9 +582,9 @@ class WildfireDataClient:
             assumptions_blob = " ".join(result.assumptions).lower()
             if "not configured" in assumptions_blob or "missing" in assumptions_blob:
                 status = "provider_unavailable"
-            elif result.match_status == "ambiguous":
+            elif match_status == "ambiguous":
                 status = "ambiguous"
-            elif result.match_status == "none":
+            elif match_status == "none":
                 status = "not_found"
             return {
                 "footprint_used": False,
@@ -561,12 +592,13 @@ class WildfireDataClient:
                 "footprint_status": status,
                 "footprint_source": result.source,
                 "footprint_confidence": result.confidence,
-                "structure_match_status": result.match_status or "none",
-                "structure_match_method": result.match_method,
-                "structure_match_distance_m": result.match_distance_m,
-                "candidate_structure_count": int(result.candidate_count or 0),
-                "structure_match_candidates": list(result.candidate_summaries or []),
-                "display_point_source": "geocoded_address_point",
+                "structure_match_status": match_status or "none",
+                "structure_match_method": match_method,
+                "structure_match_confidence": match_confidence,
+                "structure_match_distance_m": match_distance,
+                "candidate_structure_count": candidate_count,
+                "structure_match_candidates": candidate_summaries,
+                "display_point_source": "property_anchor_point",
                 "fallback_mode": "point_based",
                 "ring_metrics": point_proxy_metrics if point_proxy_metrics else None,
                 "nearest_vegetation_distance_ft": nearest_vegetation_distance_ft,
@@ -646,18 +678,32 @@ class WildfireDataClient:
         if ring_metrics:
             sources.append("Structure ring vegetation summaries")
 
+        display_confidence_floor_raw = str(os.getenv("WF_STRUCTURE_DISPLAY_MIN_CONFIDENCE", "0.8")).strip()
+        try:
+            display_confidence_floor = max(0.0, min(1.0, float(display_confidence_floor_raw)))
+        except ValueError:
+            display_confidence_floor = 0.8
+
+        structure_match_confidence = match_confidence
+        display_point_source = (
+            "matched_structure_centroid"
+            if (match_status == "matched" and structure_match_confidence >= display_confidence_floor and ring_metrics)
+            else "property_anchor_point"
+        )
+
         return {
             "footprint_used": bool(ring_metrics),
             "footprint_found": result.found,
             "footprint_status": "used" if ring_metrics else "error",
             "footprint_source": result.source,
             "footprint_confidence": result.confidence,
-            "structure_match_status": result.match_status or ("matched" if result.found else "none"),
-            "structure_match_method": result.match_method,
-            "structure_match_distance_m": result.match_distance_m,
-            "candidate_structure_count": int(result.candidate_count or 0),
-            "structure_match_candidates": list(result.candidate_summaries or []),
-            "display_point_source": "matched_structure_centroid" if ring_metrics else "geocoded_address_point",
+            "structure_match_status": match_status or ("matched" if result.found else "none"),
+            "structure_match_method": match_method,
+            "structure_match_confidence": structure_match_confidence,
+            "structure_match_distance_m": match_distance,
+            "candidate_structure_count": candidate_count,
+            "structure_match_candidates": candidate_summaries,
+            "display_point_source": display_point_source,
             "fallback_mode": "footprint" if ring_metrics else "point_based",
             "ring_metrics": ring_metrics,
             "nearest_vegetation_distance_ft": nearest_vegetation_distance_ft,
@@ -883,12 +929,24 @@ class WildfireDataClient:
             "footprint_used": False,
             "footprint_found": False,
             "footprint_status": "not_found",
+            "structure_match_status": "none",
+            "structure_match_method": None,
+            "structure_match_confidence": 0.0,
+            "structure_match_distance_m": None,
+            "candidate_structure_count": 0,
+            "structure_match_candidates": [],
+            "display_point_source": "property_anchor_point",
             "fallback_mode": "point_based",
             "ring_metrics": None,
             "hazard_context": {},
             "moisture_context": {},
             "historical_fire_context": {},
             "access_context": {},
+            "property_anchor_point": {"latitude": float(lat), "longitude": float(lon)},
+            "property_anchor_source": "geocoded_address_point",
+            "property_anchor_precision": "unknown",
+            "geocoded_address_point": {"latitude": float(lat), "longitude": float(lon)},
+            "assessed_property_display_point": {"latitude": float(lat), "longitude": float(lon)},
             "region_status": region_context.get("region_status"),
             "region_id": region_context.get("region_id"),
             "region_display_name": region_context.get("region_display_name"),
@@ -949,23 +1007,112 @@ class WildfireDataClient:
                 coverage_summary=coverage_summary,
             )
 
+        anchor_resolver = PropertyAnchorResolver(
+            address_points_path=runtime_paths.get("address_points"),
+            parcels_path=runtime_paths.get("parcels"),
+        )
+        anchor = anchor_resolver.resolve(
+            geocoded_lat=float(lat),
+            geocoded_lon=float(lon),
+            geocode_provider=None,
+            geocode_precision="unknown",
+            geocoded_address=None,
+        )
+        property_level_context.update(anchor.to_context())
+        assumptions.extend(anchor.diagnostics[:2])
+        assumptions.extend(anchor.alignment_notes[:2])
+        if anchor.address_point_source_name:
+            sources.append(f"Address points: {anchor.address_point_source_name}")
+        if anchor.parcel_source_name:
+            sources.append(f"Parcels: {anchor.parcel_source_name}")
+
+        update_layer_audit(
+            layer_audit,
+            "address_points",
+            sample_attempted=True,
+            sample_succeeded=anchor.parcel_address_point_geojson is not None,
+            coverage_status=(
+                "observed"
+                if anchor.parcel_address_point_geojson is not None
+                else ("not_configured" if not runtime_paths.get("address_points") else "fallback_used")
+            ),
+            raw_value_preview={
+                "source_name": anchor.address_point_source_name,
+                "source_vintage": anchor.address_point_source_vintage,
+            }
+            if anchor.parcel_address_point_geojson is not None
+            else None,
+            failure_reason=(
+                None
+                if anchor.parcel_address_point_geojson is not None
+                else "No nearby address-point candidate was selected."
+            ),
+        )
+        update_layer_audit(
+            layer_audit,
+            "parcels",
+            sample_attempted=True,
+            sample_succeeded=anchor.parcel_geometry_geojson is not None,
+            coverage_status=(
+                "observed"
+                if anchor.parcel_geometry_geojson is not None
+                else ("not_configured" if not runtime_paths.get("parcels") else "fallback_used")
+            ),
+            raw_value_preview={"parcel_id": anchor.parcel_id} if anchor.parcel_geometry_geojson is not None else None,
+            failure_reason=(
+                None if anchor.parcel_geometry_geojson is not None else "No containing parcel polygon found for anchor."
+            ),
+        )
+
         ring_context, ring_assumptions, ring_sources = self._compute_structure_ring_metrics(
-            lat,
-            lon,
+            anchor.anchor_latitude,
+            anchor.anchor_longitude,
             canopy_path=runtime_paths.get("canopy", ""),
             fuel_path=runtime_paths.get("fuel", ""),
             footprint_path=runtime_paths.get("footprints"),
             fallback_footprint_path=runtime_paths.get("fema_structures"),
+            parcel_polygon=anchor.parcel_polygon,
+            anchor_precision=anchor.anchor_precision,
         )
         property_level_context = ring_context
         property_level_context.update(
             {
+                **anchor.to_context(),
                 "region_status": region_context.get("region_status"),
                 "region_id": region_context.get("region_id"),
                 "region_display_name": region_context.get("region_display_name"),
                 "region_manifest_path": region_context.get("manifest_path"),
             }
         )
+        display_point_source = str(property_level_context.get("display_point_source") or "property_anchor_point")
+        if (
+            display_point_source == "matched_structure_centroid"
+            and isinstance(property_level_context.get("footprint_centroid"), dict)
+            and property_level_context["footprint_centroid"].get("latitude") is not None
+            and property_level_context["footprint_centroid"].get("longitude") is not None
+        ):
+            property_level_context["assessed_property_display_point"] = {
+                "latitude": float(property_level_context["footprint_centroid"]["latitude"]),
+                "longitude": float(property_level_context["footprint_centroid"]["longitude"]),
+            }
+        else:
+            property_level_context["display_point_source"] = "property_anchor_point"
+            property_level_context["assessed_property_display_point"] = dict(
+                property_level_context.get("property_anchor_point") or {
+                    "latitude": float(lat),
+                    "longitude": float(lon),
+                }
+            )
+
+        property_level_context["geocode_to_anchor_distance_m"] = anchor.geocode_to_anchor_distance_m
+        property_level_context["source_conflict_flag"] = bool(anchor.source_conflict_flag)
+        property_level_context["alignment_notes"] = list(anchor.alignment_notes)
+        property_level_context["footprint_source_name"] = str(
+            os.getenv("WF_FOOTPRINT_SOURCE_NAME", "") or Path(str(ring_context.get("footprint_source") or "")).stem
+        ) or None
+        property_level_context["footprint_source_vintage"] = str(
+            os.getenv("WF_FOOTPRINT_SOURCE_VINTAGE", "")
+        ) or None
         footprint_status = str(ring_context.get("footprint_status") or "not_found")
         update_layer_audit(
             layer_audit,

@@ -192,6 +192,8 @@ Common runtime settings:
   - `WF_LAYER_GRIDMET_DRYNESS_TIF`
   - `WF_LAYER_OSM_ROADS_GEOJSON`
   - `WF_LAYER_FEMA_STRUCTURES_GEOJSON`
+  - `WF_LAYER_ADDRESS_POINTS_GEOJSON`
+  - `WF_LAYER_PARCELS_GEOJSON`
 - `WILDFIRE_APP_CACHE_ROOT`, `WILDFIRE_APP_DATA_ROOT`, `WILDFIRE_APP_TMP_ROOT` (offline prep script paths)
 
 Legacy direct-layer paths are still supported via `WF_LAYER_*` env vars (`DEM`, `SLOPE`, `FUEL`, `CANOPY`, fire perimeters, building footprints, etc.), but prepared-region runtime is the primary path.
@@ -524,8 +526,10 @@ After a successful assessment, the frontend shows a map card with property and w
 - Map payload endpoint: `GET /report/{assessment_id}/map`
 - Geometry contract:
   - map geometries are GeoJSON in WGS84 (`EPSG:4326`) with `[longitude, latitude]` coordinates
-  - `display_point_source` identifies whether the main property marker is from
-    `matched_structure_centroid` (preferred when available) or `geocoded_address_point`
+  - map payload separates `geocoded_address_point`, `property_anchor_point`, and
+    `matched_structure_centroid`
+  - `display_point_source` identifies whether the main marker is from
+    `matched_structure_centroid` (high-confidence only) or `property_anchor_point`
   - map payload includes geocode/structure-match diagnostics (`geocode_precision`,
     `structure_match_status`, `structure_match_method`, `structure_match_distance_m`,
     `candidate_structure_count`) for routing/alignment QA

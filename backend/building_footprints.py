@@ -193,7 +193,14 @@ class BuildingFootprintClient:
         except Exception:
             return False
 
-    def get_building_footprint(self, lat: float, lon: float) -> BuildingFootprintResult:
+    def get_building_footprint(
+        self,
+        lat: float,
+        lon: float,
+        *,
+        parcel_polygon: Any | None = None,
+        anchor_precision: str | None = None,
+    ) -> BuildingFootprintResult:
         assumptions: list[str] = []
         if not self._geo_ready():
             assumptions.append("Building footprint analysis unavailable; geospatial dependencies missing.")
@@ -264,6 +271,7 @@ class BuildingFootprintClient:
         point_m = shapely_transform(to_3857, point_wgs84)
 
         candidates: list[dict[str, Any]] = []
+        parcel_overlap_available = parcel_polygon is not None and not getattr(parcel_polygon, "is_empty", True)
         for candidate, source in features:
             candidate_m = shapely_transform(to_3857, candidate)
             distance = float(max(0.0, candidate_m.distance(point_m)))
@@ -271,10 +279,17 @@ class BuildingFootprintClient:
                 continue
             centroid_distance = float(max(0.0, candidate_m.centroid.distance(point_m)))
             area_score = self._residential_area_score(self._geom_area_m2(candidate))
+            parcel_overlap = False
+            if parcel_overlap_available:
+                try:
+                    parcel_overlap = bool(candidate.intersects(parcel_polygon))
+                except Exception:
+                    parcel_overlap = False
             score = (
                 max(0.0, 1.0 - (distance / max(self.max_match_distance_m, 1.0))) * 0.75
                 + max(0.0, 1.0 - (centroid_distance / max(self.max_search_m, 1.0))) * 0.15
                 + area_score * 0.10
+                + (0.12 if parcel_overlap else 0.0)
             )
             candidates.append(
                 {
@@ -283,6 +298,7 @@ class BuildingFootprintClient:
                     "distance_m": distance,
                     "centroid_distance_m": centroid_distance,
                     "area_score": area_score,
+                    "parcel_overlap": parcel_overlap,
                     "score": score,
                 }
             )
@@ -297,15 +313,26 @@ class BuildingFootprintClient:
                 assumptions=assumptions,
             )
 
+        if parcel_overlap_available:
+            parcel_candidates = [row for row in candidates if row.get("parcel_overlap")]
+            if parcel_candidates:
+                candidates = parcel_candidates
+                assumptions.append("Structure matching prioritized candidates intersecting the matched parcel.")
+
         candidates.sort(key=lambda row: (row["distance_m"], row["centroid_distance_m"], -row["score"]))
         top = candidates[0]
         top_distance = float(top["distance_m"])
+        normalized_precision = str(anchor_precision or "unknown").strip().lower()
+        if normalized_precision in {"interpolated", "approximate", "unknown"}:
+            effective_max_match_distance_m = min(self.max_match_distance_m, 18.0)
+        else:
+            effective_max_match_distance_m = self.max_match_distance_m
         candidate_summaries = [
             self._candidate_summary(geom=row["geom"], source=row["source"], point_wgs84=point_wgs84, to_3857=to_3857)
             for row in candidates[: self.max_candidate_summaries]
         ]
 
-        if top_distance > self.max_match_distance_m:
+        if top_distance > effective_max_match_distance_m:
             assumptions.append(
                 "Nearest structure footprint is too far from the geocoded point; using geocoded point fallback."
             )
@@ -339,8 +366,12 @@ class BuildingFootprintClient:
                     assumptions=assumptions,
                 )
 
-        distance_component = max(0.0, 1.0 - (top_distance / max(self.max_match_distance_m, 1.0)))
+        distance_component = max(0.0, 1.0 - (top_distance / max(effective_max_match_distance_m, 1.0)))
         confidence = max(0.45, min(0.9, 0.45 + (distance_component * 0.4) + (float(top["area_score"]) * 0.1)))
+        if normalized_precision in {"interpolated", "approximate"}:
+            confidence = min(confidence, 0.74)
+        if normalized_precision == "unknown":
+            confidence = min(confidence, 0.7)
         nearest_geom = top["geom"]
         nearest_source = top["source"]
         c = nearest_geom.centroid

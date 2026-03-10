@@ -1353,10 +1353,21 @@ def _normalize_property_level_context(raw_context: object) -> dict[str, Any]:
             "footprint_status": "not_found",
             "structure_match_status": "none",
             "structure_match_method": None,
+            "structure_match_confidence": 0.0,
             "structure_match_distance_m": None,
             "candidate_structure_count": 0,
             "structure_match_candidates": [],
-            "display_point_source": "geocoded_address_point",
+            "display_point_source": "property_anchor_point",
+            "property_anchor_point": None,
+            "property_anchor_source": "geocoded_address_point",
+            "property_anchor_precision": "unknown",
+            "geocoded_address_point": None,
+            "assessed_property_display_point": None,
+            "parcel_id": None,
+            "parcel_geometry": None,
+            "parcel_address_point": None,
+            "alignment_notes": [],
+            "source_conflict_flag": False,
             "fallback_mode": "point_based",
             "ring_metrics": None,
         }
@@ -1370,11 +1381,29 @@ def _normalize_property_level_context(raw_context: object) -> dict[str, Any]:
     normalized.setdefault("fallback_mode", "footprint" if footprint_used else "point_based")
     normalized.setdefault("structure_match_status", "matched" if footprint_used else "none")
     normalized.setdefault("structure_match_method", "point_in_polygon" if footprint_used else None)
+    normalized.setdefault("structure_match_confidence", float(normalized.get("footprint_confidence") or (0.9 if footprint_used else 0.0)))
     normalized.setdefault("structure_match_distance_m", 0.0 if footprint_used else None)
     normalized.setdefault("candidate_structure_count", 1 if footprint_used else 0)
     candidates = normalized.get("structure_match_candidates")
     normalized["structure_match_candidates"] = candidates if isinstance(candidates, list) else []
-    normalized.setdefault("display_point_source", "matched_structure_centroid" if footprint_used else "geocoded_address_point")
+    normalized.setdefault("display_point_source", "matched_structure_centroid" if footprint_used else "property_anchor_point")
+    normalized.setdefault(
+        "property_anchor_point",
+        {
+            "latitude": None,
+            "longitude": None,
+        },
+    )
+    normalized.setdefault("property_anchor_source", "geocoded_address_point")
+    normalized.setdefault("property_anchor_precision", "unknown")
+    normalized.setdefault("geocoded_address_point", {"latitude": None, "longitude": None})
+    normalized.setdefault("assessed_property_display_point", normalized.get("property_anchor_point"))
+    normalized.setdefault("parcel_id", None)
+    normalized.setdefault("parcel_geometry", None)
+    normalized.setdefault("parcel_address_point", None)
+    notes = normalized.get("alignment_notes")
+    normalized["alignment_notes"] = notes if isinstance(notes, list) else []
+    normalized.setdefault("source_conflict_flag", False)
     ring_metrics = normalized.get("ring_metrics")
     if isinstance(ring_metrics, dict):
         # Canonical zone keys for API consumers.
@@ -2684,6 +2713,28 @@ def _run_assessment(
     scoring_attrs = normalize_property_attributes(payload.attributes)
     normalization_changes = normalized_attribute_changes(payload.attributes, scoring_attrs)
     property_level_context = _normalize_property_level_context(context.property_level_context)
+    geocode_precision = str(geocode_meta.get("geocode_precision") or "unknown")
+    geocode_provider = str(geocode_meta.get("geocode_provider") or geocode_meta.get("provider") or geocode_source or "")
+    property_level_context["geocode_provider"] = geocode_provider or None
+    property_level_context["geocoded_address"] = geocode_meta.get("geocoded_address") or geocode_meta.get("matched_address")
+    property_level_context["geocode_precision"] = geocode_precision
+    if property_level_context.get("property_anchor_source") in {
+        "geocoded_address_point",
+        "rooftop_geocode",
+        "address_point_geocode",
+        "interpolated_geocode",
+        "approximate_geocode",
+    }:
+        property_level_context["property_anchor_precision"] = geocode_precision
+    if not isinstance(property_level_context.get("geocoded_address_point"), dict):
+        property_level_context["geocoded_address_point"] = {"latitude": lat, "longitude": lon}
+    if not isinstance(property_level_context.get("property_anchor_point"), dict):
+        property_level_context["property_anchor_point"] = {"latitude": lat, "longitude": lon}
+    if not isinstance(property_level_context.get("assessed_property_display_point"), dict):
+        property_level_context["assessed_property_display_point"] = dict(
+            property_level_context.get("property_anchor_point") or {"latitude": lat, "longitude": lon}
+        )
+    context.property_level_context = property_level_context
     scoring_attrs, attribute_fallbacks = _apply_attribute_fallbacks(
         scoring_attrs,
         property_level_context=property_level_context,
@@ -3076,6 +3127,18 @@ def _run_assessment(
     fact_map = _attributes_to_dict(payload.attributes)
     final_tags = sorted(set((payload.tags or []) + (tags or [])))
 
+    def _clean_point_dict(raw: object) -> dict[str, float] | None:
+        if not isinstance(raw, dict):
+            return None
+        try:
+            lat_v = float(raw.get("latitude"))
+            lon_v = float(raw.get("longitude"))
+        except (TypeError, ValueError):
+            return None
+        if not (-90.0 <= lat_v <= 90.0 and -180.0 <= lon_v <= 180.0):
+            return None
+        return {"latitude": lat_v, "longitude": lon_v}
+
     region_data_version = str(property_level_context.get("region_manifest_path") or "") or None
     governance = _build_result_governance(
         ruleset_version=ruleset.ruleset_version,
@@ -3155,11 +3218,37 @@ def _run_assessment(
         region_resolution=region_resolution,
         coverage_available=bool(region_resolution.coverage_available),
         resolved_region_id=region_resolution.resolved_region_id,
-        display_point_source=str(property_level_context.get("display_point_source") or "geocoded_address_point"),
+        property_anchor_point=_clean_point_dict(property_level_context.get("property_anchor_point")),
+        property_anchor_source=(
+            str(property_level_context.get("property_anchor_source"))
+            if property_level_context.get("property_anchor_source")
+            else None
+        ),
+        property_anchor_precision=(
+            str(property_level_context.get("property_anchor_precision"))
+            if property_level_context.get("property_anchor_precision")
+            else None
+        ),
+        assessed_property_display_point=_clean_point_dict(property_level_context.get("assessed_property_display_point")),
+        parcel_id=(
+            str(property_level_context.get("parcel_id"))
+            if property_level_context.get("parcel_id")
+            else None
+        ),
+        source_conflict_flag=bool(property_level_context.get("source_conflict_flag")),
+        alignment_notes=[
+            str(note) for note in (property_level_context.get("alignment_notes") or []) if str(note).strip()
+        ],
+        display_point_source=str(property_level_context.get("display_point_source") or "property_anchor_point"),
         structure_match_status=str(property_level_context.get("structure_match_status") or "none"),
         structure_match_method=(
             str(property_level_context.get("structure_match_method"))
             if property_level_context.get("structure_match_method")
+            else None
+        ),
+        structure_match_confidence=(
+            float(property_level_context.get("structure_match_confidence"))
+            if property_level_context.get("structure_match_confidence") is not None
             else None
         ),
         structure_match_distance_m=(
@@ -5354,12 +5443,24 @@ def layer_diagnostics(payload: AddressRequest, ctx: ActorContext = Depends(get_a
             "footprint_used": (debug_payload.get("property_level_context") or {}).get("footprint_used"),
             "footprint_status": (debug_payload.get("property_level_context") or {}).get("footprint_status"),
             "footprint_source": (debug_payload.get("property_level_context") or {}).get("footprint_source"),
+            "footprint_source_name": (debug_payload.get("property_level_context") or {}).get("footprint_source_name"),
+            "footprint_source_vintage": (debug_payload.get("property_level_context") or {}).get("footprint_source_vintage"),
+            "property_anchor_point": (debug_payload.get("property_level_context") or {}).get("property_anchor_point"),
+            "property_anchor_source": (debug_payload.get("property_level_context") or {}).get("property_anchor_source"),
+            "property_anchor_precision": (debug_payload.get("property_level_context") or {}).get("property_anchor_precision"),
+            "parcel_id": (debug_payload.get("property_level_context") or {}).get("parcel_id"),
+            "parcel_source_name": (debug_payload.get("property_level_context") or {}).get("parcel_source_name"),
+            "parcel_source_vintage": (debug_payload.get("property_level_context") or {}).get("parcel_source_vintage"),
             "structure_match_status": (debug_payload.get("property_level_context") or {}).get("structure_match_status"),
             "structure_match_method": (debug_payload.get("property_level_context") or {}).get("structure_match_method"),
+            "structure_match_confidence": (debug_payload.get("property_level_context") or {}).get("structure_match_confidence"),
             "structure_match_distance_m": (debug_payload.get("property_level_context") or {}).get("structure_match_distance_m"),
             "candidate_structure_count": (debug_payload.get("property_level_context") or {}).get("candidate_structure_count"),
             "structure_match_candidates": (debug_payload.get("property_level_context") or {}).get("structure_match_candidates"),
             "display_point_source": (debug_payload.get("property_level_context") or {}).get("display_point_source"),
+            "assessed_property_display_point": (debug_payload.get("property_level_context") or {}).get("assessed_property_display_point"),
+            "source_conflict_flag": (debug_payload.get("property_level_context") or {}).get("source_conflict_flag"),
+            "alignment_notes": (debug_payload.get("property_level_context") or {}).get("alignment_notes"),
             "fallback_mode": (debug_payload.get("property_level_context") or {}).get("fallback_mode"),
             "defensible_space_analysis": (debug_payload.get("property_level_context") or {}).get("defensible_space_analysis"),
         },

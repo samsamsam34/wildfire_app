@@ -443,6 +443,20 @@
       let mapLayerInstances = {};
 
       const mapLayerStyle = {
+        property_anchor_point: {
+          radius: 5,
+          color: "#b45309",
+          weight: 2,
+          fillColor: "#f59e0b",
+          fillOpacity: 0.65,
+        },
+        parcel_address_point: {
+          radius: 4,
+          color: "#334155",
+          weight: 2,
+          fillColor: "#94a3b8",
+          fillOpacity: 0.65,
+        },
         geocoded_address_point: {
           radius: 5,
           color: "#6d28d9",
@@ -469,6 +483,12 @@
           weight: 2,
           fillColor: "#60a5fa",
           fillOpacity: 0.24,
+        },
+        parcel_polygon: {
+          color: "#334155",
+          weight: 2,
+          fillColor: "#94a3b8",
+          fillOpacity: 0.05,
         },
         defensible_space_rings: (feature) => {
           const zone = feature?.properties?.zone_key;
@@ -611,22 +631,36 @@
         }
 
         const geocoded = payload?.geocoded_address_point;
+        const anchor = payload?.property_anchor_point;
+        const parcelPoint = payload?.parcel_address_point;
+        const parcelPolygon = payload?.parcel_polygon;
         const matchedCentroid = payload?.matched_structure_centroid;
         const footprint = payload?.matched_structure_footprint;
-        const displayPointSource = payload?.display_point_source || "geocoded_address_point";
+        const displayPointSource = payload?.display_point_source || "property_anchor_point";
         const geocodeProvider = payload?.geocode_provider || payload?.metadata?.geocoding?.provider || "unknown";
         const geocodePrecision = payload?.geocode_precision || payload?.metadata?.geocoding?.geocode_precision || "unknown";
         const geocodeLocationType = payload?.geocode_location_type || payload?.metadata?.geocoding?.geocode_location_type || "unknown";
+        const anchorSource = payload?.property_anchor_source || payload?.metadata?.property_anchor?.source || "unknown";
+        const anchorPrecision = payload?.property_anchor_precision || payload?.metadata?.property_anchor?.precision || "unknown";
+        const sourceConflict = !!(payload?.source_conflict_flag ?? payload?.metadata?.property_anchor?.source_conflict_flag);
+        const parcelId = payload?.parcel_id || payload?.metadata?.property_anchor?.parcel_id || "n/a";
         const structureMatchStatus = payload?.structure_match_status || payload?.metadata?.structure_match?.status || "none";
         const structureMatchMethod = payload?.structure_match_method || payload?.metadata?.structure_match?.method || "none";
+        const structureMatchConfidence = payload?.structure_match_confidence ?? payload?.metadata?.structure_match?.confidence;
         const structureMatchDistanceM = payload?.structure_match_distance_m ?? payload?.metadata?.structure_match?.distance_m;
         const candidateStructureCount = payload?.candidate_structure_count ?? payload?.metadata?.structure_match?.candidate_count;
         const maxMatchDistanceM = payload?.metadata?.structure_match?.max_match_distance_m;
         const ambiguityGapM = payload?.metadata?.structure_match?.ambiguity_gap_m;
+        const footprintSourceName = payload?.metadata?.structure_match?.footprint_source_name || "unknown";
+        const footprintSourceVintage = payload?.metadata?.structure_match?.footprint_source_vintage || "unknown";
+        const parcelSourceName = payload?.metadata?.property_anchor?.parcel_source_name || "unknown";
+        const parcelSourceVintage = payload?.metadata?.property_anchor?.parcel_source_vintage || "unknown";
         const candidateSummaries = Array.isArray(payload?.metadata?.structure_match?.candidate_summaries)
           ? payload.metadata.structure_match.candidate_summaries
           : [];
         const geocodedCoords = parsePointCoordinates(geocoded);
+        const anchorCoords = parsePointCoordinates(anchor);
+        const parcelPointCoords = parsePointCoordinates(parcelPoint);
         const centroidCoords = parsePointCoordinates(matchedCentroid);
 
         let offsetText = "n/a";
@@ -646,13 +680,23 @@
           `geocode_provider: ${geocodeProvider}`,
           `geocode_precision: ${geocodePrecision}`,
           `geocode_location_type: ${geocodeLocationType}`,
+          `property_anchor_source: ${anchorSource}`,
+          `property_anchor_precision: ${anchorPrecision}`,
+          `source_conflict_flag: ${sourceConflict ? "true" : "false"}`,
+          `parcel_id: ${parcelId}`,
           `display_point_source: ${displayPointSource}`,
           `structure_match_status: ${structureMatchStatus}`,
           `structure_match_method: ${structureMatchMethod}`,
+          `structure_match_confidence: ${Number.isFinite(Number(structureMatchConfidence)) ? Number(structureMatchConfidence).toFixed(2) : "n/a"}`,
           `structure_match_distance_m: ${Number.isFinite(Number(structureMatchDistanceM)) ? Number(structureMatchDistanceM).toFixed(2) : "n/a"}`,
           `candidate_structure_count: ${Number.isFinite(Number(candidateStructureCount)) ? Number(candidateStructureCount) : "n/a"}`,
           `match_thresholds_m: max=${Number.isFinite(Number(maxMatchDistanceM)) ? Number(maxMatchDistanceM).toFixed(1) : "n/a"}, ambiguity_gap=${Number.isFinite(Number(ambiguityGapM)) ? Number(ambiguityGapM).toFixed(1) : "n/a"}`,
+          `footprint_source: ${footprintSourceName} (vintage=${footprintSourceVintage})`,
+          `parcel_source: ${parcelSourceName} (vintage=${parcelSourceVintage})`,
           `geocoded_address_point: ${geocodedCoords ? `[${geocodedCoords.lon.toFixed(6)}, ${geocodedCoords.lat.toFixed(6)}]` : "unavailable"}`,
+          `property_anchor_point: ${anchorCoords ? `[${anchorCoords.lon.toFixed(6)}, ${anchorCoords.lat.toFixed(6)}]` : "unavailable"}`,
+          `parcel_address_point: ${parcelPointCoords ? `[${parcelPointCoords.lon.toFixed(6)}, ${parcelPointCoords.lat.toFixed(6)}]` : "unavailable"}`,
+          `parcel_polygon: ${parcelPolygon ? "available" : "unavailable"}`,
           `matched_structure_centroid: ${centroidCoords ? `[${centroidCoords.lon.toFixed(6)}, ${centroidCoords.lat.toFixed(6)}]` : "unavailable"}`,
           `matched_structure_footprint: ${footprint ? "available" : "unavailable"}`,
           `geocode_to_centroid_offset: ${offsetText}`,
@@ -669,7 +713,14 @@
 
       function buildLeafletLayer(layerKey, fc) {
         if (!window.L || !fc || !Array.isArray(fc.features)) return null;
-        if (layerKey === "property_point" || layerKey === "geocoded_address_point" || layerKey === "matched_structure_centroid") {
+        if (
+          layerKey === "property_point"
+          || layerKey === "assessed_property_display_point"
+          || layerKey === "property_anchor_point"
+          || layerKey === "parcel_address_point"
+          || layerKey === "geocoded_address_point"
+          || layerKey === "matched_structure_centroid"
+        ) {
           const pointStyle = mapLayerStyle[layerKey] || mapLayerStyle.property_point;
           return L.geoJSON(fc, {
             pointToLayer: (_feature, latlng) => L.circleMarker(latlng, pointStyle),

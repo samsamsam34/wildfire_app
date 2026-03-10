@@ -149,3 +149,63 @@ def test_interpolated_like_road_point_does_not_force_distant_match(tmp_path: Pat
     assert result.match_distance_m is not None
     assert result.match_distance_m > 0
     assert any("too far" in note.lower() for note in result.assumptions)
+
+
+@pytest.mark.skipif(not _geo_ready(), reason="Building footprint matching tests require shapely")
+def test_parcel_overlap_bias_prefers_structure_on_parcel(tmp_path: Path) -> None:
+    from shapely.geometry import Polygon
+
+    footprints_path = _write_geojson(
+        tmp_path / "parcel_biased_footprints.geojson",
+        [
+            {
+                "type": "Feature",
+                "properties": {"id": "on_parcel"},
+                "geometry": {
+                    "type": "Polygon",
+                    "coordinates": [[
+                        [-105.00010, 40.00008],
+                        [-104.99995, 40.00008],
+                        [-104.99995, 39.99992],
+                        [-105.00010, 39.99992],
+                        [-105.00010, 40.00008],
+                    ]],
+                },
+            },
+            {
+                "type": "Feature",
+                "properties": {"id": "off_parcel"},
+                "geometry": {
+                    "type": "Polygon",
+                    "coordinates": [[
+                        [-105.00022, 40.00010],
+                        [-105.00006, 40.00010],
+                        [-105.00006, 39.99994],
+                        [-105.00022, 39.99994],
+                        [-105.00022, 40.00010],
+                    ]],
+                },
+            },
+        ],
+    )
+    parcel_polygon = Polygon(
+        [
+            (-105.00013, 40.00012),
+            (-104.99990, 40.00012),
+            (-104.99990, 39.99988),
+            (-105.00013, 39.99988),
+            (-105.00013, 40.00012),
+        ]
+    )
+    client = BuildingFootprintClient(path=footprints_path, max_search_m=80.0)
+    result = client.get_building_footprint(
+        lat=40.0,
+        lon=-105.00012,
+        parcel_polygon=parcel_polygon,
+        anchor_precision="parcel_or_address_point",
+    )
+
+    assert result.found is True
+    assert result.match_status == "matched"
+    assert result.match_method in {"distance_ranked", "point_in_polygon"}
+    assert any("parcel" in note.lower() for note in result.assumptions)

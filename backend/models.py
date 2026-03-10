@@ -588,9 +588,17 @@ class AssessmentResult(BaseModel):
     # Convenience mirrors for routing observability without parsing nested objects.
     coverage_available: bool = False
     resolved_region_id: Optional[str] = None
+    property_anchor_point: Optional[Dict[str, float]] = None
+    property_anchor_source: Optional[str] = None
+    property_anchor_precision: Optional[str] = None
+    assessed_property_display_point: Optional[Dict[str, float]] = None
+    parcel_id: Optional[str] = None
+    source_conflict_flag: bool = False
+    alignment_notes: List[str] = Field(default_factory=list)
     display_point_source: Optional[str] = None
     structure_match_status: Optional[str] = None
     structure_match_method: Optional[str] = None
+    structure_match_confidence: Optional[float] = None
     structure_match_distance_m: Optional[float] = None
     candidate_structure_count: Optional[int] = None
     site_hazard_eligibility: ScoreEligibility = Field(default_factory=ScoreEligibility)
@@ -763,14 +771,29 @@ class AssessmentMapPayload(BaseModel):
     coverage_available: bool = False
     basis_geometry_type: str = "point_proxy"
     geocode_provider: Optional[str] = None
+    geocode_source_name: Optional[str] = None
     geocoded_address: Optional[str] = None
     geocode_location_type: Optional[str] = None
     geocode_precision: Optional[str] = None
+    property_anchor_point: Optional[Dict[str, object]] = None
+    property_anchor_source: Optional[str] = None
+    property_anchor_precision: Optional[str] = None
+    assessed_property_display_point: Optional[Dict[str, object]] = None
+    parcel_address_point: Optional[Dict[str, object]] = None
+    parcel_polygon: Optional[Dict[str, object]] = None
+    parcel_id: Optional[str] = None
+    parcel_source_name: Optional[str] = None
+    parcel_source_vintage: Optional[str] = None
+    footprint_source_name: Optional[str] = None
+    footprint_source_vintage: Optional[str] = None
+    source_conflict_flag: bool = False
+    alignment_notes: List[str] = Field(default_factory=list)
     structure_match_status: Optional[str] = None
     structure_match_method: Optional[str] = None
+    structure_match_confidence: Optional[float] = None
     structure_match_distance_m: Optional[float] = None
     candidate_structure_count: Optional[int] = None
-    display_point_source: str = "geocoded_address_point"
+    display_point_source: str = "property_anchor_point"
     geocoded_address_point: Optional[Dict[str, object]] = None
     matched_structure_centroid: Optional[Dict[str, object]] = None
     matched_structure_footprint: Optional[Dict[str, object]] = None
