@@ -1351,6 +1351,12 @@ def _normalize_property_level_context(raw_context: object) -> dict[str, Any]:
         return {
             "footprint_used": False,
             "footprint_status": "not_found",
+            "structure_match_status": "none",
+            "structure_match_method": None,
+            "structure_match_distance_m": None,
+            "candidate_structure_count": 0,
+            "structure_match_candidates": [],
+            "display_point_source": "geocoded_address_point",
             "fallback_mode": "point_based",
             "ring_metrics": None,
         }
@@ -1362,6 +1368,13 @@ def _normalize_property_level_context(raw_context: object) -> dict[str, Any]:
     if normalized.get("footprint_status") == "source_unavailable":
         normalized["footprint_status"] = "provider_unavailable"
     normalized.setdefault("fallback_mode", "footprint" if footprint_used else "point_based")
+    normalized.setdefault("structure_match_status", "matched" if footprint_used else "none")
+    normalized.setdefault("structure_match_method", "point_in_polygon" if footprint_used else None)
+    normalized.setdefault("structure_match_distance_m", 0.0 if footprint_used else None)
+    normalized.setdefault("candidate_structure_count", 1 if footprint_used else 0)
+    candidates = normalized.get("structure_match_candidates")
+    normalized["structure_match_candidates"] = candidates if isinstance(candidates, list) else []
+    normalized.setdefault("display_point_source", "matched_structure_centroid" if footprint_used else "geocoded_address_point")
     ring_metrics = normalized.get("ring_metrics")
     if isinstance(ring_metrics, dict):
         # Canonical zone keys for API consumers.
@@ -3142,6 +3155,23 @@ def _run_assessment(
         region_resolution=region_resolution,
         coverage_available=bool(region_resolution.coverage_available),
         resolved_region_id=region_resolution.resolved_region_id,
+        display_point_source=str(property_level_context.get("display_point_source") or "geocoded_address_point"),
+        structure_match_status=str(property_level_context.get("structure_match_status") or "none"),
+        structure_match_method=(
+            str(property_level_context.get("structure_match_method"))
+            if property_level_context.get("structure_match_method")
+            else None
+        ),
+        structure_match_distance_m=(
+            float(property_level_context.get("structure_match_distance_m"))
+            if property_level_context.get("structure_match_distance_m") is not None
+            else None
+        ),
+        candidate_structure_count=(
+            int(property_level_context.get("candidate_structure_count"))
+            if property_level_context.get("candidate_structure_count") is not None
+            else None
+        ),
         site_hazard_eligibility=site_hazard_eligibility,
         home_vulnerability_eligibility=home_vulnerability_eligibility,
         insurance_readiness_eligibility=insurance_readiness_eligibility,
@@ -3954,10 +3984,15 @@ def _geocode_address_or_raise(*, address: str, purpose: str) -> tuple[float, flo
         "submitted_address": submitted_address,
         "normalized_address": normalized_address,
         "geocode_source": geocode_source,
+        "geocode_provider": provider,
         "provider": provider,
+        "geocoded_address": None,
         "matched_address": None,
+        "geocoded_point": {"latitude": float(lat), "longitude": float(lon)},
         "confidence_score": None,
         "candidate_count": None,
+        "geocode_location_type": None,
+        "geocode_precision": "unknown",
         "parsed_candidates": None,
         "trust_filter_rule": None,
         "resolved_latitude": float(lat),
@@ -3970,9 +4005,13 @@ def _geocode_address_or_raise(*, address: str, purpose: str) -> tuple[float, flo
                 "geocode_status": _normalize_geocode_status(str(geocoder_meta.get("geocode_status") or "accepted")),
                 "normalized_address": geocoder_meta.get("normalized_address") or normalized_address,
                 "provider": geocoder_meta.get("provider") or provider,
+                "geocode_provider": geocoder_meta.get("provider") or provider,
+                "geocoded_address": geocoder_meta.get("matched_address"),
                 "matched_address": geocoder_meta.get("matched_address"),
                 "confidence_score": geocoder_meta.get("confidence_score"),
                 "candidate_count": geocoder_meta.get("candidate_count"),
+                "geocode_location_type": geocoder_meta.get("geocode_location_type"),
+                "geocode_precision": geocoder_meta.get("geocode_precision") or "unknown",
                 "rejection_reason": geocoder_meta.get("rejection_reason"),
                 "trust_filter_rule": geocoder_meta.get("raw_response_preview", {}).get("trust_filter_rule")
                 if isinstance(geocoder_meta.get("raw_response_preview"), dict)
@@ -4140,6 +4179,9 @@ def _build_geocode_debug_payload(address: str) -> dict[str, Any]:
             "normalized_address": meta.get("normalized_address") or normalized,
             "geocode_status": geocode_status,
             "accepted": geocode_status == "accepted",
+            "geocode_provider": meta.get("provider") or source,
+            "geocode_location_type": meta.get("geocode_location_type"),
+            "geocode_precision": meta.get("geocode_precision") or "unknown",
             "match_count": int(meta.get("candidate_count") or 1),
             "parsed_candidates": meta.get("raw_response_preview", {}).get("parsed_candidates")
             if isinstance(meta.get("raw_response_preview"), dict)
@@ -4178,6 +4220,9 @@ def _build_geocode_debug_payload(address: str) -> dict[str, Any]:
             "normalized_address": exc.normalized_address or normalized,
             "geocode_status": status,
             "accepted": False,
+            "geocode_provider": exc.provider,
+            "geocode_location_type": None,
+            "geocode_precision": "unknown",
             "match_count": 0,
             "parsed_candidates": exc.raw_response_preview.get("parsed_candidates")
             if isinstance(exc.raw_response_preview, dict)
@@ -4210,6 +4255,9 @@ def _build_geocode_debug_payload(address: str) -> dict[str, Any]:
             "normalized_address": normalized,
             "geocode_status": "provider_error",
             "accepted": False,
+            "geocode_provider": "OpenStreetMap Nominatim",
+            "geocode_location_type": None,
+            "geocode_precision": "unknown",
             "match_count": 0,
             "parsed_candidates": None,
             "selected_match": None,
@@ -5306,6 +5354,12 @@ def layer_diagnostics(payload: AddressRequest, ctx: ActorContext = Depends(get_a
             "footprint_used": (debug_payload.get("property_level_context") or {}).get("footprint_used"),
             "footprint_status": (debug_payload.get("property_level_context") or {}).get("footprint_status"),
             "footprint_source": (debug_payload.get("property_level_context") or {}).get("footprint_source"),
+            "structure_match_status": (debug_payload.get("property_level_context") or {}).get("structure_match_status"),
+            "structure_match_method": (debug_payload.get("property_level_context") or {}).get("structure_match_method"),
+            "structure_match_distance_m": (debug_payload.get("property_level_context") or {}).get("structure_match_distance_m"),
+            "candidate_structure_count": (debug_payload.get("property_level_context") or {}).get("candidate_structure_count"),
+            "structure_match_candidates": (debug_payload.get("property_level_context") or {}).get("structure_match_candidates"),
+            "display_point_source": (debug_payload.get("property_level_context") or {}).get("display_point_source"),
             "fallback_mode": (debug_payload.get("property_level_context") or {}).get("fallback_mode"),
             "defensible_space_analysis": (debug_payload.get("property_level_context") or {}).get("defensible_space_analysis"),
         },

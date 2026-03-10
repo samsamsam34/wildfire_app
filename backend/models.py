@@ -196,8 +196,13 @@ class GeocodingDetails(BaseModel):
     submitted_address: str = ""
     normalized_address: Optional[str] = None
     geocode_source: Optional[str] = None
+    geocode_provider: Optional[str] = None
     provider: Optional[str] = None
+    geocoded_address: Optional[str] = None
     matched_address: Optional[str] = None
+    geocoded_point: Optional[Dict[str, float]] = None
+    geocode_location_type: Optional[str] = None
+    geocode_precision: Optional[str] = None
     confidence_score: Optional[float] = None
     candidate_count: Optional[int] = None
     resolved_latitude: Optional[float] = None
@@ -583,6 +588,11 @@ class AssessmentResult(BaseModel):
     # Convenience mirrors for routing observability without parsing nested objects.
     coverage_available: bool = False
     resolved_region_id: Optional[str] = None
+    display_point_source: Optional[str] = None
+    structure_match_status: Optional[str] = None
+    structure_match_method: Optional[str] = None
+    structure_match_distance_m: Optional[float] = None
+    candidate_structure_count: Optional[int] = None
     site_hazard_eligibility: ScoreEligibility = Field(default_factory=ScoreEligibility)
     home_vulnerability_eligibility: ScoreEligibility = Field(default_factory=ScoreEligibility)
     insurance_readiness_eligibility: ScoreEligibility = Field(default_factory=ScoreEligibility)
@@ -752,6 +762,14 @@ class AssessmentMapPayload(BaseModel):
     resolved_region_id: Optional[str] = None
     coverage_available: bool = False
     basis_geometry_type: str = "point_proxy"
+    geocode_provider: Optional[str] = None
+    geocoded_address: Optional[str] = None
+    geocode_location_type: Optional[str] = None
+    geocode_precision: Optional[str] = None
+    structure_match_status: Optional[str] = None
+    structure_match_method: Optional[str] = None
+    structure_match_distance_m: Optional[float] = None
+    candidate_structure_count: Optional[int] = None
     display_point_source: str = "geocoded_address_point"
     geocoded_address_point: Optional[Dict[str, object]] = None
     matched_structure_centroid: Optional[Dict[str, object]] = None

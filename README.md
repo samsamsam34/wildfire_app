@@ -526,6 +526,9 @@ After a successful assessment, the frontend shows a map card with property and w
   - map geometries are GeoJSON in WGS84 (`EPSG:4326`) with `[longitude, latitude]` coordinates
   - `display_point_source` identifies whether the main property marker is from
     `matched_structure_centroid` (preferred when available) or `geocoded_address_point`
+  - map payload includes geocode/structure-match diagnostics (`geocode_precision`,
+    `structure_match_status`, `structure_match_method`, `structure_match_distance_m`,
+    `candidate_structure_count`) for routing/alignment QA
 - Graceful degradation:
   - if footprint geometry is unavailable, rings use point-proxy geometry
   - if overlays are unavailable, map still renders available layers with limitations text

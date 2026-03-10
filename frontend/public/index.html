@@ -614,6 +614,18 @@
         const matchedCentroid = payload?.matched_structure_centroid;
         const footprint = payload?.matched_structure_footprint;
         const displayPointSource = payload?.display_point_source || "geocoded_address_point";
+        const geocodeProvider = payload?.geocode_provider || payload?.metadata?.geocoding?.provider || "unknown";
+        const geocodePrecision = payload?.geocode_precision || payload?.metadata?.geocoding?.geocode_precision || "unknown";
+        const geocodeLocationType = payload?.geocode_location_type || payload?.metadata?.geocoding?.geocode_location_type || "unknown";
+        const structureMatchStatus = payload?.structure_match_status || payload?.metadata?.structure_match?.status || "none";
+        const structureMatchMethod = payload?.structure_match_method || payload?.metadata?.structure_match?.method || "none";
+        const structureMatchDistanceM = payload?.structure_match_distance_m ?? payload?.metadata?.structure_match?.distance_m;
+        const candidateStructureCount = payload?.candidate_structure_count ?? payload?.metadata?.structure_match?.candidate_count;
+        const maxMatchDistanceM = payload?.metadata?.structure_match?.max_match_distance_m;
+        const ambiguityGapM = payload?.metadata?.structure_match?.ambiguity_gap_m;
+        const candidateSummaries = Array.isArray(payload?.metadata?.structure_match?.candidate_summaries)
+          ? payload.metadata.structure_match.candidate_summaries
+          : [];
         const geocodedCoords = parsePointCoordinates(geocoded);
         const centroidCoords = parsePointCoordinates(matchedCentroid);
 
@@ -624,13 +636,28 @@
         }
 
         panel.style.display = "block";
+        const candidateText = candidateSummaries.slice(0, 3).map((row, idx) => {
+          const d = Number(row?.distance_m);
+          const cd = Number(row?.centroid_distance_m);
+          return `  ${idx + 1}. d=${Number.isFinite(d) ? d.toFixed(2) : "n/a"}m, centroid_d=${Number.isFinite(cd) ? cd.toFixed(2) : "n/a"}m`;
+        });
         panel.textContent = [
           `Map debug`,
+          `geocode_provider: ${geocodeProvider}`,
+          `geocode_precision: ${geocodePrecision}`,
+          `geocode_location_type: ${geocodeLocationType}`,
           `display_point_source: ${displayPointSource}`,
+          `structure_match_status: ${structureMatchStatus}`,
+          `structure_match_method: ${structureMatchMethod}`,
+          `structure_match_distance_m: ${Number.isFinite(Number(structureMatchDistanceM)) ? Number(structureMatchDistanceM).toFixed(2) : "n/a"}`,
+          `candidate_structure_count: ${Number.isFinite(Number(candidateStructureCount)) ? Number(candidateStructureCount) : "n/a"}`,
+          `match_thresholds_m: max=${Number.isFinite(Number(maxMatchDistanceM)) ? Number(maxMatchDistanceM).toFixed(1) : "n/a"}, ambiguity_gap=${Number.isFinite(Number(ambiguityGapM)) ? Number(ambiguityGapM).toFixed(1) : "n/a"}`,
           `geocoded_address_point: ${geocodedCoords ? `[${geocodedCoords.lon.toFixed(6)}, ${geocodedCoords.lat.toFixed(6)}]` : "unavailable"}`,
           `matched_structure_centroid: ${centroidCoords ? `[${centroidCoords.lon.toFixed(6)}, ${centroidCoords.lat.toFixed(6)}]` : "unavailable"}`,
           `matched_structure_footprint: ${footprint ? "available" : "unavailable"}`,
           `geocode_to_centroid_offset: ${offsetText}`,
+          `candidate_summaries:`,
+          ...(candidateText.length ? candidateText : ["  none"]),
         ].join("\n");
       }
 

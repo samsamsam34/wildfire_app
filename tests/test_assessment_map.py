@@ -169,6 +169,9 @@ def test_map_endpoint_returns_point_footprint_rings_and_overlays(monkeypatch, tm
     assert -180.0 <= payload["center"]["longitude"] <= 180.0
     assert payload["basis_geometry_type"] in {"building_footprint", "point_proxy"}
     assert payload["display_point_source"] in {"geocoded_address_point", "matched_structure_centroid"}
+    assert payload["geocode_provider"]
+    assert payload["geocode_precision"] in {"rooftop", "parcel_or_address_point", "interpolated", "approximate", "unknown", None}
+    assert payload["structure_match_status"] in {"matched", "ambiguous", "none", "provider_unavailable", "error"}
     assert payload["geocoded_address_point"]["geometry"]["type"] == "Point"
 
     assert "property_point" in payload["data"]
@@ -194,6 +197,7 @@ def test_map_endpoint_returns_point_footprint_rings_and_overlays(monkeypatch, tm
     assert -180.0 <= property_coords[0] <= 180.0
     assert -90.0 <= property_coords[1] <= 90.0
     assert payload["metadata"]["geometry_contract"]["coordinate_order"] == "[longitude, latitude]"
+    assert "structure_match" in payload["metadata"]
 
     matched_centroid = payload.get("matched_structure_centroid")
     footprint = payload.get("matched_structure_footprint")
@@ -294,6 +298,54 @@ def test_map_endpoint_marks_overlay_unavailable_without_failure(monkeypatch, tmp
     fire_layer = next(row for row in payload["layers"] if row["layer_key"] == "fire_perimeters")
     assert fire_layer["available"] is False
     assert fire_layer["reason_unavailable"]
+
+
+@pytest.mark.skipif(not _geo_ready(), reason="Map geometry tests require shapely/pyproj")
+def test_map_endpoint_uses_geocoded_point_when_structure_match_is_ambiguous(monkeypatch, tmp_path: Path):
+    footprints = _write_geojson(
+        tmp_path / "footprints_ambiguous.geojson",
+        [
+            {
+                "type": "Feature",
+                "properties": {"id": "north_house"},
+                "geometry": {
+                    "type": "Polygon",
+                    "coordinates": [[
+                        [-113.99425, 46.87234],
+                        [-113.99395, 46.87234],
+                        [-113.99395, 46.87222],
+                        [-113.99425, 46.87222],
+                        [-113.99425, 46.87234],
+                    ]],
+                },
+            },
+            {
+                "type": "Feature",
+                "properties": {"id": "south_house"},
+                "geometry": {
+                    "type": "Polygon",
+                    "coordinates": [[
+                        [-113.99425, 46.87198],
+                        [-113.99395, 46.87198],
+                        [-113.99395, 46.87186],
+                        [-113.99425, 46.87186],
+                        [-113.99425, 46.87198],
+                    ]],
+                },
+            },
+        ],
+    )
+    _setup(monkeypatch, tmp_path, footprints_path=footprints, perimeters_path=None)
+    assessed = _assess()
+    map_response = client.get(f"/report/{assessed['assessment_id']}/map")
+    assert map_response.status_code == 200
+    payload = map_response.json()
+
+    assert payload["display_point_source"] == "geocoded_address_point"
+    assert payload["structure_match_status"] == "ambiguous"
+    assert payload["matched_structure_centroid"] is None
+    assert payload["data"]["property_point"]["features"][0]["geometry"]["coordinates"] == payload["geocoded_address_point"]["geometry"]["coordinates"]
+    assert any("similarly plausible" in str(note).lower() for note in payload.get("limitations") or [])
 
 
 @pytest.mark.skipif(not _geo_ready(), reason="Map geometry tests require shapely/pyproj")

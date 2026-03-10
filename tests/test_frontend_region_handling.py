@@ -78,6 +78,9 @@ def test_frontend_includes_assessment_map_panel_and_layer_controls() -> None:
     assert "geocoded_address_point" in html
     assert "matched_structure_centroid" in html
     assert "display_point_source" in html
+    assert "structure_match_status" in html
+    assert "geocode_precision" in html
+    assert "candidate_summaries" in html
 
 
 def test_frontend_map_degrades_gracefully_for_uncovered_or_geocode_failure() -> None:

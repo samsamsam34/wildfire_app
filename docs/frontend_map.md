@@ -24,6 +24,9 @@ Response includes:
   - `matched_structure_centroid` (when a footprint match exists)
   - `matched_structure_footprint` (when a footprint match exists)
   - `display_point_source` (`matched_structure_centroid` preferred, else `geocoded_address_point`)
+- geocode + structure-match diagnostics for map debugging:
+  - `geocode_provider`, `geocoded_address`, `geocode_location_type`, `geocode_precision`
+  - `structure_match_status`, `structure_match_method`, `structure_match_distance_m`, `candidate_structure_count`
 - layer definitions (display name, availability, default visibility, legend text)
 - compact GeoJSON feature collections by layer key
 - limitations/warnings when geometry or overlays are missing/partial

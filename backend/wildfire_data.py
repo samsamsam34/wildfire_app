@@ -508,6 +508,12 @@ class WildfireDataClient:
                 "footprint_status": "error",
                 "footprint_source": None,
                 "footprint_confidence": 0.0,
+                "structure_match_status": "error",
+                "structure_match_method": None,
+                "structure_match_distance_m": None,
+                "candidate_structure_count": 0,
+                "structure_match_candidates": [],
+                "display_point_source": "geocoded_address_point",
                 "fallback_mode": "point_based",
                 "ring_metrics": None,
                 "nearest_vegetation_distance_ft": None,
@@ -545,12 +551,22 @@ class WildfireDataClient:
             assumptions_blob = " ".join(result.assumptions).lower()
             if "not configured" in assumptions_blob or "missing" in assumptions_blob:
                 status = "provider_unavailable"
+            elif result.match_status == "ambiguous":
+                status = "ambiguous"
+            elif result.match_status == "none":
+                status = "not_found"
             return {
                 "footprint_used": False,
                 "footprint_found": False,
                 "footprint_status": status,
                 "footprint_source": result.source,
                 "footprint_confidence": result.confidence,
+                "structure_match_status": result.match_status or "none",
+                "structure_match_method": result.match_method,
+                "structure_match_distance_m": result.match_distance_m,
+                "candidate_structure_count": int(result.candidate_count or 0),
+                "structure_match_candidates": list(result.candidate_summaries or []),
+                "display_point_source": "geocoded_address_point",
                 "fallback_mode": "point_based",
                 "ring_metrics": point_proxy_metrics if point_proxy_metrics else None,
                 "nearest_vegetation_distance_ft": nearest_vegetation_distance_ft,
@@ -636,6 +652,12 @@ class WildfireDataClient:
             "footprint_status": "used" if ring_metrics else "error",
             "footprint_source": result.source,
             "footprint_confidence": result.confidence,
+            "structure_match_status": result.match_status or ("matched" if result.found else "none"),
+            "structure_match_method": result.match_method,
+            "structure_match_distance_m": result.match_distance_m,
+            "candidate_structure_count": int(result.candidate_count or 0),
+            "structure_match_candidates": list(result.candidate_summaries or []),
+            "display_point_source": "matched_structure_centroid" if ring_metrics else "geocoded_address_point",
             "fallback_mode": "footprint" if ring_metrics else "point_based",
             "ring_metrics": ring_metrics,
             "nearest_vegetation_distance_ft": nearest_vegetation_distance_ft,

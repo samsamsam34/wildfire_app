@@ -291,6 +291,40 @@ def build_assessment_map_payload(
     data: dict[str, dict[str, Any]] = {}
     layers: list[AssessmentMapLayer] = []
     display_point_source = "geocoded_address_point"
+    geocoding = result.geocoding if hasattr(result, "geocoding") else None
+    geocode_provider = str(getattr(geocoding, "geocode_provider", "") or getattr(geocoding, "provider", "") or "") or None
+    geocoded_address = str(getattr(geocoding, "geocoded_address", "") or getattr(geocoding, "matched_address", "") or "") or None
+    geocode_location_type = str(getattr(geocoding, "geocode_location_type", "") or "") or None
+    geocode_precision = str(getattr(geocoding, "geocode_precision", "") or "") or None
+
+    property_ctx = result.property_level_context if isinstance(result.property_level_context, dict) else {}
+    structure_match_status = str(property_ctx.get("structure_match_status") or result.structure_match_status or "none")
+    structure_match_method = (
+        str(property_ctx.get("structure_match_method") or result.structure_match_method)
+        if (property_ctx.get("structure_match_method") or result.structure_match_method)
+        else None
+    )
+    structure_match_distance_m = (
+        float(property_ctx.get("structure_match_distance_m"))
+        if property_ctx.get("structure_match_distance_m") is not None
+        else (
+            float(result.structure_match_distance_m)
+            if result.structure_match_distance_m is not None
+            else None
+        )
+    )
+    candidate_structure_count = (
+        int(property_ctx.get("candidate_structure_count"))
+        if property_ctx.get("candidate_structure_count") is not None
+        else (
+            int(result.candidate_structure_count)
+            if result.candidate_structure_count is not None
+            else None
+        )
+    )
+    structure_match_candidates = property_ctx.get("structure_match_candidates")
+    if not isinstance(structure_match_candidates, list):
+        structure_match_candidates = []
 
     geocoded_address_point = _point_feature(
         lon=geocoded_lon,
@@ -324,16 +358,27 @@ def build_assessment_map_payload(
     footprint_features: list[dict[str, Any]] = []
     ring_features: list[dict[str, Any]] = []
     matched_structure_centroid: dict[str, Any] | None = None
+    max_match_distance_m: float | None = None
+    ambiguity_gap_m: float | None = None
 
     if _geo_ready() and footprint_paths:
         try:
             client = BuildingFootprintClient(path=footprint_paths[0], extra_paths=footprint_paths[1:])
+            max_match_distance_m = float(getattr(client, "max_match_distance_m", 0.0) or 0.0) or None
+            ambiguity_gap_m = float(getattr(client, "ambiguity_gap_m", 0.0) or 0.0) or None
             fp_result = client.get_building_footprint(lat=lat, lon=lon)
         except Exception as exc:
             fp_result = None
             limitations.append(f"Building footprint lookup failed: {exc}")
 
         if fp_result and fp_result.found and fp_result.footprint is not None:
+            structure_match_status = str(fp_result.match_status or "matched")
+            structure_match_method = fp_result.match_method or "point_in_polygon"
+            structure_match_distance_m = (
+                float(fp_result.match_distance_m) if fp_result.match_distance_m is not None else 0.0
+            )
+            candidate_structure_count = int(fp_result.candidate_count or 1)
+            structure_match_candidates = list(fp_result.candidate_summaries or [])
             basis_geometry_type = "building_footprint"
             geometry = _to_json_geometry(fp_result.footprint)
             if geometry:
@@ -344,6 +389,9 @@ def build_assessment_map_payload(
                             "label": "Primary structure footprint",
                             "source": fp_result.source,
                             "confidence": fp_result.confidence,
+                            "match_status": structure_match_status,
+                            "match_method": structure_match_method,
+                            "match_distance_m": structure_match_distance_m,
                             "crs": "EPSG:4326",
                         },
                         "geometry": geometry,
@@ -373,6 +421,9 @@ def build_assessment_map_payload(
                         "source": "matched_structure_centroid",
                         "footprint_source": fp_result.source,
                         "confidence": fp_result.confidence,
+                        "match_status": structure_match_status,
+                        "match_method": structure_match_method,
+                        "match_distance_m": structure_match_distance_m,
                         "crs": "EPSG:4326",
                     },
                 )
@@ -381,15 +432,28 @@ def build_assessment_map_payload(
             rings, _assumptions = compute_structure_rings(fp_result.footprint)
             ring_features = _ring_zone_features_from_geometry(rings, basis="building_footprint")
         else:
+            if fp_result:
+                structure_match_status = str(fp_result.match_status or "none")
+                structure_match_method = fp_result.match_method
+                structure_match_distance_m = (
+                    float(fp_result.match_distance_m) if fp_result.match_distance_m is not None else None
+                )
+                candidate_structure_count = int(fp_result.candidate_count or 0)
+                structure_match_candidates = list(fp_result.candidate_summaries or [])
             limitations.append(
                 "Structure footprint unavailable; defensible-space zones are shown using point-proxy geometry."
             )
+            if structure_match_status == "ambiguous":
+                limitations.append(
+                    "Multiple nearby structures were similarly plausible, so the map marker uses the geocoded address point."
+                )
             ring_features = _build_proxy_rings(lat=lat, lon=lon)
     else:
         if not _geo_ready():
             limitations.append("Geospatial dependencies unavailable; map uses point-only rendering.")
         elif not footprint_paths:
             limitations.append("Building footprint source not configured; defensible-space zones use point-proxy geometry.")
+            structure_match_status = "provider_unavailable"
         ring_features = _build_proxy_rings(lat=lat, lon=lon)
 
     if matched_structure_centroid:
@@ -561,6 +625,14 @@ def build_assessment_map_payload(
         resolved_region_id=result.resolved_region_id or str((result.property_level_context or {}).get("region_id") or "") or None,
         coverage_available=bool(result.coverage_available),
         basis_geometry_type=basis_geometry_type,
+        geocode_provider=geocode_provider,
+        geocoded_address=geocoded_address,
+        geocode_location_type=geocode_location_type,
+        geocode_precision=geocode_precision,
+        structure_match_status=structure_match_status,
+        structure_match_method=structure_match_method,
+        structure_match_distance_m=structure_match_distance_m,
+        candidate_structure_count=candidate_structure_count,
         display_point_source=display_point_source,
         geocoded_address_point=geocoded_address_point,
         matched_structure_centroid=matched_structure_centroid,
@@ -573,6 +645,21 @@ def build_assessment_map_payload(
                 "crs": "EPSG:4326",
                 "coordinate_order": "[longitude, latitude]",
                 "display_point_source": display_point_source,
+            },
+            "geocoding": {
+                "provider": geocode_provider,
+                "matched_address": geocoded_address,
+                "geocode_location_type": geocode_location_type,
+                "geocode_precision": geocode_precision,
+            },
+            "structure_match": {
+                "status": structure_match_status,
+                "method": structure_match_method,
+                "distance_m": structure_match_distance_m,
+                "candidate_count": candidate_structure_count,
+                "max_match_distance_m": max_match_distance_m,
+                "ambiguity_gap_m": ambiguity_gap_m,
+                "candidate_summaries": structure_match_candidates[:6] if structure_match_candidates else [],
             },
             "region_resolution": _dump_region_resolution(result),
             "model_governance": (result.model_governance.model_dump() if hasattr(result.model_governance, "model_dump") else {}),

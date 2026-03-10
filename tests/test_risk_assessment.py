@@ -1193,6 +1193,8 @@ def test_route_geocode_and_coverage_are_consistent_for_valid_covered_address(mon
     assert assess_body["geocoding"]["geocode_status"] == "accepted"
     assert assess_body["coverage_available"] is True
     assert assess_body["resolved_region_id"] == "missoula_pilot"
+    assert assess_body["display_point_source"] in {"geocoded_address_point", "matched_structure_centroid"}
+    assert assess_body["structure_match_status"] in {"none", "matched", "ambiguous", "provider_unavailable", "error"}
 
 
 def test_route_geocode_and_coverage_are_consistent_for_valid_uncovered_address(monkeypatch, tmp_path):
@@ -1245,6 +1247,7 @@ def test_route_geocode_and_coverage_are_consistent_for_valid_uncovered_address(m
     assert assess_detail["coverage_available"] is False
     assert assess_detail["reason"] == "no_prepared_region_for_location"
     assert "error" not in assess_detail
+    assert assess_detail["normalized_address"]
 
 
 def test_route_geocode_and_coverage_are_consistent_for_invalid_address(monkeypatch, tmp_path):

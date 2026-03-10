@@ -31,6 +31,11 @@ class BuildingFootprintResult:
     centroid: tuple[float, float] | None = None
     source: str | None = None
     confidence: float = 0.0
+    match_status: str = "none"
+    match_method: str | None = None
+    match_distance_m: float | None = None
+    candidate_count: int = 0
+    candidate_summaries: list[dict[str, Any]] = field(default_factory=list)
     assumptions: list[str] = field(default_factory=list)
 
 
@@ -57,6 +62,38 @@ class BuildingFootprintClient:
         self.path = unique_paths[0] if unique_paths else ""
         self.paths = unique_paths
         self.max_search_m = max_search_m
+        self.max_match_distance_m = self._env_float(
+            "WF_STRUCTURE_MATCH_MAX_DISTANCE_M",
+            max(5.0, min(float(max_search_m), 35.0)),
+            min_value=1.0,
+        )
+        self.ambiguity_gap_m = self._env_float("WF_STRUCTURE_MATCH_AMBIGUITY_GAP_M", 6.0, min_value=0.1)
+        self.max_candidate_summaries = int(
+            max(
+                1,
+                min(
+                    8,
+                    round(
+                        self._env_float(
+                            "WF_STRUCTURE_MATCH_MAX_CANDIDATE_SUMMARIES",
+                            4.0,
+                            min_value=1.0,
+                        )
+                    ),
+                ),
+            )
+        )
+
+    @staticmethod
+    def _env_float(name: str, default: float, *, min_value: float | None = None) -> float:
+        raw = str(os.getenv(name, str(default))).strip()
+        try:
+            value = float(raw)
+        except ValueError:
+            value = float(default)
+        if min_value is not None:
+            value = max(min_value, value)
+        return value
 
     @staticmethod
     def _geo_ready() -> bool:
@@ -122,23 +159,64 @@ class BuildingFootprintClient:
                 features.append((self._primary_polygon(geom), source_path))
         return features
 
+    def _candidate_summary(
+        self,
+        *,
+        geom: Any,
+        source: str,
+        point_wgs84: Any,
+        to_3857: Any,
+    ) -> dict[str, Any]:
+        geom_m = shapely_transform(to_3857, geom)
+        point_m = shapely_transform(to_3857, point_wgs84)
+        distance_m = float(max(0.0, geom_m.distance(point_m)))
+        centroid_distance_m = float(max(0.0, geom_m.centroid.distance(point_m)))
+        area_m2 = self._geom_area_m2(geom)
+        area_score = self._residential_area_score(area_m2)
+        contains_point = bool(getattr(geom, "covers", lambda _p: False)(point_wgs84))
+        centroid = geom.centroid
+        return {
+            "source": source,
+            "distance_m": round(distance_m, 2),
+            "centroid_distance_m": round(centroid_distance_m, 2),
+            "area_m2": round(area_m2, 2),
+            "area_score": round(area_score, 3),
+            "contains_point": contains_point,
+            "centroid_latitude": round(float(centroid.y), 7),
+            "centroid_longitude": round(float(centroid.x), 7),
+        }
+
+    @staticmethod
+    def _inside_polygon(geom: Any, point_wgs84: Any) -> bool:
+        try:
+            return bool(getattr(geom, "covers", lambda _p: False)(point_wgs84))
+        except Exception:
+            return False
+
     def get_building_footprint(self, lat: float, lon: float) -> BuildingFootprintResult:
         assumptions: list[str] = []
         if not self._geo_ready():
             assumptions.append("Building footprint analysis unavailable; geospatial dependencies missing.")
-            return BuildingFootprintResult(found=False, assumptions=assumptions)
+            return BuildingFootprintResult(found=False, match_status="provider_unavailable", assumptions=assumptions)
 
         if not self.paths:
             assumptions.append("Building footprint source is not configured or missing.")
-            return BuildingFootprintResult(found=False, assumptions=assumptions)
+            return BuildingFootprintResult(found=False, match_status="provider_unavailable", assumptions=assumptions)
 
         features = self._all_source_features()
         if not features:
             assumptions.append("No building footprints available in configured source(s).")
-            return BuildingFootprintResult(found=False, source=self.path, assumptions=assumptions)
+            return BuildingFootprintResult(
+                found=False,
+                source=self.path,
+                match_status="provider_unavailable",
+                assumptions=assumptions,
+            )
 
         point_wgs84 = Point(lon, lat)
-        containing = [(geom, src) for geom, src in features if geom.contains(point_wgs84)]
+        to_3857 = Transformer.from_crs("EPSG:4326", "EPSG:3857", always_xy=True).transform
+
+        containing = [(geom, src) for geom, src in features if self._inside_polygon(geom, point_wgs84)]
         if containing:
             # Deterministically pick best residential-sized containing polygon.
             def _contain_score(item: tuple[Any, str]) -> float:
@@ -146,7 +224,28 @@ class BuildingFootprintClient:
                 area_m2 = self._geom_area_m2(geom)
                 return self._residential_area_score(area_m2) + min(1.0, area_m2 / 10_000.0) * 0.05
 
-            geom, source = max(containing, key=_contain_score)
+            ranked = sorted(containing, key=_contain_score, reverse=True)
+            geom, source = ranked[0]
+            candidate_summaries = [
+                self._candidate_summary(geom=g, source=s, point_wgs84=point_wgs84, to_3857=to_3857)
+                for g, s in ranked[: self.max_candidate_summaries]
+            ]
+            if len(ranked) > 1:
+                top_score = _contain_score(ranked[0])
+                second_score = _contain_score(ranked[1])
+                if (top_score - second_score) < 0.03:
+                    assumptions.append("Multiple overlapping structure footprints were equally plausible; using geocoded point fallback.")
+                    return BuildingFootprintResult(
+                        found=False,
+                        source=source,
+                        confidence=0.0,
+                        match_status="ambiguous",
+                        match_method="point_in_polygon",
+                        match_distance_m=0.0,
+                        candidate_count=len(ranked),
+                        candidate_summaries=candidate_summaries,
+                        assumptions=assumptions,
+                    )
             c = geom.centroid
             return BuildingFootprintResult(
                 found=True,
@@ -154,33 +253,96 @@ class BuildingFootprintClient:
                 centroid=(float(c.y), float(c.x)),
                 source=source,
                 confidence=0.97,
+                match_status="matched",
+                match_method="point_in_polygon",
+                match_distance_m=0.0,
+                candidate_count=len(ranked),
+                candidate_summaries=candidate_summaries,
                 assumptions=assumptions,
             )
 
-        to_3857 = Transformer.from_crs("EPSG:4326", "EPSG:3857", always_xy=True).transform
         point_m = shapely_transform(to_3857, point_wgs84)
 
-        nearest_geom = None
-        nearest_source = None
-        nearest_distance_m = None
-        best_score = None
+        candidates: list[dict[str, Any]] = []
         for candidate, source in features:
             candidate_m = shapely_transform(to_3857, candidate)
-            distance = candidate_m.distance(point_m)
+            distance = float(max(0.0, candidate_m.distance(point_m)))
+            if distance > float(self.max_search_m):
+                continue
+            centroid_distance = float(max(0.0, candidate_m.centroid.distance(point_m)))
             area_score = self._residential_area_score(self._geom_area_m2(candidate))
-            score = (max(0.0, 1.0 - (distance / max(self.max_search_m, 1.0))) * 0.8) + (area_score * 0.2)
-            if nearest_distance_m is None or distance < nearest_distance_m:
-                nearest_distance_m = float(distance)
-            if best_score is None or score > best_score:
-                best_score = score
-                nearest_geom = candidate
-                nearest_source = source
+            score = (
+                max(0.0, 1.0 - (distance / max(self.max_match_distance_m, 1.0))) * 0.75
+                + max(0.0, 1.0 - (centroid_distance / max(self.max_search_m, 1.0))) * 0.15
+                + area_score * 0.10
+            )
+            candidates.append(
+                {
+                    "geom": candidate,
+                    "source": source,
+                    "distance_m": distance,
+                    "centroid_distance_m": centroid_distance,
+                    "area_score": area_score,
+                    "score": score,
+                }
+            )
 
-        if nearest_geom is None or nearest_distance_m is None or nearest_distance_m > self.max_search_m:
+        if not candidates:
             assumptions.append("No nearby building footprint found for this location.")
-            return BuildingFootprintResult(found=False, source=self.path, assumptions=assumptions)
+            return BuildingFootprintResult(
+                found=False,
+                source=self.path,
+                match_status="none",
+                candidate_count=0,
+                assumptions=assumptions,
+            )
 
-        confidence = max(0.35, min(0.9, 0.9 - (nearest_distance_m / max(self.max_search_m, 1.0)) * 0.5))
+        candidates.sort(key=lambda row: (row["distance_m"], row["centroid_distance_m"], -row["score"]))
+        top = candidates[0]
+        top_distance = float(top["distance_m"])
+        candidate_summaries = [
+            self._candidate_summary(geom=row["geom"], source=row["source"], point_wgs84=point_wgs84, to_3857=to_3857)
+            for row in candidates[: self.max_candidate_summaries]
+        ]
+
+        if top_distance > self.max_match_distance_m:
+            assumptions.append(
+                "Nearest structure footprint is too far from the geocoded point; using geocoded point fallback."
+            )
+            return BuildingFootprintResult(
+                found=False,
+                source=str(top.get("source") or self.path),
+                confidence=0.0,
+                match_status="none",
+                match_method="distance_ranked",
+                match_distance_m=round(top_distance, 2),
+                candidate_count=len(candidates),
+                candidate_summaries=candidate_summaries,
+                assumptions=assumptions,
+            )
+
+        if len(candidates) > 1:
+            second_distance = float(candidates[1]["distance_m"])
+            if (second_distance - top_distance) <= float(self.ambiguity_gap_m):
+                assumptions.append(
+                    "Multiple nearby structures were similarly plausible; using geocoded point fallback."
+                )
+                return BuildingFootprintResult(
+                    found=False,
+                    source=str(top.get("source") or self.path),
+                    confidence=0.0,
+                    match_status="ambiguous",
+                    match_method="distance_ranked",
+                    match_distance_m=round(top_distance, 2),
+                    candidate_count=len(candidates),
+                    candidate_summaries=candidate_summaries,
+                    assumptions=assumptions,
+                )
+
+        distance_component = max(0.0, 1.0 - (top_distance / max(self.max_match_distance_m, 1.0)))
+        confidence = max(0.45, min(0.9, 0.45 + (distance_component * 0.4) + (float(top["area_score"]) * 0.1)))
+        nearest_geom = top["geom"]
+        nearest_source = top["source"]
         c = nearest_geom.centroid
         return BuildingFootprintResult(
             found=True,
@@ -188,6 +350,11 @@ class BuildingFootprintClient:
             centroid=(float(c.y), float(c.x)),
             source=nearest_source or self.path,
             confidence=round(confidence, 2),
+            match_status="matched",
+            match_method="distance_ranked",
+            match_distance_m=round(top_distance, 2),
+            candidate_count=len(candidates),
+            candidate_summaries=candidate_summaries,
             assumptions=assumptions,
         )
 

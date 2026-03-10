@@ -25,6 +25,8 @@ class GeocodeResult:
     matched_address: str | None = None
     confidence_score: float | None = None
     candidate_count: int = 0
+    geocode_location_type: str | None = None
+    geocode_precision: str = "unknown"
     raw_response_preview: dict[str, Any] | None = None
 
 
@@ -145,6 +147,24 @@ class Geocoder:
         has_precise_street_context = bool(road and locality and (house or postcode))
         has_regional_anchor = bool(state or postcode)
         return has_precise_street_context and has_regional_anchor
+
+    def _derive_precision_tier(self, candidate: Any, importance: float | None) -> tuple[str, str | None]:
+        if not isinstance(candidate, dict):
+            return "unknown", None
+        cand_class = str(candidate.get("class") or "").strip().lower()
+        cand_type = str(candidate.get("type") or "").strip().lower()
+        location_type = f"{cand_class}:{cand_type}" if cand_class or cand_type else None
+        precise = self._candidate_has_precise_address(candidate)
+
+        if cand_type in {"house", "building"} or cand_class in {"building"}:
+            return "rooftop", location_type
+        if precise:
+            return "parcel_or_address_point", location_type
+        if cand_class in {"highway", "place"} or cand_type in {"residential", "road", "street"}:
+            return "interpolated", location_type
+        if importance is not None and importance < max(0.01, self.min_importance or 0.0):
+            return "approximate", location_type
+        return "unknown", location_type
 
     def geocode_with_diagnostics(self, address: str) -> GeocodeResult:
         submitted_address = str(address or "")
@@ -296,6 +316,7 @@ class Geocoder:
                     )
 
         matched_address = first.get("display_name") if isinstance(first, dict) else None
+        geocode_precision, geocode_location_type = self._derive_precision_tier(first, importance)
         candidate_previews = [p for p in (self._preview_candidate(c) for c in payload[: self.max_candidates]) if p]
         return GeocodeResult(
             latitude=float(lat),
@@ -308,6 +329,8 @@ class Geocoder:
             matched_address=matched_address,
             confidence_score=importance,
             candidate_count=len(payload),
+            geocode_location_type=geocode_location_type,
+            geocode_precision=geocode_precision,
             raw_response_preview={
                 "top_candidate": self._preview_candidate(first),
                 "parsed_candidates": candidate_previews,
@@ -330,6 +353,8 @@ class Geocoder:
                 "matched_address": None,
                 "confidence_score": None,
                 "candidate_count": 0,
+                "geocode_location_type": None,
+                "geocode_precision": "unknown",
                 "raw_response_preview": exc.raw_response_preview,
                 "rejection_reason": exc.rejection_reason,
             }
@@ -342,6 +367,8 @@ class Geocoder:
             "matched_address": result.matched_address,
             "confidence_score": result.confidence_score,
             "candidate_count": result.candidate_count,
+            "geocode_location_type": result.geocode_location_type,
+            "geocode_precision": result.geocode_precision,
             "raw_response_preview": result.raw_response_preview,
             "rejection_reason": None,
         }
