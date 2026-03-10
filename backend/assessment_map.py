@@ -29,6 +29,27 @@ def _geo_ready() -> bool:
     return bool(Transformer and Point and box and mapping and shape and shapely_transform)
 
 
+def _canonical_wgs84_lon_lat(lon: Any, lat: Any) -> tuple[float, float] | None:
+    """Return canonical EPSG:4326 lon/lat ordering and repair obvious axis-swaps."""
+    try:
+        lon_f = float(lon)
+        lat_f = float(lat)
+    except (TypeError, ValueError):
+        return None
+
+    if -180.0 <= lon_f <= 180.0 and -90.0 <= lat_f <= 90.0:
+        return lon_f, lat_f
+
+    # Defensive fallback for data paths that accidentally pass lat/lon.
+    if -180.0 <= lat_f <= 180.0 and -90.0 <= lon_f <= 90.0:
+        swapped_lon = lat_f
+        swapped_lat = lon_f
+        if -180.0 <= swapped_lon <= 180.0 and -90.0 <= swapped_lat <= 90.0:
+            return swapped_lon, swapped_lat
+
+    return None
+
+
 def _feature_collection(features: list[dict[str, Any]]) -> dict[str, Any]:
     return {"type": "FeatureCollection", "features": features}
 
@@ -177,17 +198,26 @@ def _resolve_vector_paths(
     }
 
 
-def _property_marker_feature(result: AssessmentResult) -> dict[str, Any]:
+def _point_feature(
+    *,
+    lon: float,
+    lat: float,
+    label: str,
+    properties: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    normalized = _canonical_wgs84_lon_lat(lon, lat)
+    if normalized is None:
+        raise ValueError("Point coordinates are not valid WGS84 lon/lat.")
+    norm_lon, norm_lat = normalized
     return {
         "type": "Feature",
         "properties": {
-            "label": "Assessed property",
-            "assessment_id": result.assessment_id,
-            "address": result.address,
+            "label": label,
+            **(properties or {}),
         },
         "geometry": {
             "type": "Point",
-            "coordinates": [float(result.longitude), float(result.latitude)],
+            "coordinates": [float(norm_lon), float(norm_lat)],
         },
     }
 
@@ -252,21 +282,36 @@ def build_assessment_map_payload(
 ) -> AssessmentMapPayload:
     lat = float(result.latitude)
     lon = float(result.longitude)
+    geocoded_lon_lat = _canonical_wgs84_lon_lat(lon, lat)
+    if geocoded_lon_lat is None:
+        geocoded_lon_lat = (float(lon), float(lat))
+    geocoded_lon, geocoded_lat = geocoded_lon_lat
 
     limitations: list[str] = []
     data: dict[str, dict[str, Any]] = {}
     layers: list[AssessmentMapLayer] = []
+    display_point_source = "geocoded_address_point"
 
-    property_point = _feature_collection([_property_marker_feature(result)])
-    data["property_point"] = property_point
+    geocoded_address_point = _point_feature(
+        lon=geocoded_lon,
+        lat=geocoded_lat,
+        label="Geocoded address point",
+        properties={
+            "source": "geocoded_address_point",
+            "assessment_id": result.assessment_id,
+            "address": result.address,
+            "crs": "EPSG:4326",
+        },
+    )
+    data["geocoded_address_point"] = _feature_collection([geocoded_address_point])
     layers.append(
         AssessmentMapLayer(
-            layer_key="property_point",
-            display_name="Property",
+            layer_key="geocoded_address_point",
+            display_name="Geocoded Address Point",
             available=True,
-            default_visible=True,
-            description="Assessed property location.",
-            legend_label="Property marker",
+            default_visible=False,
+            description="Raw geocoded point from address lookup (WGS84).",
+            legend_label="Geocoded address point",
             geometry_type="point",
             feature_count=1,
         )
@@ -278,6 +323,7 @@ def build_assessment_map_payload(
     basis_geometry_type = "point_proxy"
     footprint_features: list[dict[str, Any]] = []
     ring_features: list[dict[str, Any]] = []
+    matched_structure_centroid: dict[str, Any] | None = None
 
     if _geo_ready() and footprint_paths:
         try:
@@ -298,10 +344,40 @@ def build_assessment_map_payload(
                             "label": "Primary structure footprint",
                             "source": fp_result.source,
                             "confidence": fp_result.confidence,
+                            "crs": "EPSG:4326",
                         },
                         "geometry": geometry,
                     }
                 ]
+            centroid_lat = None
+            centroid_lon = None
+            if isinstance(fp_result.centroid, tuple) and len(fp_result.centroid) == 2:
+                centroid_lat = fp_result.centroid[0]
+                centroid_lon = fp_result.centroid[1]
+            elif _geo_ready():
+                try:
+                    centroid_lat = float(fp_result.footprint.centroid.y)
+                    centroid_lon = float(fp_result.footprint.centroid.x)
+                except Exception:
+                    centroid_lat = None
+                    centroid_lon = None
+
+            centroid_lon_lat = _canonical_wgs84_lon_lat(centroid_lon, centroid_lat)
+            if centroid_lon_lat is not None:
+                centroid_lon_norm, centroid_lat_norm = centroid_lon_lat
+                matched_structure_centroid = _point_feature(
+                    lon=centroid_lon_norm,
+                    lat=centroid_lat_norm,
+                    label="Matched structure centroid",
+                    properties={
+                        "source": "matched_structure_centroid",
+                        "footprint_source": fp_result.source,
+                        "confidence": fp_result.confidence,
+                        "crs": "EPSG:4326",
+                    },
+                )
+                data["matched_structure_centroid"] = _feature_collection([matched_structure_centroid])
+                display_point_source = "matched_structure_centroid"
             rings, _assumptions = compute_structure_rings(fp_result.footprint)
             ring_features = _ring_zone_features_from_geometry(rings, basis="building_footprint")
         else:
@@ -315,6 +391,69 @@ def build_assessment_map_payload(
         elif not footprint_paths:
             limitations.append("Building footprint source not configured; defensible-space zones use point-proxy geometry.")
         ring_features = _build_proxy_rings(lat=lat, lon=lon)
+
+    if matched_structure_centroid:
+        layers.append(
+            AssessmentMapLayer(
+                layer_key="matched_structure_centroid",
+                display_name="Matched Structure Centroid",
+                available=True,
+                default_visible=False,
+                description="Centroid of the matched structure footprint (WGS84).",
+                legend_label="Matched structure centroid",
+                geometry_type="point",
+                feature_count=1,
+            )
+        )
+    else:
+        layers.append(
+            AssessmentMapLayer(
+                layer_key="matched_structure_centroid",
+                display_name="Matched Structure Centroid",
+                available=False,
+                default_visible=False,
+                description="Centroid of the matched structure footprint (WGS84).",
+                legend_label="Matched structure centroid",
+                geometry_type="point",
+                feature_count=0,
+                reason_unavailable="No matched structure footprint centroid was available.",
+            )
+        )
+
+    property_geometry = (
+        dict((matched_structure_centroid or geocoded_address_point).get("geometry") or {})
+    )
+    property_point = _feature_collection(
+        [
+            {
+                "type": "Feature",
+                "properties": {
+                    "label": "Assessed property",
+                    "assessment_id": result.assessment_id,
+                    "address": result.address,
+                    "source": display_point_source,
+                    "crs": "EPSG:4326",
+                },
+                "geometry": property_geometry,
+            }
+        ]
+    )
+    data["property_point"] = property_point
+    layers.append(
+        AssessmentMapLayer(
+            layer_key="property_point",
+            display_name="Property",
+            available=True,
+            default_visible=True,
+            description=(
+                "Assessed property marker. Uses matched structure centroid when available, "
+                "otherwise geocoded address point."
+            ),
+            legend_label="Assessed property",
+            geometry_type="point",
+            feature_count=1,
+        )
+    )
 
     if footprint_features:
         data["building_footprint"] = _feature_collection(footprint_features)
@@ -408,16 +547,33 @@ def build_assessment_map_payload(
         if note not in limitations:
             limitations.append(str(note))
 
+    center_lon, center_lat = geocoded_lon, geocoded_lat
+    if isinstance(property_geometry.get("coordinates"), list) and len(property_geometry["coordinates"]) >= 2:
+        maybe_lon = property_geometry["coordinates"][0]
+        maybe_lat = property_geometry["coordinates"][1]
+        normalized_center = _canonical_wgs84_lon_lat(maybe_lon, maybe_lat)
+        if normalized_center is not None:
+            center_lon, center_lat = normalized_center
+
     return AssessmentMapPayload(
         assessment_id=result.assessment_id,
-        center={"latitude": lat, "longitude": lon},
+        center={"latitude": float(center_lat), "longitude": float(center_lon)},
         resolved_region_id=result.resolved_region_id or str((result.property_level_context or {}).get("region_id") or "") or None,
         coverage_available=bool(result.coverage_available),
         basis_geometry_type=basis_geometry_type,
+        display_point_source=display_point_source,
+        geocoded_address_point=geocoded_address_point,
+        matched_structure_centroid=matched_structure_centroid,
+        matched_structure_footprint=footprint_features[0] if footprint_features else None,
         layers=layers,
         data=data,
         limitations=limitations[:8],
         metadata={
+            "geometry_contract": {
+                "crs": "EPSG:4326",
+                "coordinate_order": "[longitude, latitude]",
+                "display_point_source": display_point_source,
+            },
             "region_resolution": _dump_region_resolution(result),
             "model_governance": (result.model_governance.model_dump() if hasattr(result.model_governance, "model_dump") else {}),
         },

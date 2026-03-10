@@ -71,9 +71,13 @@ def test_frontend_includes_assessment_map_panel_and_layer_controls() -> None:
     assert 'id="assessmentMap"' in html
     assert 'id="mapLayerToggles"' in html
     assert 'id="mapLimitationsText"' in html
+    assert 'id="mapDebugPanel"' in html
     assert "function renderAssessmentMap(assessmentId)" in html
     assert "/report/${assessmentId}/map" in html
     assert "defensible_space_rings" in html
+    assert "geocoded_address_point" in html
+    assert "matched_structure_centroid" in html
+    assert "display_point_source" in html
 
 
 def test_frontend_map_degrades_gracefully_for_uncovered_or_geocode_failure() -> None:
@@ -81,3 +85,12 @@ def test_frontend_map_degrades_gracefully_for_uncovered_or_geocode_failure() -> 
     assert "clearMapLayers();" in html
     assert "setMapStatus(\"Map unavailable until this location has prepared-region coverage.\");" in html
     assert "setMapStatus(\"Map unavailable until geocoding succeeds.\");" in html
+    assert "renderMapDebugPanel(null);" in html
+
+
+def test_frontend_map_uses_geojson_directly_without_axis_reordering() -> None:
+    html = _frontend_html()
+    assert "L.geoJSON(fc" in html
+    assert "pointToLayer: (_feature, latlng) => L.circleMarker(latlng" in html
+    assert "coordinates[0]" not in html
+    assert "coordinates[1]" not in html

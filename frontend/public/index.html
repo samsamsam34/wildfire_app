@@ -100,6 +100,16 @@
         color: var(--muted);
         font-size: 0.9rem;
       }
+      .map-debug {
+        margin-top: 0.55rem;
+        font-size: 0.78rem;
+        color: #6b7280;
+        border: 1px dashed #d1d5db;
+        border-radius: 8px;
+        padding: 0.5rem 0.65rem;
+        background: #fafaf9;
+        white-space: pre-line;
+      }
       .score { font-size: 2rem; font-weight: 700; line-height: 1; margin: 0.25rem 0; }
       .score.good { color: var(--good); }
       .score.warn { color: var(--warn); }
@@ -269,6 +279,7 @@
         <p id="mapEmptyText" class="map-empty">Run an assessment to load map layers.</p>
         <div id="mapLayerToggles" class="map-toggles"></div>
         <p id="mapLimitationsText" class="muted" style="margin-top:0.5rem;">Map limitations will appear here when needed.</p>
+        <div id="mapDebugPanel" class="map-debug" style="display:none;"></div>
       </section>
 
       <section class="card">
@@ -432,6 +443,27 @@
       let mapLayerInstances = {};
 
       const mapLayerStyle = {
+        geocoded_address_point: {
+          radius: 5,
+          color: "#6d28d9",
+          weight: 2,
+          fillColor: "#8b5cf6",
+          fillOpacity: 0.7,
+        },
+        matched_structure_centroid: {
+          radius: 5,
+          color: "#0f766e",
+          weight: 2,
+          fillColor: "#14b8a6",
+          fillOpacity: 0.72,
+        },
+        property_point: {
+          radius: 7,
+          color: "#b91c1c",
+          weight: 2,
+          fillColor: "#ef4444",
+          fillOpacity: 0.75,
+        },
         building_footprint: {
           color: "#1d4ed8",
           weight: 2,
@@ -547,6 +579,61 @@
         });
       }
 
+      function parsePointCoordinates(feature) {
+        const coords = feature?.geometry?.coordinates;
+        if (!Array.isArray(coords) || coords.length < 2) return null;
+        const lon = Number(coords[0]);
+        const lat = Number(coords[1]);
+        if (!Number.isFinite(lon) || !Number.isFinite(lat)) return null;
+        return { lon, lat };
+      }
+
+      function haversineFeet(a, b) {
+        const toRad = (deg) => (deg * Math.PI) / 180;
+        const R = 6371000;
+        const dLat = toRad(b.lat - a.lat);
+        const dLon = toRad(b.lon - a.lon);
+        const lat1 = toRad(a.lat);
+        const lat2 = toRad(b.lat);
+        const h = Math.sin(dLat / 2) ** 2
+          + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) ** 2;
+        const meters = 2 * R * Math.atan2(Math.sqrt(h), Math.sqrt(1 - h));
+        return meters * 3.28084;
+      }
+
+      function renderMapDebugPanel(payload) {
+        const panel = document.getElementById("mapDebugPanel");
+        if (!panel) return;
+        if (!isDebugMode) {
+          panel.style.display = "none";
+          panel.textContent = "";
+          return;
+        }
+
+        const geocoded = payload?.geocoded_address_point;
+        const matchedCentroid = payload?.matched_structure_centroid;
+        const footprint = payload?.matched_structure_footprint;
+        const displayPointSource = payload?.display_point_source || "geocoded_address_point";
+        const geocodedCoords = parsePointCoordinates(geocoded);
+        const centroidCoords = parsePointCoordinates(matchedCentroid);
+
+        let offsetText = "n/a";
+        if (geocodedCoords && centroidCoords) {
+          const offsetFeet = haversineFeet(geocodedCoords, centroidCoords);
+          offsetText = `${offsetFeet.toFixed(1)} ft`;
+        }
+
+        panel.style.display = "block";
+        panel.textContent = [
+          `Map debug`,
+          `display_point_source: ${displayPointSource}`,
+          `geocoded_address_point: ${geocodedCoords ? `[${geocodedCoords.lon.toFixed(6)}, ${geocodedCoords.lat.toFixed(6)}]` : "unavailable"}`,
+          `matched_structure_centroid: ${centroidCoords ? `[${centroidCoords.lon.toFixed(6)}, ${centroidCoords.lat.toFixed(6)}]` : "unavailable"}`,
+          `matched_structure_footprint: ${footprint ? "available" : "unavailable"}`,
+          `geocode_to_centroid_offset: ${offsetText}`,
+        ].join("\n");
+      }
+
       function geoJsonStyle(layerKey) {
         const style = mapLayerStyle[layerKey];
         if (!style) return { color: "#374151", weight: 2, fillOpacity: 0.08 };
@@ -555,21 +642,28 @@
 
       function buildLeafletLayer(layerKey, fc) {
         if (!window.L || !fc || !Array.isArray(fc.features)) return null;
-        if (layerKey === "property_point") {
+        if (layerKey === "property_point" || layerKey === "geocoded_address_point" || layerKey === "matched_structure_centroid") {
+          const pointStyle = mapLayerStyle[layerKey] || mapLayerStyle.property_point;
           return L.geoJSON(fc, {
-            pointToLayer: (_feature, latlng) => L.circleMarker(latlng, {
-              radius: 7,
-              color: "#b91c1c",
-              weight: 2,
-              fillColor: "#ef4444",
-              fillOpacity: 0.75,
-            }),
+            pointToLayer: (_feature, latlng) => L.circleMarker(latlng, pointStyle),
+            onEachFeature: (feature, layer) => {
+              const label = feature?.properties?.label || layerKey;
+              const source = feature?.properties?.source ? `<br>source: ${feature.properties.source}` : "";
+              layer.bindPopup(`${label}${source}`);
+            },
           });
         }
         return L.geoJSON(fc, {
           style: (feature) => {
             const styleDef = geoJsonStyle(layerKey);
             return typeof styleDef === "function" ? styleDef(feature) : styleDef;
+          },
+          onEachFeature: (feature, layer) => {
+            const label = feature?.properties?.label
+              || feature?.properties?.distance_band_ft
+              || layerKey;
+            const source = feature?.properties?.source ? `<br>source: ${feature.properties.source}` : "";
+            layer.bindPopup(`${label}${source}`);
           },
         });
       }
@@ -619,6 +713,7 @@
 
           renderMapLayerToggles(payload.layers || []);
           setMapLimitations(payload.limitations || []);
+          renderMapDebugPanel(payload);
           setMapStatus("Map loaded.");
 
           if (bounds.length > 0) {
@@ -632,6 +727,7 @@
           console.error("Map payload failed:", err);
           setMapStatus("Map could not be loaded for this assessment.");
           setMapLimitations([`Map error: ${err.message || "unknown error"}`]);
+          renderMapDebugPanel(null);
         }
       }
 
@@ -1063,6 +1159,7 @@
           ...(Array.isArray(detail?.diagnostics) ? detail.diagnostics.slice(0, 2) : []),
         ]);
         renderMapLayerToggles([]);
+        renderMapDebugPanel(null);
       }
 
       function renderGeocodeFailureState(detail, submittedAddress) {
@@ -1125,6 +1222,7 @@
           detail?.message || detail?.rejection_reason || "No additional geocoding detail provided.",
         ]);
         renderMapLayerToggles([]);
+        renderMapDebugPanel(null);
       }
 
       async function fetchCoverageForAddress(address) {

@@ -752,6 +752,10 @@ class AssessmentMapPayload(BaseModel):
     resolved_region_id: Optional[str] = None
     coverage_available: bool = False
     basis_geometry_type: str = "point_proxy"
+    display_point_source: str = "geocoded_address_point"
+    geocoded_address_point: Optional[Dict[str, object]] = None
+    matched_structure_centroid: Optional[Dict[str, object]] = None
+    matched_structure_footprint: Optional[Dict[str, object]] = None
     layers: List[AssessmentMapLayer] = Field(default_factory=list)
     data: Dict[str, Dict[str, object]] = Field(default_factory=dict)
     limitations: List[str] = Field(default_factory=list)

@@ -522,6 +522,10 @@ See `docs/homeowner_report.md` for details.
 After a successful assessment, the frontend shows a map card with property and wildfire-context layers.
 
 - Map payload endpoint: `GET /report/{assessment_id}/map`
+- Geometry contract:
+  - map geometries are GeoJSON in WGS84 (`EPSG:4326`) with `[longitude, latitude]` coordinates
+  - `display_point_source` identifies whether the main property marker is from
+    `matched_structure_centroid` (preferred when available) or `geocoded_address_point`
 - Graceful degradation:
   - if footprint geometry is unavailable, rings use point-proxy geometry
   - if overlays are unavailable, map still renders available layers with limitations text

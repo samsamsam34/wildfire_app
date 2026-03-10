@@ -19,6 +19,11 @@ Map data is provided by:
 Response includes:
 
 - map center (`latitude`, `longitude`)
+- explicit geometry anchors (WGS84 GeoJSON):
+  - `geocoded_address_point`
+  - `matched_structure_centroid` (when a footprint match exists)
+  - `matched_structure_footprint` (when a footprint match exists)
+  - `display_point_source` (`matched_structure_centroid` preferred, else `geocoded_address_point`)
 - layer definitions (display name, availability, default visibility, legend text)
 - compact GeoJSON feature collections by layer key
 - limitations/warnings when geometry or overlays are missing/partial
@@ -27,6 +32,7 @@ Response includes:
 
 - Leaflet renders a basemap and map layers.
 - Layer toggles are generated from backend layer metadata.
+- GeoJSON is rendered directly in `[longitude, latitude]` order until Leaflet consumes it.
 - If structure geometry is unavailable, defensible-space rings fall back to point-proxy geometry.
 - If overlays are missing, map still renders with property + available layers and shows limitation text.
 

@@ -12,6 +12,12 @@ from backend.assessment_map import _geo_ready
 from backend.database import AssessmentStore
 from backend.wildfire_data import WildfireContext
 
+try:
+    from shapely.geometry import Point as ShapelyPoint, shape as shapely_shape
+except Exception:  # pragma: no cover - optional in constrained environments
+    ShapelyPoint = None
+    shapely_shape = None
+
 
 client = TestClient(app_main.app)
 
@@ -159,17 +165,46 @@ def test_map_endpoint_returns_point_footprint_rings_and_overlays(monkeypatch, tm
     assert map_response.status_code == 200
     payload = map_response.json()
 
-    assert payload["center"]["latitude"] == pytest.approx(46.8721)
-    assert payload["center"]["longitude"] == pytest.approx(-113.9940)
+    assert -90.0 <= payload["center"]["latitude"] <= 90.0
+    assert -180.0 <= payload["center"]["longitude"] <= 180.0
     assert payload["basis_geometry_type"] in {"building_footprint", "point_proxy"}
+    assert payload["display_point_source"] in {"geocoded_address_point", "matched_structure_centroid"}
+    assert payload["geocoded_address_point"]["geometry"]["type"] == "Point"
 
     assert "property_point" in payload["data"]
     assert payload["data"]["property_point"]["type"] == "FeatureCollection"
 
     layer_keys = {row["layer_key"] for row in payload["layers"]}
-    assert {"property_point", "building_footprint", "defensible_space_rings", "fire_perimeters"}.issubset(layer_keys)
+    assert {
+        "property_point",
+        "geocoded_address_point",
+        "matched_structure_centroid",
+        "building_footprint",
+        "defensible_space_rings",
+        "fire_perimeters",
+    }.issubset(layer_keys)
 
     assert payload["data"].get("defensible_space_rings", {}).get("features")
+
+    geocode_coords = payload["geocoded_address_point"]["geometry"]["coordinates"]
+    assert geocode_coords[0] == pytest.approx(-113.9940)
+    assert geocode_coords[1] == pytest.approx(46.8721)
+
+    property_coords = payload["data"]["property_point"]["features"][0]["geometry"]["coordinates"]
+    assert -180.0 <= property_coords[0] <= 180.0
+    assert -90.0 <= property_coords[1] <= 90.0
+    assert payload["metadata"]["geometry_contract"]["coordinate_order"] == "[longitude, latitude]"
+
+    matched_centroid = payload.get("matched_structure_centroid")
+    footprint = payload.get("matched_structure_footprint")
+    if matched_centroid and footprint:
+        centroid_coords = matched_centroid["geometry"]["coordinates"]
+        assert property_coords == centroid_coords
+        assert payload["display_point_source"] == "matched_structure_centroid"
+        if shapely_shape and ShapelyPoint:
+            footprint_geom = shapely_shape(footprint["geometry"])
+            centroid_point = ShapelyPoint(centroid_coords[0], centroid_coords[1])
+            assert footprint_geom.contains(centroid_point) or footprint_geom.touches(centroid_point)
 
 
 @pytest.mark.skipif(not _geo_ready(), reason="Map geometry tests require shapely/pyproj")
@@ -183,8 +218,48 @@ def test_map_endpoint_point_only_fallback_is_graceful(monkeypatch, tmp_path: Pat
 
     assert payload["data"]["property_point"]["type"] == "FeatureCollection"
     assert payload["basis_geometry_type"] == "point_proxy"
+    assert payload["display_point_source"] == "geocoded_address_point"
+    assert payload["matched_structure_centroid"] is None
     assert payload["data"].get("defensible_space_rings", {}).get("features")
     assert any("point" in s.lower() or "footprint" in s.lower() for s in payload.get("limitations") or [])
+
+
+@pytest.mark.skipif(not _geo_ready(), reason="Map geometry tests require shapely/pyproj")
+def test_map_endpoint_prefers_structure_centroid_for_property_marker_when_available(monkeypatch, tmp_path: Path):
+    footprints = _write_geojson(
+        tmp_path / "footprints_shifted.geojson",
+        [
+            {
+                "type": "Feature",
+                "properties": {"id": 9},
+                "geometry": {
+                    "type": "Polygon",
+                    "coordinates": [[
+                        [-113.9948, 46.8715],
+                        [-113.9942, 46.8715],
+                        [-113.9942, 46.8719],
+                        [-113.9948, 46.8719],
+                        [-113.9948, 46.8715],
+                    ]],
+                },
+            }
+        ],
+    )
+
+    _setup(monkeypatch, tmp_path, footprints_path=footprints, perimeters_path=None)
+    assessed = _assess()
+    map_response = client.get(f"/report/{assessed['assessment_id']}/map")
+    assert map_response.status_code == 200
+    payload = map_response.json()
+
+    assert payload["display_point_source"] == "matched_structure_centroid"
+    geocoded_coords = payload["geocoded_address_point"]["geometry"]["coordinates"]
+    marker_coords = payload["data"]["property_point"]["features"][0]["geometry"]["coordinates"]
+    centroid_coords = payload["matched_structure_centroid"]["geometry"]["coordinates"]
+
+    assert marker_coords == centroid_coords
+    # Ensure this regression does not silently keep the geocoded point when structure centroid exists.
+    assert marker_coords != geocoded_coords
 
 
 @pytest.mark.skipif(not _geo_ready(), reason="Map geometry tests require shapely/pyproj")
