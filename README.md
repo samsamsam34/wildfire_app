@@ -198,11 +198,18 @@ Common runtime settings:
 - Building-source selection:
   - `WF_BUILDING_SOURCE_PRIORITY` (default: `building_footprints_overture,building_footprints,fema_structures`)
   - `WF_OVERTURE_BUILDINGS_VERSION` (optional version tag shown in debug metadata)
+- Geocoding trust controls:
+  - `WF_GEOCODE_ALLOW_LOW_CONFIDENCE_FALLBACK` (default: `true`, allows medium-confidence fallback when a candidate has usable coordinates)
+  - `WF_GEOCODE_ALLOW_AMBIGUOUS_FALLBACK` (default: `false`)
+  - `WF_REGION_EDGE_TOLERANCE_M` (default: `0`, optional region-boundary tolerance for near-edge points)
 - `WILDFIRE_APP_CACHE_ROOT`, `WILDFIRE_APP_DATA_ROOT`, `WILDFIRE_APP_TMP_ROOT` (offline prep script paths)
 
 Legacy direct-layer paths are still supported via `WF_LAYER_*` env vars (`DEM`, `SLOPE`, `FUEL`, `CANOPY`, fire perimeters, building footprints, etc.), but prepared-region runtime is the primary path.
 
-Geocoding uses OpenStreetMap Nominatim (`backend/geocoding.py`). If geocoding fails, assessment returns an error instead of scoring synthetic coordinates.
+Geocoding uses OpenStreetMap Nominatim (`backend/geocoding.py`). Geocode outcomes are now explicit:
+- `geocode_failed`: no usable provider candidate
+- `geocode_succeeded_untrusted`: provider returned a candidate but trust checks were weak; runtime can continue with diagnostics
+- `geocode_succeeded_trusted`: accepted trusted match
 
 ## Data / Storage Notes
 
@@ -488,10 +495,11 @@ Governance guidance:
 
 ## Scoring Completeness And Fallbacks
 
-Homeowner assessments now prioritize graceful degradation when a trusted geocode and supported prepared region are available.
+Homeowner assessments now prioritize graceful degradation when a usable geocode and supported prepared region are available.
 
-- Hard blockers (assessment may return `insufficient_data`): no trusted geocode, no prepared-region coverage, or total absence of enough core evidence to score both site hazard and home vulnerability.
+- Hard blockers (assessment may return `insufficient_data`): no usable geocode candidate, no prepared-region coverage, or total absence of enough core evidence to score both site hazard and home vulnerability.
 - Soft blockers (assessment still returns): missing/partial layers, nodata/outside-extent sampling, missing structure fields, and footprint/ring gaps.
+- Low-confidence geocode candidates can continue as `geocode_succeeded_untrusted` with `trusted_match_status=untrusted_fallback`, explicit diagnostics, and confidence penalties.
 
 Fallback hierarchy is deterministic and explicit:
 - observed value

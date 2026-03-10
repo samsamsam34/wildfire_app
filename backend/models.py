@@ -74,6 +74,8 @@ GeocodeStatus = Literal[
     "provider_error",
     "parser_error",
 ]
+GeocodeOutcome = Literal["geocode_succeeded_trusted", "geocode_succeeded_untrusted", "geocode_failed"]
+TrustedMatchStatus = Literal["trusted", "untrusted_fallback", "rejected"]
 StructureGeometrySource = Literal["auto_detected", "user_selected", "user_modified"]
 SelectionMode = Literal["polygon", "point"]
 
@@ -195,12 +197,22 @@ class RegionCoverageStatus(BaseModel):
     reason: str = ""
     recommended_action: Optional[str] = None
     geocode_status: Optional[GeocodeStatus] = None
+    geocode_outcome: Optional[GeocodeOutcome] = None
+    trusted_match_status: Optional[TrustedMatchStatus] = None
+    trusted_match_failure_reason: Optional[str] = None
+    fallback_eligibility: Optional[bool] = None
     normalized_address: Optional[str] = None
     geocode_source: Optional[str] = None
+    geocode_precision: Optional[str] = None
+    geocode_location_type: Optional[str] = None
+    region_distance_to_boundary_m: Optional[float] = None
+    nearest_region_id: Optional[str] = None
+    edge_tolerance_m: Optional[float] = None
 
 
 class GeocodingDetails(BaseModel):
     geocode_status: GeocodeStatus = "accepted"
+    geocode_outcome: Optional[GeocodeOutcome] = None
     submitted_address: str = ""
     normalized_address: Optional[str] = None
     geocode_source: Optional[str] = None
@@ -211,6 +223,10 @@ class GeocodingDetails(BaseModel):
     geocoded_point: Optional[Dict[str, float]] = None
     geocode_location_type: Optional[str] = None
     geocode_precision: Optional[str] = None
+    trusted_match_status: Optional[TrustedMatchStatus] = None
+    trusted_match_failure_reason: Optional[str] = None
+    fallback_eligibility: Optional[bool] = None
+    address_component_comparison: Optional[Dict[str, Any]] = None
     confidence_score: Optional[float] = None
     candidate_count: Optional[int] = None
     resolved_latitude: Optional[float] = None

@@ -1393,6 +1393,154 @@ def test_low_confidence_address_returns_structured_geocode_low_confidence_error(
     assert "below policy threshold" in detail["message"].lower()
 
 
+def test_low_confidence_with_candidate_fallback_scores_when_region_is_covered(monkeypatch, tmp_path):
+    auth.API_KEYS = set()
+    monkeypatch.setattr(app_main, "store", AssessmentStore(str(tmp_path / "geocode_low_conf_fallback.db")))
+    monkeypatch.setattr(app_main.wildfire_data, "collect_context", lambda _lat, _lon: _ctx(env=44.0, wildland=50.0, historic=35.0))
+    monkeypatch.setattr(
+        app_main.geocoder,
+        "geocode",
+        lambda _addr: (_ for _ in ()).throw(
+            GeocodingError(
+                status="low_confidence",
+                message="Best geocoding match was below the confidence threshold.",
+                submitted_address="104 Riverside Ave, Winthrop, WA 98862",
+                normalized_address="104 Riverside Ave, Winthrop, WA 98862",
+                rejection_reason="importance=0.01 threshold=0.2",
+                raw_response_preview={
+                    "candidate_count": 2,
+                    "trust_filter_rule": "min_importance_threshold",
+                    "top_candidate": {
+                        "display_name": "104 Riverside Ave, Winthrop, WA 98862, USA",
+                        "lat": "48.4772",
+                        "lon": "-120.1864",
+                        "importance": 0.01,
+                        "class": "highway",
+                        "type": "residential",
+                    },
+                    "parsed_candidates": [
+                        {
+                            "display_name": "104 Riverside Ave, Winthrop, WA 98862, USA",
+                            "lat": "48.4772",
+                            "lon": "-120.1864",
+                            "importance": 0.01,
+                        }
+                    ],
+                },
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        app_main,
+        "lookup_region_for_point",
+        lambda lat, lon, regions_root=None: {
+            "covered": True,
+            "region_id": "winthrop_pilot",
+            "display_name": "Winthrop Pilot",
+            "diagnostics": [],
+        },
+    )
+
+    res = client.post(
+        "/risk/assess",
+        json={
+            "address": "104 Riverside Ave, Winthrop, WA 98862",
+            "attributes": {"roof_type": "class a"},
+            "confirmed_fields": ["roof_type"],
+            "audience": "homeowner",
+            "tags": [],
+        },
+    )
+    assert res.status_code == 200
+    body = res.json()
+    assert body["geocoding"]["geocode_status"] == "accepted"
+    assert body["geocoding"]["geocode_outcome"] == "geocode_succeeded_untrusted"
+    assert body["geocoding"]["trusted_match_status"] == "untrusted_fallback"
+    assert body["geocoding"]["fallback_eligibility"] is True
+    assert body["resolved_region_id"] == "winthrop_pilot"
+    assert body["coverage_available"] is True
+
+
+def test_low_confidence_with_candidate_fallback_reaches_uncovered_response(monkeypatch, tmp_path):
+    auth.API_KEYS = set()
+    monkeypatch.setattr(app_main, "store", AssessmentStore(str(tmp_path / "geocode_low_conf_uncovered.db")))
+    monkeypatch.setenv("WF_REQUIRE_PREPARED_REGION_COVERAGE", "true")
+    monkeypatch.setenv("WF_AUTO_QUEUE_REGION_PREP_ON_MISS", "false")
+    monkeypatch.setattr(
+        app_main.geocoder,
+        "geocode",
+        lambda _addr: (_ for _ in ()).throw(
+            GeocodingError(
+                status="low_confidence",
+                message="Best geocoding match was below the confidence threshold.",
+                submitted_address="10 Unknown Rd, Winthrop, WA 98862",
+                normalized_address="10 Unknown Rd, Winthrop, WA 98862",
+                rejection_reason="importance=0.01 threshold=0.2",
+                raw_response_preview={
+                    "candidate_count": 1,
+                    "trust_filter_rule": "min_importance_threshold",
+                    "top_candidate": {
+                        "display_name": "10 Unknown Rd, Winthrop, WA 98862, USA",
+                        "lat": "48.4760",
+                        "lon": "-120.1900",
+                        "importance": 0.01,
+                    },
+                    "parsed_candidates": [
+                        {
+                            "display_name": "10 Unknown Rd, Winthrop, WA 98862, USA",
+                            "lat": "48.4760",
+                            "lon": "-120.1900",
+                            "importance": 0.01,
+                        }
+                    ],
+                },
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        app_main,
+        "lookup_region_for_point",
+        lambda lat, lon, regions_root=None: {
+            "covered": False,
+            "diagnostics": ["No prepared region bounds contain point."],
+            "nearest_region_id": "winthrop_pilot",
+            "region_distance_to_boundary_m": 412.4,
+        },
+    )
+
+    payload = {
+        "address": "10 Unknown Rd, Winthrop, WA 98862",
+        "attributes": {"roof_type": "class a"},
+        "confirmed_fields": ["roof_type"],
+        "audience": "homeowner",
+    }
+    coverage = client.post("/regions/coverage-check", json={"address": payload["address"]})
+    debug = client.post("/risk/debug", json=payload)
+    assess = client.post("/risk/assess", json=payload)
+
+    assert coverage.status_code == 200
+    assert debug.status_code == 200
+    coverage_body = coverage.json()
+    debug_body = debug.json()
+    assert coverage_body["geocode_status"] == "accepted"
+    assert coverage_body["geocode_outcome"] == "geocode_succeeded_untrusted"
+    assert coverage_body["trusted_match_status"] == "untrusted_fallback"
+    assert coverage_body["coverage_available"] is False
+    assert coverage_body["reason"] == "no_prepared_region_for_location"
+    assert debug_body["geocoding"]["geocode_status"] == "accepted"
+    assert debug_body["geocoding"]["geocode_outcome"] == "geocode_succeeded_untrusted"
+    assert "region_resolution" in debug_body
+
+    assert assess.status_code == 409
+    detail = assess.json()["detail"]
+    assert detail["region_not_ready"] is True
+    assert detail["geocode_status"] == "accepted"
+    assert detail["geocode_outcome"] == "geocode_succeeded_untrusted"
+    assert detail["trusted_match_status"] == "untrusted_fallback"
+    assert detail["coverage_available"] is False
+    assert detail["reason"] == "no_prepared_region_for_location"
+
+
 def test_geocode_debug_returns_structured_accepted_payload_with_region_resolution(monkeypatch, tmp_path):
     auth.API_KEYS = set()
     monkeypatch.setattr(app_main, "store", AssessmentStore(str(tmp_path / "geocode_debug_ok.db")))

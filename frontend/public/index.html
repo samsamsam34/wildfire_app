@@ -1518,6 +1518,8 @@
           if (isDebugMode) {
             const geocode = data?.geocoding || {};
             const status = geocode?.geocode_status || "unknown";
+            const outcome = geocode?.geocode_outcome || "unknown";
+            const trust = geocode?.trusted_match_status || "unknown";
             const submitted = geocode?.submitted_address || data?.address || "(none)";
             const normalized = geocode?.normalized_address || "(none)";
             const lat = geocode?.resolved_latitude ?? data?.latitude;
@@ -1525,7 +1527,7 @@
             const resolvedRegionId = resolution?.resolved_region_id || data?.resolved_region_id || "unresolved";
             geocodeDebugEl.style.display = "block";
             geocodeDebugEl.textContent =
-              `Geocode: status=${status}; submitted="${submitted}"; normalized="${normalized}"; lat/lon=${lat}, ${lon}; region=${resolvedRegionId}`;
+              `Geocode: status=${status}; outcome=${outcome}; trust=${trust}; submitted="${submitted}"; normalized="${normalized}"; lat/lon=${lat}, ${lon}; region=${resolvedRegionId}`;
           } else {
             geocodeDebugEl.style.display = "none";
           }
@@ -1586,13 +1588,15 @@
         if (geocodeDebugEl) {
           if (isDebugMode) {
             const geocodeStatus = detail?.geocode_status || "unknown";
+            const geocodeOutcome = detail?.geocode_outcome || "unknown";
+            const trustedMatchStatus = detail?.trusted_match_status || "unknown";
             const submitted = detail?.submitted_address || document.getElementById("address")?.value || "(none)";
             const normalized = detail?.normalized_address || "(none)";
             const lat = detail?.resolved_latitude ?? "n/a";
             const lon = detail?.resolved_longitude ?? "n/a";
             geocodeDebugEl.style.display = "block";
             geocodeDebugEl.textContent =
-              `Geocode: status=${geocodeStatus}; submitted="${submitted}"; normalized="${normalized}"; lat/lon=${lat}, ${lon}; region=unsupported_location`;
+              `Geocode: status=${geocodeStatus}; outcome=${geocodeOutcome}; trust=${trustedMatchStatus}; submitted="${submitted}"; normalized="${normalized}"; lat/lon=${lat}, ${lon}; region=unsupported_location`;
           } else {
             geocodeDebugEl.style.display = "none";
           }
@@ -1610,6 +1614,8 @@
 
       function renderGeocodeFailureState(detail, submittedAddress) {
         const geocodeStatus = detail?.geocode_status || "unknown";
+        const geocodeOutcome = detail?.geocode_outcome || "unknown";
+        const trustedMatchStatus = detail?.trusted_match_status || "unknown";
         const normalized = detail?.normalized_address || "(none)";
         const submitted = detail?.submitted_address || submittedAddress || "(none)";
         const rejection = detail?.rejection_reason || detail?.message || "Address lookup failed.";
@@ -1660,7 +1666,7 @@
           if (isDebugMode) {
             geocodeDebugEl.style.display = "block";
             geocodeDebugEl.textContent =
-              `Geocode: status=${geocodeStatus}; submitted="${submitted}"; normalized="${normalized}"; lat/lon=n/a; region=unresolved`;
+              `Geocode: status=${geocodeStatus}; outcome=${geocodeOutcome}; trust=${trustedMatchStatus}; submitted="${submitted}"; normalized="${normalized}"; lat/lon=n/a; region=unresolved`;
           } else {
             geocodeDebugEl.style.display = "none";
           }
