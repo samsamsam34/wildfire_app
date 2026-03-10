@@ -63,6 +63,7 @@ from backend.models import (
     EnvironmentalFactors,
     FreshnessStatus,
     InputSourceMetadata,
+    GeocodeDebugRequest,
     GeocodingDetails,
     ModelGovernanceInfo,
     FactorBreakdown,
@@ -3678,12 +3679,35 @@ def _env_flag(name: str, default: bool) -> bool:
     return raw.strip().lower() not in {"0", "false", "no", "off"}
 
 
+def _is_dev_mode() -> bool:
+    env = str(os.getenv("WF_ENV") or os.getenv("APP_ENV") or "").strip().lower()
+    return env in {"dev", "development", "local", "test"} or _env_flag("WF_DEBUG_MODE", False)
+
+
+def _normalize_geocode_status(status: str | None) -> str:
+    value = str(status or "").strip().lower()
+    if value == "matched":
+        return "accepted"
+    if value in {
+        "accepted",
+        "no_match",
+        "ambiguous_match",
+        "low_confidence",
+        "missing_coordinates",
+        "provider_error",
+        "parser_error",
+    }:
+        return value
+    return "parser_error"
+
+
 def _geocode_error_message(status: str, purpose: str) -> str:
     context = "assessment" if purpose == "assessment" else "region coverage check"
     mapping = {
         "no_match": "No trusted location match was found. Please verify the address and try again.",
         "ambiguous_match": "Address matched multiple possible locations. Add city/state or ZIP and try again.",
         "low_confidence": "Address match confidence was below policy threshold. Add more address detail and retry.",
+        "missing_coordinates": "Address matched but coordinates were missing from provider response.",
         "provider_error": "Geocoding provider is temporarily unavailable. Please retry shortly.",
         "parser_error": "Address format could not be parsed. Please correct the address and retry.",
     }
@@ -3723,10 +3747,10 @@ def _log_geocode_event(
     if latitude is not None and longitude is not None:
         payload["latitude"] = round(float(latitude), 6)
         payload["longitude"] = round(float(longitude), 6)
-    if _env_flag("WF_GEOCODE_DEBUG_LOG", False) and raw_response_preview:
+    if (_env_flag("WF_GEOCODE_DEBUG_LOG", False) or _is_dev_mode()) and raw_response_preview:
         payload["raw_response_preview"] = raw_response_preview
 
-    level = logging.INFO if status == "matched" else logging.WARNING
+    level = logging.INFO if status == "accepted" else logging.WARNING
     LOGGER.log(level, "assessment_geocoding %s", json.dumps(payload, sort_keys=True))
 
 
@@ -3738,7 +3762,7 @@ def _geocode_address_or_raise(*, address: str, purpose: str) -> tuple[float, flo
     try:
         lat, lon, geocode_source = geocoder.geocode(submitted_address)
     except GeocodingError as exc:
-        status = str(exc.status or "provider_error")
+        status = _normalize_geocode_status(str(exc.status or "provider_error"))
         detail: dict[str, Any] = {
             "error": "geocoding_failed",
             "geocode_status": status,
@@ -3783,7 +3807,7 @@ def _geocode_address_or_raise(*, address: str, purpose: str) -> tuple[float, flo
 
     geocoder_meta = getattr(geocoder, "last_result", None)
     geocode_meta: dict[str, Any] = {
-        "geocode_status": "matched",
+        "geocode_status": "accepted",
         "submitted_address": submitted_address,
         "normalized_address": normalized_address,
         "geocode_source": geocode_source,
@@ -3798,7 +3822,7 @@ def _geocode_address_or_raise(*, address: str, purpose: str) -> tuple[float, flo
     if isinstance(geocoder_meta, dict):
         geocode_meta.update(
             {
-                "geocode_status": geocoder_meta.get("geocode_status") or "matched",
+                "geocode_status": _normalize_geocode_status(str(geocoder_meta.get("geocode_status") or "accepted")),
                 "normalized_address": geocoder_meta.get("normalized_address") or normalized_address,
                 "provider": geocoder_meta.get("provider") or provider,
                 "matched_address": geocoder_meta.get("matched_address"),
@@ -3812,7 +3836,7 @@ def _geocode_address_or_raise(*, address: str, purpose: str) -> tuple[float, flo
 
     _log_geocode_event(
         purpose=purpose,
-        status="matched",
+        status="accepted",
         submitted_address=submitted_address,
         normalized_address=str(geocode_meta.get("normalized_address") or normalized_address),
         latitude=float(lat),
@@ -3822,6 +3846,106 @@ def _geocode_address_or_raise(*, address: str, purpose: str) -> tuple[float, flo
         raw_response_preview=geocode_meta.get("raw_response_preview"),
     )
     return float(lat), float(lon), geocode_source, geocode_meta
+
+
+def _build_geocode_debug_payload(address: str) -> dict[str, Any]:
+    submitted_address = str(address or "")
+    normalized = normalize_address(submitted_address)
+
+    try:
+        lat, lon, source = geocoder.geocode(submitted_address)
+        meta = dict(getattr(geocoder, "last_result", {}) or {})
+        geocode_status = _normalize_geocode_status(str(meta.get("geocode_status") or "accepted"))
+        selected_match = {
+            "display_name": meta.get("matched_address"),
+            "latitude": float(lat),
+            "longitude": float(lon),
+            "confidence_score": meta.get("confidence_score"),
+            "provider": meta.get("provider") or source,
+        }
+        coverage = _region_coverage_for_coordinates(float(lat), float(lon))
+        return {
+            "raw_input_address": submitted_address,
+            "normalized_address": meta.get("normalized_address") or normalized,
+            "geocode_status": geocode_status,
+            "accepted": geocode_status == "accepted",
+            "match_count": int(meta.get("candidate_count") or 1),
+            "selected_match": selected_match,
+            "trust": {
+                "confidence_score": meta.get("confidence_score"),
+                "min_importance_threshold": getattr(geocoder, "min_importance", None),
+                "ambiguity_delta": getattr(geocoder, "ambiguity_delta", None),
+            },
+            "resolved_latitude": float(lat),
+            "resolved_longitude": float(lon),
+            "geocode_source": source,
+            "rejection_reason": None,
+            "raw_response_preview": meta.get("raw_response_preview"),
+            "region_resolution": {
+                "coverage_available": bool(coverage.get("coverage_available", False)),
+                "resolved_region_id": coverage.get("resolved_region_id"),
+                "reason": coverage.get("reason"),
+                "diagnostics": list(coverage.get("diagnostics") or []),
+            },
+        }
+    except GeocodingError as exc:
+        status = _normalize_geocode_status(exc.status)
+        return {
+            "raw_input_address": submitted_address,
+            "normalized_address": exc.normalized_address or normalized,
+            "geocode_status": status,
+            "accepted": False,
+            "match_count": 0,
+            "selected_match": None,
+            "trust": {
+                "confidence_score": None,
+                "min_importance_threshold": getattr(geocoder, "min_importance", None),
+                "ambiguity_delta": getattr(geocoder, "ambiguity_delta", None),
+            },
+            "resolved_latitude": None,
+            "resolved_longitude": None,
+            "geocode_source": exc.provider,
+            "rejection_reason": exc.rejection_reason,
+            "raw_response_preview": exc.raw_response_preview,
+            "region_resolution": None,
+        }
+    except Exception as exc:
+        return {
+            "raw_input_address": submitted_address,
+            "normalized_address": normalized,
+            "geocode_status": "provider_error",
+            "accepted": False,
+            "match_count": 0,
+            "selected_match": None,
+            "trust": {
+                "confidence_score": None,
+                "min_importance_threshold": getattr(geocoder, "min_importance", None),
+                "ambiguity_delta": getattr(geocoder, "ambiguity_delta", None),
+            },
+            "resolved_latitude": None,
+            "resolved_longitude": None,
+            "geocode_source": "OpenStreetMap Nominatim",
+            "rejection_reason": str(exc),
+            "raw_response_preview": None,
+            "region_resolution": None,
+        }
+
+
+@app.post("/risk/geocode-debug", dependencies=[Depends(require_api_key)])
+def geocode_debug(payload: GeocodeDebugRequest, _: ActorContext = Depends(get_actor_context)) -> dict[str, Any]:
+    if _is_dev_mode():
+        LOGGER.info(
+            "geocode_debug_request %s",
+            json.dumps(
+                {
+                    "event": "geocode_debug_request",
+                    "submitted_address": payload.address,
+                    "normalized_address": normalize_address(payload.address),
+                },
+                sort_keys=True,
+            ),
+        )
+    return _build_geocode_debug_payload(payload.address)
 
 
 def _region_data_root() -> str:
@@ -4385,6 +4509,20 @@ def check_region_coverage(
     payload: RegionCoverageRequest,
     _: ActorContext = Depends(get_actor_context),
 ) -> RegionCoverageStatus:
+    if _is_dev_mode():
+        LOGGER.info(
+            "coverage_check_request %s",
+            json.dumps(
+                {
+                    "event": "coverage_check_request",
+                    "address_raw": payload.address,
+                    "address_normalized": normalize_address(payload.address or ""),
+                    "has_lat_lon": payload.latitude is not None and payload.longitude is not None,
+                    "payload_shape": sorted(list(payload.model_dump(exclude_none=True).keys())),
+                },
+                sort_keys=True,
+            ),
+        )
     lat = payload.latitude
     lon = payload.longitude
     geocode_meta: dict[str, Any] | None = None
@@ -4409,6 +4547,21 @@ def assess_risk(
     ctx: ActorContext = Depends(get_actor_context),
 ) -> AssessmentResult:
     _require_role(ctx, WRITE_ROLES, "Viewer role cannot create assessments")
+    if _is_dev_mode():
+        LOGGER.info(
+            "assessment_request %s",
+            json.dumps(
+                {
+                    "event": "assessment_request",
+                    "address_raw": payload.address,
+                    "address_normalized": normalize_address(payload.address or ""),
+                    "payload_shape": sorted(list(payload.model_dump(exclude_none=True).keys())),
+                    "attribute_keys": sorted(list((payload.attributes.model_dump(exclude_none=True) or {}).keys())),
+                    "confirmed_fields_count": len(payload.confirmed_fields or []),
+                },
+                sort_keys=True,
+            ),
+        )
 
     organization_id = _resolve_org_id(payload.organization_id, ctx)
     _enforce_org_scope(ctx, organization_id)
@@ -4473,6 +4626,7 @@ def assess_risk(
                     detail={
                         "region_not_ready": True,
                         "geocode_status": geocode_meta.get("geocode_status"),
+                        "submitted_address": geocode_meta.get("submitted_address"),
                         "normalized_address": geocode_meta.get("normalized_address"),
                         "resolved_latitude": geocode_meta.get("resolved_latitude"),
                         "resolved_longitude": geocode_meta.get("resolved_longitude"),
@@ -4507,6 +4661,7 @@ def assess_risk(
                 detail={
                     "region_not_ready": True,
                     "geocode_status": geocode_meta.get("geocode_status"),
+                    "submitted_address": geocode_meta.get("submitted_address"),
                     "normalized_address": geocode_meta.get("normalized_address"),
                     "resolved_latitude": geocode_meta.get("resolved_latitude"),
                     "resolved_longitude": geocode_meta.get("resolved_longitude"),

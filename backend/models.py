@@ -64,10 +64,12 @@ LayerCoverageStatus = Literal[
 ]
 LayerSourceType = Literal["prepared_region", "runtime_env", "derived", "open_data"]
 GeocodeStatus = Literal[
+    "accepted",
     "matched",
     "no_match",
     "ambiguous_match",
     "low_confidence",
+    "missing_coordinates",
     "provider_error",
     "parser_error",
 ]
@@ -166,6 +168,10 @@ class RegionCoverageRequest(BaseModel):
     longitude: Optional[float] = None
 
 
+class GeocodeDebugRequest(BaseModel):
+    address: str = Field(..., min_length=1)
+
+
 class RegionCoverageStatus(BaseModel):
     covered: bool
     region_id: Optional[str] = None
@@ -185,7 +191,7 @@ class RegionCoverageStatus(BaseModel):
 
 
 class GeocodingDetails(BaseModel):
-    geocode_status: GeocodeStatus = "matched"
+    geocode_status: GeocodeStatus = "accepted"
     submitted_address: str = ""
     normalized_address: Optional[str] = None
     geocode_source: Optional[str] = None

@@ -933,6 +933,58 @@ def test_low_confidence_address_returns_structured_geocode_low_confidence_error(
     assert "below policy threshold" in detail["message"].lower()
 
 
+def test_geocode_debug_returns_structured_accepted_payload_with_region_resolution(monkeypatch, tmp_path):
+    auth.API_KEYS = set()
+    monkeypatch.setattr(app_main, "store", AssessmentStore(str(tmp_path / "geocode_debug_ok.db")))
+    monkeypatch.setattr(app_main.geocoder, "geocode", lambda _addr: (46.8721, -113.9940, "test-geocoder"))
+    monkeypatch.setattr(
+        app_main,
+        "lookup_region_for_point",
+        lambda lat, lon, regions_root=None: {
+            "covered": True,
+            "region_id": "missoula_pilot",
+            "display_name": "Missoula Pilot",
+            "diagnostics": [],
+        },
+    )
+
+    res = client.post("/risk/geocode-debug", json={"address": "201 W Front St, Missoula, MT 59802"})
+    assert res.status_code == 200
+    body = res.json()
+    assert body["geocode_status"] == "accepted"
+    assert body["accepted"] is True
+    assert body["resolved_latitude"] == pytest.approx(46.8721)
+    assert body["resolved_longitude"] == pytest.approx(-113.9940)
+    assert body["region_resolution"]["coverage_available"] is True
+    assert body["region_resolution"]["resolved_region_id"] == "missoula_pilot"
+
+
+def test_geocode_debug_returns_structured_rejection_for_parser_error(monkeypatch, tmp_path):
+    auth.API_KEYS = set()
+    monkeypatch.setattr(app_main, "store", AssessmentStore(str(tmp_path / "geocode_debug_parser.db")))
+    monkeypatch.setattr(
+        app_main.geocoder,
+        "geocode",
+        lambda _addr: (_ for _ in ()).throw(
+            GeocodingError(
+                status="parser_error",
+                message="Address input is too short for geocoding.",
+                submitted_address="??",
+                normalized_address="??",
+                rejection_reason="input_too_short",
+            )
+        ),
+    )
+
+    res = client.post("/risk/geocode-debug", json={"address": "??"})
+    assert res.status_code == 200
+    body = res.json()
+    assert body["accepted"] is False
+    assert body["geocode_status"] == "parser_error"
+    assert body["rejection_reason"] == "input_too_short"
+    assert body["region_resolution"] is None
+
+
 def _run(payload: dict) -> dict:
     res = client.post("/risk/assess", json=payload)
     assert res.status_code == 200

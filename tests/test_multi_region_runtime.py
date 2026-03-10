@@ -210,8 +210,8 @@ def test_assess_auto_resolves_missoula_and_bozeman_without_cross_region_routing(
     assert bozeman_body["coverage_available"] is True
     assert missoula_body["resolved_region_id"] == missoula_id
     assert bozeman_body["resolved_region_id"] == bozeman_id
-    assert missoula_body["geocoding"]["geocode_status"] == "matched"
-    assert bozeman_body["geocoding"]["geocode_status"] == "matched"
+    assert missoula_body["geocoding"]["geocode_status"] == "accepted"
+    assert bozeman_body["geocoding"]["geocode_status"] == "accepted"
     assert missoula_body["geocoding"]["resolved_latitude"] == pytest.approx(46.8721)
     assert bozeman_body["geocoding"]["resolved_latitude"] == pytest.approx(45.6796)
 
@@ -256,7 +256,7 @@ def test_uncovered_address_returns_graceful_uncovered_location_response(monkeypa
 
     assert response.status_code == 200
     body = response.json()
-    assert body["geocoding"]["geocode_status"] == "matched"
+    assert body["geocoding"]["geocode_status"] == "accepted"
     assert body["geocoding"]["resolved_latitude"] == pytest.approx(44.0839)
     assert body["region_resolution"]["coverage_available"] is False
     assert body["region_resolution"]["resolved_region_id"] is None

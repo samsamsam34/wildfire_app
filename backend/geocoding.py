@@ -18,7 +18,7 @@ class GeocodeResult:
     latitude: float
     longitude: float
     source: str
-    geocode_status: str = "matched"
+    geocode_status: str = "accepted"
     submitted_address: str = ""
     normalized_address: str = ""
     provider: str = "OpenStreetMap Nominatim"
@@ -55,7 +55,11 @@ class Geocoder:
         self.user_agent = user_agent
         timeout_raw = os.getenv("WF_GEOCODE_TIMEOUT_SECONDS", "8")
         runtime_env = str(os.getenv("WF_ENV") or os.getenv("APP_ENV") or "").strip().lower()
-        is_dev_mode = runtime_env in {"dev", "development", "local", "test"} or bool(os.getenv("PYTEST_CURRENT_TEST"))
+        is_dev_mode = (
+            runtime_env in {"dev", "development", "local", "test"}
+            or bool(os.getenv("PYTEST_CURRENT_TEST"))
+            or str(os.getenv("WF_DEBUG_MODE") or "").strip().lower() in {"1", "true", "yes", "on"}
+        )
         default_min_importance = "0.0" if is_dev_mode else "0.02"
         min_importance_raw = os.getenv("WF_GEOCODE_MIN_IMPORTANCE", default_min_importance)
         ambiguity_delta_raw = os.getenv("WF_GEOCODE_AMBIGUITY_DELTA", "0.0")
@@ -195,7 +199,7 @@ class Geocoder:
         lon = self._to_float(first.get("lon") if isinstance(first, dict) else None)
         if lat is None or lon is None:
             raise GeocodingError(
-                status="parser_error",
+                status="missing_coordinates",
                 message="Geocoding response did not include valid coordinates.",
                 submitted_address=submitted_address,
                 normalized_address=normalized_address,
@@ -242,7 +246,7 @@ class Geocoder:
             latitude=float(lat),
             longitude=float(lon),
             source=provider,
-            geocode_status="matched",
+            geocode_status="accepted",
             submitted_address=submitted_address,
             normalized_address=normalized_address,
             provider=provider,

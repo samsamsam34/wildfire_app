@@ -42,3 +42,10 @@ def test_frontend_region_debug_metadata_is_dev_mode_only() -> None:
     assert 'id="geocodeDebugText"' in html
     assert "Geocode: status=" in html
     assert 'style="display:none;"' in html
+
+
+def test_frontend_renders_geocode_failure_debug_state_in_dev_mode() -> None:
+    html = _frontend_html()
+    assert "function renderGeocodeFailureState(detail, submittedAddress)" in html
+    assert 'detail.error === "geocoding_failed"' in html
+    assert "Region: unresolved" in html

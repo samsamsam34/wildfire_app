@@ -771,12 +771,68 @@
         if (geocodeDebugEl) {
           if (isDebugMode) {
             const geocodeStatus = detail?.geocode_status || "unknown";
+            const submitted = detail?.submitted_address || document.getElementById("address")?.value || "(none)";
             const normalized = detail?.normalized_address || "(none)";
             const lat = detail?.resolved_latitude ?? "n/a";
             const lon = detail?.resolved_longitude ?? "n/a";
             geocodeDebugEl.style.display = "block";
             geocodeDebugEl.textContent =
-              `Geocode: status=${geocodeStatus}; normalized="${normalized}"; lat/lon=${lat}, ${lon}; region=unsupported_location`;
+              `Geocode: status=${geocodeStatus}; submitted="${submitted}"; normalized="${normalized}"; lat/lon=${lat}, ${lon}; region=unsupported_location`;
+          } else {
+            geocodeDebugEl.style.display = "none";
+          }
+        }
+      }
+
+      function renderGeocodeFailureState(detail, submittedAddress) {
+        const geocodeStatus = detail?.geocode_status || "unknown";
+        const normalized = detail?.normalized_address || "(none)";
+        const submitted = detail?.submitted_address || submittedAddress || "(none)";
+        const rejection = detail?.rejection_reason || detail?.message || "Address lookup failed.";
+
+        latestAssessment = null;
+        const scoreEl = document.getElementById("riskScore");
+        scoreEl.textContent = "—";
+        scoreEl.className = "score warn";
+        document.getElementById("riskLabel").textContent = "Address could not be resolved";
+        document.getElementById("summaryText").textContent = detail?.message || "Geocoding failed before region coverage could be checked.";
+        document.getElementById("propertyFindings").innerHTML = "<li class='muted'>No geocode match was accepted for this address.</li>";
+        document.getElementById("drivers").innerHTML = "<li class='muted'>Scoring requires a trusted location match.</li>";
+        document.getElementById("protective").innerHTML = "<li class='muted'>No protective factors can be evaluated until geocoding succeeds.</li>";
+        document.getElementById("nextStepsText").textContent = "Check street, city, state, and ZIP format, then retry.";
+        document.getElementById("mitigations").innerHTML = `<li>${rejection}</li>`;
+        document.getElementById("confidenceText").textContent = "Confidence score: not available until geocoding succeeds.";
+        document.getElementById("assumptions").innerHTML = `<li>Geocode status: ${geocodeStatus}</li>`;
+        document.getElementById("flags").innerHTML = `<span class='pill'>${geocodeStatus}</span>`;
+        document.getElementById("submodels").innerHTML = "<tr><td colspan='3' class='muted'>No factor data until geocoding succeeds.</td></tr>";
+        document.getElementById("readinessText").textContent = "Insurance readiness score: not computed";
+        document.getElementById("propertyContextText").textContent = "Region resolution was not attempted because geocoding did not pass trust checks.";
+
+        const regionInlineEl = document.getElementById("regionDebugInline");
+        if (regionInlineEl) {
+          if (isDebugMode) {
+            regionInlineEl.style.display = "block";
+            regionInlineEl.textContent = "Region: unresolved";
+          } else {
+            regionInlineEl.style.display = "none";
+          }
+        }
+
+        const regionResolutionEl = document.getElementById("regionResolutionText");
+        const geocodeDebugEl = document.getElementById("geocodeDebugText");
+        if (regionResolutionEl) {
+          if (isDebugMode) {
+            regionResolutionEl.style.display = "block";
+            regionResolutionEl.textContent = "Resolved prepared region: none (geocode rejected before coverage check).";
+          } else {
+            regionResolutionEl.style.display = "none";
+          }
+        }
+        if (geocodeDebugEl) {
+          if (isDebugMode) {
+            geocodeDebugEl.style.display = "block";
+            geocodeDebugEl.textContent =
+              `Geocode: status=${geocodeStatus}; submitted="${submitted}"; normalized="${normalized}"; lat/lon=n/a; region=unresolved`;
           } else {
             geocodeDebugEl.style.display = "none";
           }
@@ -862,6 +918,10 @@
             renderUncoveredLocationState(enriched);
             setRequestStatus(enriched?.message || "This location is outside currently prepared regions.", "error");
             return;
+          }
+          const isGeocodeFailure = !!(detail && detail.error === "geocoding_failed");
+          if (isGeocodeFailure) {
+            renderGeocodeFailureState(detail, document.getElementById("address")?.value || "");
           }
           setRequestStatus(`Assessment failed: ${err.message}`, "error");
           alert(err.message);

@@ -83,6 +83,7 @@ def test_uncovered_assess_enqueues_region_prep_job(monkeypatch, tmp_path: Path) 
     assert response.status_code == 409
     detail = response.json()["detail"]
     assert detail["region_not_ready"] is True
+    assert detail["geocode_status"] == "accepted"
     assert detail["prep_job_id"]
     assert detail["prep_job_status"] in {"queued", "running", "completed"}
     assert "requested_bbox" in detail
@@ -174,6 +175,7 @@ def test_assess_requires_prepared_region_when_enabled(monkeypatch, tmp_path: Pat
     assert response.status_code == 409
     detail = response.json()["detail"]
     assert detail["region_not_ready"] is True
+    assert detail["geocode_status"] == "accepted"
     assert detail["coverage_available"] is False
     assert detail["resolved_region_id"] is None
     assert detail["reason"] == "no_prepared_region_for_location"
