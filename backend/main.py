@@ -1361,8 +1361,14 @@ def _normalize_property_level_context(raw_context: object) -> dict[str, Any]:
             "candidate_structure_count": 0,
             "structure_match_candidates": [],
             "structure_geometry_source": "auto_detected",
+            "selection_mode": "polygon",
+            "user_selected_point": None,
             "selected_structure_id": None,
             "selected_structure_geometry": None,
+            "final_structure_geometry_source": "auto_detected",
+            "structure_geometry_confidence": 0.0,
+            "snapped_structure_distance_m": None,
+            "user_selected_point_in_footprint": False,
             "display_point_source": "property_anchor_point",
             "property_anchor_point": None,
             "property_anchor_source": "geocoded_address_point",
@@ -1408,6 +1414,23 @@ def _normalize_property_level_context(raw_context: object) -> dict[str, Any]:
     if geometry_source not in {"auto_detected", "user_selected", "user_modified"}:
         geometry_source = "auto_detected"
     normalized["structure_geometry_source"] = geometry_source
+    selection_mode = str(normalized.get("selection_mode") or "").strip().lower()
+    if selection_mode not in {"polygon", "point"}:
+        selection_mode = "polygon"
+    normalized["selection_mode"] = selection_mode
+    user_selected_point = normalized.get("user_selected_point")
+    if isinstance(user_selected_point, dict):
+        try:
+            us_lat = float(user_selected_point.get("latitude"))
+            us_lon = float(user_selected_point.get("longitude"))
+            if -90.0 <= us_lat <= 90.0 and -180.0 <= us_lon <= 180.0:
+                normalized["user_selected_point"] = {"latitude": us_lat, "longitude": us_lon}
+            else:
+                normalized["user_selected_point"] = None
+        except (TypeError, ValueError):
+            normalized["user_selected_point"] = None
+    else:
+        normalized["user_selected_point"] = None
     selected_structure_id = normalized.get("selected_structure_id")
     normalized["selected_structure_id"] = (
         str(selected_structure_id).strip() if selected_structure_id is not None and str(selected_structure_id).strip() else None
@@ -1416,6 +1439,31 @@ def _normalize_property_level_context(raw_context: object) -> dict[str, Any]:
     normalized["selected_structure_geometry"] = (
         selected_structure_geometry if isinstance(selected_structure_geometry, dict) else None
     )
+    final_source = str(normalized.get("final_structure_geometry_source") or "").strip().lower()
+    if final_source not in {
+        "auto_detected",
+        "user_selected_polygon",
+        "user_selected_point_snapped",
+        "user_selected_point_unsnapped",
+    }:
+        final_source = (
+            "user_selected_polygon"
+            if geometry_source in {"user_selected", "user_modified"} and normalized["selected_structure_geometry"] is not None
+            else "auto_detected"
+        )
+    normalized["final_structure_geometry_source"] = final_source
+    try:
+        normalized["structure_geometry_confidence"] = float(normalized.get("structure_geometry_confidence") or 0.0)
+    except (TypeError, ValueError):
+        normalized["structure_geometry_confidence"] = 0.0
+    try:
+        snapped_distance = normalized.get("snapped_structure_distance_m")
+        normalized["snapped_structure_distance_m"] = (
+            float(snapped_distance) if snapped_distance is not None else None
+        )
+    except (TypeError, ValueError):
+        normalized["snapped_structure_distance_m"] = None
+    normalized["user_selected_point_in_footprint"] = bool(normalized.get("user_selected_point_in_footprint"))
     normalized.setdefault("display_point_source", "matched_structure_centroid" if footprint_used else "property_anchor_point")
     normalized.setdefault(
         "property_anchor_point",
@@ -2753,9 +2801,28 @@ def _run_assessment(
     requested_structure_geometry = (
         payload.selected_structure_geometry if isinstance(payload.selected_structure_geometry, dict) else None
     )
+    requested_selection_mode = str(payload.selection_mode or "polygon").strip().lower()
+    if requested_selection_mode not in {"polygon", "point"}:
+        requested_selection_mode = "polygon"
+    requested_user_selected_point: dict[str, float] | None = None
+    if payload.user_selected_point is not None:
+        try:
+            requested_user_selected_point = {
+                "latitude": float(payload.user_selected_point.latitude),
+                "longitude": float(payload.user_selected_point.longitude),
+            }
+            if not (
+                -90.0 <= requested_user_selected_point["latitude"] <= 90.0
+                and -180.0 <= requested_user_selected_point["longitude"] <= 180.0
+            ):
+                requested_user_selected_point = None
+        except (TypeError, ValueError):
+            requested_user_selected_point = None
     collect_kwargs = {
         "geocode_precision": geocode_precision,
         "structure_geometry_source": requested_structure_source,
+        "selection_mode": requested_selection_mode,
+        "user_selected_point": requested_user_selected_point,
         "selected_structure_id": requested_structure_id,
         "selected_structure_geometry": requested_structure_geometry,
     }
@@ -2801,6 +2868,31 @@ def _run_assessment(
         property_level_context["selected_structure_id"] = requested_structure_id
     if requested_structure_geometry is not None:
         property_level_context["selected_structure_geometry"] = requested_structure_geometry
+    property_level_context["selection_mode"] = str(
+        property_level_context.get("selection_mode") or requested_selection_mode
+    )
+    if requested_user_selected_point is not None:
+        property_level_context["user_selected_point"] = requested_user_selected_point
+    if _is_dev_mode():
+        LOGGER.info(
+            "structure_selection_context %s",
+            json.dumps(
+                {
+                    "event": "structure_selection_context",
+                    "selection_mode": property_level_context.get("selection_mode"),
+                    "user_selected_point": property_level_context.get("user_selected_point"),
+                    "candidate_structure_count": property_level_context.get("candidate_structure_count"),
+                    "final_structure_geometry_source": property_level_context.get("final_structure_geometry_source"),
+                    "structure_match_status": property_level_context.get("structure_match_status"),
+                    "structure_match_distance_m": property_level_context.get("structure_match_distance_m"),
+                    "footprint_source_name": property_level_context.get("footprint_source_name"),
+                    "footprint_source_vintage": property_level_context.get("footprint_source_vintage"),
+                    "user_selected_point_in_footprint": property_level_context.get("user_selected_point_in_footprint"),
+                },
+                sort_keys=True,
+                default=str,
+            ),
+        )
     context.property_level_context = property_level_context
     scoring_attrs, attribute_fallbacks = _apply_attribute_fallbacks(
         scoring_attrs,
@@ -3358,6 +3450,27 @@ def _run_assessment(
             if property_level_context.get("candidate_structure_count") is not None
             else None
         ),
+        final_structure_geometry_source=(
+            str(property_level_context.get("final_structure_geometry_source"))
+            if property_level_context.get("final_structure_geometry_source")
+            else None
+        ),
+        structure_geometry_confidence=(
+            float(property_level_context.get("structure_geometry_confidence"))
+            if property_level_context.get("structure_geometry_confidence") is not None
+            else None
+        ),
+        snapped_structure_distance_m=(
+            float(property_level_context.get("snapped_structure_distance_m"))
+            if property_level_context.get("snapped_structure_distance_m") is not None
+            else None
+        ),
+        selection_mode=(
+            str(property_level_context.get("selection_mode"))
+            if property_level_context.get("selection_mode") in {"polygon", "point"}
+            else "polygon"
+        ),
+        user_selected_point=_clean_point_dict(property_level_context.get("user_selected_point")),
         site_hazard_eligibility=site_hazard_eligibility,
         home_vulnerability_eligibility=home_vulnerability_eligibility,
         insurance_readiness_eligibility=insurance_readiness_eligibility,
@@ -3541,11 +3654,26 @@ def _compute_assessment(
 
 def _payload_from_assessment(existing: AssessmentResult) -> AddressRequest:
     property_ctx = existing.property_level_context if isinstance(existing.property_level_context, dict) else {}
+    selection_mode = str(property_ctx.get("selection_mode") or "polygon").strip().lower()
+    if selection_mode not in {"polygon", "point"}:
+        selection_mode = "polygon"
+    selected_point_payload = None
+    if isinstance(property_ctx.get("user_selected_point"), dict):
+        raw_point = property_ctx.get("user_selected_point") or {}
+        try:
+            selected_point_payload = Coordinates(
+                latitude=float(raw_point.get("latitude")),
+                longitude=float(raw_point.get("longitude")),
+            )
+        except (TypeError, ValueError):
+            selected_point_payload = None
     return AddressRequest(
         address=existing.address,
         attributes=PropertyAttributes.model_validate(existing.property_facts or {}),
         confirmed_fields=list(existing.confirmed_fields),
         structure_geometry_source=str(property_ctx.get("structure_geometry_source") or "auto_detected"),
+        selection_mode=selection_mode,
+        user_selected_point=selected_point_payload,
         selected_structure_id=(
             str(property_ctx.get("selected_structure_id"))
             if property_ctx.get("selected_structure_id")

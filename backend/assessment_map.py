@@ -493,6 +493,55 @@ def build_assessment_map_payload(
             else None
         )
     )
+    final_structure_geometry_source = str(
+        property_ctx.get("final_structure_geometry_source")
+        or result.final_structure_geometry_source
+        or "auto_detected"
+    )
+    structure_geometry_confidence = (
+        float(property_ctx.get("structure_geometry_confidence"))
+        if property_ctx.get("structure_geometry_confidence") is not None
+        else (
+            float(result.structure_geometry_confidence)
+            if result.structure_geometry_confidence is not None
+            else structure_match_confidence
+        )
+    )
+    snapped_structure_distance_m = (
+        float(property_ctx.get("snapped_structure_distance_m"))
+        if property_ctx.get("snapped_structure_distance_m") is not None
+        else (
+            float(result.snapped_structure_distance_m)
+            if result.snapped_structure_distance_m is not None
+            else None
+        )
+    )
+    selection_mode = str(property_ctx.get("selection_mode") or result.selection_mode or "polygon")
+    if selection_mode not in {"polygon", "point"}:
+        selection_mode = "polygon"
+    user_selected_point_ctx = (
+        property_ctx.get("user_selected_point")
+        if isinstance(property_ctx.get("user_selected_point"), dict)
+        else (result.user_selected_point if isinstance(result.user_selected_point, dict) else None)
+    )
+    user_selected_point_feature: dict[str, Any] | None = None
+    if user_selected_point_ctx is not None:
+        selected_lon_lat = _canonical_wgs84_lon_lat(
+            user_selected_point_ctx.get("longitude"),
+            user_selected_point_ctx.get("latitude"),
+        )
+        if selected_lon_lat is not None:
+            selected_lon, selected_lat = selected_lon_lat
+            user_selected_point_feature = _point_feature(
+                lon=selected_lon,
+                lat=selected_lat,
+                label="User selected point",
+                properties={
+                    "source": "user_selected_point",
+                    "selection_mode": selection_mode,
+                    "crs": "EPSG:4326",
+                },
+            )
     candidate_structure_count = (
         int(property_ctx.get("candidate_structure_count"))
         if property_ctx.get("candidate_structure_count") is not None
@@ -575,6 +624,21 @@ def build_assessment_map_payload(
             legend_label="Property anchor point",
             geometry_type="point",
             feature_count=1,
+        )
+    )
+    if user_selected_point_feature:
+        data["user_selected_point"] = _feature_collection([user_selected_point_feature])
+    layers.append(
+        AssessmentMapLayer(
+            layer_key="user_selected_point",
+            display_name="User Selected Point",
+            available=bool(user_selected_point_feature),
+            default_visible=bool(user_selected_point_feature),
+            description="Manual fallback point selected by the user when footprint polygons are unavailable.",
+            legend_label="User-selected home point",
+            geometry_type="point",
+            feature_count=1 if user_selected_point_feature else 0,
+            reason_unavailable=None if user_selected_point_feature else "No user-selected point was provided for this assessment.",
         )
     )
 
@@ -992,6 +1056,10 @@ def build_assessment_map_payload(
         limitations.append(
             "No interactive selectable building polygons are available at this location; basemap building outlines are not clickable."
         )
+    if final_structure_geometry_source == "user_selected_point_unsnapped":
+        limitations.append(
+            "Exact building outline unavailable here; using the user-selected map location as the property anchor."
+        )
 
     # Include defensible-space analysis limitation notes if present.
     for note in list(result.defensible_space_limitations_summary or [])[:4]:
@@ -1041,6 +1109,11 @@ def build_assessment_map_payload(
         structure_match_confidence=structure_match_confidence,
         structure_match_distance_m=structure_match_distance_m,
         candidate_structure_count=candidate_structure_count,
+        final_structure_geometry_source=final_structure_geometry_source,
+        structure_geometry_confidence=structure_geometry_confidence,
+        snapped_structure_distance_m=snapped_structure_distance_m,
+        selection_mode=selection_mode,
+        user_selected_point=user_selected_point_feature,
         display_point_source=display_point_source,
         geocoded_address_point=geocoded_address_point,
         matched_structure_centroid=matched_structure_centroid,
@@ -1075,11 +1148,16 @@ def build_assessment_map_payload(
                 "status": structure_match_status,
                 "method": structure_match_method,
                 "geometry_source": structure_geometry_source,
+                "final_structure_geometry_source": final_structure_geometry_source,
+                "structure_geometry_confidence": structure_geometry_confidence,
+                "snapped_structure_distance_m": snapped_structure_distance_m,
                 "matched_structure_id": matched_structure_id,
                 "confidence": structure_match_confidence,
                 "distance_m": structure_match_distance_m,
                 "candidate_count": candidate_structure_count,
                 "selectable_candidate_count": len(selectable_structures),
+                "selection_mode": selection_mode,
+                "user_selected_point_in_footprint": bool(property_ctx.get("user_selected_point_in_footprint")),
                 "max_match_distance_m": max_match_distance_m,
                 "ambiguity_gap_m": ambiguity_gap_m,
                 "interactive_layer_loaded": bool(selectable_structures),

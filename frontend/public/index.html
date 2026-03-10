@@ -302,6 +302,7 @@
           <div class="actions">
             <button id="confirmHomeYesBtn" type="button">Yes — Continue</button>
             <button id="confirmHomeSelectBtn" type="button" class="secondary">No — Select My Home</button>
+            <button id="confirmHomePointBtn" type="button" class="secondary">Can’t find your house? Click directly on your home</button>
           </div>
           <p id="homeConfirmStatus" class="map-confirm-status">Confirmation status will appear here.</p>
         </div>
@@ -468,9 +469,10 @@
       let assessmentMap = null;
       let mapBaseLayer = null;
       let mapLayerInstances = {};
-      let homeSelectionMode = false;
+      let homeSelectionMode = "none";
       let selectedStructureOverride = null;
       let selectedStructureId = null;
+      let manualSelectedPointLayer = null;
 
       const mapLayerStyle = {
         property_anchor_point: {
@@ -500,6 +502,13 @@
           weight: 2,
           fillColor: "#14b8a6",
           fillOpacity: 0.72,
+        },
+        user_selected_point: {
+          radius: 6,
+          color: "#7c2d12",
+          weight: 2,
+          fillColor: "#fb923c",
+          fillOpacity: 0.9,
         },
         property_point: {
           radius: 7,
@@ -586,11 +595,51 @@
             pane.style.zIndex = "650";
             pane.style.pointerEvents = "auto";
           }
+          assessmentMap.on("click", async (evt) => {
+            if (homeSelectionMode !== "point") return;
+            const lat = Number(evt?.latlng?.lat);
+            const lon = Number(evt?.latlng?.lng);
+            if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
+            selectedStructureId = null;
+            selectedStructureOverride = {
+              id: null,
+              geometry: null,
+              source: "user_selected_point",
+              mode: "point",
+              point: { latitude: lat, longitude: lon },
+            };
+            renderManualSelectedPointMarker({ latitude: lat, longitude: lon });
+            setHomeConfirmationState({
+              mode: "confirm",
+              status: "Using your selected map point. Updating assessment...",
+            });
+            try {
+              await runAssessment(false);
+            } catch (_err) {
+              setHomeConfirmationState({
+                mode: "confirm",
+                status: "Your selected point was saved, but reassessment failed. You can retry.",
+              });
+            }
+          });
         }
         if (center && Number.isFinite(center.latitude) && Number.isFinite(center.longitude)) {
           assessmentMap.setView([center.latitude, center.longitude], 16);
         }
         return assessmentMap;
+      }
+
+      function renderManualSelectedPointMarker(point) {
+        if (!assessmentMap || !window.L || !point) return;
+        const lat = Number(point.latitude);
+        const lon = Number(point.longitude);
+        if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
+        if (manualSelectedPointLayer && assessmentMap.hasLayer(manualSelectedPointLayer)) {
+          assessmentMap.removeLayer(manualSelectedPointLayer);
+        }
+        manualSelectedPointLayer = L.circleMarker([lat, lon], mapLayerStyle.user_selected_point || mapLayerStyle.property_point);
+        manualSelectedPointLayer.bindPopup("<strong>User-selected map point</strong><br>Fallback home location");
+        manualSelectedPointLayer.addTo(assessmentMap);
       }
 
       function clearMapLayers() {
@@ -601,6 +650,10 @@
           }
         });
         mapLayerInstances = {};
+        if (manualSelectedPointLayer && assessmentMap.hasLayer(manualSelectedPointLayer)) {
+          assessmentMap.removeLayer(manualSelectedPointLayer);
+        }
+        manualSelectedPointLayer = null;
       }
 
       function setMapStatus(message) {
@@ -696,34 +749,61 @@
       function selectedStructureFromAssessment(data) {
         const ctx = data?.property_level_context || {};
         const geometrySource = String(ctx?.structure_geometry_source || "auto_detected").toLowerCase();
+        const selectionMode = String(ctx?.selection_mode || "polygon").toLowerCase();
         const selectedGeometry = ctx?.selected_structure_geometry;
         const selectedId = ctx?.selected_structure_id || ctx?.matched_structure_id || null;
+        const selectedPoint = ctx?.user_selected_point;
+        if (
+          selectionMode === "point"
+          && selectedPoint
+          && Number.isFinite(Number(selectedPoint?.latitude))
+          && Number.isFinite(Number(selectedPoint?.longitude))
+        ) {
+          return {
+            id: selectedId ? String(selectedId) : null,
+            geometry: null,
+            source: "user_selected_point",
+            mode: "point",
+            point: {
+              latitude: Number(selectedPoint.latitude),
+              longitude: Number(selectedPoint.longitude),
+            },
+          };
+        }
         if ((geometrySource === "user_selected" || geometrySource === "user_modified") && selectedGeometry) {
           return {
             id: selectedId ? String(selectedId) : null,
             geometry: selectedGeometry,
             source: geometrySource,
+            mode: "polygon",
           };
         }
         return null;
       }
 
       function setHomeConfirmationState({ mode = null, status = null } = {}) {
-        if (mode === "select") {
-          homeSelectionMode = true;
+        if (mode === "select_polygon") {
+          homeSelectionMode = "polygon";
+        } else if (mode === "select_point") {
+          homeSelectionMode = "point";
         } else if (mode === "confirm") {
-          homeSelectionMode = false;
+          homeSelectionMode = "none";
         } else if (mode === "reset") {
-          homeSelectionMode = false;
+          homeSelectionMode = "none";
           selectedStructureOverride = null;
           selectedStructureId = null;
+          if (manualSelectedPointLayer && assessmentMap && assessmentMap.hasLayer(manualSelectedPointLayer)) {
+            assessmentMap.removeLayer(manualSelectedPointLayer);
+          }
+          manualSelectedPointLayer = null;
         }
 
         const panel = document.getElementById("homeConfirmPanel");
         const statusEl = document.getElementById("homeConfirmStatus");
         const yesBtn = document.getElementById("confirmHomeYesBtn");
         const selectBtn = document.getElementById("confirmHomeSelectBtn");
-        if (!panel || !statusEl || !yesBtn || !selectBtn) return;
+        const pointBtn = document.getElementById("confirmHomePointBtn");
+        if (!panel || !statusEl || !yesBtn || !selectBtn || !pointBtn) return;
 
         if (!latestMapPayload || latestMapPayload.coverage_available !== true) {
           panel.style.display = "none";
@@ -733,18 +813,23 @@
         panel.style.display = "block";
         yesBtn.disabled = false;
         selectBtn.disabled = false;
+        pointBtn.disabled = false;
 
         const selectableLayer = Array.isArray(latestMapPayload?.layers)
           ? latestMapPayload.layers.find(layer => layer?.layer_key === "selectable_structure_footprints")
           : null;
         const selectableAvailable = !!(selectableLayer && selectableLayer.available);
 
-        if (homeSelectionMode) {
+        if (homeSelectionMode === "polygon") {
           statusEl.textContent = status || "Selection mode is on. Click one of the highlighted building polygons to select your home.";
+        } else if (homeSelectionMode === "point") {
+          statusEl.textContent = status || "Point selection mode is on. Click directly on your home location in the map.";
         } else if (!selectableAvailable) {
-          statusEl.textContent = status || "No selectable building polygons are available for this location. Basemap outlines are not clickable.";
+          statusEl.textContent = status || "No selectable building polygons are available for this location. Basemap outlines are not clickable. Use point selection fallback.";
         } else if (selectedStructureOverride?.id) {
           statusEl.textContent = status || `Using user-selected structure (${selectedStructureOverride.id}).`;
+        } else if (selectedStructureOverride?.mode === "point") {
+          statusEl.textContent = status || "Using your selected map point for this assessment.";
         } else {
           statusEl.textContent = status || "Auto-detected structure will be used unless you select a different one.";
         }
@@ -780,6 +865,16 @@
         const structureGeometrySource = (latestAssessment?.property_level_context?.structure_geometry_source)
           || payload?.metadata?.structure_match?.geometry_source
           || "auto_detected";
+        const finalStructureGeometrySource = payload?.final_structure_geometry_source
+          || payload?.metadata?.structure_match?.final_structure_geometry_source
+          || "auto_detected";
+        const structureGeometryConfidence = payload?.structure_geometry_confidence
+          ?? payload?.metadata?.structure_match?.structure_geometry_confidence;
+        const snappedStructureDistanceM = payload?.snapped_structure_distance_m
+          ?? payload?.metadata?.structure_match?.snapped_structure_distance_m;
+        const selectionMode = payload?.selection_mode
+          || payload?.metadata?.structure_match?.selection_mode
+          || "polygon";
         const matchedStructureId = payload?.matched_structure_id || payload?.metadata?.structure_match?.matched_structure_id || "n/a";
         const structureMatchConfidence = payload?.structure_match_confidence ?? payload?.metadata?.structure_match?.confidence;
         const structureMatchDistanceM = payload?.structure_match_distance_m ?? payload?.metadata?.structure_match?.distance_m;
@@ -788,6 +883,7 @@
         const ambiguityGapM = payload?.metadata?.structure_match?.ambiguity_gap_m;
         const selectableCandidateCount = payload?.metadata?.structure_match?.selectable_candidate_count;
         const interactiveLayerLoaded = payload?.metadata?.structure_match?.interactive_layer_loaded;
+        const userSelectedPointInFootprint = payload?.metadata?.structure_match?.user_selected_point_in_footprint;
         const footprintSourceName = payload?.metadata?.structure_match?.footprint_source_name || "unknown";
         const footprintSourceVintage = payload?.metadata?.structure_match?.footprint_source_vintage || "unknown";
         const parcelSourceName = payload?.metadata?.property_anchor?.parcel_source_name || "unknown";
@@ -797,6 +893,8 @@
           : [];
         const geocodedCoords = parsePointCoordinates(geocoded);
         const anchorCoords = parsePointCoordinates(anchor);
+        const userSelectedPoint = payload?.user_selected_point;
+        const userSelectedCoords = parsePointCoordinates(userSelectedPoint);
         const parcelPointCoords = parsePointCoordinates(parcelPoint);
         const centroidCoords = parsePointCoordinates(matchedCentroid);
 
@@ -827,18 +925,24 @@
           `structure_match_status: ${structureMatchStatus}`,
           `structure_match_method: ${structureMatchMethod}`,
           `structure_geometry_source: ${structureGeometrySource}`,
+          `final_structure_geometry_source: ${finalStructureGeometrySource}`,
+          `selection_mode: ${selectionMode}`,
           `matched_structure_id: ${matchedStructureId}`,
           `structure_match_confidence: ${Number.isFinite(Number(structureMatchConfidence)) ? Number(structureMatchConfidence).toFixed(2) : "n/a"}`,
+          `structure_geometry_confidence: ${Number.isFinite(Number(structureGeometryConfidence)) ? Number(structureGeometryConfidence).toFixed(2) : "n/a"}`,
+          `snapped_structure_distance_m: ${Number.isFinite(Number(snappedStructureDistanceM)) ? Number(snappedStructureDistanceM).toFixed(2) : "n/a"}`,
           `structure_match_distance_m: ${Number.isFinite(Number(structureMatchDistanceM)) ? Number(structureMatchDistanceM).toFixed(2) : "n/a"}`,
           `candidate_structure_count: ${Number.isFinite(Number(candidateStructureCount)) ? Number(candidateStructureCount) : "n/a"}`,
           `selectable_candidate_count: ${Number.isFinite(Number(selectableCandidateCount)) ? Number(selectableCandidateCount) : "n/a"}`,
           `interactive_layer_loaded: ${interactiveLayerLoaded === true ? "true" : "false"}`,
+          `user_selected_point_in_footprint: ${userSelectedPointInFootprint === true ? "true" : "false"}`,
           `selected_structure_id: ${selectedStructureId || "n/a"}`,
           `match_thresholds_m: max=${Number.isFinite(Number(maxMatchDistanceM)) ? Number(maxMatchDistanceM).toFixed(1) : "n/a"}, ambiguity_gap=${Number.isFinite(Number(ambiguityGapM)) ? Number(ambiguityGapM).toFixed(1) : "n/a"}`,
           `footprint_source: ${footprintSourceName} (vintage=${footprintSourceVintage})`,
           `parcel_source: ${parcelSourceName} (vintage=${parcelSourceVintage})`,
           `geocoded_address_point: ${geocodedCoords ? `[${geocodedCoords.lon.toFixed(6)}, ${geocodedCoords.lat.toFixed(6)}]` : "unavailable"}`,
           `property_anchor_point: ${anchorCoords ? `[${anchorCoords.lon.toFixed(6)}, ${anchorCoords.lat.toFixed(6)}]` : "unavailable"}`,
+          `user_selected_point: ${userSelectedCoords ? `[${userSelectedCoords.lon.toFixed(6)}, ${userSelectedCoords.lat.toFixed(6)}]` : "unavailable"}`,
           `parcel_address_point: ${parcelPointCoords ? `[${parcelPointCoords.lon.toFixed(6)}, ${parcelPointCoords.lat.toFixed(6)}]` : "unavailable"}`,
           `parcel_polygon: ${parcelPolygon ? "available" : "unavailable"}`,
           `matched_structure_centroid: ${centroidCoords ? `[${centroidCoords.lon.toFixed(6)}, ${centroidCoords.lat.toFixed(6)}]` : "unavailable"}`,
@@ -861,6 +965,7 @@
           layerKey === "property_point"
           || layerKey === "assessed_property_display_point"
           || layerKey === "property_anchor_point"
+          || layerKey === "user_selected_point"
           || layerKey === "parcel_address_point"
           || layerKey === "geocoded_address_point"
           || layerKey === "matched_structure_centroid"
@@ -894,17 +999,17 @@
               layer.bindPopup(popup);
 
               layer.on("mouseover", () => {
-                if (!homeSelectionMode) return;
+                if (homeSelectionMode !== "polygon") return;
                 layer.setStyle({ weight: 3, fillOpacity: 0.22 });
               });
               layer.on("mouseout", () => {
-                if (!homeSelectionMode) return;
+                if (homeSelectionMode !== "polygon") return;
                 const styleDef = geoJsonStyle(layerKey);
                 const style = typeof styleDef === "function" ? styleDef(feature) : styleDef;
                 layer.setStyle(style);
               });
               layer.on("click", async () => {
-                if (!homeSelectionMode) return;
+                if (homeSelectionMode !== "polygon") return;
                 selectedStructureId = structureId;
                 selectedStructureOverride = {
                   id: structureId,
@@ -914,6 +1019,7 @@
                     geometry: feature?.geometry || null,
                   },
                   source: "user_selected",
+                  mode: "polygon",
                 };
                   setHomeConfirmationState({
                     mode: "confirm",
@@ -1007,11 +1113,21 @@
           renderMapLayerToggles(payload.layers || []);
           setMapLimitations(payload.limitations || []);
           renderMapDebugPanel(payload);
+          if (mapLayerInstances["user_selected_point"] && manualSelectedPointLayer && assessmentMap?.hasLayer(manualSelectedPointLayer)) {
+            assessmentMap.removeLayer(manualSelectedPointLayer);
+            manualSelectedPointLayer = null;
+          }
           setMapStatus("Map loaded.");
           if (selectedStructureOverride?.id) {
             setHomeConfirmationState({
               mode: "confirm",
               status: `Using user-selected structure (${selectedStructureOverride.id}).`,
+            });
+          } else if (selectedStructureOverride?.mode === "point" && selectedStructureOverride?.point) {
+            renderManualSelectedPointMarker(selectedStructureOverride.point);
+            setHomeConfirmationState({
+              mode: "confirm",
+              status: "Using your selected map point for this assessment.",
             });
           } else {
             setHomeConfirmationState({ mode: "confirm" });
@@ -1262,7 +1378,7 @@
         if (selectedFromAssessment) {
           selectedStructureOverride = selectedFromAssessment;
           selectedStructureId = selectedFromAssessment.id;
-        } else if (!homeSelectionMode) {
+        } else if (homeSelectionMode === "none") {
           selectedStructureOverride = null;
           selectedStructureId = null;
         }
@@ -1370,6 +1486,12 @@
         const baseContext = buildPropertyContextSummary(data, combinedFindings);
         const contextParts = [baseContext];
         if (dsSummary) contextParts.push(dsSummary);
+        const finalGeometrySource = String(data?.property_level_context?.final_structure_geometry_source || "").toLowerCase();
+        if (finalGeometrySource === "user_selected_point_unsnapped") {
+          contextParts.push("Exact building outline unavailable here; using your selected location instead.");
+        } else if (finalGeometrySource === "user_selected_point_snapped") {
+          contextParts.push("Your selected map point was snapped to a nearby building footprint.");
+        }
         if (dsLimitations.length > 0) contextParts.push(dsLimitations[0]);
         document.getElementById("propertyContextText").textContent = contextParts.filter(Boolean).join(" ");
         const regionResolutionEl = document.getElementById("regionResolutionText");
@@ -1408,7 +1530,7 @@
         latestMapPayload = null;
         selectedStructureOverride = null;
         selectedStructureId = null;
-        homeSelectionMode = false;
+        homeSelectionMode = "none";
         const reasonText = detail?.reason || "no_prepared_region_for_location";
         const recommendation = detail?.recommended_action || "Prepare and validate a region for this location, then retry assessment.";
         const diagnostics = Array.isArray(detail?.diagnostics) ? detail.diagnostics : [];
@@ -1488,7 +1610,7 @@
         latestMapPayload = null;
         selectedStructureOverride = null;
         selectedStructureId = null;
-        homeSelectionMode = false;
+        homeSelectionMode = "none";
         const scoreEl = document.getElementById("riskScore");
         scoreEl.textContent = "—";
         scoreEl.className = "score warn";
@@ -1555,9 +1677,20 @@
           address: String(document.getElementById("address").value || "").trim(),
           attributes: collectAttributes(""),
           confirmed_fields: parseCSV(document.getElementById("confirmed_fields").value),
+          selection_mode: "polygon",
+          user_selected_point: null,
           audience: "homeowner"
         };
-        if (selectedStructureOverride?.geometry) {
+        if (selectedStructureOverride?.mode === "point" && selectedStructureOverride?.point) {
+          payload.selection_mode = "point";
+          payload.user_selected_point = {
+            latitude: Number(selectedStructureOverride.point.latitude),
+            longitude: Number(selectedStructureOverride.point.longitude),
+          };
+          payload.structure_geometry_source = "auto_detected";
+          payload.selected_structure_id = null;
+          payload.selected_structure_geometry = null;
+        } else if (selectedStructureOverride?.geometry) {
           payload.structure_geometry_source = selectedStructureOverride.source || "user_selected";
           payload.selected_structure_id = selectedStructureOverride.id || null;
           payload.selected_structure_geometry = selectedStructureOverride.geometry;
@@ -1596,13 +1729,24 @@
 
       async function confirmAutoDetectedStructure() {
         const currentSource = String(latestAssessment?.property_level_context?.structure_geometry_source || "auto_detected").toLowerCase();
+        const currentSelectionMode = String(latestAssessment?.property_level_context?.selection_mode || "polygon").toLowerCase();
+        const currentFinalSource = String(latestAssessment?.property_level_context?.final_structure_geometry_source || "auto_detected").toLowerCase();
         selectedStructureOverride = null;
         selectedStructureId = null;
+        if (manualSelectedPointLayer && assessmentMap && assessmentMap.hasLayer(manualSelectedPointLayer)) {
+          assessmentMap.removeLayer(manualSelectedPointLayer);
+        }
+        manualSelectedPointLayer = null;
         setHomeConfirmationState({
           mode: "confirm",
           status: "Using auto-detected structure for scoring.",
         });
-        if (currentSource === "user_selected" || currentSource === "user_modified") {
+        if (
+          currentSource === "user_selected"
+          || currentSource === "user_modified"
+          || currentSelectionMode === "point"
+          || currentFinalSource.startsWith("user_selected_point_")
+        ) {
           try {
             await runAssessment(false);
           } catch (_err) {
@@ -1621,14 +1765,29 @@
         if (!selectableLayer || !selectableLayer.available) {
           setHomeConfirmationState({
             mode: "confirm",
-            status: "No selectable building polygons are available for this location. Basemap outlines are not clickable.",
+            status: "No selectable building polygons are available for this location. Basemap outlines are not clickable. Use the point-selection fallback.",
           });
           return;
         }
         ensureMapLayerVisible("selectable_structure_footprints");
         setHomeConfirmationState({
-          mode: "select",
+          mode: "select_polygon",
           status: "Selection mode enabled. Click one of the highlighted building polygons to select your home.",
+        });
+      }
+
+      function startPointStructureSelection() {
+        const map = ensureMap(latestMapPayload?.center || latestAssessment?.coordinates || {});
+        if (!map) {
+          setHomeConfirmationState({
+            mode: "confirm",
+            status: "Map is unavailable, so point selection cannot be started.",
+          });
+          return;
+        }
+        setHomeConfirmationState({
+          mode: "select_point",
+          status: "Point selection mode enabled. Click directly on your home location in the map.",
         });
       }
 
@@ -1852,6 +2011,7 @@
       document.getElementById("downloadPdfBtn").addEventListener("click", downloadHomeownerPdf);
       document.getElementById("confirmHomeYesBtn")?.addEventListener("click", confirmAutoDetectedStructure);
       document.getElementById("confirmHomeSelectBtn")?.addEventListener("click", startManualStructureSelection);
+      document.getElementById("confirmHomePointBtn")?.addEventListener("click", startPointStructureSelection);
     </script>
   </body>
 </html>

@@ -581,6 +581,21 @@ class WildfireDataClient:
             return None, "User-selected structure must be a polygon footprint."
         return geom, None
 
+    @staticmethod
+    def _coerce_user_selected_point(
+        raw_point: dict[str, Any] | None,
+    ) -> tuple[tuple[float, float] | None, str | None]:
+        if not isinstance(raw_point, dict):
+            return None, "User-selected point payload is missing or invalid."
+        try:
+            lat = float(raw_point.get("latitude"))
+            lon = float(raw_point.get("longitude"))
+        except (TypeError, ValueError):
+            return None, "User-selected point must include numeric latitude and longitude."
+        if not (-90.0 <= lat <= 90.0 and -180.0 <= lon <= 180.0):
+            return None, "User-selected point coordinates are out of bounds."
+        return (lat, lon), None
+
     def _compute_structure_ring_metrics(
         self,
         lat: float,
@@ -594,6 +609,8 @@ class WildfireDataClient:
         parcel_polygon: Any | None = None,
         anchor_precision: str | None = None,
         structure_geometry_source: str | None = None,
+        selection_mode: str | None = None,
+        user_selected_point: dict[str, Any] | None = None,
         selected_structure_id: str | None = None,
         selected_structure_geometry: dict[str, Any] | None = None,
     ) -> tuple[dict[str, Any], list[str], list[str]]:
@@ -611,6 +628,22 @@ class WildfireDataClient:
         normalized_geometry_source = str(structure_geometry_source or "auto_detected").strip().lower()
         if normalized_geometry_source not in {"auto_detected", "user_selected", "user_modified"}:
             normalized_geometry_source = "auto_detected"
+        normalized_selection_mode = str(selection_mode or "polygon").strip().lower()
+        if normalized_selection_mode not in {"polygon", "point"}:
+            normalized_selection_mode = "polygon"
+        user_selected_point_coords: tuple[float, float] | None = None
+        if normalized_selection_mode == "point":
+            user_selected_point_coords, user_point_error = self._coerce_user_selected_point(user_selected_point)
+            if user_selected_point_coords is None:
+                assumptions.append(user_point_error or "User-selected point was invalid.")
+                assumptions.append("Falling back to polygon/auto structure matching.")
+                normalized_selection_mode = "polygon"
+
+        query_lat = float(lat)
+        query_lon = float(lon)
+        if normalized_selection_mode == "point" and user_selected_point_coords is not None:
+            query_lat, query_lon = user_selected_point_coords
+            assumptions.append("Using user-selected map point for structure lookup and ring analysis.")
 
         selected_geom: Any | None = None
         if normalized_geometry_source in {"user_selected", "user_modified"}:
@@ -642,14 +675,18 @@ class WildfireDataClient:
             try:
                 try:
                     result = footprint_client.get_building_footprint(
-                        lat,
-                        lon,
-                        parcel_polygon=parcel_polygon,
+                        query_lat,
+                        query_lon,
+                        parcel_polygon=(
+                            parcel_polygon
+                            if normalized_selection_mode != "point"
+                            else None
+                        ),
                         anchor_precision=anchor_precision,
                     )
                 except TypeError:
                     # Backward-compatible path for tests/mocks that still expose (lat, lon) signature.
-                    result = footprint_client.get_building_footprint(lat, lon)
+                    result = footprint_client.get_building_footprint(query_lat, query_lon)
             except Exception as exc:  # pragma: no cover - defensive guard for malformed sources
                 assumptions.append(f"Building footprint lookup failed: {exc}")
                 assumptions.append("Building footprint analysis unavailable; using point-based vegetation context.")
@@ -667,8 +704,22 @@ class WildfireDataClient:
                     "candidate_structure_count": 0,
                     "structure_match_candidates": [],
                     "structure_geometry_source": "auto_detected",
+                    "selection_mode": normalized_selection_mode,
+                    "user_selected_point": (
+                        {"latitude": query_lat, "longitude": query_lon}
+                        if normalized_selection_mode == "point"
+                        else None
+                    ),
                     "selected_structure_id": selected_structure_id,
                     "selected_structure_geometry": selected_structure_geometry if isinstance(selected_structure_geometry, dict) else None,
+                    "final_structure_geometry_source": (
+                        "user_selected_point_unsnapped"
+                        if normalized_selection_mode == "point"
+                        else "auto_detected"
+                    ),
+                    "structure_geometry_confidence": 0.35 if normalized_selection_mode == "point" else 0.0,
+                    "snapped_structure_distance_m": None,
+                    "user_selected_point_in_footprint": False,
                     "display_point_source": "property_anchor_point",
                     "fallback_mode": "point_based",
                     "ring_metrics": None,
@@ -693,8 +744,8 @@ class WildfireDataClient:
         if not result.found or result.footprint is None:
             assumptions.append("Building footprint analysis unavailable; using point-based vegetation context.")
             point_proxy_metrics = self._build_point_proxy_ring_metrics(
-                lat=lat,
-                lon=lon,
+                lat=query_lat,
+                lon=query_lon,
                 canopy_path=canopy_path,
                 fuel_path=fuel_path,
             )
@@ -723,6 +774,15 @@ class WildfireDataClient:
                 status = "ambiguous"
             elif match_status == "none":
                 status = "not_found"
+            final_geometry_source = (
+                "user_selected_point_unsnapped"
+                if normalized_selection_mode == "point"
+                else "auto_detected"
+            )
+            if normalized_selection_mode == "point":
+                assumptions.append(
+                    "Exact building outline unavailable near the selected point; using the selected location as the property anchor."
+                )
             return {
                 "footprint_used": False,
                 "footprint_found": False,
@@ -737,8 +797,18 @@ class WildfireDataClient:
                 "candidate_structure_count": candidate_count,
                 "structure_match_candidates": candidate_summaries,
                 "structure_geometry_source": "auto_detected",
+                "selection_mode": normalized_selection_mode,
+                "user_selected_point": (
+                    {"latitude": query_lat, "longitude": query_lon}
+                    if normalized_selection_mode == "point"
+                    else None
+                ),
                 "selected_structure_id": selected_structure_id,
                 "selected_structure_geometry": selected_structure_geometry if isinstance(selected_structure_geometry, dict) else None,
+                "final_structure_geometry_source": final_geometry_source,
+                "structure_geometry_confidence": 0.42 if normalized_selection_mode == "point" else 0.0,
+                "snapped_structure_distance_m": None,
+                "user_selected_point_in_footprint": False,
                 "display_point_source": "property_anchor_point",
                 "fallback_mode": "point_based",
                 "ring_metrics": point_proxy_metrics if point_proxy_metrics else None,
@@ -809,8 +879,8 @@ class WildfireDataClient:
                 break
 
         neighbor_metrics = footprint_client.get_neighbor_structure_metrics(
-            lat=lat,
-            lon=lon,
+            lat=query_lat,
+            lon=query_lon,
             subject_footprint=result.footprint,
             source_path=result.source,
             radius_m=300.0 * 0.3048,
@@ -826,9 +896,30 @@ class WildfireDataClient:
             display_confidence_floor = 0.8
 
         structure_match_confidence = match_confidence
+        if normalized_geometry_source in {"user_selected", "user_modified"} and selected_geom is not None:
+            final_structure_geometry_source = "user_selected_polygon"
+            structure_geometry_confidence = 1.0
+            snapped_structure_distance_m = 0.0
+        elif normalized_selection_mode == "point":
+            final_structure_geometry_source = "user_selected_point_snapped"
+            structure_geometry_confidence = max(0.5, structure_match_confidence)
+            snapped_structure_distance_m = (
+                float(match_distance) if match_distance is not None else 0.0
+            )
+        else:
+            final_structure_geometry_source = "auto_detected"
+            structure_geometry_confidence = structure_match_confidence
+            snapped_structure_distance_m = None
         display_point_source = (
             "matched_structure_centroid"
-            if (match_status == "matched" and structure_match_confidence >= display_confidence_floor and ring_metrics)
+            if (
+                match_status == "matched"
+                and ring_metrics
+                and (
+                    final_structure_geometry_source == "user_selected_point_snapped"
+                    or structure_match_confidence >= display_confidence_floor
+                )
+            )
             else "property_anchor_point"
         )
 
@@ -848,6 +939,12 @@ class WildfireDataClient:
             "structure_geometry_source": (
                 normalized_geometry_source if normalized_geometry_source in {"user_selected", "user_modified"} and selected_geom is not None else "auto_detected"
             ),
+            "selection_mode": normalized_selection_mode,
+            "user_selected_point": (
+                {"latitude": query_lat, "longitude": query_lon}
+                if normalized_selection_mode == "point"
+                else None
+            ),
             "selected_structure_id": (
                 selected_structure_id
                 or getattr(result, "matched_structure_id", None)
@@ -855,6 +952,12 @@ class WildfireDataClient:
             ),
             "selected_structure_geometry": (
                 selected_structure_geometry if isinstance(selected_structure_geometry, dict) else None
+            ),
+            "final_structure_geometry_source": final_structure_geometry_source,
+            "structure_geometry_confidence": structure_geometry_confidence,
+            "snapped_structure_distance_m": snapped_structure_distance_m,
+            "user_selected_point_in_footprint": (
+                bool(normalized_selection_mode == "point" and match_distance is not None and float(match_distance) <= 0.5)
             ),
             "display_point_source": display_point_source,
             "fallback_mode": "footprint" if ring_metrics else "point_based",
@@ -1069,6 +1172,8 @@ class WildfireDataClient:
         *,
         geocode_precision: str | None = None,
         structure_geometry_source: str | None = None,
+        selection_mode: str | None = None,
+        user_selected_point: dict[str, Any] | None = None,
         selected_structure_id: str | None = None,
         selected_structure_geometry: dict[str, Any] | None = None,
     ) -> WildfireContext:
@@ -1078,6 +1183,15 @@ class WildfireDataClient:
         normalized_structure_geometry_source = str(structure_geometry_source or "auto_detected").strip().lower()
         if normalized_structure_geometry_source not in {"auto_detected", "user_selected", "user_modified"}:
             normalized_structure_geometry_source = "auto_detected"
+        normalized_selection_mode = str(selection_mode or "polygon").strip().lower()
+        if normalized_selection_mode not in {"polygon", "point"}:
+            normalized_selection_mode = "polygon"
+        user_selected_point_coords: tuple[float, float] | None = None
+        if normalized_selection_mode == "point":
+            user_selected_point_coords, point_error = self._coerce_user_selected_point(user_selected_point)
+            if user_selected_point_coords is None:
+                assumptions.append(point_error or "User-selected point was invalid.")
+                normalized_selection_mode = "polygon"
         runtime_paths, region_context, runtime_assumptions, runtime_sources = self._resolve_runtime_layer_paths(lat, lon)
         assumptions.extend(runtime_assumptions)
         sources.extend(runtime_sources)
@@ -1114,8 +1228,17 @@ class WildfireDataClient:
             "geocoded_address_point": {"latitude": float(lat), "longitude": float(lon)},
             "assessed_property_display_point": {"latitude": float(lat), "longitude": float(lon)},
             "structure_geometry_source": normalized_structure_geometry_source,
+            "selection_mode": normalized_selection_mode,
+            "user_selected_point": (
+                {"latitude": user_selected_point_coords[0], "longitude": user_selected_point_coords[1]}
+                if user_selected_point_coords is not None
+                else None
+            ),
             "selected_structure_id": selected_structure_id,
             "selected_structure_geometry": selected_structure_geometry if isinstance(selected_structure_geometry, dict) else None,
+            "final_structure_geometry_source": "auto_detected",
+            "structure_geometry_confidence": 0.0,
+            "snapped_structure_distance_m": None,
             "region_status": region_context.get("region_status"),
             "region_id": region_context.get("region_id"),
             "region_display_name": region_context.get("region_display_name"),
@@ -1234,17 +1357,34 @@ class WildfireDataClient:
         )
 
         building_source_paths = self._resolve_building_source_paths(runtime_paths, region_context)
+        structure_query_lat = float(anchor.anchor_latitude)
+        structure_query_lon = float(anchor.anchor_longitude)
+        parcel_for_matching = anchor.parcel_polygon
+        if normalized_selection_mode == "point" and user_selected_point_coords is not None:
+            structure_query_lat = float(user_selected_point_coords[0])
+            structure_query_lon = float(user_selected_point_coords[1])
+            parcel_for_matching = None
+            assumptions.append(
+                "Point-based structure selection mode enabled; structure lookup is centered on the user-selected map location."
+            )
+
         ring_context, ring_assumptions, ring_sources = self._compute_structure_ring_metrics(
-            anchor.anchor_latitude,
-            anchor.anchor_longitude,
+            structure_query_lat,
+            structure_query_lon,
             canopy_path=runtime_paths.get("canopy", ""),
             fuel_path=runtime_paths.get("fuel", ""),
             footprint_priority_paths=building_source_paths,
             footprint_path=runtime_paths.get("footprints"),
             fallback_footprint_path=runtime_paths.get("fema_structures"),
-            parcel_polygon=anchor.parcel_polygon,
+            parcel_polygon=parcel_for_matching,
             anchor_precision=anchor.anchor_precision or normalized_geocode_precision,
             structure_geometry_source=normalized_structure_geometry_source,
+            selection_mode=normalized_selection_mode,
+            user_selected_point=(
+                {"latitude": user_selected_point_coords[0], "longitude": user_selected_point_coords[1]}
+                if user_selected_point_coords is not None
+                else None
+            ),
             selected_structure_id=selected_structure_id,
             selected_structure_geometry=selected_structure_geometry if isinstance(selected_structure_geometry, dict) else None,
         )
@@ -1262,14 +1402,52 @@ class WildfireDataClient:
                     or normalized_structure_geometry_source
                     or "auto_detected"
                 ),
+                "selection_mode": str(ring_context.get("selection_mode") or normalized_selection_mode or "polygon"),
+                "user_selected_point": (
+                    ring_context.get("user_selected_point")
+                    if isinstance(ring_context.get("user_selected_point"), dict)
+                    else (
+                        {"latitude": user_selected_point_coords[0], "longitude": user_selected_point_coords[1]}
+                        if user_selected_point_coords is not None
+                        else None
+                    )
+                ),
                 "selected_structure_id": ring_context.get("selected_structure_id") or selected_structure_id,
                 "selected_structure_geometry": (
                     ring_context.get("selected_structure_geometry")
                     if isinstance(ring_context.get("selected_structure_geometry"), dict)
                     else (selected_structure_geometry if isinstance(selected_structure_geometry, dict) else None)
                 ),
+                "final_structure_geometry_source": (
+                    str(ring_context.get("final_structure_geometry_source") or "auto_detected")
+                ),
+                "structure_geometry_confidence": (
+                    float(ring_context.get("structure_geometry_confidence"))
+                    if ring_context.get("structure_geometry_confidence") is not None
+                    else 0.0
+                ),
+                "snapped_structure_distance_m": (
+                    float(ring_context.get("snapped_structure_distance_m"))
+                    if ring_context.get("snapped_structure_distance_m") is not None
+                    else None
+                ),
             }
         )
+        if normalized_selection_mode == "point" and user_selected_point_coords is not None:
+            property_level_context["property_anchor_point"] = {
+                "latitude": float(user_selected_point_coords[0]),
+                "longitude": float(user_selected_point_coords[1]),
+            }
+            property_level_context["property_anchor_source"] = "user_selected_point"
+            property_level_context["property_anchor_precision"] = "user_selected_point"
+            property_level_context["display_point_source"] = (
+                "matched_structure_centroid"
+                if str(property_level_context.get("final_structure_geometry_source") or "") == "user_selected_point_snapped"
+                else "property_anchor_point"
+            )
+            assumptions.append(
+                "User-selected map point is being used as the property anchor for this assessment."
+            )
         display_point_source = str(property_level_context.get("display_point_source") or "property_anchor_point")
         if (
             display_point_source == "matched_structure_centroid"
@@ -1290,7 +1468,24 @@ class WildfireDataClient:
                 }
             )
 
-        property_level_context["geocode_to_anchor_distance_m"] = anchor.geocode_to_anchor_distance_m
+        geocode_to_anchor_distance_m = anchor.geocode_to_anchor_distance_m
+        if normalized_selection_mode == "point" and user_selected_point_coords is not None:
+            try:
+                lat1 = math.radians(float(lat))
+                lon1 = math.radians(float(lon))
+                lat2 = math.radians(float(user_selected_point_coords[0]))
+                lon2 = math.radians(float(user_selected_point_coords[1]))
+                dlat = lat2 - lat1
+                dlon = lon2 - lon1
+                a = (
+                    math.sin(dlat / 2.0) ** 2
+                    + math.cos(lat1) * math.cos(lat2) * (math.sin(dlon / 2.0) ** 2)
+                )
+                c = 2.0 * math.atan2(math.sqrt(a), math.sqrt(max(1e-12, 1.0 - a)))
+                geocode_to_anchor_distance_m = round(6371000.0 * c, 2)
+            except Exception:
+                geocode_to_anchor_distance_m = anchor.geocode_to_anchor_distance_m
+        property_level_context["geocode_to_anchor_distance_m"] = geocode_to_anchor_distance_m
         property_level_context["source_conflict_flag"] = bool(anchor.source_conflict_flag)
         property_level_context["alignment_notes"] = list(anchor.alignment_notes)
         property_level_context["footprint_source_name"] = str(

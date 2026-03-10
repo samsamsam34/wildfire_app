@@ -75,6 +75,7 @@ GeocodeStatus = Literal[
     "parser_error",
 ]
 StructureGeometrySource = Literal["auto_detected", "user_selected", "user_modified"]
+SelectionMode = Literal["polygon", "point"]
 
 
 class PropertyAttributes(BaseModel):
@@ -94,6 +95,8 @@ class AddressRequest(BaseModel):
     attributes: PropertyAttributes = Field(default_factory=PropertyAttributes)
     confirmed_fields: List[str] = Field(default_factory=list)
     structure_geometry_source: StructureGeometrySource = "auto_detected"
+    selection_mode: SelectionMode = "polygon"
+    user_selected_point: Optional[Coordinates] = None
     selected_structure_id: Optional[str] = None
     selected_structure_geometry: Optional[Dict[str, Any]] = None
     audience: Audience = "homeowner"
@@ -611,6 +614,11 @@ class AssessmentResult(BaseModel):
     building_source_confidence: Optional[float] = None
     structure_match_distance_m: Optional[float] = None
     candidate_structure_count: Optional[int] = None
+    final_structure_geometry_source: Optional[str] = None
+    structure_geometry_confidence: Optional[float] = None
+    snapped_structure_distance_m: Optional[float] = None
+    selection_mode: Optional[SelectionMode] = None
+    user_selected_point: Optional[Dict[str, float]] = None
     site_hazard_eligibility: ScoreEligibility = Field(default_factory=ScoreEligibility)
     home_vulnerability_eligibility: ScoreEligibility = Field(default_factory=ScoreEligibility)
     insurance_readiness_eligibility: ScoreEligibility = Field(default_factory=ScoreEligibility)
@@ -806,6 +814,11 @@ class AssessmentMapPayload(BaseModel):
     structure_match_confidence: Optional[float] = None
     structure_match_distance_m: Optional[float] = None
     candidate_structure_count: Optional[int] = None
+    final_structure_geometry_source: Optional[str] = None
+    structure_geometry_confidence: Optional[float] = None
+    snapped_structure_distance_m: Optional[float] = None
+    selection_mode: Optional[SelectionMode] = None
+    user_selected_point: Optional[Dict[str, object]] = None
     display_point_source: str = "property_anchor_point"
     geocoded_address_point: Optional[Dict[str, object]] = None
     matched_structure_centroid: Optional[Dict[str, object]] = None

@@ -94,10 +94,13 @@ def test_frontend_includes_home_confirmation_step_and_selection_payload_fields()
     assert "Click one of the highlighted building polygons to select your home." in html
     assert "Yes — Continue" in html
     assert "No — Select My Home" in html
+    assert "Can’t find your house? Click directly on your home" in html
     assert "structure_geometry_source" in html
+    assert "selection_mode" in html
+    assert "user_selected_point" in html
     assert "selected_structure_id" in html
     assert "selected_structure_geometry" in html
-    assert "No selectable building polygons are available for this location. Basemap outlines are not clickable." in html
+    assert "Basemap outlines are not clickable" in html
     assert 'createPane("selectableStructuresPane")' in html
     assert 'pane: "selectableStructuresPane"' in html
     assert "interactive_layer_loaded" in html
@@ -112,6 +115,15 @@ def test_frontend_selectable_structure_layer_has_click_and_selection_logic() -> 
     assert 'source: "user_selected"' in html
     assert "await runAssessment(false);" in html
     assert "Selection mode is on. Click one of the highlighted building polygons to select your home." in html
+
+
+def test_frontend_point_selection_fallback_places_user_selected_point_and_reassesses() -> None:
+    html = _frontend_html()
+    assert 'mode: "point"' in html
+    assert "Point selection mode enabled. Click directly on your home location in the map." in html
+    assert "Using your selected map point. Updating assessment..." in html
+    assert "renderManualSelectedPointMarker" in html
+    assert 'source: "user_selected_point"' in html
 
 
 def test_frontend_map_degrades_gracefully_for_uncovered_or_geocode_failure() -> None:

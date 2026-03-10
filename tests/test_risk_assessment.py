@@ -512,6 +512,52 @@ def test_assessment_passes_user_selected_structure_override_to_context(monkeypat
     assert plc.get("selected_structure_geometry", {}).get("geometry", {}).get("type") == "Polygon"
 
 
+def test_assessment_passes_user_selected_point_override_to_context(monkeypatch, tmp_path):
+    context = _ctx(
+        52.0,
+        40.0,
+        34.0,
+        ring_metrics={
+            "ring_0_5_ft": {"vegetation_density": 24.0},
+            "ring_5_30_ft": {"vegetation_density": 32.0},
+            "ring_30_100_ft": {"vegetation_density": 45.0},
+        },
+    )
+    context.property_level_context.update(
+        {
+            "selection_mode": "point",
+            "user_selected_point": {"latitude": 39.7394, "longitude": -104.9901},
+            "final_structure_geometry_source": "user_selected_point_unsnapped",
+            "structure_geometry_confidence": 0.42,
+            "snapped_structure_distance_m": None,
+            "display_point_source": "property_anchor_point",
+        }
+    )
+    captured: dict[str, object] = {}
+    _setup_with_collect_capture(monkeypatch, tmp_path, context, captured)
+
+    response = client.post(
+        "/risk/assess",
+        json={
+            **_payload("1500 Market St, Denver, CO 80202", {"roof_type": "metal"}),
+            "selection_mode": "point",
+            "user_selected_point": {"latitude": 39.7394, "longitude": -104.9901},
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+
+    kwargs = captured.get("kwargs")
+    assert isinstance(kwargs, dict)
+    assert kwargs.get("selection_mode") == "point"
+    assert kwargs.get("user_selected_point") == {"latitude": 39.7394, "longitude": -104.9901}
+
+    plc = body.get("property_level_context") or {}
+    assert plc.get("selection_mode") == "point"
+    assert plc.get("user_selected_point") == {"latitude": 39.7394, "longitude": -104.9901}
+    assert body.get("final_structure_geometry_source") == "user_selected_point_unsnapped"
+
+
 def test_property_findings_from_ring_metrics_surface_in_assessment(monkeypatch, tmp_path):
     ring_metrics = {
         "ring_0_5_ft": {"vegetation_density": 82.0},
@@ -667,6 +713,172 @@ def test_wildfire_data_builds_point_proxy_ring_metrics_when_footprint_unavailabl
     assert ring_context["ring_metrics"]["zone_0_5_ft"]["vegetation_density"] == pytest.approx(70.0)
     assert any("point-based annulus" in note.lower() for note in assumptions)
     assert any("point-proxy ring vegetation summaries" in s.lower() for s in sources)
+
+
+def test_wildfire_data_point_selection_snaps_to_nearby_footprint(monkeypatch):
+    _require_shapely()
+    client = WildfireDataClient()
+    footprint = Polygon(
+        [
+            (-105.00010, 40.00010),
+            (-104.99992, 40.00010),
+            (-104.99992, 39.99992),
+            (-105.00010, 39.99992),
+            (-105.00010, 40.00010),
+        ]
+    )
+
+    monkeypatch.setattr(
+        client.footprints,
+        "get_building_footprint",
+        lambda _lat, _lon, **_kwargs: BuildingFootprintResult(
+            found=True,
+            footprint=footprint,
+            centroid=(40.0, -105.0),
+            source="fixture",
+            confidence=0.72,
+            match_status="matched",
+            match_method="nearest_building_fallback",
+            matched_structure_id="snap-home",
+            match_distance_m=4.2,
+            candidate_count=3,
+            candidate_summaries=[],
+            assumptions=[],
+        ),
+    )
+    monkeypatch.setattr(
+        client,
+        "_summarize_ring_canopy",
+        lambda _geom, canopy_path: {
+            "canopy_mean": 52.0,
+            "canopy_max": 71.0,
+            "coverage_pct": 46.0,
+            "vegetation_density": 55.0,
+        },
+    )
+    monkeypatch.setattr(client, "_summarize_ring_fuel_presence", lambda _geom, fuel_path: 42.0)
+
+    context_blob, assumptions, _sources = client._compute_structure_ring_metrics(
+        40.0,
+        -105.0,
+        canopy_path="canopy.tif",
+        fuel_path="fuel.tif",
+        selection_mode="point",
+        user_selected_point={"latitude": 40.0, "longitude": -105.0},
+    )
+
+    assert context_blob["footprint_used"] is True
+    assert context_blob["selection_mode"] == "point"
+    assert context_blob["final_structure_geometry_source"] == "user_selected_point_snapped"
+    assert context_blob["structure_geometry_confidence"] >= 0.5
+    assert context_blob["snapped_structure_distance_m"] == pytest.approx(4.2)
+    assert context_blob["user_selected_point_in_footprint"] is False
+    assert context_blob["matched_structure_id"] == "snap-home"
+    assert any("user-selected map point" in note.lower() for note in assumptions)
+
+
+def test_wildfire_data_point_selection_detects_point_inside_footprint(monkeypatch):
+    _require_shapely()
+    client = WildfireDataClient()
+    footprint = Polygon(
+        [
+            (-105.00008, 40.00008),
+            (-104.99992, 40.00008),
+            (-104.99992, 39.99992),
+            (-105.00008, 39.99992),
+            (-105.00008, 40.00008),
+        ]
+    )
+    monkeypatch.setattr(
+        client.footprints,
+        "get_building_footprint",
+        lambda _lat, _lon, **_kwargs: BuildingFootprintResult(
+            found=True,
+            footprint=footprint,
+            centroid=(40.0, -105.0),
+            source="fixture",
+            confidence=0.86,
+            match_status="matched",
+            match_method="nearest_building_fallback",
+            matched_structure_id="inside-home",
+            match_distance_m=0.0,
+            candidate_count=1,
+            candidate_summaries=[],
+            assumptions=[],
+        ),
+    )
+    monkeypatch.setattr(
+        client,
+        "_summarize_ring_canopy",
+        lambda _geom, canopy_path: {
+            "canopy_mean": 45.0,
+            "canopy_max": 63.0,
+            "coverage_pct": 40.0,
+            "vegetation_density": 48.0,
+        },
+    )
+    monkeypatch.setattr(client, "_summarize_ring_fuel_presence", lambda _geom, fuel_path: 36.0)
+
+    context_blob, _assumptions, _sources = client._compute_structure_ring_metrics(
+        40.0,
+        -105.0,
+        canopy_path="canopy.tif",
+        fuel_path="fuel.tif",
+        selection_mode="point",
+        user_selected_point={"latitude": 40.0, "longitude": -105.0},
+    )
+    assert context_blob["final_structure_geometry_source"] == "user_selected_point_snapped"
+    assert context_blob["user_selected_point_in_footprint"] is True
+    assert context_blob["snapped_structure_distance_m"] == pytest.approx(0.0)
+
+
+def test_wildfire_data_point_selection_unsnapped_falls_back_to_selected_anchor(monkeypatch):
+    client = WildfireDataClient()
+
+    monkeypatch.setattr(
+        client.footprints,
+        "get_building_footprint",
+        lambda _lat, _lon, **_kwargs: BuildingFootprintResult(
+            found=False,
+            footprint=None,
+            centroid=None,
+            source="fixture_missing",
+            confidence=0.0,
+            match_status="none",
+            match_method="nearest_building_fallback",
+            matched_structure_id=None,
+            match_distance_m=28.0,
+            candidate_count=2,
+            candidate_summaries=[],
+            assumptions=["Nearest structure footprint is too far from the geocoded point; using geocoded point fallback."],
+        ),
+    )
+    proxy = {
+        "zone_0_5_ft": {"vegetation_density": 58.0, "coverage_pct": 62.0, "fuel_presence_proxy": 54.0},
+        "zone_5_30_ft": {"vegetation_density": 51.0, "coverage_pct": 55.0, "fuel_presence_proxy": 47.0},
+        "zone_30_100_ft": {"vegetation_density": 45.0, "coverage_pct": 49.0, "fuel_presence_proxy": 42.0},
+        "ring_0_5_ft": {"vegetation_density": 58.0, "coverage_pct": 62.0, "fuel_presence_proxy": 54.0},
+        "ring_5_30_ft": {"vegetation_density": 51.0, "coverage_pct": 55.0, "fuel_presence_proxy": 47.0},
+        "ring_30_100_ft": {"vegetation_density": 45.0, "coverage_pct": 49.0, "fuel_presence_proxy": 42.0},
+    }
+    monkeypatch.setattr(client, "_build_point_proxy_ring_metrics", lambda **_kwargs: proxy)
+
+    context_blob, assumptions, _sources = client._compute_structure_ring_metrics(
+        46.87,
+        -113.99,
+        canopy_path="",
+        fuel_path="",
+        selection_mode="point",
+        user_selected_point={"latitude": 46.8702, "longitude": -113.9898},
+    )
+    assert context_blob["footprint_used"] is False
+    assert context_blob["selection_mode"] == "point"
+    assert context_blob["final_structure_geometry_source"] == "user_selected_point_unsnapped"
+    assert context_blob["structure_geometry_confidence"] == pytest.approx(0.42)
+    assert context_blob["snapped_structure_distance_m"] is None
+    assert context_blob["user_selected_point"] == {"latitude": 46.8702, "longitude": -113.9898}
+    assert context_blob["display_point_source"] == "property_anchor_point"
+    assert any("exact building outline unavailable" in note.lower() for note in assumptions)
 
 
 def test_score_decomposition_and_blended_wildfire_score(monkeypatch, tmp_path):
