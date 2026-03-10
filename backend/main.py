@@ -23,7 +23,7 @@ from backend.database import AssessmentStore, DEFAULT_ORG_ID
 from backend.data_prep.region_lookup import (
     find_region_for_point as lookup_region_for_point,
 )
-from backend.geocoding import Geocoder
+from backend.geocoding import Geocoder, GeocodingError, normalize_address
 from backend.layer_diagnostics import LAYER_SPECS
 from backend.mitigation import build_mitigation_plan
 from backend.models import (
@@ -63,6 +63,7 @@ from backend.models import (
     EnvironmentalFactors,
     FreshnessStatus,
     InputSourceMetadata,
+    GeocodingDetails,
     ModelGovernanceInfo,
     FactorBreakdown,
     Organization,
@@ -2332,16 +2333,10 @@ def _run_assessment(
     portfolio_name: str | None = None,
     tags: list[str] | None = None,
 ) -> tuple[AssessmentResult, dict]:
-    try:
-        lat, lon, geocode_source = geocoder.geocode(payload.address)
-    except Exception as exc:
-        raise HTTPException(
-            status_code=503,
-            detail=(
-                "Geocoding lookup failed; a trusted location match is required for this assessment. "
-                "Please verify the address and try again."
-            ),
-        ) from exc
+    lat, lon, geocode_source, geocode_meta = _geocode_address_or_raise(
+        address=payload.address,
+        purpose="assessment",
+    )
 
     scoring_attrs = normalize_property_attributes(payload.attributes)
     normalization_changes = normalized_attribute_changes(payload.attributes, scoring_attrs)
@@ -2713,6 +2708,7 @@ def _run_assessment(
         confirmed_fields=sorted(set(payload.confirmed_fields)),
         latitude=lat,
         longitude=lon,
+        geocoding=GeocodingDetails.model_validate(geocode_meta),
         wildfire_risk_score=blended_wildfire_risk_score,
         legacy_weighted_wildfire_risk_score=legacy_weighted_wildfire_risk_score,
         site_hazard_score=site_hazard_score,
@@ -2812,6 +2808,7 @@ def _run_assessment(
         "organization_id": organization_id,
         "ruleset_id": ruleset.ruleset_id,
         "coordinates": {"latitude": lat, "longitude": lon},
+        "geocoding": geocode_meta,
         "context_indices": {
             "burn_probability_index": context.burn_probability_index,
             "hazard_severity_index": context.hazard_severity_index,
@@ -3362,6 +3359,152 @@ def _env_flag(name: str, default: bool) -> bool:
     if raw is None:
         return default
     return raw.strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _geocode_error_message(status: str, purpose: str) -> str:
+    context = "assessment" if purpose == "assessment" else "region coverage check"
+    mapping = {
+        "no_match": "No trusted location match was found. Please verify the address and try again.",
+        "ambiguous_match": "Address matched multiple possible locations. Add city/state or ZIP and try again.",
+        "low_confidence": "Address match confidence was below policy threshold. Add more address detail and retry.",
+        "provider_error": "Geocoding provider is temporarily unavailable. Please retry shortly.",
+        "parser_error": "Address format could not be parsed. Please correct the address and retry.",
+    }
+    base = mapping.get(status, "Geocoding lookup failed. Please verify the address and try again.")
+    return f"Geocoding failed for {context}. {base}"
+
+
+def _geocode_http_status_for_status(status: str) -> int:
+    if status == "provider_error":
+        return 503
+    return 422
+
+
+def _log_geocode_event(
+    *,
+    purpose: str,
+    status: str,
+    submitted_address: str,
+    normalized_address: str,
+    latitude: float | None = None,
+    longitude: float | None = None,
+    provider: str | None = None,
+    source: str | None = None,
+    reason: str | None = None,
+    raw_response_preview: dict[str, Any] | None = None,
+) -> None:
+    payload: dict[str, Any] = {
+        "event": "assessment_geocoding",
+        "purpose": purpose,
+        "geocode_status": status,
+        "submitted_address": submitted_address,
+        "normalized_address": normalized_address,
+        "provider": provider,
+        "source": source,
+        "reason": reason,
+    }
+    if latitude is not None and longitude is not None:
+        payload["latitude"] = round(float(latitude), 6)
+        payload["longitude"] = round(float(longitude), 6)
+    if _env_flag("WF_GEOCODE_DEBUG_LOG", False) and raw_response_preview:
+        payload["raw_response_preview"] = raw_response_preview
+
+    level = logging.INFO if status == "matched" else logging.WARNING
+    LOGGER.log(level, "assessment_geocoding %s", json.dumps(payload, sort_keys=True))
+
+
+def _geocode_address_or_raise(*, address: str, purpose: str) -> tuple[float, float, str, dict[str, Any]]:
+    submitted_address = str(address or "")
+    normalized_address = normalize_address(submitted_address)
+    provider = "OpenStreetMap Nominatim"
+
+    try:
+        lat, lon, geocode_source = geocoder.geocode(submitted_address)
+    except GeocodingError as exc:
+        status = str(exc.status or "provider_error")
+        detail: dict[str, Any] = {
+            "error": "geocoding_failed",
+            "geocode_status": status,
+            "message": _geocode_error_message(status, purpose),
+            "submitted_address": submitted_address,
+            "normalized_address": exc.normalized_address or normalized_address,
+            "provider": exc.provider or provider,
+            "rejection_reason": exc.rejection_reason,
+        }
+        if _env_flag("WF_GEOCODE_DEBUG_LOG", False) and exc.raw_response_preview:
+            detail["raw_response_preview"] = exc.raw_response_preview
+        _log_geocode_event(
+            purpose=purpose,
+            status=status,
+            submitted_address=submitted_address,
+            normalized_address=detail["normalized_address"],
+            provider=detail["provider"],
+            reason=exc.rejection_reason,
+            raw_response_preview=exc.raw_response_preview,
+        )
+        raise HTTPException(status_code=_geocode_http_status_for_status(status), detail=detail) from exc
+    except Exception as exc:
+        status = "provider_error"
+        detail = {
+            "error": "geocoding_failed",
+            "geocode_status": status,
+            "message": _geocode_error_message(status, purpose),
+            "submitted_address": submitted_address,
+            "normalized_address": normalized_address,
+            "provider": provider,
+            "rejection_reason": str(exc),
+        }
+        _log_geocode_event(
+            purpose=purpose,
+            status=status,
+            submitted_address=submitted_address,
+            normalized_address=normalized_address,
+            provider=provider,
+            reason=str(exc),
+        )
+        raise HTTPException(status_code=503, detail=detail) from exc
+
+    geocoder_meta = getattr(geocoder, "last_result", None)
+    geocode_meta: dict[str, Any] = {
+        "geocode_status": "matched",
+        "submitted_address": submitted_address,
+        "normalized_address": normalized_address,
+        "geocode_source": geocode_source,
+        "provider": provider,
+        "matched_address": None,
+        "confidence_score": None,
+        "candidate_count": None,
+        "resolved_latitude": float(lat),
+        "resolved_longitude": float(lon),
+        "rejection_reason": None,
+    }
+    if isinstance(geocoder_meta, dict):
+        geocode_meta.update(
+            {
+                "geocode_status": geocoder_meta.get("geocode_status") or "matched",
+                "normalized_address": geocoder_meta.get("normalized_address") or normalized_address,
+                "provider": geocoder_meta.get("provider") or provider,
+                "matched_address": geocoder_meta.get("matched_address"),
+                "confidence_score": geocoder_meta.get("confidence_score"),
+                "candidate_count": geocoder_meta.get("candidate_count"),
+                "rejection_reason": geocoder_meta.get("rejection_reason"),
+            }
+        )
+        if _env_flag("WF_GEOCODE_DEBUG_LOG", False) and geocoder_meta.get("raw_response_preview"):
+            geocode_meta["raw_response_preview"] = geocoder_meta.get("raw_response_preview")
+
+    _log_geocode_event(
+        purpose=purpose,
+        status="matched",
+        submitted_address=submitted_address,
+        normalized_address=str(geocode_meta.get("normalized_address") or normalized_address),
+        latitude=float(lat),
+        longitude=float(lon),
+        provider=str(geocode_meta.get("provider") or provider),
+        source=geocode_source,
+        raw_response_preview=geocode_meta.get("raw_response_preview"),
+    )
+    return float(lat), float(lon), geocode_source, geocode_meta
 
 
 def _region_data_root() -> str:
@@ -3927,20 +4070,19 @@ def check_region_coverage(
 ) -> RegionCoverageStatus:
     lat = payload.latitude
     lon = payload.longitude
+    geocode_meta: dict[str, Any] | None = None
     if lat is None or lon is None:
         if not payload.address or len(payload.address.strip()) < 5:
             raise HTTPException(status_code=400, detail="Provide either latitude/longitude or a valid address.")
-        try:
-            lat, lon, _ = geocoder.geocode(payload.address)
-        except Exception as exc:
-            raise HTTPException(
-                status_code=503,
-                detail=(
-                    "Geocoding lookup failed; a trusted location match is required for region coverage checks. "
-                    "Please verify the address and try again."
-                ),
-            ) from exc
+        lat, lon, _source, geocode_meta = _geocode_address_or_raise(
+            address=payload.address,
+            purpose="region_coverage_check",
+        )
     coverage = _region_coverage_for_coordinates(float(lat), float(lon))
+    if geocode_meta:
+        coverage["geocode_status"] = geocode_meta.get("geocode_status")
+        coverage["normalized_address"] = geocode_meta.get("normalized_address")
+        coverage["geocode_source"] = geocode_meta.get("geocode_source")
     return RegionCoverageStatus.model_validate(coverage)
 
 
@@ -3959,16 +4101,10 @@ def assess_risk(
     auto_queue_on_uncovered = _env_flag("WF_AUTO_QUEUE_REGION_PREP_ON_MISS", False)
     require_prepared_region = _env_flag("WF_REQUIRE_PREPARED_REGION_COVERAGE", False)
     if auto_queue_on_uncovered or require_prepared_region:
-        try:
-            lat, lon, _ = geocoder.geocode(payload.address)
-        except Exception as exc:
-            raise HTTPException(
-                status_code=503,
-                detail=(
-                    "Geocoding lookup failed; a trusted location match is required for this assessment. "
-                    "Please verify the address and try again."
-                ),
-            ) from exc
+        lat, lon, _source, geocode_meta = _geocode_address_or_raise(
+            address=payload.address,
+            purpose="assessment",
+        )
 
         coverage = _region_coverage_for_coordinates(lat=float(lat), lon=float(lon))
         if not coverage.get("covered"):
@@ -4019,6 +4155,10 @@ def assess_risk(
                     status_code=409,
                     detail={
                         "region_not_ready": True,
+                        "geocode_status": geocode_meta.get("geocode_status"),
+                        "normalized_address": geocode_meta.get("normalized_address"),
+                        "resolved_latitude": geocode_meta.get("resolved_latitude"),
+                        "resolved_longitude": geocode_meta.get("resolved_longitude"),
                         "coverage_available": False,
                         "resolved_region_id": None,
                         "reason": "no_prepared_region_for_location",
@@ -4049,6 +4189,10 @@ def assess_risk(
                 status_code=409,
                 detail={
                     "region_not_ready": True,
+                    "geocode_status": geocode_meta.get("geocode_status"),
+                    "normalized_address": geocode_meta.get("normalized_address"),
+                    "resolved_latitude": geocode_meta.get("resolved_latitude"),
+                    "resolved_longitude": geocode_meta.get("resolved_longitude"),
                     "coverage_available": False,
                     "resolved_region_id": None,
                     "reason": "no_prepared_region_for_location",
@@ -4293,6 +4437,7 @@ def layer_diagnostics(payload: AddressRequest, ctx: ActorContext = Depends(get_a
         "organization_id": debug_payload.get("organization_id"),
         "ruleset_id": debug_payload.get("ruleset_id"),
         "coordinates": debug_payload.get("coordinates"),
+        "geocoding": debug_payload.get("geocoding", {}),
         "region": {
             "region_id": (debug_payload.get("property_level_context") or {}).get("region_id"),
             "region_status": (debug_payload.get("property_level_context") or {}).get("region_status"),

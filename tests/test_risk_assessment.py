@@ -19,6 +19,7 @@ import backend.wildfire_data as wildfire_data_module
 from backend.building_footprints import BuildingFootprintClient, BuildingFootprintResult, compute_structure_rings
 from backend.data_prep.prepare_region import prepare_region_layers
 from backend.database import AssessmentStore
+from backend.geocoding import GeocodingError
 from backend.mitigation import build_mitigation_plan
 from backend.models import AssumptionsBlock, PropertyAttributes
 from backend.open_data_adapters import (
@@ -823,7 +824,113 @@ def test_geocoding_failure_does_not_use_synthetic_coordinate_fallback(monkeypatc
         },
     )
     assert res.status_code == 503
-    assert "trusted location match is required" in res.text
+    detail = res.json()["detail"]
+    assert detail["error"] == "geocoding_failed"
+    assert detail["geocode_status"] == "provider_error"
+    assert "temporarily unavailable" in detail["message"].lower()
+    assert detail["normalized_address"]
+
+
+def test_malformed_address_returns_structured_geocode_parser_error(monkeypatch, tmp_path):
+    auth.API_KEYS = set()
+    monkeypatch.setattr(
+        app_main.geocoder,
+        "geocode",
+        lambda _addr: (_ for _ in ()).throw(
+            GeocodingError(
+                status="parser_error",
+                message="Address input is too short for geocoding.",
+                submitted_address="??",
+                normalized_address="??",
+                rejection_reason="input_too_short",
+            )
+        ),
+    )
+    monkeypatch.setattr(app_main, "store", AssessmentStore(str(tmp_path / "geocode_parser.db")))
+
+    res = client.post(
+        "/risk/assess",
+        json={
+            "address": "?? ???",
+            "attributes": {},
+            "confirmed_fields": [],
+            "audience": "homeowner",
+            "tags": [],
+        },
+    )
+    assert res.status_code == 422
+    detail = res.json()["detail"]
+    assert detail["error"] == "geocoding_failed"
+    assert detail["geocode_status"] == "parser_error"
+    assert "could not be parsed" in detail["message"].lower()
+
+
+def test_ambiguous_address_returns_structured_geocode_ambiguity_error(monkeypatch, tmp_path):
+    auth.API_KEYS = set()
+    monkeypatch.setattr(
+        app_main.geocoder,
+        "geocode",
+        lambda _addr: (_ for _ in ()).throw(
+            GeocodingError(
+                status="ambiguous_match",
+                message="Geocoding returned multiple similarly ranked matches.",
+                submitted_address="100 Main St",
+                normalized_address="100 Main St",
+                rejection_reason="top and second candidates within ambiguity threshold",
+            )
+        ),
+    )
+    monkeypatch.setattr(app_main, "store", AssessmentStore(str(tmp_path / "geocode_ambiguous.db")))
+
+    res = client.post(
+        "/risk/assess",
+        json={
+            "address": "100 Main St",
+            "attributes": {},
+            "confirmed_fields": [],
+            "audience": "homeowner",
+            "tags": [],
+        },
+    )
+    assert res.status_code == 422
+    detail = res.json()["detail"]
+    assert detail["error"] == "geocoding_failed"
+    assert detail["geocode_status"] == "ambiguous_match"
+    assert "multiple possible locations" in detail["message"].lower()
+
+
+def test_low_confidence_address_returns_structured_geocode_low_confidence_error(monkeypatch, tmp_path):
+    auth.API_KEYS = set()
+    monkeypatch.setattr(
+        app_main.geocoder,
+        "geocode",
+        lambda _addr: (_ for _ in ()).throw(
+            GeocodingError(
+                status="low_confidence",
+                message="Best geocoding match was below the confidence threshold.",
+                submitted_address="Rural Route 1 Box 2",
+                normalized_address="Rural Route 1 Box 2",
+                rejection_reason="importance=0.01 threshold=0.2",
+            )
+        ),
+    )
+    monkeypatch.setattr(app_main, "store", AssessmentStore(str(tmp_path / "geocode_low_conf.db")))
+
+    res = client.post(
+        "/risk/assess",
+        json={
+            "address": "Rural Route 1 Box 2",
+            "attributes": {},
+            "confirmed_fields": [],
+            "audience": "homeowner",
+            "tags": [],
+        },
+    )
+    assert res.status_code == 422
+    detail = res.json()["detail"]
+    assert detail["error"] == "geocoding_failed"
+    assert detail["geocode_status"] == "low_confidence"
+    assert "below policy threshold" in detail["message"].lower()
 
 
 def _run(payload: dict) -> dict:

@@ -63,6 +63,14 @@ LayerCoverageStatus = Literal[
     "partial",
 ]
 LayerSourceType = Literal["prepared_region", "runtime_env", "derived", "open_data"]
+GeocodeStatus = Literal[
+    "matched",
+    "no_match",
+    "ambiguous_match",
+    "low_confidence",
+    "provider_error",
+    "parser_error",
+]
 
 
 class PropertyAttributes(BaseModel):
@@ -171,6 +179,23 @@ class RegionCoverageStatus(BaseModel):
     resolved_region_id: Optional[str] = None
     reason: str = ""
     recommended_action: Optional[str] = None
+    geocode_status: Optional[GeocodeStatus] = None
+    normalized_address: Optional[str] = None
+    geocode_source: Optional[str] = None
+
+
+class GeocodingDetails(BaseModel):
+    geocode_status: GeocodeStatus = "matched"
+    submitted_address: str = ""
+    normalized_address: Optional[str] = None
+    geocode_source: Optional[str] = None
+    provider: Optional[str] = None
+    matched_address: Optional[str] = None
+    confidence_score: Optional[float] = None
+    candidate_count: Optional[int] = None
+    resolved_latitude: Optional[float] = None
+    resolved_longitude: Optional[float] = None
+    rejection_reason: Optional[str] = None
 
 
 class RegionResolution(BaseModel):
@@ -488,6 +513,7 @@ class AssessmentResult(BaseModel):
 
     latitude: float
     longitude: float
+    geocoding: GeocodingDetails = Field(default_factory=GeocodingDetails)
     wildfire_risk_score: Optional[float] = None
     legacy_weighted_wildfire_risk_score: Optional[float] = None
     site_hazard_score: Optional[float] = None

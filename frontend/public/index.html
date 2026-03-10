@@ -365,6 +365,7 @@
           <h3 style="margin-top:0.9rem;">Property-Level Context</h3>
           <p id="propertyContextText" class="muted">No property-level context available yet.</p>
           <p id="regionResolutionText" class="muted" style="display:none;">Region resolution details unavailable.</p>
+          <p id="geocodeDebugText" class="muted" style="display:none;">Geocode details unavailable.</p>
         </details>
       </section>
     </div>
@@ -692,6 +693,7 @@
         }
         document.getElementById("propertyContextText").textContent = buildPropertyContextSummary(data, propertyFindings);
         const regionResolutionEl = document.getElementById("regionResolutionText");
+        const geocodeDebugEl = document.getElementById("geocodeDebugText");
         if (regionResolutionEl) {
           if (isDebugMode) {
             const resolvedRegionId = resolution?.resolved_region_id || data?.property_level_context?.region_id || "unresolved";
@@ -700,6 +702,22 @@
               `Resolved prepared region: ${resolvedRegionId} (${resolution?.reason || "unknown"}, covered=${resolution?.coverage_available === true}).`;
           } else {
             regionResolutionEl.style.display = "none";
+          }
+        }
+        if (geocodeDebugEl) {
+          if (isDebugMode) {
+            const geocode = data?.geocoding || {};
+            const status = geocode?.geocode_status || "unknown";
+            const submitted = geocode?.submitted_address || data?.address || "(none)";
+            const normalized = geocode?.normalized_address || "(none)";
+            const lat = geocode?.resolved_latitude ?? data?.latitude;
+            const lon = geocode?.resolved_longitude ?? data?.longitude;
+            const resolvedRegionId = resolution?.resolved_region_id || data?.resolved_region_id || "unresolved";
+            geocodeDebugEl.style.display = "block";
+            geocodeDebugEl.textContent =
+              `Geocode: status=${status}; submitted="${submitted}"; normalized="${normalized}"; lat/lon=${lat}, ${lon}; region=${resolvedRegionId}`;
+          } else {
+            geocodeDebugEl.style.display = "none";
           }
         }
       }
@@ -740,6 +758,7 @@
         document.getElementById("readinessText").textContent = "Insurance readiness score: not computed (location outside prepared coverage)";
         document.getElementById("propertyContextText").textContent = recommendation;
         const regionResolutionEl = document.getElementById("regionResolutionText");
+        const geocodeDebugEl = document.getElementById("geocodeDebugText");
         if (regionResolutionEl) {
           if (isDebugMode) {
             regionResolutionEl.style.display = "block";
@@ -747,6 +766,19 @@
               `Resolved prepared region: none (${reasonText}, covered=false).`;
           } else {
             regionResolutionEl.style.display = "none";
+          }
+        }
+        if (geocodeDebugEl) {
+          if (isDebugMode) {
+            const geocodeStatus = detail?.geocode_status || "unknown";
+            const normalized = detail?.normalized_address || "(none)";
+            const lat = detail?.resolved_latitude ?? "n/a";
+            const lon = detail?.resolved_longitude ?? "n/a";
+            geocodeDebugEl.style.display = "block";
+            geocodeDebugEl.textContent =
+              `Geocode: status=${geocodeStatus}; normalized="${normalized}"; lat/lon=${lat}, ${lon}; region=unsupported_location`;
+          } else {
+            geocodeDebugEl.style.display = "none";
           }
         }
       }
