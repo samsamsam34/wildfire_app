@@ -33,6 +33,7 @@ Response includes:
   - `parcel_id`, `parcel_lookup_method`, `parcel_lookup_distance_m`
   - `structure_match_status`, `structure_match_method`, `matched_structure_id`,
     `structure_match_confidence`, `structure_match_distance_m`, `candidate_structure_count`
+  - `building_source`, `building_source_version`, `building_source_confidence` (in assessment/debug payloads)
 - layer definitions (display name, availability, default visibility, legend text)
 - compact GeoJSON feature collections by layer key
 - limitations/warnings when geometry or overlays are missing/partial
@@ -42,6 +43,7 @@ Response includes:
 - Leaflet renders a basemap and map layers.
 - Layer toggles are generated from backend layer metadata.
 - GeoJSON is rendered directly in `[longitude, latitude]` order until Leaflet consumes it.
+- Building footprint popups include source, matched building id, and match distance metadata.
 - If structure geometry is unavailable, defensible-space rings fall back to point-proxy geometry.
 - If overlays are missing, map still renders with property + available layers and shows limitation text.
 

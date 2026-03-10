@@ -44,6 +44,7 @@ OPTIONAL_REGION_LAYER_KEYS = {
     "gridmet_dryness",
     "roads",
     "fema_structures",
+    "building_footprints_overture",
     "parcel_polygons",
     "parcel_address_points",
 }

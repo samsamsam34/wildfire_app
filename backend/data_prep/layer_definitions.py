@@ -9,6 +9,7 @@ DERIVED_RASTER_LAYERS = ("slope",)
 
 # Optional enrichment layers; absence should warn, not hard-fail.
 OPTIONAL_LAYERS = (
+    "building_footprints_overture",
     "roads",
     "whp",
     "mtbs_severity",

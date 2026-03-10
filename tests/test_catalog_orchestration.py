@@ -163,6 +163,35 @@ def test_catalog_coverage_plan_full_partial_none(tmp_path):
     assert none_plan["layers"]["fuel"]["coverage_status"] == "none"
 
 
+def test_overture_buildings_vector_ingestion_supported(tmp_path):
+    pytest.importorskip("shapely")
+    catalog_root = tmp_path / "catalog"
+    overture_geojson = tmp_path / "building_footprints_overture.geojson"
+    payload = {
+        "type": "FeatureCollection",
+        "features": [
+            {
+                "type": "Feature",
+                "properties": {"id": "ov-1"},
+                "geometry": {
+                    "type": "Polygon",
+                    "coordinates": [[[-0.5, 0.3], [-0.2, 0.3], [-0.2, 0.6], [-0.5, 0.6], [-0.5, 0.3]]],
+                },
+            }
+        ],
+    }
+    overture_geojson.write_text(json.dumps(payload), encoding="utf-8")
+
+    metadata = ingest_catalog_vector(
+        layer_name="building_footprints_overture",
+        source_path=str(overture_geojson),
+        catalog_root=catalog_root,
+        bounds={"min_lon": -0.7, "min_lat": 0.2, "max_lon": 0.7, "max_lat": 0.9},
+    )
+    assert metadata["layer_name"] == "building_footprints_overture"
+    assert Path(str(metadata["catalog_path"])).exists()
+
+
 def test_prepare_any_region_plan_only_no_name_error_and_policy_structure(tmp_path):
     catalog_root = tmp_path / "catalog"
     regions_root = tmp_path / "regions"

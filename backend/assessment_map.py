@@ -177,6 +177,7 @@ def _resolve_vector_paths(
     manifest = _resolve_region_manifest_for_result(result, region_data_dir)
 
     fire_perimeters: str | None = None
+    footprints_overture: str | None = None
     footprints: str | None = None
     fema_structures: str | None = None
     address_points: str | None = None
@@ -184,6 +185,10 @@ def _resolve_vector_paths(
 
     if manifest:
         fire_perimeters = resolve_region_file(manifest, "fire_perimeters", base_dir=region_data_dir)
+        footprints_overture = (
+            resolve_region_file(manifest, "building_footprints_overture", base_dir=region_data_dir)
+            or resolve_region_file(manifest, "overture_buildings", base_dir=region_data_dir)
+        )
         footprints = resolve_region_file(manifest, "building_footprints", base_dir=region_data_dir)
         address_points = (
             resolve_region_file(manifest, "address_points", base_dir=region_data_dir)
@@ -198,6 +203,11 @@ def _resolve_vector_paths(
     base_paths = getattr(wildfire_data, "base_paths", {}) or {}
 
     fire_perimeters = fire_perimeters or runtime_paths.get("perimeters") or base_paths.get("perimeters")
+    footprints_overture = (
+        footprints_overture
+        or runtime_paths.get("footprints_overture")
+        or base_paths.get("footprints_overture")
+    )
     footprints = footprints or runtime_paths.get("footprints") or base_paths.get("footprints")
     fema_structures = runtime_paths.get("fema_structures") or base_paths.get("fema_structures")
     address_points = address_points or runtime_paths.get("address_points") or base_paths.get("address_points")
@@ -205,6 +215,7 @@ def _resolve_vector_paths(
 
     return {
         "fire_perimeters": fire_perimeters,
+        "footprints_overture": footprints_overture,
         "footprints": footprints,
         "fema_structures": fema_structures,
         "address_points": address_points,
@@ -504,7 +515,11 @@ def build_assessment_map_payload(
     )
 
     paths = _resolve_vector_paths(result, wildfire_data=wildfire_data)
-    footprint_paths = [p for p in [paths.get("footprints"), paths.get("fema_structures")] if p]
+    footprint_paths = [
+        p
+        for p in [paths.get("footprints_overture"), paths.get("footprints"), paths.get("fema_structures")]
+        if p
+    ]
 
     basis_geometry_type = "point_proxy"
     footprint_features: list[dict[str, Any]] = []
@@ -546,6 +561,7 @@ def build_assessment_map_payload(
                         "properties": {
                             "label": "Primary structure footprint",
                             "source": fp_result.source,
+                            "building_source": Path(str(fp_result.source or "")).stem or None,
                             "confidence": fp_result.confidence,
                             "match_status": structure_match_status,
                             "match_method": structure_match_method,
@@ -578,6 +594,7 @@ def build_assessment_map_payload(
                     label="Matched structure centroid",
                     properties={
                         "source": "matched_structure_centroid",
+                        "building_source": Path(str(fp_result.source or "")).stem or None,
                         "footprint_source": fp_result.source,
                         "confidence": fp_result.confidence,
                         "match_status": structure_match_status,

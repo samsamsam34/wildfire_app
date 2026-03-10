@@ -12,6 +12,10 @@ LAYER_SPECS: dict[str, dict[str, Any]] = {
     "fuel": {"display_name": "Fuel Model", "required_for": ["site_hazard", "home_ignition_vulnerability"]},
     "canopy": {"display_name": "Canopy Cover", "required_for": ["site_hazard", "home_ignition_vulnerability"]},
     "fire_perimeters": {"display_name": "Historical Fire Perimeters", "required_for": ["site_hazard", "insurance_readiness"]},
+    "building_footprints_overture": {
+        "display_name": "Overture Building Footprints",
+        "required_for": ["home_ignition_vulnerability", "insurance_readiness"],
+    },
     "building_footprints": {"display_name": "Building Footprints", "required_for": ["home_ignition_vulnerability", "insurance_readiness"]},
     "address_points": {"display_name": "Address/Parcel Points", "required_for": ["home_ignition_vulnerability"]},
     "parcels": {"display_name": "Parcel Polygons", "required_for": ["home_ignition_vulnerability"]},
@@ -24,7 +28,14 @@ LAYER_SPECS: dict[str, dict[str, Any]] = {
 }
 
 
-OPEN_DATA_KEYS = {"whp", "mtbs_severity", "gridmet_dryness", "roads", "fema_structures"}
+OPEN_DATA_KEYS = {
+    "whp",
+    "mtbs_severity",
+    "gridmet_dryness",
+    "roads",
+    "fema_structures",
+    "building_footprints_overture",
+}
 
 
 def _source_type_for_layer(layer_key: str, path: str, region_context: dict[str, Any]) -> str:
@@ -48,6 +59,7 @@ def initialize_layer_audit(runtime_paths: dict[str, str], region_context: dict[s
         "fuel": "fuel",
         "canopy": "canopy",
         "fire_perimeters": "perimeters",
+        "building_footprints_overture": "footprints_overture",
         "building_footprints": "footprints",
         "address_points": "address_points",
         "parcels": "parcels",

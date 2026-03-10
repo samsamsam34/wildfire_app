@@ -1354,6 +1354,9 @@ def _normalize_property_level_context(raw_context: object) -> dict[str, Any]:
             "structure_match_status": "none",
             "structure_match_method": None,
             "structure_match_confidence": 0.0,
+            "building_source": None,
+            "building_source_version": None,
+            "building_source_confidence": 0.0,
             "structure_match_distance_m": None,
             "candidate_structure_count": 0,
             "structure_match_candidates": [],
@@ -1391,6 +1394,9 @@ def _normalize_property_level_context(raw_context: object) -> dict[str, Any]:
         ),
     )
     normalized.setdefault("structure_match_confidence", float(normalized.get("footprint_confidence") or (0.9 if footprint_used else 0.0)))
+    normalized.setdefault("building_source", str(normalized.get("footprint_source_name") or "") or None)
+    normalized.setdefault("building_source_version", str(normalized.get("footprint_source_vintage") or "") or None)
+    normalized.setdefault("building_source_confidence", float(normalized.get("structure_match_confidence") or 0.0))
     normalized.setdefault("structure_match_distance_m", 0.0 if footprint_used else None)
     normalized.setdefault("candidate_structure_count", 1 if footprint_used else 0)
     candidates = normalized.get("structure_match_candidates")
@@ -3276,6 +3282,21 @@ def _run_assessment(
         structure_match_confidence=(
             float(property_level_context.get("structure_match_confidence"))
             if property_level_context.get("structure_match_confidence") is not None
+            else None
+        ),
+        building_source=(
+            str(property_level_context.get("building_source"))
+            if property_level_context.get("building_source")
+            else None
+        ),
+        building_source_version=(
+            str(property_level_context.get("building_source_version"))
+            if property_level_context.get("building_source_version")
+            else None
+        ),
+        building_source_confidence=(
+            float(property_level_context.get("building_source_confidence"))
+            if property_level_context.get("building_source_confidence") is not None
             else None
         ),
         structure_match_distance_m=(
@@ -5484,6 +5505,9 @@ def layer_diagnostics(payload: AddressRequest, ctx: ActorContext = Depends(get_a
             "structure_match_method": (debug_payload.get("property_level_context") or {}).get("structure_match_method"),
             "matched_structure_id": (debug_payload.get("property_level_context") or {}).get("matched_structure_id"),
             "structure_match_confidence": (debug_payload.get("property_level_context") or {}).get("structure_match_confidence"),
+            "building_source": (debug_payload.get("property_level_context") or {}).get("building_source"),
+            "building_source_version": (debug_payload.get("property_level_context") or {}).get("building_source_version"),
+            "building_source_confidence": (debug_payload.get("property_level_context") or {}).get("building_source_confidence"),
             "structure_match_distance_m": (debug_payload.get("property_level_context") or {}).get("structure_match_distance_m"),
             "candidate_structure_count": (debug_payload.get("property_level_context") or {}).get("candidate_structure_count"),
             "structure_match_candidates": (debug_payload.get("property_level_context") or {}).get("structure_match_candidates"),

@@ -181,12 +181,17 @@ class BuildingFootprintClient:
         for source_path in self.paths:
             if not self._file_exists(source_path):
                 continue
+            try:
+                source_rank = self.paths.index(source_path)
+            except ValueError:
+                source_rank = 999
             for row in self._load_features(source_path):
                 geom = self._primary_polygon(row["geometry"])
                 features.append(
                     {
                         "geometry": geom,
                         "source": source_path,
+                        "source_rank": source_rank,
                         "properties": dict(row.get("properties") or {}),
                         "structure_id": row.get("structure_id"),
                     }
@@ -277,7 +282,10 @@ class BuildingFootprintClient:
                 area_m2 = self._geom_area_m2(geom)
                 return self._residential_area_score(area_m2) + min(1.0, area_m2 / 10_000.0) * 0.05
 
-            ranked = sorted(containing, key=_contain_score, reverse=True)
+            ranked = sorted(
+                containing,
+                key=lambda row: (-_contain_score(row), int(row.get("source_rank", 999))),
+            )
             top_row = ranked[0]
             geom = top_row["geometry"]
             source = str(top_row.get("source") or self.path)
@@ -359,11 +367,13 @@ class BuildingFootprintClient:
                 + max(0.0, 1.0 - (centroid_distance / max(self.max_search_m, 1.0))) * 0.15
                 + area_score * 0.10
                 + (0.12 if parcel_overlap else 0.0)
+                + max(0.0, 0.06 - (0.015 * float(candidate.get("source_rank", 0))))
             )
             candidates.append(
                 {
                     "geom": candidate_geom,
                     "source": source,
+                    "source_rank": int(candidate.get("source_rank", 999)),
                     "structure_id": candidate.get("structure_id"),
                     "distance_m": distance,
                     "centroid_distance_m": centroid_distance,
@@ -401,10 +411,18 @@ class BuildingFootprintClient:
                     float(row.get("parcel_centroid_distance_m") or 0.0),
                     -float(row.get("footprint_area_m2") or 0.0),
                     float(row.get("distance_m") or 0.0),
+                    int(row.get("source_rank", 999)),
                 )
             )
         else:
-            candidates.sort(key=lambda row: (row["distance_m"], row["centroid_distance_m"], -row["score"]))
+            candidates.sort(
+                key=lambda row: (
+                    row["distance_m"],
+                    row["centroid_distance_m"],
+                    int(row.get("source_rank", 999)),
+                    -row["score"],
+                )
+            )
         top = candidates[0]
         top_distance = float(top["distance_m"])
         normalized_precision = str(anchor_precision or "unknown").strip().lower()

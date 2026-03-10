@@ -48,6 +48,7 @@ STANDARD_LAYER_FILENAMES = {
     "canopy": "canopy.tif",
     "fire_perimeters": "fire_perimeters.geojson",
     "building_footprints": "building_footprints.geojson",
+    "building_footprints_overture": "building_footprints_overture.geojson",
     "burn_probability": "burn_probability.tif",
     "wildfire_hazard": "wildfire_hazard.tif",
     "moisture": "moisture.tif",
@@ -74,6 +75,7 @@ LAYER_TYPES = {
     "gridmet_dryness": "raster",
     "fire_perimeters": "vector",
     "building_footprints": "vector",
+    "building_footprints_overture": "vector",
     "roads": "vector",
     "parcel_polygons": "vector",
     "parcel_address_points": "vector",
@@ -83,6 +85,7 @@ AUTOMATION_NOTES = {
     "dem": "Supports local file or URL source. Full source-catalog automation is deferred.",
     "fire_perimeters": "Supports local GeoJSON or URL source. Direct NIFC catalog sync is deferred.",
     "building_footprints": "Supports local GeoJSON or URL source. Direct Microsoft tile index sync is deferred.",
+    "building_footprints_overture": "Supports local file, URL, or configured bbox service. Preferred high-coverage global building source when available.",
     "fuel": "Supports local/URL source prep. Full LANDFIRE discovery/download automation is deferred.",
     "canopy": "Supports local/URL source prep. Full LANDFIRE discovery/download automation is deferred.",
     "roads": "Supports local file or URL source. Automated regional road extraction is optional.",
@@ -98,6 +101,7 @@ OPTIONAL_LAYER_KEYS = (
     "wildfire_hazard",
     "moisture",
     "aspect",
+    "building_footprints_overture",
     "roads",
     "whp",
     "mtbs_severity",
@@ -1614,6 +1618,15 @@ def prepare_region_layers(
             "max_lat": float(bounds["max_lat"]),
         },
         "files": files,
+        "building_sources": [
+            source
+            for source in (
+                "building_footprints_overture",
+                "building_footprints",
+                "fema_structures",
+            )
+            if source in files
+        ],
         "layers": layers_meta,
         "prepared_layers": prepared_layers,
         "attempted_layers": attempted_layers,

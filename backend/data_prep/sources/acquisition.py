@@ -734,7 +734,7 @@ def acquire_layer_from_config(
             require_return_geometry=require_return_geometry,
             preferred_response_format=preferred_response_format,
         )
-    elif provider_type in {"file_download", "vector_service"}:
+    elif provider_type in {"file_download", "vector_service", "overture_buildings"}:
         if not full_download_url:
             return None
         return AcquisitionResult(

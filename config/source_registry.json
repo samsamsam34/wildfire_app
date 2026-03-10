@@ -57,6 +57,19 @@
       "expected_output_format": "geojson",
       "notes": "Public USA structures feature-service default (fallback for building-footprint context)."
     },
+    "building_footprints_overture": {
+      "provider_type": "local_file",
+      "source_path": "${WF_DEFAULT_OVERTURE_BUILDINGS_PATH:-}",
+      "source_endpoint": "${WF_DEFAULT_OVERTURE_BUILDINGS_ENDPOINT:-}",
+      "source_url": "${WF_DEFAULT_OVERTURE_BUILDINGS_URL:-}",
+      "supports_bbox_export": true,
+      "allow_full_download_fallback": true,
+      "query_format": "json",
+      "supports_geojson_direct": false,
+      "require_return_geometry": true,
+      "expected_output_format": "geojson",
+      "notes": "Preferred Overture Maps building source. Use regional subsets (GeoJSON/FlatGeobuf converted to GeoJSON) or a bbox-capable service endpoint."
+    },
     "parcel_polygons": {
       "provider_type": "local_file",
       "source_path": "${WF_DEFAULT_PARCEL_POLYGONS_PATH:-}",

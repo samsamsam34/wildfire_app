@@ -747,7 +747,16 @@
               || feature?.properties?.distance_band_ft
               || layerKey;
             const source = feature?.properties?.source ? `<br>source: ${feature.properties.source}` : "";
-            layer.bindPopup(`${label}${source}`);
+            const buildingSource = feature?.properties?.building_source
+              ? `<br>building_source: ${feature.properties.building_source}`
+              : "";
+            const buildingId = feature?.properties?.matched_structure_id
+              ? `<br>building_id: ${feature.properties.matched_structure_id}`
+              : "";
+            const matchDistance = Number.isFinite(Number(feature?.properties?.match_distance_m))
+              ? `<br>match_distance_m: ${Number(feature.properties.match_distance_m).toFixed(2)}`
+              : "";
+            layer.bindPopup(`${label}${source}${buildingSource}${buildingId}${matchDistance}`);
           },
         });
       }

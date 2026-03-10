@@ -123,6 +123,7 @@ class WildfireDataClient:
             "gridmet_dryness": os.getenv("WF_LAYER_GRIDMET_DRYNESS_TIF", ""),
             "perimeters": os.getenv("WF_LAYER_FIRE_PERIMETERS_GEOJSON", ""),
             "mtbs_severity": os.getenv("WF_LAYER_MTBS_SEVERITY_TIF", ""),
+            "footprints_overture": os.getenv("WF_LAYER_BUILDING_FOOTPRINTS_OVERTURE_GEOJSON", ""),
             "footprints": os.getenv("WF_LAYER_BUILDING_FOOTPRINTS_GEOJSON", ""),
             "fema_structures": os.getenv("WF_LAYER_FEMA_STRUCTURES_GEOJSON", ""),
             "address_points": os.getenv("WF_LAYER_ADDRESS_POINTS_GEOJSON", ""),
@@ -175,6 +176,7 @@ class WildfireDataClient:
             configured_paths.get("fuel"),
             configured_paths.get("canopy"),
             configured_paths.get("perimeters"),
+            configured_paths.get("footprints_overture"),
             configured_paths.get("footprints"),
             configured_paths.get("address_points"),
             configured_paths.get("parcels"),
@@ -198,6 +200,7 @@ class WildfireDataClient:
             "region_id": None,
             "region_display_name": None,
             "manifest_path": None,
+            "building_sources": [],
         }
 
         region_manifest: dict[str, Any] | None = None
@@ -219,6 +222,7 @@ class WildfireDataClient:
                     "region_id": region_manifest.get("region_id"),
                     "region_display_name": region_manifest.get("display_name"),
                     "manifest_path": region_manifest.get("_manifest_path"),
+                    "building_sources": [],
                 }
                 sources.append(f"Prepared region: {region_manifest.get('region_id')}")
                 layer_key_map = {
@@ -234,6 +238,7 @@ class WildfireDataClient:
                     "gridmet_dryness": ("gridmet_dryness", "gridmet"),
                     "perimeters": ("fire_perimeters", "perimeters"),
                     "mtbs_severity": ("mtbs_severity", "burn_severity"),
+                    "footprints_overture": ("building_footprints_overture", "overture_buildings"),
                     "footprints": ("building_footprints", "footprints"),
                     "fema_structures": ("fema_structures",),
                     "address_points": ("address_points", "parcel_address_points"),
@@ -248,6 +253,11 @@ class WildfireDataClient:
                             break
                     if resolved:
                         runtime_paths[runtime_key] = resolved
+                configured_building_sources = region_manifest.get("building_sources")
+                if isinstance(configured_building_sources, list):
+                    region_context["building_sources"] = [str(v) for v in configured_building_sources if str(v).strip()]
+                else:
+                    region_context["building_sources"] = []
                 return runtime_paths, region_context, assumptions, sources
 
             region_context = {
@@ -255,6 +265,7 @@ class WildfireDataClient:
                 "region_id": region_manifest.get("region_id"),
                 "region_display_name": region_manifest.get("display_name"),
                 "manifest_path": region_manifest.get("_manifest_path"),
+                "building_sources": [],
             }
             assumptions.append("Prepared region manifest is missing required files for this area.")
             assumptions.extend([f"Region file validation: {reason}" for reason in missing[:5]])
@@ -267,6 +278,7 @@ class WildfireDataClient:
                     "region_id": None,
                     "region_display_name": None,
                     "manifest_path": None,
+                    "building_sources": [],
                 }
             sources.append("Legacy direct layer paths")
             return runtime_paths, region_context, assumptions, sources
@@ -281,10 +293,53 @@ class WildfireDataClient:
                 "region_id": None,
                 "region_display_name": None,
                 "manifest_path": None,
+                "building_sources": [],
             },
             assumptions,
             sources,
         )
+
+    @staticmethod
+    def _resolve_building_source_paths(
+        runtime_paths: dict[str, str],
+        region_context: dict[str, Any],
+    ) -> list[str]:
+        env_priority = str(
+            os.getenv(
+                "WF_BUILDING_SOURCE_PRIORITY",
+                "building_footprints_overture,building_footprints,fema_structures",
+            )
+        ).strip()
+        tokens = [token.strip().lower() for token in env_priority.split(",") if token.strip()]
+
+        configured = region_context.get("building_sources")
+        if isinstance(configured, list) and configured:
+            normalized = [str(v).strip().lower() for v in configured if str(v).strip()]
+            if normalized:
+                tokens = normalized
+
+        runtime_key_map = {
+            "building_footprints_overture": "footprints_overture",
+            "overture_buildings": "footprints_overture",
+            "building_footprints": "footprints",
+            "existing_building_dataset": "footprints",
+            "osm_buildings": "fema_structures",
+            "fema_structures": "fema_structures",
+        }
+
+        ordered: list[str] = []
+        for token in tokens:
+            runtime_key = runtime_key_map.get(token, token)
+            candidate = str(runtime_paths.get(runtime_key) or "").strip()
+            if candidate and candidate not in ordered:
+                ordered.append(candidate)
+
+        # Safety fallback if priority did not resolve.
+        for runtime_key in ("footprints_overture", "footprints", "fema_structures"):
+            candidate = str(runtime_paths.get(runtime_key) or "").strip()
+            if candidate and candidate not in ordered:
+                ordered.append(candidate)
+        return ordered
 
     @lru_cache(maxsize=16)
     def _open_raster(self, path: str):
@@ -494,6 +549,7 @@ class WildfireDataClient:
         *,
         canopy_path: str,
         fuel_path: str,
+        footprint_priority_paths: list[str] | None = None,
         footprint_path: str | None = None,
         fallback_footprint_path: str | None = None,
         parcel_polygon: Any | None = None,
@@ -502,7 +558,11 @@ class WildfireDataClient:
         assumptions: list[str] = []
         sources: list[str] = []
         footprint_client = self.footprints
-        source_paths = [p for p in [footprint_path, fallback_footprint_path] if p]
+        source_paths: list[str] = []
+        if isinstance(footprint_priority_paths, list):
+            source_paths = [str(p).strip() for p in footprint_priority_paths if str(p).strip()]
+        if not source_paths:
+            source_paths = [p for p in [footprint_path, fallback_footprint_path] if p]
         if source_paths:
             footprint_client = BuildingFootprintClient(path=source_paths[0], extra_paths=source_paths[1:])
 
@@ -1067,11 +1127,13 @@ class WildfireDataClient:
             ),
         )
 
+        building_source_paths = self._resolve_building_source_paths(runtime_paths, region_context)
         ring_context, ring_assumptions, ring_sources = self._compute_structure_ring_metrics(
             anchor.anchor_latitude,
             anchor.anchor_longitude,
             canopy_path=runtime_paths.get("canopy", ""),
             fuel_path=runtime_paths.get("fuel", ""),
+            footprint_priority_paths=building_source_paths,
             footprint_path=runtime_paths.get("footprints"),
             fallback_footprint_path=runtime_paths.get("fema_structures"),
             parcel_polygon=anchor.parcel_polygon,
@@ -1085,6 +1147,7 @@ class WildfireDataClient:
                 "region_id": region_context.get("region_id"),
                 "region_display_name": region_context.get("region_display_name"),
                 "region_manifest_path": region_context.get("manifest_path"),
+                "building_sources": list(region_context.get("building_sources") or []),
             }
         )
         display_point_source = str(property_level_context.get("display_point_source") or "property_anchor_point")
@@ -1116,7 +1179,63 @@ class WildfireDataClient:
         property_level_context["footprint_source_vintage"] = str(
             os.getenv("WF_FOOTPRINT_SOURCE_VINTAGE", "")
         ) or None
+        property_level_context["building_source"] = property_level_context.get("footprint_source_name")
+        selected_footprint_source = str(ring_context.get("footprint_source") or "").lower()
+        if "overture" in selected_footprint_source:
+            property_level_context["building_source_version"] = (
+                str(os.getenv("WF_OVERTURE_BUILDINGS_VERSION", "")).strip()
+                or property_level_context.get("footprint_source_vintage")
+            )
+        else:
+            property_level_context["building_source_version"] = property_level_context.get("footprint_source_vintage")
+        property_level_context["building_source_confidence"] = (
+            float(property_level_context.get("structure_match_confidence"))
+            if property_level_context.get("structure_match_confidence") is not None
+            else None
+        )
+        try:
+            alignment_warn_distance_m = float(
+                str(os.getenv("WF_STRUCTURE_ALIGNMENT_WARN_DISTANCE_M", "20.0")).strip() or "20.0"
+            )
+        except ValueError:
+            alignment_warn_distance_m = 20.0
+        property_level_context["structure_alignment_error_flag"] = bool(
+            property_level_context.get("structure_match_status") == "matched"
+            and (property_level_context.get("structure_match_distance_m") or 0.0) > alignment_warn_distance_m
+        )
+        if property_level_context["structure_alignment_error_flag"]:
+            property_level_context.setdefault("alignment_notes", [])
+            property_level_context["alignment_notes"].append(
+                "Matched structure is relatively far from the address anchor; verify building alignment."
+            )
         footprint_status = str(ring_context.get("footprint_status") or "not_found")
+        update_layer_audit(
+            layer_audit,
+            "building_footprints_overture",
+            sample_attempted=True,
+            sample_succeeded=bool(ring_context.get("footprint_used"))
+            and str(ring_context.get("footprint_source") or "").lower().find("overture") >= 0,
+            coverage_status=(
+                "observed"
+                if (
+                    bool(ring_context.get("footprint_used"))
+                    and str(ring_context.get("footprint_source") or "").lower().find("overture") >= 0
+                )
+                else (
+                    "not_configured"
+                    if not runtime_paths.get("footprints_overture")
+                    else "fallback_used"
+                )
+            ),
+            failure_reason=(
+                None
+                if (
+                    bool(ring_context.get("footprint_used"))
+                    and str(ring_context.get("footprint_source") or "").lower().find("overture") >= 0
+                )
+                else "Overture footprint source unavailable or not selected."
+            ),
+        )
         update_layer_audit(
             layer_audit,
             "building_footprints",

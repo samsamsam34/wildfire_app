@@ -192,8 +192,12 @@ Common runtime settings:
   - `WF_LAYER_GRIDMET_DRYNESS_TIF`
   - `WF_LAYER_OSM_ROADS_GEOJSON`
   - `WF_LAYER_FEMA_STRUCTURES_GEOJSON`
+  - `WF_LAYER_BUILDING_FOOTPRINTS_OVERTURE_GEOJSON`
   - `WF_LAYER_ADDRESS_POINTS_GEOJSON`
   - `WF_LAYER_PARCELS_GEOJSON`
+- Building-source selection:
+  - `WF_BUILDING_SOURCE_PRIORITY` (default: `building_footprints_overture,building_footprints,fema_structures`)
+  - `WF_OVERTURE_BUILDINGS_VERSION` (optional version tag shown in debug metadata)
 - `WILDFIRE_APP_CACHE_ROOT`, `WILDFIRE_APP_DATA_ROOT`, `WILDFIRE_APP_TMP_ROOT` (offline prep script paths)
 
 Legacy direct-layer paths are still supported via `WF_LAYER_*` env vars (`DEM`, `SLOPE`, `FUEL`, `CANOPY`, fire perimeters, building footprints, etc.), but prepared-region runtime is the primary path.
@@ -219,6 +223,8 @@ data/regions/<region_id>/
   canopy.tif
   fire_perimeters.geojson
   building_footprints.geojson
+  # optional primary building source
+  building_footprints_overture.geojson
   # optional enrichment layers
   whp.tif
   mtbs_severity.tif
@@ -226,6 +232,18 @@ data/regions/<region_id>/
   roads.geojson
   manifest.json
 ```
+
+Building footprint source workflow:
+- Preferred runtime matching order defaults to:
+  1. `building_footprints_overture`
+  2. `building_footprints`
+  3. `fema_structures` (fallback)
+- Region manifests now include `building_sources` so runtime can keep region-specific source priority.
+- Structure-match diagnostics include:
+  - `structure_match_method` (`parcel_intersection` or `nearest_building_fallback`)
+  - `matched_structure_id`
+  - `building_source`, `building_source_version`, `building_source_confidence`
+  - `structure_match_distance_m` (used to flag potential alignment issues)
 
 Offline prep/validation scripts:
 - Preferred (canonical): `scripts/prepare_region_from_catalog_or_sources.py` (plan/fill/build/validate in one command)

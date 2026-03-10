@@ -40,6 +40,7 @@ SUPPORTED_PROVIDER_TYPES = {
     "arcgis_feature_service",
     "file_download",
     "vector_service",
+    "overture_buildings",
     "local_file",
 }
 
@@ -71,6 +72,15 @@ LAYER_SOURCE_HINTS: dict[str, dict[str, Any]] = {
     "roads": {
         "layer_type": "vector",
         "env_vars": ["WF_DEFAULT_ROADS_ENDPOINT", "WF_DEFAULT_ROADS_FULL_URL"],
+        "registry_keys": ["source_endpoint", "source_url", "source_path"],
+    },
+    "building_footprints_overture": {
+        "layer_type": "vector",
+        "env_vars": [
+            "WF_DEFAULT_OVERTURE_BUILDINGS_ENDPOINT",
+            "WF_DEFAULT_OVERTURE_BUILDINGS_URL",
+            "WF_DEFAULT_OVERTURE_BUILDINGS_PATH",
+        ],
         "registry_keys": ["source_endpoint", "source_url", "source_path"],
     },
     "parcel_polygons": {
@@ -365,7 +375,7 @@ def _validate_layer_source_config(*, layer_key: str, layer_cfg: dict[str, Any]) 
     if provider_type in {"arcgis_image_service", "arcgis_feature_service"}:
         if not (has_local_path or has_endpoint or has_url):
             missing_required_fields.append("source_endpoint|source_url|source_path")
-    elif provider_type in {"file_download", "vector_service"}:
+    elif provider_type in {"file_download", "vector_service", "overture_buildings"}:
         if not (has_local_path or has_url):
             missing_required_fields.append("source_url|full_download_url|source_path")
     elif provider_type == "local_file":

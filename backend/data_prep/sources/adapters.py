@@ -177,6 +177,37 @@ class MicrosoftBuildingFootprintAdapter:
         return sorted(assets, key=lambda a: a.tile_id or "")
 
 
+class OvertureBuildingFootprintAdapter:
+    def __init__(self) -> None:
+        self.default_url = os.getenv("WF_OVERTURE_BUILDINGS_URL", "")
+        self.template = os.getenv("WF_OVERTURE_BUILDINGS_URL_TEMPLATE", "")
+
+    def resolve_sources(self, bbox: BoundingBox) -> list[SourceAsset]:
+        url = self.default_url
+        if not url and self.template:
+            url = self.template.format(
+                min_lon=bbox["min_lon"],
+                min_lat=bbox["min_lat"],
+                max_lon=bbox["max_lon"],
+                max_lat=bbox["max_lat"],
+                bbox=f"{bbox['min_lon']},{bbox['min_lat']},{bbox['max_lon']},{bbox['max_lat']}",
+            )
+        if not url:
+            return []
+        return [
+            SourceAsset(
+                url=url,
+                dataset_name="Overture Maps Global Buildings",
+                dataset_version=os.getenv("WF_OVERTURE_BUILDINGS_VERSION"),
+                dataset_provider="Overture Maps Foundation",
+                layer_key="building_footprints_overture",
+                layer_type="vector",
+                expected_format="geojson",
+                discovery_notes="Overture building subset source resolved from configured URL/template.",
+            )
+        ]
+
+
 class LANDFIREFuelAdapter:
     def resolve_sources(self, bbox: BoundingBox) -> list[SourceAsset]:
         return _resolve_landfire_layer(
@@ -238,6 +269,7 @@ def discover_wildfire_sources(bbox: BoundingBox) -> dict[str, list[SourceAsset]]
     adapters: list[SourceAdapter] = [
         USGS3DEPAdapter(),
         NIFCFirePerimeterAdapter(),
+        OvertureBuildingFootprintAdapter(),
         MicrosoftBuildingFootprintAdapter(),
         LANDFIREFuelAdapter(),
         LANDFIRECanopyAdapter(),

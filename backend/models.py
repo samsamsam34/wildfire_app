@@ -602,6 +602,9 @@ class AssessmentResult(BaseModel):
     structure_match_method: Optional[str] = None
     matched_structure_id: Optional[str] = None
     structure_match_confidence: Optional[float] = None
+    building_source: Optional[str] = None
+    building_source_version: Optional[str] = None
+    building_source_confidence: Optional[float] = None
     structure_match_distance_m: Optional[float] = None
     candidate_structure_count: Optional[int] = None
     site_hazard_eligibility: ScoreEligibility = Field(default_factory=ScoreEligibility)

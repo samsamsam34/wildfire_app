@@ -57,6 +57,7 @@ LAYER_TYPES: dict[str, str] = {
     "gridmet_dryness": "raster",
     "fire_perimeters": "vector",
     "building_footprints": "vector",
+    "building_footprints_overture": "vector",
     "roads": "vector",
     "parcel_polygons": "vector",
     "parcel_address_points": "vector",

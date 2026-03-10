@@ -213,3 +213,81 @@ def test_parcel_overlap_bias_prefers_structure_on_parcel(tmp_path: Path) -> None
     assert result.matched_structure_id == "on_parcel"
     assert result.confidence >= 0.9
     assert any("parcel" in note.lower() for note in result.assumptions)
+
+
+@pytest.mark.skipif(not _geo_ready(), reason="Building footprint matching tests require shapely")
+def test_structure_matching_prefers_overture_source_when_available(tmp_path: Path) -> None:
+    overture_path = _write_geojson(
+        tmp_path / "building_footprints_overture.geojson",
+        [
+            {
+                "type": "Feature",
+                "properties": {"id": "overture-home"},
+                "geometry": {
+                    "type": "Polygon",
+                    "coordinates": [[
+                        [-105.00016, 40.00012],
+                        [-104.99992, 40.00012],
+                        [-104.99992, 39.99990],
+                        [-105.00016, 39.99990],
+                        [-105.00016, 40.00012],
+                    ]],
+                },
+            }
+        ],
+    )
+    fallback_path = _write_geojson(
+        tmp_path / "building_footprints_fallback.geojson",
+        [
+            {
+                "type": "Feature",
+                "properties": {"id": "fallback-home"},
+                "geometry": {
+                    "type": "Polygon",
+                    "coordinates": [[
+                        [-105.00020, 40.00014],
+                        [-104.99990, 40.00014],
+                        [-104.99990, 39.99988],
+                        [-105.00020, 39.99988],
+                        [-105.00020, 40.00014],
+                    ]],
+                },
+            }
+        ],
+    )
+    client = BuildingFootprintClient(path=overture_path, extra_paths=[fallback_path], max_search_m=90.0)
+    result = client.get_building_footprint(lat=40.0, lon=-105.0, anchor_precision="parcel_or_address_point")
+
+    assert result.found is True
+    assert result.source is not None and "overture" in result.source
+    assert result.matched_structure_id == "overture-home"
+
+
+@pytest.mark.skipif(not _geo_ready(), reason="Building footprint matching tests require shapely")
+def test_structure_matching_falls_back_when_overture_source_missing(tmp_path: Path) -> None:
+    missing_overture = str(tmp_path / "building_footprints_overture.geojson")
+    fallback_path = _write_geojson(
+        tmp_path / "building_footprints_fallback.geojson",
+        [
+            {
+                "type": "Feature",
+                "properties": {"id": "fallback-home"},
+                "geometry": {
+                    "type": "Polygon",
+                    "coordinates": [[
+                        [-105.00018, 40.00010],
+                        [-104.99990, 40.00010],
+                        [-104.99990, 39.99988],
+                        [-105.00018, 39.99988],
+                        [-105.00018, 40.00010],
+                    ]],
+                },
+            }
+        ],
+    )
+    client = BuildingFootprintClient(path=missing_overture, extra_paths=[fallback_path], max_search_m=90.0)
+    result = client.get_building_footprint(lat=40.0, lon=-105.0, anchor_precision="parcel_or_address_point")
+
+    assert result.found is True
+    assert result.source is not None and "fallback" in result.source
+    assert result.matched_structure_id == "fallback-home"
