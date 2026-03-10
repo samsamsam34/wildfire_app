@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import math
+import os
 from pathlib import Path
 from typing import Any
 
@@ -144,6 +146,97 @@ def _filter_features_to_bbox(
             break
 
     return kept
+
+
+def _extract_structure_id(properties: dict[str, Any]) -> str | None:
+    for key in ("structure_id", "building_id", "id", "objectid", "OBJECTID", "globalid", "GlobalID", "fid", "FID"):
+        value = properties.get(key)
+        if value is not None and str(value).strip():
+            return str(value).strip()
+    return None
+
+
+def _stable_structure_id(*, geometry: dict[str, Any], fallback_prefix: str, index: int) -> str:
+    serialized = json.dumps(geometry, sort_keys=True, separators=(",", ":"))
+    digest = hashlib.sha1(serialized.encode("utf-8")).hexdigest()[:12]
+    return f"{fallback_prefix}_{index}_{digest}"
+
+
+def _prepare_selectable_structure_features(
+    features: list[dict[str, Any]],
+    *,
+    anchor_lat: float,
+    anchor_lon: float,
+    max_features: int = 80,
+) -> list[dict[str, Any]]:
+    if not features:
+        return []
+
+    parsed: list[tuple[float, dict[str, Any]]] = []
+    use_distance = _geo_ready()
+    to_3857 = Transformer.from_crs("EPSG:4326", "EPSG:3857", always_xy=True).transform if use_distance else None
+    anchor_point_m = None
+    if use_distance and to_3857 is not None:
+        try:
+            anchor_point_m = shapely_transform(to_3857, Point(anchor_lon, anchor_lat))
+        except Exception:
+            use_distance = False
+
+    for idx, feature in enumerate(features, start=1):
+        geometry = feature.get("geometry")
+        if not isinstance(geometry, dict):
+            continue
+        props = dict(feature.get("properties") or {})
+
+        structure_id = _extract_structure_id(props)
+        distance_m: float | None = None
+        centroid_lon: float | None = None
+        centroid_lat: float | None = None
+
+        if use_distance and to_3857 is not None and anchor_point_m is not None:
+            try:
+                geom_shape = shape(geometry)
+                geom_m = shapely_transform(to_3857, geom_shape)
+                centroid = geom_shape.centroid
+                centroid_lon = float(centroid.x)
+                centroid_lat = float(centroid.y)
+                distance_m = float(max(0.0, geom_m.distance(anchor_point_m)))
+            except Exception:
+                distance_m = None
+
+        if not structure_id:
+            structure_id = _stable_structure_id(
+                geometry=geometry,
+                fallback_prefix="candidate_structure",
+                index=idx,
+            )
+
+        props.setdefault("structure_id", structure_id)
+        props.setdefault("building_id", structure_id)
+        if distance_m is not None:
+            props["distance_m"] = round(distance_m, 2)
+        if centroid_lon is not None and centroid_lat is not None:
+            props.setdefault("centroid_longitude", round(centroid_lon, 7))
+            props.setdefault("centroid_latitude", round(centroid_lat, 7))
+
+        parsed.append(
+            (
+                float(distance_m) if distance_m is not None else 1e9,
+                {
+                    "type": "Feature",
+                    "properties": props,
+                    "geometry": geometry,
+                },
+            )
+        )
+
+    parsed.sort(key=lambda row: row[0])
+    selected = [row[1] for row in parsed[: max(1, max_features)]]
+    for rank, feature in enumerate(selected, start=1):
+        feature_props = feature.get("properties")
+        if isinstance(feature_props, dict):
+            feature_props["candidate_rank"] = rank
+    return selected
 
 
 def _resolve_region_manifest_for_result(result: AssessmentResult, region_data_dir: str | None) -> dict[str, Any] | None:
@@ -834,17 +927,28 @@ def build_assessment_map_payload(
     )
 
     nearby_structures: list[dict[str, Any]] = []
+    selectable_structures: list[dict[str, Any]] = []
+    candidate_limit_raw = str(os.getenv("WF_SELECTABLE_STRUCTURE_MAX_CANDIDATES", "80")).strip()
+    try:
+        candidate_limit = max(10, min(200, int(candidate_limit_raw)))
+    except ValueError:
+        candidate_limit = 80
     if footprint_paths:
         nearby_structures = _filter_features_to_bbox(
             _load_geojson_features(footprint_paths[0]),
             bbox_bounds=_viewport_bbox(anchor_lat, anchor_lon, radius_m=800.0),
-            max_features=250,
+            max_features=max(candidate_limit * 2, 80),
             clip=False,
+        )
+        selectable_structures = _prepare_selectable_structure_features(
+            nearby_structures,
+            anchor_lat=anchor_lat,
+            anchor_lon=anchor_lon,
+            max_features=candidate_limit,
         )
 
     if nearby_structures:
         data["nearby_structures"] = _feature_collection(nearby_structures)
-        data["selectable_structure_footprints"] = _feature_collection(nearby_structures)
     layers.append(
         AssessmentMapLayer(
             layer_key="nearby_structures",
@@ -858,21 +962,36 @@ def build_assessment_map_payload(
             reason_unavailable=None if nearby_structures else "No nearby structures were available in configured footprint data.",
         )
     )
+
+    if not selectable_structures and footprint_features:
+        selectable_structures = _prepare_selectable_structure_features(
+            footprint_features,
+            anchor_lat=anchor_lat,
+            anchor_lon=anchor_lon,
+            max_features=1,
+        )
+
+    if selectable_structures:
+        data["selectable_structure_footprints"] = _feature_collection(selectable_structures)
     layers.append(
         AssessmentMapLayer(
             layer_key="selectable_structure_footprints",
             display_name="Selectable Structures",
-            available=bool(nearby_structures),
+            available=bool(selectable_structures),
             default_visible=False,
             description="Nearby structure footprints available for manual home selection.",
             legend_label="Selectable structure footprints",
             geometry_type="polygon",
-            feature_count=len(nearby_structures),
+            feature_count=len(selectable_structures),
             reason_unavailable=(
-                None if nearby_structures else "No selectable structure footprints were available near this location."
+                None if selectable_structures else "No selectable structure footprints were available near this location."
             ),
         )
     )
+    if not selectable_structures:
+        limitations.append(
+            "No interactive selectable building polygons are available at this location; basemap building outlines are not clickable."
+        )
 
     # Include defensible-space analysis limitation notes if present.
     for note in list(result.defensible_space_limitations_summary or [])[:4]:
@@ -960,8 +1079,10 @@ def build_assessment_map_payload(
                 "confidence": structure_match_confidence,
                 "distance_m": structure_match_distance_m,
                 "candidate_count": candidate_structure_count,
+                "selectable_candidate_count": len(selectable_structures),
                 "max_match_distance_m": max_match_distance_m,
                 "ambiguity_gap_m": ambiguity_gap_m,
+                "interactive_layer_loaded": bool(selectable_structures),
                 "candidate_summaries": structure_match_candidates[:6] if structure_match_candidates else [],
                 "footprint_source_name": footprint_source_name,
                 "footprint_source_vintage": footprint_source_vintage,

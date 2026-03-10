@@ -298,7 +298,7 @@
         <div id="mapLayerToggles" class="map-toggles"></div>
         <p id="mapLimitationsText" class="muted" style="margin-top:0.5rem;">Map limitations will appear here when needed.</p>
         <div id="homeConfirmPanel" class="map-confirm" style="display:none;">
-          <p id="homeConfirmPrompt" class="muted">We detected this building as your home. Is this correct?</p>
+          <p id="homeConfirmPrompt" class="muted">We detected this building as your home. Is this correct? Click one of the highlighted building polygons to select your home.</p>
           <div class="actions">
             <button id="confirmHomeYesBtn" type="button">Yes — Continue</button>
             <button id="confirmHomeSelectBtn" type="button" class="secondary">No — Select My Home</button>
@@ -581,6 +581,11 @@
             maxZoom: 19,
           });
           mapBaseLayer.addTo(assessmentMap);
+          if (!assessmentMap.getPane("selectableStructuresPane")) {
+            const pane = assessmentMap.createPane("selectableStructuresPane");
+            pane.style.zIndex = "650";
+            pane.style.pointerEvents = "auto";
+          }
         }
         if (center && Number.isFinite(center.latitude) && Number.isFinite(center.longitude)) {
           assessmentMap.setView([center.latitude, center.longitude], 16);
@@ -640,6 +645,9 @@
             if (!assessmentMap || !mapLayer) return;
             if (input.checked) {
               mapLayer.addTo(assessmentMap);
+              if (layerKey === "selectable_structure_footprints" && mapLayer.bringToFront) {
+                mapLayer.bringToFront();
+              }
             } else if (assessmentMap.hasLayer(mapLayer)) {
               assessmentMap.removeLayer(mapLayer);
             }
@@ -726,8 +734,15 @@
         yesBtn.disabled = false;
         selectBtn.disabled = false;
 
+        const selectableLayer = Array.isArray(latestMapPayload?.layers)
+          ? latestMapPayload.layers.find(layer => layer?.layer_key === "selectable_structure_footprints")
+          : null;
+        const selectableAvailable = !!(selectableLayer && selectableLayer.available);
+
         if (homeSelectionMode) {
-          statusEl.textContent = status || "Selection mode is on. Click a building polygon in “Selectable Structures”.";
+          statusEl.textContent = status || "Selection mode is on. Click one of the highlighted building polygons to select your home.";
+        } else if (!selectableAvailable) {
+          statusEl.textContent = status || "No selectable building polygons are available for this location. Basemap outlines are not clickable.";
         } else if (selectedStructureOverride?.id) {
           statusEl.textContent = status || `Using user-selected structure (${selectedStructureOverride.id}).`;
         } else {
@@ -771,6 +786,8 @@
         const candidateStructureCount = payload?.candidate_structure_count ?? payload?.metadata?.structure_match?.candidate_count;
         const maxMatchDistanceM = payload?.metadata?.structure_match?.max_match_distance_m;
         const ambiguityGapM = payload?.metadata?.structure_match?.ambiguity_gap_m;
+        const selectableCandidateCount = payload?.metadata?.structure_match?.selectable_candidate_count;
+        const interactiveLayerLoaded = payload?.metadata?.structure_match?.interactive_layer_loaded;
         const footprintSourceName = payload?.metadata?.structure_match?.footprint_source_name || "unknown";
         const footprintSourceVintage = payload?.metadata?.structure_match?.footprint_source_vintage || "unknown";
         const parcelSourceName = payload?.metadata?.property_anchor?.parcel_source_name || "unknown";
@@ -814,6 +831,9 @@
           `structure_match_confidence: ${Number.isFinite(Number(structureMatchConfidence)) ? Number(structureMatchConfidence).toFixed(2) : "n/a"}`,
           `structure_match_distance_m: ${Number.isFinite(Number(structureMatchDistanceM)) ? Number(structureMatchDistanceM).toFixed(2) : "n/a"}`,
           `candidate_structure_count: ${Number.isFinite(Number(candidateStructureCount)) ? Number(candidateStructureCount) : "n/a"}`,
+          `selectable_candidate_count: ${Number.isFinite(Number(selectableCandidateCount)) ? Number(selectableCandidateCount) : "n/a"}`,
+          `interactive_layer_loaded: ${interactiveLayerLoaded === true ? "true" : "false"}`,
+          `selected_structure_id: ${selectedStructureId || "n/a"}`,
           `match_thresholds_m: max=${Number.isFinite(Number(maxMatchDistanceM)) ? Number(maxMatchDistanceM).toFixed(1) : "n/a"}, ambiguity_gap=${Number.isFinite(Number(ambiguityGapM)) ? Number(ambiguityGapM).toFixed(1) : "n/a"}`,
           `footprint_source: ${footprintSourceName} (vintage=${footprintSourceVintage})`,
           `parcel_source: ${parcelSourceName} (vintage=${parcelSourceVintage})`,
@@ -857,6 +877,7 @@
         }
         if (layerKey === "selectable_structure_footprints") {
           return L.geoJSON(fc, {
+            pane: "selectableStructuresPane",
             style: (feature) => {
               const styleDef = geoJsonStyle(layerKey);
               return typeof styleDef === "function" ? styleDef(feature) : styleDef;
@@ -894,10 +915,10 @@
                   },
                   source: "user_selected",
                 };
-                setHomeConfirmationState({
-                  mode: "confirm",
-                  status: `Selected structure ${structureId}. Updating assessment...`,
-                });
+                  setHomeConfirmationState({
+                    mode: "confirm",
+                    status: `Selected structure ${structureId}. Updating assessment...`,
+                  });
                 try {
                   await runAssessment(false);
                 } catch (_err) {
@@ -1565,6 +1586,9 @@
         const layer = mapLayerInstances[layerKey];
         if (assessmentMap && layer && !assessmentMap.hasLayer(layer)) {
           layer.addTo(assessmentMap);
+          if (layerKey === "selectable_structure_footprints" && layer.bringToFront) {
+            layer.bringToFront();
+          }
         }
         const toggle = document.querySelector(`#mapLayerToggles input[data-layer-key="${layerKey}"]`);
         if (toggle) toggle.checked = true;
@@ -1591,10 +1615,20 @@
       }
 
       function startManualStructureSelection() {
+        const selectableLayer = Array.isArray(latestMapPayload?.layers)
+          ? latestMapPayload.layers.find(layer => layer?.layer_key === "selectable_structure_footprints")
+          : null;
+        if (!selectableLayer || !selectableLayer.available) {
+          setHomeConfirmationState({
+            mode: "confirm",
+            status: "No selectable building polygons are available for this location. Basemap outlines are not clickable.",
+          });
+          return;
+        }
         ensureMapLayerVisible("selectable_structure_footprints");
         setHomeConfirmationState({
           mode: "select",
-          status: "Selection mode enabled. Click a building polygon to choose your home.",
+          status: "Selection mode enabled. Click one of the highlighted building polygons to select your home.",
         });
       }
 

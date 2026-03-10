@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 
 import backend.auth as auth
 import backend.main as app_main
-from backend.assessment_map import _geo_ready
+from backend.assessment_map import _geo_ready, _prepare_selectable_structure_features
 from backend.database import AssessmentStore
 from backend.wildfire_data import WildfireContext
 
@@ -20,6 +20,53 @@ except Exception:  # pragma: no cover - optional in constrained environments
 
 
 client = TestClient(app_main.app)
+
+
+def test_prepare_selectable_structure_features_assigns_stable_ids() -> None:
+    features = [
+        {
+            "type": "Feature",
+            "properties": {"name": "A"},
+            "geometry": {
+                "type": "Polygon",
+                "coordinates": [[
+                    [-113.9942, 46.8720],
+                    [-113.9938, 46.8720],
+                    [-113.9938, 46.8723],
+                    [-113.9942, 46.8723],
+                    [-113.9942, 46.8720],
+                ]],
+            },
+        },
+        {
+            "type": "Feature",
+            "properties": {"OBJECTID": 12},
+            "geometry": {
+                "type": "Polygon",
+                "coordinates": [[
+                    [-113.9930, 46.8720],
+                    [-113.9927, 46.8720],
+                    [-113.9927, 46.8722],
+                    [-113.9930, 46.8722],
+                    [-113.9930, 46.8720],
+                ]],
+            },
+        },
+    ]
+    selected = _prepare_selectable_structure_features(
+        features,
+        anchor_lat=46.8721,
+        anchor_lon=-113.9940,
+        max_features=10,
+    )
+    assert len(selected) == 2
+    ids = [row.get("properties", {}).get("structure_id") for row in selected]
+    assert all(ids)
+    assert len(set(ids)) == len(ids)
+    for row in selected:
+        props = row.get("properties") or {}
+        assert props.get("building_id")
+        assert props.get("candidate_rank")
 
 
 def _ctx() -> WildfireContext:
@@ -196,6 +243,20 @@ def test_map_endpoint_returns_point_footprint_rings_and_overlays(monkeypatch, tm
     }.issubset(layer_keys)
 
     assert payload["data"].get("defensible_space_rings", {}).get("features")
+    selectable_fc = payload["data"].get("selectable_structure_footprints", {})
+    selectable_features = selectable_fc.get("features", [])
+    assert isinstance(selectable_features, list)
+    assert len(selectable_features) >= 1
+    for feature in selectable_features:
+        assert feature.get("geometry", {}).get("type") in {"Polygon", "MultiPolygon"}
+        props = feature.get("properties") or {}
+        assert props.get("structure_id")
+        assert props.get("building_id")
+
+    structure_meta = (payload.get("metadata") or {}).get("structure_match") or {}
+    assert "selectable_candidate_count" in structure_meta
+    assert structure_meta["selectable_candidate_count"] >= 1
+    assert "interactive_layer_loaded" in structure_meta
 
     geocode_coords = payload["geocoded_address_point"]["geometry"]["coordinates"]
     assert geocode_coords[0] == pytest.approx(-113.9940)

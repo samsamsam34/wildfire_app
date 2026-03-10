@@ -91,11 +91,27 @@ def test_frontend_includes_assessment_map_panel_and_layer_controls() -> None:
 def test_frontend_includes_home_confirmation_step_and_selection_payload_fields() -> None:
     html = _frontend_html()
     assert "We detected this building as your home. Is this correct?" in html
+    assert "Click one of the highlighted building polygons to select your home." in html
     assert "Yes — Continue" in html
     assert "No — Select My Home" in html
     assert "structure_geometry_source" in html
     assert "selected_structure_id" in html
     assert "selected_structure_geometry" in html
+    assert "No selectable building polygons are available for this location. Basemap outlines are not clickable." in html
+    assert 'createPane("selectableStructuresPane")' in html
+    assert 'pane: "selectableStructuresPane"' in html
+    assert "interactive_layer_loaded" in html
+
+
+def test_frontend_selectable_structure_layer_has_click_and_selection_logic() -> None:
+    html = _frontend_html()
+    assert 'layerKey === "selectable_structure_footprints"' in html
+    assert "const isSelected = !!selectedStructureId" in html
+    assert 'layer.on("click", async () => {' in html
+    assert "selectedStructureId = structureId;" in html
+    assert 'source: "user_selected"' in html
+    assert "await runAssessment(false);" in html
+    assert "Selection mode is on. Click one of the highlighted building polygons to select your home." in html
 
 
 def test_frontend_map_degrades_gracefully_for_uncovered_or_geocode_failure() -> None:
