@@ -279,6 +279,10 @@ def _scenario_snapshot(
             "site_hazard_score": result.site_hazard_score,
             "home_ignition_vulnerability_score": result.home_ignition_vulnerability_score,
             "insurance_readiness_score": result.insurance_readiness_score,
+            "calibrated_damage_likelihood": result.calibrated_damage_likelihood,
+            "empirical_damage_likelihood_proxy": result.empirical_damage_likelihood_proxy,
+            "calibration_applied": result.calibration_applied,
+            "calibration_status": result.calibration_status,
             "wildfire_risk_score_available": result.wildfire_risk_score_available,
             "site_hazard_score_available": result.site_hazard_score_available,
             "home_ignition_vulnerability_score_available": result.home_ignition_vulnerability_score_available,
@@ -305,6 +309,12 @@ def _scenario_snapshot(
             "coverage": debug_payload.get("coverage", {}),
         },
         "governance": governance,
+        "calibration": {
+            "calibration_version": result.calibration_version,
+            "calibration_method": result.calibration_method,
+            "calibration_limitations": list(result.calibration_limitations or []),
+            "calibration_scope_warning": result.calibration_scope_warning,
+        },
     }
 
 

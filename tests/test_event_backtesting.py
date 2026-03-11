@@ -176,6 +176,9 @@ def test_run_event_backtest_generates_artifacts_and_governance(tmp_path: Path):
     assert "false_low_count" in artifact["analysis"]
     assert "false_high_count" in artifact["analysis"]
     assert "recommendations" in artifact["analysis"]
+    assert "raw_feature_vector" in artifact["records"][0]
+    assert "transformed_feature_vector" in artifact["records"][0]
+    assert "factor_contribution_breakdown" in artifact["records"][0]
 
 
 def test_false_low_false_high_extraction_present(tmp_path: Path):

@@ -100,4 +100,36 @@ def test_assessment_includes_optional_calibration_fields(monkeypatch, tmp_path):
     assert body["calibration_applied"] is True
     assert body["calibration_method"] == "logistic"
     assert body["calibrated_damage_likelihood"] is not None
+    assert body["empirical_damage_likelihood_proxy"] == body["calibrated_damage_likelihood"]
+    assert body["empirical_loss_likelihood_proxy"] == body["calibrated_damage_likelihood"]
+    assert body["calibration_status"] == "applied"
 
+
+def test_assessment_without_calibration_artifact_stays_backward_compatible(monkeypatch, tmp_path):
+    auth.API_KEYS = set()
+    monkeypatch.setattr(app_main.geocoder, "geocode", lambda _: (46.87, -113.99, "test-geocoder"))
+    monkeypatch.setattr(app_main.wildfire_data, "collect_context", lambda *_args, **_kwargs: _context())
+    monkeypatch.setattr(app_main, "store", AssessmentStore(str(tmp_path / "assessment_calibration_none.db")))
+    monkeypatch.delenv("WF_PUBLIC_CALIBRATION_ARTIFACT", raising=False)
+
+    response = client.post(
+        "/risk/assess",
+        json={
+            "address": "124 Calibration Ln, Missoula, MT",
+            "attributes": {
+                "roof_type": "class a",
+                "vent_type": "ember-resistant",
+                "defensible_space_ft": 25,
+                "construction_year": 2016,
+            },
+            "confirmed_fields": ["roof_type", "vent_type", "defensible_space_ft", "construction_year"],
+            "audience": "homeowner",
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["calibration_applied"] is False
+    assert body["calibrated_damage_likelihood"] is None
+    assert body["empirical_damage_likelihood_proxy"] is None
+    assert body["empirical_loss_likelihood_proxy"] is None
+    assert body["calibration_status"] == "disabled_no_artifact"

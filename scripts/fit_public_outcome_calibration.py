@@ -101,8 +101,14 @@ def fit_calibration(*, dataset_path: Path, output_path: Path) -> dict[str, Any]:
     for row in rows:
         if not isinstance(row, dict):
             continue
+        # Support both legacy flat rows and newer nested calibration dataset rows.
+        row_scores = row.get("scores") if isinstance(row.get("scores"), dict) else {}
         score = _to_float(row.get("wildfire_risk_score"))
+        if score is None:
+            score = _to_float(row_scores.get("wildfire_risk_score"))
         label = _to_float(row.get("adverse"))
+        if label is None:
+            label = _to_float(row.get("structure_loss_or_major_damage"))
         if score is None or label is None:
             continue
         scores.append(float(score))

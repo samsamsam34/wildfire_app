@@ -22,7 +22,7 @@ from backend.assessment_map import build_assessment_map_payload
 from backend.benchmarking import (
     build_benchmark_hints_for_assessment,
 )
-from backend.calibration import apply_public_calibration
+from backend.calibration import resolve_public_calibration
 from backend.defensible_space import (
     build_defensible_space_analysis,
     build_prioritized_vegetation_actions,
@@ -3425,8 +3425,9 @@ def _run_assessment(
     insurance_readiness_score = score_outputs["insurance_readiness_score"]
     blended_wildfire_risk_score = score_outputs["wildfire_risk_score"]
     legacy_weighted_wildfire_risk_score = score_outputs["legacy_weighted_wildfire_risk_score"]
-    calibration_payload = apply_public_calibration(
+    calibration_payload = resolve_public_calibration(
         raw_wildfire_score=blended_wildfire_risk_score,
+        resolved_region_id=region_resolution.resolved_region_id,
     )
     fallback_decisions = _build_fallback_decisions(
         attribute_fallbacks=attribute_fallbacks,
@@ -3609,11 +3610,15 @@ def _run_assessment(
         )
     if assessment_blockers:
         scoring_notes.append("Assessment blockers: " + ", ".join(assessment_blockers[:6]) + ".")
-    if calibration_payload and calibration_payload.get("calibration_applied"):
+    if calibration_payload.get("calibration_applied"):
         scoring_notes.append(
             "Public-outcome calibration applied to produce calibrated damage-likelihood guidance."
         )
         property_level_context["calibration"] = calibration_payload
+    elif calibration_payload.get("calibration_status") == "out_of_scope":
+        warning = str(calibration_payload.get("scope_warning") or "").strip()
+        if warning:
+            scoring_notes.append(f"Calibration out of scope: {warning}")
 
     def _score_phrase(label: str, value: float | None) -> str:
         return f"{label}: {value:.1f}/100" if value is not None else f"{label}: not computed"
@@ -3698,13 +3703,32 @@ def _run_assessment(
         insurance_readiness_score=insurance_readiness_score,
         calibrated_damage_likelihood=(
             float(calibration_payload.get("calibrated_damage_likelihood"))
-            if calibration_payload and calibration_payload.get("calibrated_damage_likelihood") is not None
+            if calibration_payload.get("calibrated_damage_likelihood") is not None
             else None
         ),
-        calibration_applied=bool(calibration_payload and calibration_payload.get("calibration_applied")),
+        empirical_damage_likelihood_proxy=(
+            float(calibration_payload.get("empirical_damage_likelihood_proxy"))
+            if calibration_payload.get("empirical_damage_likelihood_proxy") is not None
+            else None
+        ),
+        empirical_loss_likelihood_proxy=(
+            float(calibration_payload.get("empirical_loss_likelihood_proxy"))
+            if calibration_payload.get("empirical_loss_likelihood_proxy") is not None
+            else None
+        ),
+        calibration_applied=bool(calibration_payload.get("calibration_applied")),
         calibration_method=(
             str(calibration_payload.get("calibration_method"))
-            if calibration_payload and calibration_payload.get("calibration_method")
+            if calibration_payload.get("calibration_method")
+            else None
+        ),
+        calibration_status=str(calibration_payload.get("calibration_status") or "disabled"),
+        calibration_limitations=[
+            str(item) for item in (calibration_payload.get("calibration_limitations") or []) if str(item).strip()
+        ],
+        calibration_scope_warning=(
+            str(calibration_payload.get("scope_warning"))
+            if calibration_payload.get("scope_warning")
             else None
         ),
         wildfire_risk_score_available=bool(score_outputs["wildfire_risk_score_available"]),
@@ -3968,8 +3992,11 @@ def _run_assessment(
             "insurance_readiness_score": result.insurance_readiness_score,
             "insurance_readiness_score_available": result.insurance_readiness_score_available,
             "calibrated_damage_likelihood": result.calibrated_damage_likelihood,
+            "empirical_damage_likelihood_proxy": result.empirical_damage_likelihood_proxy,
+            "empirical_loss_likelihood_proxy": result.empirical_loss_likelihood_proxy,
             "calibration_applied": result.calibration_applied,
             "calibration_method": result.calibration_method,
+            "calibration_status": result.calibration_status,
         },
         "normalized_property_facts": _attributes_to_dict(scoring_attrs),
         "normalization_changes": normalization_changes,
@@ -3998,7 +4025,15 @@ def _run_assessment(
         },
         "layer_coverage_audit": [row.model_dump() for row in result.layer_coverage_audit],
         "coverage_summary": result.coverage_summary.model_dump(),
-        "calibration": calibration_payload or {"calibration_applied": False},
+        "calibration": {
+            **calibration_payload,
+            "top_calibration_drivers": top_risk_drivers[:3],
+            "calibration_warning": (
+                calibration_payload.get("scope_warning")
+                if calibration_payload.get("calibration_status") == "out_of_scope"
+                else None
+            ),
+        },
         "raw_feature_vector": score_variance_diagnostics.get("raw_feature_vector", {}),
         "transformed_feature_vector": score_variance_diagnostics.get("transformed_feature_vector", {}),
         "factor_contribution_breakdown": score_variance_diagnostics.get("factor_contribution_breakdown", {}),

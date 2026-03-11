@@ -531,7 +531,9 @@ def _record_snapshot(
     result: AssessmentResult,
     *,
     dataset_id: str,
+    debug_payload: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    debug_payload = debug_payload or {}
     governance = (
         result.model_governance.model_dump()
         if result.model_governance
@@ -587,6 +589,41 @@ def _record_snapshot(
             },
         },
         "scoring_notes": list(result.scoring_notes or []),
+        "raw_feature_vector": (
+            debug_payload.get("raw_feature_vector")
+            if isinstance(debug_payload.get("raw_feature_vector"), dict)
+            else {}
+        ),
+        "transformed_feature_vector": (
+            debug_payload.get("transformed_feature_vector")
+            if isinstance(debug_payload.get("transformed_feature_vector"), dict)
+            else {}
+        ),
+        "factor_contribution_breakdown": (
+            debug_payload.get("factor_contribution_breakdown")
+            if isinstance(debug_payload.get("factor_contribution_breakdown"), dict)
+            else {}
+        ),
+        "compression_flags": (
+            debug_payload.get("compression_flags")
+            if isinstance(debug_payload.get("compression_flags"), list)
+            else []
+        ),
+        "score_variance_diagnostics": (
+            debug_payload.get("score_variance_diagnostics")
+            if isinstance(debug_payload.get("score_variance_diagnostics"), dict)
+            else {}
+        ),
+        "calibration": (
+            debug_payload.get("calibration")
+            if isinstance(debug_payload.get("calibration"), dict)
+            else {}
+        ),
+        "property_level_context": (
+            debug_payload.get("property_level_context")
+            if isinstance(debug_payload.get("property_level_context"), dict)
+            else {}
+        ),
         "model_governance": governance,
     }
 
@@ -623,12 +660,12 @@ def _run_record_assessment(
         geocode_source=record.geocode_source,
         context=context,
     ):
-        result, _debug_payload = app_main._run_assessment(
+        result, debug_payload = app_main._run_assessment(
             payload,
             organization_id=record.organization_id,
             ruleset=resolved_ruleset,
         )
-    return _record_snapshot(record, result, dataset_id="")
+    return _record_snapshot(record, result, dataset_id="", debug_payload=debug_payload)
 
 
 def _build_markdown_summary(artifact: dict[str, Any]) -> str:

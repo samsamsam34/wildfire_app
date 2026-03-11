@@ -689,8 +689,13 @@ class AssessmentResult(BaseModel):
     home_ignition_vulnerability_score: Optional[float] = None
     insurance_readiness_score: Optional[float] = None
     calibrated_damage_likelihood: Optional[float] = None
+    empirical_damage_likelihood_proxy: Optional[float] = None
+    empirical_loss_likelihood_proxy: Optional[float] = None
     calibration_applied: bool = False
     calibration_method: Optional[str] = None
+    calibration_status: str = "disabled"
+    calibration_limitations: List[str] = Field(default_factory=list)
+    calibration_scope_warning: Optional[str] = None
     wildfire_risk_score_available: bool = False
     site_hazard_score_available: bool = False
     home_ignition_vulnerability_score_available: bool = False

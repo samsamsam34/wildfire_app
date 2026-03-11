@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from backend.calibration import apply_public_calibration
+from backend.calibration import apply_public_calibration, resolve_public_calibration
 
 
 def test_apply_public_calibration_logistic(tmp_path):
@@ -51,3 +51,27 @@ def test_apply_public_calibration_piecewise(tmp_path):
 def test_apply_public_calibration_missing_artifact_returns_none():
     assert apply_public_calibration(raw_wildfire_score=60.0, artifact_path="") is None
 
+
+def test_resolve_public_calibration_out_of_scope(tmp_path):
+    artifact_path = tmp_path / "calibration_scope.json"
+    artifact_path.write_text(
+        json.dumps(
+            {
+                "artifact_version": "1.0.0",
+                "method": "logistic",
+                "parameters": {"intercept": -4.0, "slope": 8.0},
+                "scope": {"region_ids": ["california_pilot"]},
+                "limitations": ["Public outcomes are directional only."],
+            }
+        ),
+        encoding="utf-8",
+    )
+    payload = resolve_public_calibration(
+        raw_wildfire_score=70.0,
+        artifact_path=str(artifact_path),
+        resolved_region_id="missoula_pilot",
+    )
+    assert payload["calibration_enabled"] is True
+    assert payload["calibration_applied"] is False
+    assert payload["calibration_status"] == "out_of_scope"
+    assert payload["scope_warning"] is not None

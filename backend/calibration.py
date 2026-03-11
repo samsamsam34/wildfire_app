@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import math
 import os
+from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -81,24 +82,91 @@ def _apply_piecewise(score: float, artifact: dict[str, Any]) -> float | None:
     return None
 
 
-def apply_public_calibration(
+def _scope_status(artifact: dict[str, Any], resolved_region_id: str | None) -> tuple[bool, str | None]:
+    scope = artifact.get("scope")
+    if not isinstance(scope, dict):
+        return True, None
+    region_ok = True
+    region_warning = None
+    regions = scope.get("region_ids")
+    if isinstance(regions, list) and regions:
+        resolved = str(resolved_region_id or "").strip()
+        if not resolved:
+            return False, "Calibration artifact is region-scoped but no resolved_region_id was provided."
+        allowed = {str(r).strip() for r in regions if str(r).strip()}
+        if resolved not in allowed:
+            region_ok = False
+            region_warning = f"Calibration artifact scope excludes region '{resolved}'."
+
+    year_now = datetime.now(tz=timezone.utc).year
+    start_year = _safe_float(scope.get("year_start"))
+    end_year = _safe_float(scope.get("year_end"))
+    if start_year is not None and year_now < int(start_year):
+        return False, (
+            f"Calibration artifact temporal scope starts at {int(start_year)}; "
+            f"current year {year_now} is earlier."
+        )
+    if end_year is not None and year_now > int(end_year):
+        return False, (
+            f"Calibration artifact temporal scope ends at {int(end_year)}; "
+            f"current year {year_now} is later."
+        )
+    if not region_ok:
+        return False, region_warning
+    return True, None
+
+
+def resolve_public_calibration(
     *,
     raw_wildfire_score: float | None,
     artifact_path: str | None = None,
-) -> dict[str, Any] | None:
-    if raw_wildfire_score is None:
-        return None
+    resolved_region_id: str | None = None,
+) -> dict[str, Any]:
+    base: dict[str, Any] = {
+        "calibration_enabled": False,
+        "calibration_applied": False,
+        "calibration_status": "disabled",
+        "calibration_method": None,
+        "artifact_path": None,
+        "artifact_version": None,
+        "artifact_generated_at": None,
+        "outcome_dataset": None,
+        "calibration_limitations": [],
+        "calibrated_damage_likelihood": None,
+        "empirical_damage_likelihood_proxy": None,
+        "empirical_loss_likelihood_proxy": None,
+        "raw_wildfire_risk_score": _safe_float(raw_wildfire_score),
+        "scope_included": None,
+        "scope_warning": None,
+    }
     score = _safe_float(raw_wildfire_score)
-    if score is None:
-        return None
     configured_path = str(artifact_path or os.getenv("WF_PUBLIC_CALIBRATION_ARTIFACT", "")).strip()
     if not configured_path:
-        return None
+        base["calibration_status"] = "disabled_no_artifact"
+        return base
     artifact = load_calibration_artifact(configured_path)
+    base["calibration_enabled"] = True
+    base["artifact_path"] = configured_path
+    base["artifact_version"] = artifact.get("artifact_version")
+    base["artifact_generated_at"] = artifact.get("generated_at")
+    base["outcome_dataset"] = artifact.get("dataset")
+    base["calibration_limitations"] = list(artifact.get("limitations") or artifact.get("notes") or [])
     if not artifact:
-        return None
+        base["calibration_status"] = "invalid_artifact"
+        return base
+    if score is None:
+        base["calibration_status"] = "score_unavailable"
+        return base
+
+    in_scope, scope_warning = _scope_status(artifact, resolved_region_id=resolved_region_id)
+    base["scope_included"] = bool(in_scope)
+    base["scope_warning"] = scope_warning
+    if not in_scope:
+        base["calibration_status"] = "out_of_scope"
+        return base
 
     method = str(artifact.get("method") or "").strip().lower()
+    base["calibration_method"] = method or None
     if method == "logistic":
         calibrated = _apply_logistic(score, artifact)
     elif method in {"piecewise_linear", "piecewise"}:
@@ -106,14 +174,28 @@ def apply_public_calibration(
     else:
         calibrated = None
     if calibrated is None:
-        return None
+        base["calibration_status"] = "invalid_method_or_parameters"
+        return base
     calibrated = max(0.0, min(1.0, float(calibrated)))
-    return {
-        "calibration_applied": True,
-        "calibration_method": method,
-        "artifact_path": configured_path,
-        "calibrated_damage_likelihood": round(calibrated, 4),
-        "raw_wildfire_risk_score": round(score, 2),
-        "artifact_version": artifact.get("artifact_version"),
-        "outcome_dataset": artifact.get("dataset"),
-    }
+    base["calibration_applied"] = True
+    base["calibration_status"] = "applied"
+    base["calibrated_damage_likelihood"] = round(calibrated, 4)
+    base["empirical_damage_likelihood_proxy"] = round(calibrated, 4)
+    base["empirical_loss_likelihood_proxy"] = round(calibrated, 4)
+    return base
+
+
+def apply_public_calibration(
+    *,
+    raw_wildfire_score: float | None,
+    artifact_path: str | None = None,
+    resolved_region_id: str | None = None,
+) -> dict[str, Any] | None:
+    payload = resolve_public_calibration(
+        raw_wildfire_score=raw_wildfire_score,
+        artifact_path=artifact_path,
+        resolved_region_id=resolved_region_id,
+    )
+    if not payload.get("calibration_applied"):
+        return None
+    return payload

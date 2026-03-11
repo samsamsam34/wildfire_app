@@ -571,6 +571,51 @@ Interpretation guardrails:
 - use results for directional calibration and threshold review
 - do not treat fallback-heavy records as primary tuning anchors
 
+## Public Outcome Calibration
+
+The model supports an optional, additive empirical calibration workflow using public structure-damage outcomes (for example CAL FIRE DINS-style datasets). The deterministic scoring engine remains the primary scorer.
+
+End-to-end workflow:
+
+```bash
+# 1) Normalize public structure-damage outcomes
+python scripts/ingest_public_structure_damage.py \
+  --input path/to/public_damage_records.csv \
+  --output-json benchmark/calibration/public_structure_damage_normalized.json
+
+# 2) Generate scored event artifacts
+python scripts/run_event_backtest.py \
+  --dataset benchmark/event_backtest_sample_v1.json \
+  --output-dir benchmark/event_backtest_results
+
+# 3) Join outcomes to scored feature records
+python scripts/build_calibration_dataset.py \
+  --outcomes benchmark/calibration/public_structure_damage_normalized.json \
+  --feature-artifact benchmark/event_backtest_results/event_backtest_YYYYMMDDTHHMMSSZ.json \
+  --output benchmark/calibration/public_outcome_calibration_dataset.json
+
+# 4) Evaluate discrimination/calibration quality
+python scripts/evaluate_model_against_public_outcomes.py \
+  --dataset benchmark/calibration/public_outcome_calibration_dataset.json \
+  --output-json benchmark/calibration/public_outcome_evaluation.json
+
+# 5) Fit calibration artifact (optional)
+python scripts/fit_public_outcome_calibration.py \
+  --dataset benchmark/calibration/public_outcome_calibration_dataset.json \
+  --output config/public_outcome_calibration.json
+```
+
+Runtime calibration (optional):
+
+```bash
+export WF_PUBLIC_CALIBRATION_ARTIFACT=config/public_outcome_calibration.json
+```
+
+When enabled, `/risk/assess` and `/risk/debug` include calibration metadata (`calibration_status`, method/artifact metadata, and calibrated likelihood proxies) while preserving deterministic raw scores and evidence outputs.
+
+See `docs/public_outcome_calibration.md` for details and caveats.
+See `docs/calibration_gap_analysis.md` for the empirical-gap rationale behind this calibration step.
+
 ## Model Tuning
 
 The repo includes a deterministic tuning harness that turns event-backtest output into bounded, explainable parameter experiments.

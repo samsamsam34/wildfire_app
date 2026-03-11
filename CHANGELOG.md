@@ -2,6 +2,36 @@
 
 This file tracks release-level governance changes for `WildfireRisk Advisor`.
 
+## [0.16.0] - 2026-03-11
+### Version changes
+- `product_version`: `0.16.0` (minor)
+- `api_version`: `1.4.0` (minor; additive calibration metadata and status fields)
+- `scoring_model_version`: `1.9.0` (unchanged)
+- `ruleset_version`: tracked per assessment ruleset
+- `rules_logic_version`: `1.1.0` (unchanged)
+- `factor_schema_version`: `1.3.0` (unchanged)
+- `benchmark_pack_version`: `1.0.0` (unchanged)
+- `calibration_version`: `0.3.0` (minor; public-outcome ingest/evaluate workflow and runtime calibration status metadata)
+- `region_data_version`: tracked per assessment/region build
+- `data_bundle_version`: `unversioned` default unless overridden
+
+### Reason
+- Add outcome-based validation and optional empirical calibration workflow using public structure-damage records while preserving deterministic core scoring and explainability.
+
+### Expected effect on outputs
+- New public-outcome scripts support ingest, calibration-dataset building, and model evaluation against labeled structure outcomes.
+- `/risk/assess` adds additive optional calibration fields (`empirical_damage_likelihood_proxy`, `calibration_status`, `calibration_limitations`, `calibration_scope_warning`).
+- `/risk/debug` now returns richer calibration status/metadata, including out-of-scope warnings when applicable.
+
+### Migration/interpretation notes
+- Core deterministic score fields are unchanged; new calibration fields are additive and optional.
+- Calibrated likelihood values are directional guidance derived from public outcome datasets and should not be treated as carrier claims probabilities.
+
+### Historical comparison validity
+- `not_directly_comparable` when scoring/rules/schema dimensions differ.
+- `comparable_with_review` when data/calibration dimensions differ.
+- `directly_comparable` when governance dimensions match.
+
 ## [0.15.0] - 2026-03-11
 ### Version changes
 - `product_version`: `0.15.0` (minor)
