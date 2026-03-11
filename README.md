@@ -209,6 +209,10 @@ Common runtime settings:
   - `WF_LOCATION_RESOLUTION_SOURCE_CONFIG` (optional source config, default: `config/location_resolution_sources.json`)
   - `WF_WA_STATEWIDE_PARCEL_PATH` (optional direct path override for Washington statewide parcel/address dataset exports)
   - `WF_OKANOGAN_ADDRESS_POINTS_PATH` (optional direct path override for Okanogan local addressing exports)
+  - `WF_RESOLVER_CONFLICT_DISTANCE_M` (default: `1500`, cross-source disagreement distance threshold for ambiguity protection)
+  - `WF_RESOLVER_CONFLICT_SCORE_MARGIN` (default: `18`, score-gap threshold used with disagreement distance checks)
+  - `WF_RESOLVER_IN_REGION_BOOST` (default: `35`, score boost for candidates inside prepared-region coverage)
+  - `WF_RESOLVER_ALLOW_INTERPOLATED_AUTO` (default: `true`, controls whether interpolated geocoder candidates can auto-resolve)
   - `WF_REGION_EDGE_TOLERANCE_M` (default: `0`, optional region-boundary tolerance for near-edge points)
 - `WILDFIRE_APP_CACHE_ROOT`, `WILDFIRE_APP_DATA_ROOT`, `WILDFIRE_APP_TMP_ROOT` (offline prep script paths)
 
@@ -218,13 +222,15 @@ Address resolution uses a staged, confidence-scored pipeline:
 1. Primary geocoder
 2. Optional secondary geocoder
 3. Local authoritative datasets (`address_points`, `parcel_address_points`, `parcels`, plus optional configured statewide/county sources)
-4. Explicit local fallback records (`config/local_address_fallbacks.json`)
-5. Provider backoff query variants
-6. User-selected `property_anchor_point` fallback (for assessment routes)
+4. Statewide parcel-address lookup (when configured)
+5. Explicit local fallback records (`config/local_address_fallbacks.json`)
+6. Provider backoff query variants
+7. User-selected `property_anchor_point` fallback (for assessment routes)
 
 Candidate guardrails:
 - only `high`/`medium` confidence candidates are auto-used for property coordinates
 - street-only/locality-only matches are not auto-used
+- cross-source disagreement checks prevent silently selecting materially conflicting candidates
 - if a candidate is outside prepared coverage, resolver keeps searching later stages before finalizing
 - if multiple prepared regions contain a point, the smallest covering region is selected
 
@@ -233,6 +239,12 @@ Geocode outcomes remain explicit:
 - `geocode_succeeded_untrusted`: fallback location was used (secondary/local/user point)
 - `geocode_succeeded_trusted`: accepted trusted match from a geocoder/local authoritative source
 
+Resolver status labels:
+- `resolved_high_confidence`
+- `resolved_medium_confidence`
+- `ambiguous_conflict` (requires map confirmation)
+- `unresolved` / `unresolved_no_safe_candidate`
+
 `/risk/assess`, `/risk/debug`, and `/regions/coverage-check` now share this same canonical resolution flow and expose:
 - `resolution_status`, `resolution_method`, `fallback_used`
 - `provider_attempts`, `provider_statuses`
@@ -240,10 +252,13 @@ Geocode outcomes remain explicit:
 - `final_coordinates_used`, `final_coordinate_source`
 - `candidate_regions_containing_point`
 - `local_fallback_attempted`, `authoritative_fallback_result`, `local_fallback_result`
+- `resolver_candidates` and `candidate_disagreement_distances` in debug payloads
 
 For local geocode/trust troubleshooting (including Winthrop edge cases), use:
 - `POST /risk/geocode-debug` (or `/debug/geocode`) for candidate/trust/region diagnostics
 - `python scripts/debug_geocode_trust_pipeline.py --address "6 Pineview Rd, Winthrop, WA 98862" --pretty`
+- `python scripts/debug_address_resolution.py --address "6 Pineview Rd, Winthrop, WA 98862" --pretty`
+- `python scripts/ingest_county_address_points.py --input path/to/okanogan_address_points.csv --output data/address_points/okanogan/okanogan_address_points.geojson`
 
 ## Data / Storage Notes
 

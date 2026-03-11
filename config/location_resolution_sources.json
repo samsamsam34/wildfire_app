@@ -5,7 +5,7 @@
       "source_type": "statewide_parcel_dataset",
       "enabled": false,
       "priority": 40,
-      "path": "data/external/wa_state_current_parcels.geojson",
+      "path": "data/parcels/wa_state_current_parcels.geojson",
       "metadata": {
         "description": "Washington State Current Parcels with situs addressing (configure local export path).",
         "refresh": "manual",
@@ -17,7 +17,7 @@
       "source_type": "county_address_dataset",
       "enabled": false,
       "priority": 30,
-      "path": "data/external/okanogan_address_points.geojson",
+      "path": "data/address_points/okanogan/okanogan_address_points.geojson",
       "metadata": {
         "description": "Okanogan County local addressing / E-911 style address points.",
         "refresh": "manual",

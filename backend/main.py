@@ -4913,220 +4913,225 @@ def _resolve_trusted_geocode(
     normalized_address = normalize_address(submitted_address or "")
     provider_attempts: list[dict[str, Any]] = []
     provider_statuses: dict[str, str] = {}
+    resolver_candidates: list[dict[str, Any]] = []
     local_fallback_attempted = False
     local_fallback_result: dict[str, Any] | None = None
     authoritative_fallback_result: dict[str, Any] | None = None
     statewide_parcel_result: dict[str, Any] | None = None
     last_failure: HTTPException | None = None
-    low_confidence_candidate: dict[str, Any] | None = None
-    outside_region_candidate: dict[str, Any] | None = None
+
+    try:
+        conflict_distance_m = max(50.0, float(os.getenv("WF_RESOLVER_CONFLICT_DISTANCE_M", "1500")))
+    except ValueError:
+        conflict_distance_m = 1500.0
+    try:
+        conflict_score_margin = max(1.0, float(os.getenv("WF_RESOLVER_CONFLICT_SCORE_MARGIN", "18")))
+    except ValueError:
+        conflict_score_margin = 18.0
+    try:
+        in_region_boost = max(0.0, float(os.getenv("WF_RESOLVER_IN_REGION_BOOST", "35")))
+    except ValueError:
+        in_region_boost = 35.0
+    allow_interpolated_auto = _env_flag("WF_RESOLVER_ALLOW_INTERPOLATED_AUTO", True)
+
+    def _confidence_rank(tier: str | None) -> int:
+        mapping = {"high": 3, "medium": 2, "low": 1}
+        return mapping.get(str(tier or "").strip().lower(), 0)
 
     def _confidence_allows_auto_use(tier: str | None) -> bool:
-        return str(tier or "").strip().lower() in {"high", "medium"}
+        return _confidence_rank(tier) >= 2
 
-    def _capture_low_confidence_candidate(
-        *,
-        stage: str,
-        lat: float,
-        lon: float,
-        provider_name: str,
-        confidence_tier: str | None,
-        matched_address: str | None,
-        candidate_count: int | None,
-        rejection_reason: str,
-    ) -> None:
-        nonlocal low_confidence_candidate
-        candidate = {
-            "stage": stage,
-            "provider": provider_name,
-            "latitude": float(lat),
-            "longitude": float(lon),
-            "confidence_tier": str(confidence_tier or "low"),
-            "matched_address": matched_address,
-            "candidate_count": candidate_count,
-            "rejection_reason": rejection_reason,
+    def _normalize_precision(precision: str | None) -> str:
+        raw = str(precision or "").strip().lower()
+        if raw in {"rooftop", "parcel_or_address_point", "interpolated", "user_selected_point"}:
+            return raw
+        if raw in {"parcel", "address_point", "road", "locality", "zip_centroid"}:
+            return raw
+        if raw.startswith("parcel"):
+            return "parcel"
+        if "road" in raw:
+            return "road"
+        if "locality" in raw or "city" in raw:
+            return "locality"
+        return "unknown"
+
+    def _precision_rank(precision: str) -> float:
+        mapping = {
+            "rooftop": 42.0,
+            "parcel_or_address_point": 38.0,
+            "address_point": 36.0,
+            "parcel": 30.0,
+            "user_selected_point": 34.0,
+            "interpolated": 18.0,
+            "road": 12.0,
+            "locality": 4.0,
+            "zip_centroid": 0.0,
+            "unknown": 0.0,
         }
-        ranking = {"high": 3, "medium": 2, "low": 1}
-        current_rank = ranking.get(str(low_confidence_candidate.get("confidence_tier") if low_confidence_candidate else "low"), 0)
-        new_rank = ranking.get(candidate["confidence_tier"], 1)
-        if low_confidence_candidate is None or new_rank >= current_rank:
-            low_confidence_candidate = candidate
+        return mapping.get(precision, 0.0)
 
-    def _candidate_stage_priority(stage: str) -> int:
-        order = {
-            "primary_geocoder": 60,
-            "secondary_geocoder": 50,
-            "local_authoritative_fallback": 45,
-            "explicit_fallback_record": 40,
-            "provider_backoff_query": 30,
-        }
-        return order.get(stage, 0)
+    def _source_rank(stage: str, source_type: str | None) -> float:
+        st = str(stage or "")
+        source_kind = str(source_type or "")
+        if st == "user_selected_point":
+            return 95.0
+        if source_kind in {"county_address_dataset", "prepared_region_address_dataset"}:
+            return 90.0
+        if source_kind in {"prepared_region_parcel_address_dataset", "local_authoritative_dataset"}:
+            return 86.0
+        if source_kind in {"statewide_parcel_dataset", "prepared_region_parcel_dataset"}:
+            return 80.0
+        if st == "primary_geocoder":
+            return 72.0
+        if st == "secondary_geocoder":
+            return 68.0
+        if st == "explicit_fallback_record":
+            return 35.0
+        if st == "provider_backoff_query":
+            return 45.0
+        return 30.0
 
-    def _store_outside_region_candidate(
-        *,
-        stage: str,
-        lat: float,
-        lon: float,
-        source: str,
-        geocode_meta: dict[str, Any],
-    ) -> None:
-        nonlocal outside_region_candidate
-        confidence_rank = {"high": 3, "medium": 2, "low": 1}
-        tier = str(geocode_meta.get("geocode_trust_tier") or geocode_meta.get("final_location_confidence") or "low").lower()
-        score = (confidence_rank.get(tier, 0) * 100) + _candidate_stage_priority(stage)
-        candidate = {
-            "score": score,
-            "stage": stage,
-            "latitude": float(lat),
-            "longitude": float(lon),
-            "source": source,
-            "geocode_meta": dict(geocode_meta),
-        }
-        if outside_region_candidate is None or int(candidate["score"]) >= int(outside_region_candidate.get("score") or -1):
-            outside_region_candidate = candidate
+    def _candidate_distance_m(first: dict[str, Any], second: dict[str, Any]) -> float:
+        a_lat = float(first["latitude"])
+        a_lon = float(first["longitude"])
+        b_lat = float(second["latitude"])
+        b_lon = float(second["longitude"])
+        lat_mid = math.radians((a_lat + b_lat) / 2.0)
+        meters_per_deg_lat = 111_320.0
+        meters_per_deg_lon = max(1.0, 111_320.0 * math.cos(lat_mid))
+        return float(math.hypot((a_lat - b_lat) * meters_per_deg_lat, (a_lon - b_lon) * meters_per_deg_lon))
 
-    def _finalize_if_prepared_region(
-        *,
-        stage: str,
-        lat: float,
-        lon: float,
-        source: str,
-        geocode_meta: dict[str, Any],
-    ) -> GeocodeResolution | None:
-        coverage_lookup = _region_coverage_for_coordinates(float(lat), float(lon))
-        geocode_meta["candidate_regions_containing_point"] = list(coverage_lookup.get("candidate_regions_containing_point") or [])
-        geocode_meta["region_lookup_result"] = (
-            "inside_prepared_region"
-            if bool(coverage_lookup.get("coverage_available"))
-            else "outside_prepared_regions"
-        )
-        geocode_meta["region_distance_to_boundary_m"] = coverage_lookup.get("region_distance_to_boundary_m")
-        geocode_meta["nearest_region_id"] = coverage_lookup.get("nearest_region_id")
-        geocode_meta["unsupported_location_reason"] = (
-            None
-            if bool(coverage_lookup.get("coverage_available"))
-            else coverage_lookup.get("reason")
-        )
-        if bool(coverage_lookup.get("coverage_available")):
-            geocode_meta["selected_region_id"] = coverage_lookup.get("resolved_region_id")
-            geocode_meta["selected_region_display_name"] = coverage_lookup.get("resolved_region_display_name")
-            return _finalize_success(lat=lat, lon=lon, source=source, geocode_meta=geocode_meta)
+    def _parse_candidate_lat_lon(detail: dict[str, Any]) -> tuple[float, float] | None:
+        try:
+            lat_raw = detail.get("top_candidate_lat")
+            lon_raw = detail.get("top_candidate_lng")
+            if lat_raw is not None and lon_raw is not None:
+                lat = float(lat_raw)
+                lon = float(lon_raw)
+                if -90.0 <= lat <= 90.0 and -180.0 <= lon <= 180.0:
+                    return float(lat), float(lon)
+        except (TypeError, ValueError):
+            pass
+        candidate = _extract_candidate_from_preview(detail.get("raw_response_preview"))
+        fallback = _extract_lat_lon_from_candidate(candidate)
+        if fallback is None:
+            return None
+        return float(fallback[0]), float(fallback[1])
 
-        _store_outside_region_candidate(
-            stage=stage,
-            lat=float(lat),
-            lon=float(lon),
-            source=source,
-            geocode_meta=geocode_meta,
-        )
+    def _candidate_record_id(best_match: dict[str, Any]) -> str | None:
+        props = best_match.get("feature_properties")
+        if not isinstance(props, dict):
+            return None
+        for key in ("address_id", "site_id", "parcel_id", "objectid", "OBJECTID", "id"):
+            value = props.get(key)
+            if value is not None and str(value).strip():
+                return str(value)
         return None
 
-    def _finalize_success(
-        *,
-        lat: float,
-        lon: float,
-        source: str,
-        geocode_meta: dict[str, Any],
-    ) -> GeocodeResolution:
-        geocode_meta.setdefault("submitted_address", submitted_address)
-        geocode_meta.setdefault("normalized_address", normalized_address)
-        geocode_meta.setdefault("resolved_latitude", float(lat))
-        geocode_meta.setdefault("resolved_longitude", float(lon))
-        geocode_meta["provider_attempts"] = provider_attempts
-        geocode_meta["provider_statuses"] = provider_statuses
-        geocode_meta["local_fallback_attempted"] = bool(local_fallback_attempted)
-        geocode_meta["authoritative_fallback_result"] = authoritative_fallback_result
-        geocode_meta["statewide_parcel_result"] = statewide_parcel_result
-        geocode_meta["local_fallback_result"] = local_fallback_result
-        geocode_meta["candidate_sources_attempted"] = [str(row.get("stage")) for row in provider_attempts]
-        geocode_meta["candidates_found"] = sum(
-            1
-            for row in provider_attempts
-            if isinstance(row.get("candidate_count"), int) and int(row["candidate_count"]) > 0
-        )
-        geocode_meta.setdefault("resolution_status", "accepted")
-        geocode_meta.setdefault("resolution_method", "primary_geocoder")
-        geocode_meta.setdefault("fallback_used", geocode_meta.get("resolution_method") != "primary_geocoder")
-        geocode_meta.setdefault("final_location_confidence", geocode_meta.get("geocode_trust_tier") or "medium")
-        geocode_meta.setdefault("coordinate_source", geocode_meta.get("resolution_method"))
-        geocode_meta.setdefault("match_confidence", geocode_meta.get("final_location_confidence"))
-        geocode_meta.setdefault("match_method", geocode_meta.get("geocode_decision"))
-        geocode_meta["final_coordinates_used"] = {"latitude": float(lat), "longitude": float(lon)}
-        geocode_meta["final_coordinate_source"] = geocode_meta.get("coordinate_source")
-        geocode_meta.setdefault("local_address_lookup_attempted", authoritative_fallback_result is not None)
-        geocode_meta.setdefault("local_address_lookup_result", authoritative_fallback_result)
-        geocode_meta.setdefault("address_point_match_found", bool((authoritative_fallback_result or {}).get("matched")))
-        geocode_meta.setdefault("parcel_lookup_attempted", statewide_parcel_result is not None)
-        geocode_meta.setdefault("parcel_lookup_result", statewide_parcel_result)
-        geocode_meta.setdefault("parcel_situs_match", bool((statewide_parcel_result or {}).get("matched")))
-        geocode_meta.setdefault("fallback_records_checked", bool(local_fallback_attempted))
-        geocode_meta.setdefault("fallback_match_method", (local_fallback_result or {}).get("match_method"))
-
-        selected_candidate = {
-            "display_name": geocode_meta.get("matched_address"),
-            "confidence_score": geocode_meta.get("confidence_score"),
-            "provider": geocode_meta.get("provider"),
+    def _candidate_is_street_only(match_method: str | None) -> bool:
+        return str(match_method or "") in {
+            "street_only_match",
+            "locality_or_postal_only",
+            "house_and_street_partial",
+            "no_viable_match",
         }
-        if not selected_candidate["display_name"] and not selected_candidate["confidence_score"]:
-            selected_candidate = None
 
-        resolution = GeocodeResolution(
-            raw_input=str(geocode_meta.get("submitted_address") or submitted_address),
-            normalized_address=str(geocode_meta.get("normalized_address") or normalized_address),
-            geocode_status=str(geocode_meta.get("geocode_status") or "accepted"),
-            candidate_count=int(geocode_meta.get("candidate_count") or 1),
-            selected_candidate=selected_candidate,
-            confidence_score=(
-                float(geocode_meta["confidence_score"])
-                if geocode_meta.get("confidence_score") is not None
-                else None
-            ),
-            latitude=float(lat),
-            longitude=float(lon),
-            geocode_source=str(source),
-            geocode_meta=dict(geocode_meta or {}),
-            geocode_outcome=str(geocode_meta.get("geocode_outcome") or "geocode_succeeded_trusted"),
-            trusted_match_status=str(geocode_meta.get("trusted_match_status") or "trusted"),
-            rejection_reason=geocode_meta.get("rejection_reason"),
-        )
-        if _is_dev_mode():
-            LOGGER.info(
-                "route_geocode_resolution %s",
-                json.dumps(
-                    {
-                        "event": "route_geocode_resolution",
-                        "route_name": route_name,
-                        "submitted_address": resolution.raw_input,
-                        "normalized_address": resolution.normalized_address,
-                        "geocode_status": resolution.geocode_status,
-                        "geocode_outcome": resolution.geocode_outcome,
-                        "trusted_match_status": resolution.trusted_match_status,
-                        "geocode_trust_tier": geocode_meta.get("geocode_trust_tier"),
-                        "geocode_decision": geocode_meta.get("geocode_decision"),
-                        "resolution_method": geocode_meta.get("resolution_method"),
-                        "coordinate_source": geocode_meta.get("coordinate_source"),
-                        "match_confidence": geocode_meta.get("match_confidence"),
-                        "match_method": geocode_meta.get("match_method"),
-                        "provider_attempts": provider_attempts,
-                        "local_fallback_attempted": local_fallback_attempted,
-                        "candidate_sources_attempted": geocode_meta.get("candidate_sources_attempted"),
-                        "candidates_found": geocode_meta.get("candidates_found"),
-                        "candidate_count": resolution.candidate_count,
-                        "confidence_score": resolution.confidence_score,
-                        "latitude": round(resolution.latitude, 6),
-                        "longitude": round(resolution.longitude, 6),
-                        "trust_filter_rule": geocode_meta.get("trust_filter_rule"),
-                        "trusted_match_failure_reason": geocode_meta.get("trusted_match_failure_reason"),
-                    },
-                    sort_keys=True,
-                ),
+    def _candidate_is_auto_eligible(candidate: dict[str, Any]) -> bool:
+        if candidate.get("source") == "user_selected_point":
+            return True
+        if _confidence_rank(str(candidate.get("confidence_tier") or "low")) < 2:
+            return False
+        precision = str(candidate.get("precision_type") or "unknown")
+        if precision in {"locality", "zip_centroid", "unknown"}:
+            return False
+        if not allow_interpolated_auto and precision in {"interpolated", "road"}:
+            return False
+        if _candidate_is_street_only(candidate.get("match_method")):
+            return False
+        return True
+
+    def _upsert_stage_status(stage: str, status: str) -> None:
+        rank = {"accepted": 3, "low_confidence": 2, "no_match": 1, "provider_error": 0, "parser_error": 0}
+        existing = provider_statuses.get(stage)
+        if existing is None or rank.get(status, -1) >= rank.get(existing, -1):
+            provider_statuses[stage] = status
+
+    def _register_candidate(
+        *,
+        stage: str,
+        latitude: float,
+        longitude: float,
+        geocode_meta: dict[str, Any],
+        source: str,
+        source_type: str | None = None,
+        source_record_id: str | None = None,
+    ) -> None:
+        coverage_lookup = _region_coverage_for_coordinates(float(latitude), float(longitude))
+        precision_type = _normalize_precision(str(geocode_meta.get("geocode_precision") or geocode_meta.get("precision_type") or "unknown"))
+        if precision_type == "unknown" and stage in {"primary_geocoder", "secondary_geocoder", "provider_backoff_query"}:
+            # Legacy geocoder stubs often return coordinates without precision metadata.
+            precision_type = "interpolated"
+        confidence_tier = str(
+            geocode_meta.get("geocode_trust_tier")
+            or geocode_meta.get("final_location_confidence")
+            or geocode_meta.get("confidence_tier")
+            or "low"
+        ).lower()
+        confidence_score_raw = geocode_meta.get("confidence_score")
+        try:
+            confidence_score = float(confidence_score_raw) if confidence_score_raw is not None else None
+        except (TypeError, ValueError):
+            confidence_score = None
+        diagnostics = list(geocode_meta.get("diagnostics") or [])
+        candidate = {
+            "latitude": float(latitude),
+            "longitude": float(longitude),
+            "source": str(source or stage),
+            "source_stage": stage,
+            "source_type": str(source_type or geocode_meta.get("source_type") or ""),
+            "source_record_id": source_record_id or geocode_meta.get("source_record_id"),
+            "provider": str(geocode_meta.get("provider") or source or stage),
+            "formatted_address": geocode_meta.get("matched_address") or geocode_meta.get("geocoded_address"),
+            "normalized_address": geocode_meta.get("normalized_address") or normalized_address,
+            "match_method": str(geocode_meta.get("match_method") or geocode_meta.get("geocode_decision") or "unknown"),
+            "confidence_score": confidence_score,
+            "confidence_tier": confidence_tier,
+            "precision_type": precision_type,
+            "trusted_match_status": str(geocode_meta.get("trusted_match_status") or "untrusted_fallback"),
+            "geocode_status": str(geocode_meta.get("geocode_status") or "accepted"),
+            "geocode_outcome": str(geocode_meta.get("geocode_outcome") or "geocode_succeeded_untrusted"),
+            "diagnostics": diagnostics,
+            "coverage_available": bool(coverage_lookup.get("coverage_available")),
+            "resolved_region_id": coverage_lookup.get("resolved_region_id"),
+            "candidate_regions_containing_point": list(coverage_lookup.get("candidate_regions_containing_point") or []),
+            "region_distance_to_boundary_m": coverage_lookup.get("region_distance_to_boundary_m"),
+            "nearest_region_id": coverage_lookup.get("nearest_region_id"),
+            "unsupported_location_reason": coverage_lookup.get("reason"),
+            "geocode_meta": dict(geocode_meta or {}),
+        }
+        confidence_rank = _confidence_rank(candidate["confidence_tier"])
+        score = (
+            float(confidence_rank * 100)
+            + _precision_rank(candidate["precision_type"])
+            + _source_rank(stage, candidate.get("source_type"))
+            + (in_region_boost if candidate["coverage_available"] else 0.0)
+            + (
+                max(0.0, min(1.0, float(candidate["confidence_score"]))) * 20.0
+                if candidate["confidence_score"] is not None
+                else 0.0
             )
-        return resolution
+        )
+        exact_address_bonus = 0.0
+        if str(candidate.get("match_method") or "") == "exact_normalized_address":
+            exact_address_bonus = 12.0
+        candidate["rank_score"] = round(score + exact_address_bonus, 4)
+        candidate["auto_eligible"] = _candidate_is_auto_eligible(candidate)
+        resolver_candidates.append(candidate)
 
     def _record_failure(stage: str, query: str, provider_name: str, exc: HTTPException) -> dict[str, Any]:
         detail = exc.detail if isinstance(exc.detail, dict) else {}
         status = str(detail.get("geocode_status") or "provider_error")
-        provider_statuses[stage] = status
+        _upsert_stage_status(stage, status)
         provider_attempts.append(
             _build_provider_attempt(
                 stage=stage,
@@ -5136,16 +5141,43 @@ def _resolve_trusted_geocode(
                 geocode_status=status,
                 geocode_outcome=str(detail.get("geocode_outcome") or "geocode_failed"),
                 rejection_reason=str(detail.get("rejection_reason") or detail.get("message") or ""),
-                candidate_count=(
-                    int(detail.get("candidate_count"))
-                    if detail.get("candidate_count") is not None
-                    else None
-                ),
+                candidate_count=(int(detail.get("candidate_count")) if detail.get("candidate_count") is not None else None),
             )
         )
+        fallback_coords = _parse_candidate_lat_lon(detail)
+        if fallback_coords is not None:
+            fallback_lat, fallback_lon = fallback_coords
+            fallback_meta = {
+                "geocode_status": status,
+                "geocode_outcome": str(detail.get("geocode_outcome") or "geocode_failed"),
+                "trusted_match_status": str(detail.get("trusted_match_status") or "rejected"),
+                "geocode_trust_tier": str(detail.get("geocode_trust_tier") or "low"),
+                "geocode_decision": str(detail.get("geocode_decision") or "candidate_from_error_detail"),
+                "submitted_address": submitted_address,
+                "normalized_address": detail.get("normalized_address") or normalized_address,
+                "provider": detail.get("provider") or provider_name,
+                "geocoded_address": detail.get("top_candidate_formatted_address"),
+                "matched_address": detail.get("top_candidate_formatted_address"),
+                "confidence_score": None,
+                "candidate_count": int(detail.get("candidate_count") or 1),
+                "geocode_precision": str(detail.get("geocode_precision") or "interpolated"),
+                "raw_response_preview": detail.get("raw_response_preview"),
+                "rejection_reason": detail.get("rejection_reason"),
+                "trusted_match_failure_reason": detail.get("trusted_match_failure_reason") or detail.get("rejection_reason"),
+                "fallback_eligibility": bool(detail.get("fallback_eligibility")),
+                "match_method": str(detail.get("match_method") or detail.get("geocode_decision") or "candidate_from_error_detail"),
+                "diagnostics": [str(detail.get("message") or "")] if detail.get("message") else [],
+            }
+            _register_candidate(
+                stage=stage,
+                latitude=float(fallback_lat),
+                longitude=float(fallback_lon),
+                geocode_meta=fallback_meta,
+                source=str(fallback_meta.get("provider") or provider_name),
+            )
         return detail
 
-    # Stage A: primary geocoder.
+    # Stage A: primary geocoder
     try:
         lat, lon, source, geocode_meta = _geocode_address_or_raise(
             address=submitted_address,
@@ -5153,103 +5185,33 @@ def _resolve_trusted_geocode(
             geocoder_client=geocoder,
             provider_override=getattr(geocoder, "provider_name", None),
         )
-        provider_name = str(geocode_meta.get("provider") or getattr(geocoder, "provider_name", "primary"))
         trust_tier = str(geocode_meta.get("geocode_trust_tier") or "low")
-        if _confidence_allows_auto_use(trust_tier):
-            provider_statuses["primary_geocoder"] = "accepted"
-            provider_attempts.append(
-                _build_provider_attempt(
-                    stage="primary_geocoder",
-                    provider_name=provider_name,
-                    query=submitted_address,
-                    accepted=True,
-                    geocode_status=str(geocode_meta.get("geocode_status") or "accepted"),
-                    geocode_outcome=str(geocode_meta.get("geocode_outcome") or "geocode_succeeded_trusted"),
-                    rejection_reason=None,
-                    candidate_count=(
-                        int(geocode_meta.get("candidate_count"))
-                        if geocode_meta.get("candidate_count") is not None
-                        else None
-                    ),
-                )
-            )
-            geocode_meta["resolution_method"] = "primary_geocoder"
-            geocode_meta["resolution_status"] = "accepted"
-            geocode_meta["fallback_used"] = False
-            geocode_meta["final_location_confidence"] = trust_tier
-            accepted = _finalize_if_prepared_region(
-                stage="primary_geocoder",
-                lat=float(lat),
-                lon=float(lon),
-                source=source,
-                geocode_meta=geocode_meta,
-            )
-            if accepted is not None:
-                return accepted
-
-        provider_statuses["primary_geocoder"] = "low_confidence"
+        accepted = _confidence_allows_auto_use(trust_tier)
+        _upsert_stage_status("primary_geocoder", "accepted" if accepted else "low_confidence")
         provider_attempts.append(
             _build_provider_attempt(
                 stage="primary_geocoder",
-                provider_name=provider_name,
+                provider_name=str(geocode_meta.get("provider") or getattr(geocoder, "provider_name", "primary")),
                 query=submitted_address,
-                accepted=False,
-                geocode_status="low_confidence",
-                geocode_outcome="geocode_succeeded_untrusted",
-                rejection_reason="candidate_below_auto_use_confidence",
-                candidate_count=(
-                    int(geocode_meta.get("candidate_count"))
-                    if geocode_meta.get("candidate_count") is not None
-                    else None
-                ),
+                accepted=accepted,
+                geocode_status=str(geocode_meta.get("geocode_status") or ("accepted" if accepted else "low_confidence")),
+                geocode_outcome=str(geocode_meta.get("geocode_outcome") or "geocode_succeeded_trusted"),
+                rejection_reason=None if accepted else "candidate_below_auto_use_confidence",
+                candidate_count=(int(geocode_meta.get("candidate_count")) if geocode_meta.get("candidate_count") is not None else None),
             )
         )
-        _capture_low_confidence_candidate(
+        _register_candidate(
             stage="primary_geocoder",
-            lat=lat,
-            lon=lon,
-            provider_name=provider_name,
-            confidence_tier=trust_tier,
-            matched_address=str(geocode_meta.get("matched_address") or ""),
-            candidate_count=(
-                int(geocode_meta.get("candidate_count"))
-                if geocode_meta.get("candidate_count") is not None
-                else None
-            ),
-            rejection_reason="candidate_below_auto_use_confidence",
+            latitude=float(lat),
+            longitude=float(lon),
+            geocode_meta=dict(geocode_meta or {}),
+            source=str(source),
         )
     except HTTPException as exc:
         last_failure = exc
-        primary_detail = _record_failure(
-            "primary_geocoder",
-            submitted_address,
-            str(getattr(geocoder, "provider_name", "OpenStreetMap Nominatim")),
-            exc,
-        )
-        primary_status = str(primary_detail.get("geocode_status") or "provider_error")
-        # Parser/coordinate-shape failures fail fast; provider outages still continue to later stages.
-        if primary_status in {"parser_error", "missing_coordinates"} and property_anchor_point is None:
-            if _is_dev_mode():
-                LOGGER.warning(
-                    "route_geocode_resolution %s",
-                    json.dumps(
-                        {
-                            "event": "route_geocode_resolution",
-                            "route_name": route_name,
-                            "status_code": exc.status_code,
-                            "submitted_address": str(primary_detail.get("submitted_address") or submitted_address),
-                            "normalized_address": str(primary_detail.get("normalized_address") or normalized_address),
-                            "geocode_status": primary_status,
-                            "geocode_outcome": primary_detail.get("geocode_outcome") or "geocode_failed",
-                            "trusted_match_status": primary_detail.get("trusted_match_status") or "rejected",
-                            "rejection_reason": primary_detail.get("rejection_reason"),
-                        },
-                        sort_keys=True,
-                    ),
-                )
-            raise
+        _record_failure("primary_geocoder", submitted_address, str(getattr(geocoder, "provider_name", "OpenStreetMap Nominatim")), exc)
 
-    # Stage B: optional secondary geocoder.
+    # Stage B: optional secondary geocoder
     if _secondary_geocoder_enabled():
         try:
             lat, lon, source, geocode_meta = _geocode_address_or_raise(
@@ -5258,353 +5220,287 @@ def _resolve_trusted_geocode(
                 geocoder_client=secondary_geocoder,
                 provider_override=_secondary_provider_name(),
             )
-            provider_name = str(geocode_meta.get("provider") or _secondary_provider_name())
             trust_tier = str(geocode_meta.get("geocode_trust_tier") or "low")
-            if _confidence_allows_auto_use(trust_tier):
-                provider_statuses["secondary_geocoder"] = "accepted"
-                provider_attempts.append(
-                    _build_provider_attempt(
-                        stage="secondary_geocoder",
-                        provider_name=provider_name,
-                        query=submitted_address,
-                        accepted=True,
-                        geocode_status=str(geocode_meta.get("geocode_status") or "accepted"),
-                        geocode_outcome=str(geocode_meta.get("geocode_outcome") or "geocode_succeeded_untrusted"),
-                        rejection_reason=None,
-                        candidate_count=(
-                            int(geocode_meta.get("candidate_count"))
-                            if geocode_meta.get("candidate_count") is not None
-                            else None
-                        ),
-                    )
-                )
-                geocode_meta["resolution_method"] = "secondary_geocoder"
-                geocode_meta["resolution_status"] = "accepted"
-                geocode_meta["fallback_used"] = True
-                geocode_meta["geocode_decision"] = "resolved_via_secondary_geocoder"
-                geocode_meta["final_location_confidence"] = trust_tier
-                accepted = _finalize_if_prepared_region(
-                    stage="secondary_geocoder",
-                    lat=float(lat),
-                    lon=float(lon),
-                    source=source,
-                    geocode_meta=geocode_meta,
-                )
-                if accepted is not None:
-                    return accepted
-
-            provider_statuses["secondary_geocoder"] = "low_confidence"
+            accepted = _confidence_allows_auto_use(trust_tier)
+            _upsert_stage_status("secondary_geocoder", "accepted" if accepted else "low_confidence")
             provider_attempts.append(
                 _build_provider_attempt(
                     stage="secondary_geocoder",
-                    provider_name=provider_name,
+                    provider_name=str(geocode_meta.get("provider") or _secondary_provider_name()),
                     query=submitted_address,
-                    accepted=False,
-                    geocode_status="low_confidence",
-                    geocode_outcome="geocode_succeeded_untrusted",
-                    rejection_reason="candidate_below_auto_use_confidence",
-                    candidate_count=(
-                        int(geocode_meta.get("candidate_count"))
-                        if geocode_meta.get("candidate_count") is not None
-                        else None
-                    ),
+                    accepted=accepted,
+                    geocode_status=str(geocode_meta.get("geocode_status") or ("accepted" if accepted else "low_confidence")),
+                    geocode_outcome=str(geocode_meta.get("geocode_outcome") or "geocode_succeeded_untrusted"),
+                    rejection_reason=None if accepted else "candidate_below_auto_use_confidence",
+                    candidate_count=(int(geocode_meta.get("candidate_count")) if geocode_meta.get("candidate_count") is not None else None),
                 )
             )
-            _capture_low_confidence_candidate(
+            _register_candidate(
                 stage="secondary_geocoder",
-                lat=lat,
-                lon=lon,
-                provider_name=provider_name,
-                confidence_tier=trust_tier,
-                matched_address=str(geocode_meta.get("matched_address") or ""),
-                candidate_count=(
-                    int(geocode_meta.get("candidate_count"))
-                    if geocode_meta.get("candidate_count") is not None
-                    else None
-                ),
-                rejection_reason="candidate_below_auto_use_confidence",
+                latitude=float(lat),
+                longitude=float(lon),
+                geocode_meta=dict(geocode_meta or {}),
+                source=str(source),
             )
         except HTTPException as exc:
             last_failure = exc
             _record_failure("secondary_geocoder", submitted_address, _secondary_provider_name(), exc)
 
-    # Stage C: county/local authoritative address points fallback.
+    # Stage C: county/prepared local authoritative address points
     local_fallback_attempted = True
     try:
         authoritative_fallback_result = _resolve_local_authoritative_coordinates(submitted_address)
-    except Exception as exc:  # pragma: no cover - defensive logging path
+    except Exception as exc:  # pragma: no cover
         authoritative_fallback_result = {
             "matched": False,
-            "diagnostics": [f"Local authoritative fallback resolver error: {exc}"],
             "candidate_count": 0,
+            "failure_reason": "local_authoritative_resolver_error",
+            "diagnostics": [f"Local authoritative fallback resolver error: {exc}"],
             "top_candidates": [],
         }
-    if bool((authoritative_fallback_result or {}).get("matched")) and isinstance(
-        (authoritative_fallback_result or {}).get("best_match"), dict
-    ):
-        best_match = dict((authoritative_fallback_result or {}).get("best_match") or {})
+    local_best = (
+        dict((authoritative_fallback_result or {}).get("best_match") or {})
+        if bool((authoritative_fallback_result or {}).get("matched"))
+        else dict((authoritative_fallback_result or {}).get("best_candidate") or {})
+    )
+    if local_best:
         try:
-            lat = float(best_match["latitude"])
-            lon = float(best_match["longitude"])
+            lat = float(local_best["latitude"])
+            lon = float(local_best["longitude"])
         except (TypeError, ValueError, KeyError):
             lat = None  # type: ignore[assignment]
             lon = None  # type: ignore[assignment]
         if lat is not None and lon is not None:
-            local_confidence = str((authoritative_fallback_result or {}).get("confidence") or "low")
-            if _confidence_allows_auto_use(local_confidence):
-                source_key = str(best_match.get("source") or "")
-                source_type = str(best_match.get("source_type") or "")
-                stage_label = (
-                    "county_address_points"
-                    if source_type == "county_address_dataset"
-                    else "local_authoritative_fallback"
-                )
-                decision_label = (
-                    "resolved_via_county_address_points"
-                    if source_type == "county_address_dataset"
-                    else "resolved_via_local_authoritative_fallback"
-                )
-                trust_status = (
-                    "trusted"
-                    if local_confidence == "high" and source_key in {"address_points", "parcel_address_points"}
-                    else "untrusted_fallback"
-                )
-                geocode_meta = {
-                    "geocode_status": "accepted",
-                    "geocode_outcome": "geocode_succeeded_untrusted",
-                    "trusted_match_status": trust_status,
-                    "geocode_trust_tier": local_confidence,
-                    "geocode_decision": decision_label,
-                    "submitted_address": submitted_address,
-                    "normalized_address": (authoritative_fallback_result or {}).get("normalized_address") or normalized_address,
-                    "geocode_source": stage_label,
-                    "geocode_provider": stage_label,
-                    "provider": stage_label,
-                    "geocoded_address": best_match.get("matched_address"),
-                    "matched_address": best_match.get("matched_address"),
-                    "geocoded_point": {"latitude": float(lat), "longitude": float(lon)},
-                    "confidence_score": best_match.get("match_score"),
-                    "candidate_count": int((authoritative_fallback_result or {}).get("candidate_count") or 1),
-                    "geocode_location_type": "local_authoritative_dataset",
-                    "geocode_precision": "parcel_or_address_point",
-                    "parsed_candidates": (authoritative_fallback_result or {}).get("top_candidates"),
-                    "trust_filter_rule": "local_authoritative_dataset_match",
-                    "resolved_latitude": float(lat),
-                    "resolved_longitude": float(lon),
-                    "rejection_reason": None,
-                    "trusted_match_failure_reason": None,
-                    "fallback_eligibility": True,
-                    "resolution_method": stage_label,
-                    "resolution_status": "accepted",
-                    "fallback_used": True,
-                    "final_location_confidence": local_confidence,
-                    "local_address_lookup_attempted": True,
-                    "local_address_lookup_result": authoritative_fallback_result,
-                    "address_point_match_found": True,
-                    "local_fallback_result": authoritative_fallback_result,
-                }
-                provider_statuses[stage_label] = "accepted"
-                provider_attempts.append(
-                    _build_provider_attempt(
-                        stage=stage_label,
-                        provider_name=stage_label,
-                        query=submitted_address,
-                        accepted=True,
-                        geocode_status="accepted",
-                        geocode_outcome="geocode_succeeded_untrusted",
-                        rejection_reason=None,
-                        candidate_count=int((authoritative_fallback_result or {}).get("candidate_count") or 1),
-                    )
-                )
-                accepted = _finalize_if_prepared_region(
+            source_type = str(local_best.get("source_type") or "")
+            stage_label = "county_address_points" if source_type == "county_address_dataset" else "local_authoritative_fallback"
+            confidence = str((authoritative_fallback_result or {}).get("confidence") or local_best.get("confidence_tier") or "low")
+            accepted = _confidence_allows_auto_use(confidence)
+            _upsert_stage_status(stage_label, "accepted" if accepted else "low_confidence")
+            provider_attempts.append(
+                _build_provider_attempt(
                     stage=stage_label,
-                    lat=float(lat),
-                    lon=float(lon),
-                    source=stage_label,
-                    geocode_meta=geocode_meta,
+                    provider_name=stage_label,
+                    query=submitted_address,
+                    accepted=accepted,
+                    geocode_status="accepted" if accepted else "low_confidence",
+                    geocode_outcome="geocode_succeeded_untrusted" if accepted else "geocode_failed",
+                    rejection_reason=None if accepted else str((authoritative_fallback_result or {}).get("failure_reason") or "candidate_below_auto_use_confidence"),
+                    candidate_count=int((authoritative_fallback_result or {}).get("candidate_count") or 1),
                 )
-                if accepted is not None:
-                    return accepted
-            _capture_low_confidence_candidate(
-                stage="county_address_points",
-                lat=float(lat),
-                lon=float(lon),
-                provider_name="county_address_points",
-                confidence_tier=local_confidence,
-                matched_address=str(best_match.get("matched_address") or ""),
-                candidate_count=int((authoritative_fallback_result or {}).get("candidate_count") or 0),
-                rejection_reason="candidate_below_auto_use_confidence",
             )
-    elif isinstance((authoritative_fallback_result or {}).get("best_candidate"), dict):
-        best_candidate = dict((authoritative_fallback_result or {}).get("best_candidate") or {})
+            local_meta = {
+                "geocode_status": "accepted",
+                "geocode_outcome": "geocode_succeeded_untrusted",
+                "trusted_match_status": "trusted" if confidence == "high" else "untrusted_fallback",
+                "geocode_trust_tier": confidence,
+                "geocode_decision": (
+                    "resolved_via_county_address_points"
+                    if stage_label == "county_address_points"
+                    else "resolved_via_local_authoritative_fallback"
+                ),
+                "submitted_address": submitted_address,
+                "normalized_address": (authoritative_fallback_result or {}).get("normalized_address") or normalized_address,
+                "provider": stage_label,
+                "geocode_provider": stage_label,
+                "geocode_source": stage_label,
+                "matched_address": local_best.get("matched_address"),
+                "geocoded_address": local_best.get("matched_address"),
+                "confidence_score": local_best.get("match_score"),
+                "candidate_count": int((authoritative_fallback_result or {}).get("candidate_count") or 1),
+                "geocode_precision": "parcel_or_address_point",
+                "match_method": (authoritative_fallback_result or {}).get("match_method") or local_best.get("match_type"),
+                "diagnostics": list((authoritative_fallback_result or {}).get("diagnostics") or []),
+            }
+            _register_candidate(
+                stage=stage_label,
+                latitude=float(lat),
+                longitude=float(lon),
+                geocode_meta=local_meta,
+                source=stage_label,
+                source_type=source_type,
+                source_record_id=_candidate_record_id(local_best),
+            )
+    else:
+        _upsert_stage_status("county_address_points", "no_match")
+        provider_attempts.append(
+            _build_provider_attempt(
+                stage="county_address_points",
+                provider_name="county_address_points",
+                query=submitted_address,
+                accepted=False,
+                geocode_status="no_match",
+                geocode_outcome="geocode_failed",
+                rejection_reason=str((authoritative_fallback_result or {}).get("failure_reason") or "no_local_authoritative_match"),
+                candidate_count=int((authoritative_fallback_result or {}).get("candidate_count") or 0),
+            )
+        )
+
+    # Stage D: statewide parcels / parcel-centric fallback
+    try:
+        statewide_parcel_result = _resolve_statewide_parcel_coordinates(submitted_address)
+    except Exception as exc:  # pragma: no cover
+        statewide_parcel_result = {
+            "matched": False,
+            "candidate_count": 0,
+            "failure_reason": "statewide_parcel_resolver_error",
+            "diagnostics": [f"Statewide parcel resolver error: {exc}"],
+            "top_candidates": [],
+        }
+    parcel_best = (
+        dict((statewide_parcel_result or {}).get("best_match") or {})
+        if bool((statewide_parcel_result or {}).get("matched"))
+        else dict((statewide_parcel_result or {}).get("best_candidate") or {})
+    )
+    if parcel_best:
         try:
-            lat = float(best_candidate["latitude"])
-            lon = float(best_candidate["longitude"])
+            lat = float(parcel_best["latitude"])
+            lon = float(parcel_best["longitude"])
         except (TypeError, ValueError, KeyError):
             lat = None  # type: ignore[assignment]
             lon = None  # type: ignore[assignment]
         if lat is not None and lon is not None:
-            _capture_low_confidence_candidate(
-                stage="county_address_points",
-                lat=float(lat),
-                lon=float(lon),
-                provider_name="county_address_points",
-                confidence_tier=str(best_candidate.get("confidence_tier") or "low"),
-                matched_address=str(best_candidate.get("matched_address") or ""),
-                candidate_count=int((authoritative_fallback_result or {}).get("candidate_count") or 0),
-                rejection_reason=str((authoritative_fallback_result or {}).get("failure_reason") or "low_confidence_local_authoritative_candidate"),
+            confidence = str((statewide_parcel_result or {}).get("confidence") or parcel_best.get("confidence_tier") or "low")
+            accepted = _confidence_allows_auto_use(confidence)
+            _upsert_stage_status("statewide_parcel_lookup", "accepted" if accepted else "low_confidence")
+            provider_attempts.append(
+                _build_provider_attempt(
+                    stage="statewide_parcel_lookup",
+                    provider_name="statewide_parcel_lookup",
+                    query=submitted_address,
+                    accepted=accepted,
+                    geocode_status="accepted" if accepted else "low_confidence",
+                    geocode_outcome="geocode_succeeded_untrusted" if accepted else "geocode_failed",
+                    rejection_reason=None if accepted else str((statewide_parcel_result or {}).get("failure_reason") or "candidate_below_auto_use_confidence"),
+                    candidate_count=int((statewide_parcel_result or {}).get("candidate_count") or 1),
+                )
             )
-    provider_statuses["county_address_points"] = (
-        "low_confidence"
-        if bool((authoritative_fallback_result or {}).get("candidate_count"))
-        else "no_match"
-    )
-    provider_attempts.append(
-        _build_provider_attempt(
-            stage="county_address_points",
-            provider_name="county_address_points",
-            query=submitted_address,
-            accepted=False,
-            geocode_status=(
-                "low_confidence"
-                if bool((authoritative_fallback_result or {}).get("candidate_count"))
-                else "no_match"
-            ),
-            geocode_outcome="geocode_failed",
-            rejection_reason=str((authoritative_fallback_result or {}).get("failure_reason") or "no_local_authoritative_match"),
-            candidate_count=int((authoritative_fallback_result or {}).get("candidate_count") or 0),
+            parcel_meta = {
+                "geocode_status": "accepted",
+                "geocode_outcome": "geocode_succeeded_untrusted",
+                "trusted_match_status": "trusted" if confidence == "high" else "untrusted_fallback",
+                "geocode_trust_tier": confidence,
+                "geocode_decision": "resolved_via_statewide_parcel_lookup",
+                "submitted_address": submitted_address,
+                "normalized_address": (statewide_parcel_result or {}).get("normalized_address") or normalized_address,
+                "provider": "statewide_parcel_lookup",
+                "geocode_provider": "statewide_parcel_lookup",
+                "geocode_source": "statewide_parcel_lookup",
+                "matched_address": parcel_best.get("matched_address"),
+                "geocoded_address": parcel_best.get("matched_address"),
+                "confidence_score": parcel_best.get("match_score"),
+                "candidate_count": int((statewide_parcel_result or {}).get("candidate_count") or 1),
+                "geocode_precision": "parcel",
+                "match_method": (statewide_parcel_result or {}).get("match_method") or parcel_best.get("match_type"),
+                "diagnostics": list((statewide_parcel_result or {}).get("diagnostics") or []),
+            }
+            _register_candidate(
+                stage="statewide_parcel_lookup",
+                latitude=float(lat),
+                longitude=float(lon),
+                geocode_meta=parcel_meta,
+                source="statewide_parcel_lookup",
+                source_type=str(parcel_best.get("source_type") or "statewide_parcel_dataset"),
+                source_record_id=_candidate_record_id(parcel_best),
+            )
+    else:
+        _upsert_stage_status("statewide_parcel_lookup", "no_match")
+        provider_attempts.append(
+            _build_provider_attempt(
+                stage="statewide_parcel_lookup",
+                provider_name="statewide_parcel_lookup",
+                query=submitted_address,
+                accepted=False,
+                geocode_status="no_match",
+                geocode_outcome="geocode_failed",
+                rejection_reason=str((statewide_parcel_result or {}).get("failure_reason") or "no_statewide_parcel_match"),
+                candidate_count=int((statewide_parcel_result or {}).get("candidate_count") or 0),
+            )
         )
-    )
 
-    # Stage D: explicit fallback records.
+    # Stage E: explicit fallback records
     local_fallback_attempted = True
     try:
         local_fallback_result = _resolve_local_fallback_coordinates(submitted_address)
-    except Exception as exc:  # pragma: no cover - defensive logging path
+    except Exception as exc:  # pragma: no cover
         local_fallback_result = {
             "matched": False,
-            "diagnostics": [f"Local fallback resolver error: {exc}"],
             "candidate_count": 0,
+            "failure_reason": "explicit_fallback_resolver_error",
+            "diagnostics": [f"Explicit fallback resolver error: {exc}"],
             "top_candidates": [],
         }
-    if bool((local_fallback_result or {}).get("matched")) and isinstance(
-        (local_fallback_result or {}).get("best_match"), dict
-    ):
-        best_match = dict((local_fallback_result or {}).get("best_match") or {})
+    fallback_best = (
+        dict((local_fallback_result or {}).get("best_match") or {})
+        if bool((local_fallback_result or {}).get("matched"))
+        else dict((local_fallback_result or {}).get("best_candidate") or {})
+    )
+    if fallback_best:
         try:
-            lat = float(best_match["latitude"])
-            lon = float(best_match["longitude"])
+            lat = float(fallback_best["latitude"])
+            lon = float(fallback_best["longitude"])
         except (TypeError, ValueError, KeyError):
             lat = None  # type: ignore[assignment]
             lon = None  # type: ignore[assignment]
         if lat is not None and lon is not None:
-            local_confidence = str((local_fallback_result or {}).get("confidence") or "low")
-            if _confidence_allows_auto_use(local_confidence):
-                geocode_meta = {
-                    "geocode_status": "accepted",
-                    "geocode_outcome": "geocode_succeeded_untrusted",
-                    "trusted_match_status": "untrusted_fallback",
-                    "geocode_trust_tier": local_confidence,
-                    "geocode_decision": "resolved_via_explicit_fallback_record",
-                    "submitted_address": submitted_address,
-                    "normalized_address": (local_fallback_result or {}).get("normalized_address") or normalized_address,
-                    "geocode_source": "explicit_fallback_record",
-                    "geocode_provider": "explicit_fallback_record",
-                    "provider": "explicit_fallback_record",
-                    "geocoded_address": best_match.get("matched_address"),
-                    "matched_address": best_match.get("matched_address"),
-                    "geocoded_point": {"latitude": float(lat), "longitude": float(lon)},
-                    "confidence_score": best_match.get("match_score"),
-                    "candidate_count": int((local_fallback_result or {}).get("candidate_count") or 1),
-                    "geocode_location_type": "explicit_fallback_record",
-                    "geocode_precision": "parcel_or_address_point" if local_confidence == "high" else "interpolated",
-                    "parsed_candidates": (local_fallback_result or {}).get("top_candidates"),
-                    "trust_filter_rule": "explicit_fallback_record_match",
-                    "resolved_latitude": float(lat),
-                    "resolved_longitude": float(lon),
-                    "rejection_reason": None,
-                    "trusted_match_failure_reason": None,
-                    "fallback_eligibility": True,
-                    "resolution_method": "explicit_fallback_record",
-                    "resolution_status": "accepted",
-                    "fallback_used": True,
-                    "final_location_confidence": local_confidence,
-                    "local_fallback_result": local_fallback_result,
-                }
-                provider_statuses["explicit_fallback_record"] = "accepted"
-                provider_attempts.append(
-                    _build_provider_attempt(
-                        stage="explicit_fallback_record",
-                        provider_name="explicit_fallback_record",
-                        query=submitted_address,
-                        accepted=True,
-                        geocode_status="accepted",
-                        geocode_outcome="geocode_succeeded_untrusted",
-                        rejection_reason=None,
-                        candidate_count=int((local_fallback_result or {}).get("candidate_count") or 1),
-                    )
-                )
-                accepted = _finalize_if_prepared_region(
+            confidence = str((local_fallback_result or {}).get("confidence") or fallback_best.get("confidence_tier") or "low")
+            accepted = _confidence_allows_auto_use(confidence)
+            _upsert_stage_status("explicit_fallback_record", "accepted" if accepted else "low_confidence")
+            provider_attempts.append(
+                _build_provider_attempt(
                     stage="explicit_fallback_record",
-                    lat=float(lat),
-                    lon=float(lon),
-                    source="explicit_fallback_record",
-                    geocode_meta=geocode_meta,
+                    provider_name="explicit_fallback_record",
+                    query=submitted_address,
+                    accepted=accepted,
+                    geocode_status="accepted" if accepted else "low_confidence",
+                    geocode_outcome="geocode_succeeded_untrusted" if accepted else "geocode_failed",
+                    rejection_reason=None if accepted else str((local_fallback_result or {}).get("failure_reason") or "candidate_below_auto_use_confidence"),
+                    candidate_count=int((local_fallback_result or {}).get("candidate_count") or 1),
                 )
-                if accepted is not None:
-                    return accepted
-            _capture_low_confidence_candidate(
-                stage="explicit_fallback_record",
-                lat=float(lat),
-                lon=float(lon),
-                provider_name="explicit_fallback_record",
-                confidence_tier=local_confidence,
-                matched_address=str(best_match.get("matched_address") or ""),
-                candidate_count=int((local_fallback_result or {}).get("candidate_count") or 0),
-                rejection_reason="candidate_below_auto_use_confidence",
             )
-    elif isinstance((local_fallback_result or {}).get("best_candidate"), dict):
-        best_candidate = dict((local_fallback_result or {}).get("best_candidate") or {})
-        try:
-            lat = float(best_candidate["latitude"])
-            lon = float(best_candidate["longitude"])
-        except (TypeError, ValueError, KeyError):
-            lat = None  # type: ignore[assignment]
-            lon = None  # type: ignore[assignment]
-        if lat is not None and lon is not None:
-            _capture_low_confidence_candidate(
+            fallback_meta = {
+                "geocode_status": "accepted",
+                "geocode_outcome": "geocode_succeeded_untrusted",
+                "trusted_match_status": "trusted" if confidence == "high" else "untrusted_fallback",
+                "geocode_trust_tier": confidence,
+                "geocode_decision": "resolved_via_explicit_fallback_record",
+                "submitted_address": submitted_address,
+                "normalized_address": (local_fallback_result or {}).get("normalized_address") or normalized_address,
+                "provider": "explicit_fallback_record",
+                "geocode_provider": "explicit_fallback_record",
+                "geocode_source": "explicit_fallback_record",
+                "matched_address": fallback_best.get("matched_address"),
+                "geocoded_address": fallback_best.get("matched_address"),
+                "confidence_score": fallback_best.get("match_score"),
+                "candidate_count": int((local_fallback_result or {}).get("candidate_count") or 1),
+                "geocode_precision": "parcel_or_address_point" if confidence == "high" else "interpolated",
+                "match_method": (local_fallback_result or {}).get("match_method") or fallback_best.get("match_type"),
+                "diagnostics": list((local_fallback_result or {}).get("diagnostics") or []),
+            }
+            _register_candidate(
                 stage="explicit_fallback_record",
-                lat=float(lat),
-                lon=float(lon),
-                provider_name="explicit_fallback_record",
-                confidence_tier=str(best_candidate.get("confidence_tier") or "low"),
-                matched_address=str(best_candidate.get("matched_address") or ""),
-                candidate_count=int((local_fallback_result or {}).get("candidate_count") or 0),
-                rejection_reason=str((local_fallback_result or {}).get("failure_reason") or "low_confidence_explicit_fallback_candidate"),
+                latitude=float(lat),
+                longitude=float(lon),
+                geocode_meta=fallback_meta,
+                source="explicit_fallback_record",
+                source_type="explicit_fallback_record",
+                source_record_id=_candidate_record_id(fallback_best),
             )
-    provider_statuses["explicit_fallback_record"] = (
-        "low_confidence"
-        if bool((local_fallback_result or {}).get("candidate_count"))
-        else "no_match"
-    )
-    provider_attempts.append(
-        _build_provider_attempt(
-            stage="explicit_fallback_record",
-            provider_name="explicit_fallback_record",
-            query=submitted_address,
-            accepted=False,
-            geocode_status=(
-                "low_confidence"
-                if bool((local_fallback_result or {}).get("candidate_count"))
-                else "no_match"
-            ),
-            geocode_outcome="geocode_failed",
-            rejection_reason=str((local_fallback_result or {}).get("failure_reason") or "no_explicit_fallback_match"),
-            candidate_count=int((local_fallback_result or {}).get("candidate_count") or 0),
+    else:
+        _upsert_stage_status("explicit_fallback_record", "no_match")
+        provider_attempts.append(
+            _build_provider_attempt(
+                stage="explicit_fallback_record",
+                provider_name="explicit_fallback_record",
+                query=submitted_address,
+                accepted=False,
+                geocode_status="no_match",
+                geocode_outcome="geocode_failed",
+                rejection_reason=str((local_fallback_result or {}).get("failure_reason") or "no_explicit_fallback_match"),
+                candidate_count=int((local_fallback_result or {}).get("candidate_count") or 0),
+            )
         )
-    )
 
-    # Stage E: provider backoff query variants for street/locality-only matching.
+    # Stage F: provider backoff query variants
     if _env_flag("WF_GEOCODE_ENABLE_PROVIDER_BACKOFF_QUERY", True):
         for query in _build_provider_backoff_queries(submitted_address):
             if query == submitted_address:
@@ -5616,6 +5512,28 @@ def _resolve_trusted_geocode(
                     geocoder_client=geocoder,
                     provider_override=getattr(geocoder, "provider_name", None),
                 )
+                trust_tier = str(geocode_meta.get("geocode_trust_tier") or "low")
+                accepted = _confidence_allows_auto_use(trust_tier)
+                _upsert_stage_status("provider_backoff_query", "accepted" if accepted else "low_confidence")
+                provider_attempts.append(
+                    _build_provider_attempt(
+                        stage="provider_backoff_query",
+                        provider_name=str(geocode_meta.get("provider") or getattr(geocoder, "provider_name", "primary")),
+                        query=query,
+                        accepted=accepted,
+                        geocode_status=str(geocode_meta.get("geocode_status") or ("accepted" if accepted else "low_confidence")),
+                        geocode_outcome=str(geocode_meta.get("geocode_outcome") or "geocode_succeeded_untrusted"),
+                        rejection_reason=None if accepted else "candidate_below_auto_use_confidence",
+                        candidate_count=(int(geocode_meta.get("candidate_count")) if geocode_meta.get("candidate_count") is not None else None),
+                    )
+                )
+                _register_candidate(
+                    stage="provider_backoff_query",
+                    latitude=float(lat),
+                    longitude=float(lon),
+                    geocode_meta=dict(geocode_meta or {}),
+                    source=str(source),
+                )
             except HTTPException as exc:
                 last_failure = exc
                 _record_failure(
@@ -5624,141 +5542,30 @@ def _resolve_trusted_geocode(
                     str(getattr(geocoder, "provider_name", "OpenStreetMap Nominatim")),
                     exc,
                 )
-                continue
 
-            provider_name = str(geocode_meta.get("provider") or getattr(geocoder, "provider_name", "primary"))
-            trust_tier = str(geocode_meta.get("geocode_trust_tier") or "low")
-            if _confidence_allows_auto_use(trust_tier):
-                provider_statuses["provider_backoff_query"] = "accepted"
-                provider_attempts.append(
-                    _build_provider_attempt(
-                        stage="provider_backoff_query",
-                        provider_name=provider_name,
-                        query=query,
-                        accepted=True,
-                        geocode_status=str(geocode_meta.get("geocode_status") or "accepted"),
-                        geocode_outcome=str(geocode_meta.get("geocode_outcome") or "geocode_succeeded_untrusted"),
-                        rejection_reason=None,
-                        candidate_count=(
-                            int(geocode_meta.get("candidate_count"))
-                            if geocode_meta.get("candidate_count") is not None
-                            else None
-                        ),
-                    )
-                )
-                geocode_meta["resolution_method"] = "provider_backoff_query"
-                geocode_meta["resolution_status"] = "accepted"
-                geocode_meta["fallback_used"] = True
-                geocode_meta["geocode_decision"] = "resolved_via_provider_backoff_query"
-                geocode_meta["final_location_confidence"] = trust_tier
-                geocode_meta["submitted_address"] = submitted_address
-                geocode_meta["normalized_address"] = normalized_address
-                geocode_meta["local_fallback_result"] = local_fallback_result
-                accepted = _finalize_if_prepared_region(
-                    stage="provider_backoff_query",
-                    lat=float(lat),
-                    lon=float(lon),
-                    source=source,
-                    geocode_meta=geocode_meta,
-                )
-                if accepted is not None:
-                    return accepted
-
-            provider_statuses["provider_backoff_query"] = "low_confidence"
-            provider_attempts.append(
-                _build_provider_attempt(
-                    stage="provider_backoff_query",
-                    provider_name=provider_name,
-                    query=query,
-                    accepted=False,
-                    geocode_status="low_confidence",
-                    geocode_outcome="geocode_succeeded_untrusted",
-                    rejection_reason="candidate_below_auto_use_confidence",
-                    candidate_count=(
-                        int(geocode_meta.get("candidate_count"))
-                        if geocode_meta.get("candidate_count") is not None
-                        else None
-                    ),
-                )
-            )
-            _capture_low_confidence_candidate(
-                stage="provider_backoff_query",
-                lat=lat,
-                lon=lon,
-                provider_name=provider_name,
-                confidence_tier=trust_tier,
-                matched_address=str(geocode_meta.get("matched_address") or ""),
-                candidate_count=(
-                    int(geocode_meta.get("candidate_count"))
-                    if geocode_meta.get("candidate_count") is not None
-                    else None
-                ),
-                rejection_reason="candidate_below_auto_use_confidence",
-            )
-
-    if property_anchor_point is None and outside_region_candidate is not None:
-        deferred_meta = dict(outside_region_candidate.get("geocode_meta") or {})
-        deferred_meta["resolution_status"] = "accepted"
-        deferred_meta["fallback_used"] = bool(
-            deferred_meta.get("resolution_method") not in {None, "primary_geocoder"}
-        )
-        deferred_meta["geocode_decision"] = (
-            deferred_meta.get("geocode_decision")
-            or "accepted_candidate_outside_prepared_regions"
-        )
-        return _finalize_success(
-            lat=float(outside_region_candidate["latitude"]),
-            lon=float(outside_region_candidate["longitude"]),
-            source=str(outside_region_candidate.get("source") or deferred_meta.get("provider") or "geocoder"),
-            geocode_meta=deferred_meta,
-        )
-
-    # Stage F: user-supplied property anchor fallback.
+    # Stage G: user selected property anchor
     if property_anchor_point is not None:
         lat = float(property_anchor_point["latitude"])
         lon = float(property_anchor_point["longitude"])
-        geocode_meta = {
+        user_meta = {
             "geocode_status": "accepted",
             "geocode_outcome": "geocode_succeeded_untrusted",
-            "trusted_match_status": "untrusted_fallback",
-            "geocode_trust_tier": "medium",
+            "trusted_match_status": "trusted",
+            "geocode_trust_tier": "high",
             "geocode_decision": "resolved_via_user_selected_point",
             "submitted_address": submitted_address,
             "normalized_address": normalized_address,
-            "geocode_source": "user_selected_point",
-            "geocode_provider": "user_selected_point",
             "provider": "user_selected_point",
-            "geocoded_address": submitted_address,
+            "geocode_provider": "user_selected_point",
+            "geocode_source": "user_selected_point",
             "matched_address": None,
-            "geocoded_point": {"latitude": lat, "longitude": lon},
-            "confidence_score": None,
+            "geocoded_address": submitted_address,
             "candidate_count": 0,
-            "geocode_location_type": "user_selected_point",
             "geocode_precision": "user_selected_point",
-            "parsed_candidates": [],
-            "trust_filter_rule": "user_selected_point_fallback",
-            "resolved_latitude": lat,
-            "resolved_longitude": lon,
-            "rejection_reason": None,
-            "trusted_match_failure_reason": None,
-            "fallback_eligibility": True,
-            "resolution_method": "user_selected_point",
-            "resolution_status": "accepted",
-            "fallback_used": True,
-            "final_location_confidence": "medium",
-            "coordinate_source": "user_selected_point",
-            "match_confidence": "medium",
-            "match_method": "resolved_via_user_selected_point",
-            "candidate_sources_attempted": [str(row.get("stage")) for row in provider_attempts] + ["user_selected_point"],
-            "candidates_found": sum(
-                1
-                for row in provider_attempts
-                if isinstance(row.get("candidate_count"), int) and int(row["candidate_count"]) > 0
-            ),
-            "authoritative_fallback_result": authoritative_fallback_result,
-            "local_fallback_result": local_fallback_result,
+            "match_method": "user_selected_point",
+            "diagnostics": ["User-selected property anchor point supplied by request payload."],
         }
-        provider_statuses["user_selected_point"] = "accepted"
+        _upsert_stage_status("user_selected_point", "accepted")
         provider_attempts.append(
             _build_provider_attempt(
                 stage="user_selected_point",
@@ -5771,97 +5578,342 @@ def _resolve_trusted_geocode(
                 candidate_count=0,
             )
         )
-        return _finalize_success(lat=lat, lon=lon, source="user_selected_point", geocode_meta=geocode_meta)
+        _register_candidate(
+            stage="user_selected_point",
+            latitude=lat,
+            longitude=lon,
+            geocode_meta=user_meta,
+            source="user_selected_point",
+        )
 
-    # All resolution stages failed; return enriched failure diagnostics.
-    if last_failure is not None and isinstance(last_failure.detail, dict):
-        detail = dict(last_failure.detail)
-        status_code = int(last_failure.status_code)
-    else:
-        detail = {
-            "error": "geocoding_failed",
-            "geocode_status": "provider_error",
-            "geocode_outcome": "geocode_failed",
-            "trusted_match_status": "rejected",
-            "geocode_trust_tier": "low",
-            "rejection_reason": "all resolution stages failed",
-            "message": _geocode_error_message("provider_error", purpose),
-            "submitted_address": submitted_address,
-            "normalized_address": normalized_address,
-        }
-        status_code = 503
-    detail["resolution_status"] = "unresolved"
-    detail["resolution_method"] = "none"
-    detail["provider_attempts"] = provider_attempts
-    detail["provider_statuses"] = provider_statuses
-    detail["local_fallback_attempted"] = bool(local_fallback_attempted)
-    detail["authoritative_fallback_result"] = authoritative_fallback_result
-    detail["local_fallback_result"] = local_fallback_result
-    detail["candidate_sources_attempted"] = [str(row.get("stage")) for row in provider_attempts]
-    detail["candidates_found"] = sum(
-        1
-        for row in provider_attempts
-        if isinstance(row.get("candidate_count"), int) and int(row["candidate_count"]) > 0
+    # Rank candidates using score + source quality + in-region preference.
+    resolver_candidates.sort(
+        key=lambda row: (
+            -float(row.get("rank_score") or 0.0),
+            -int(bool(row.get("coverage_available"))),
+            -_confidence_rank(str(row.get("confidence_tier") or "low")),
+            str(row.get("source_stage") or ""),
+        )
     )
-    detail["coordinate_source"] = None
-    detail["final_coordinate_source"] = None
-    detail["final_coordinates_used"] = None
-    detail["match_confidence"] = "low"
-    detail["match_method"] = "unresolved"
-    detail["final_location_confidence"] = "low"
-    detail["fallback_used"] = False
-    if low_confidence_candidate is not None:
-        detail["geocode_status"] = "low_confidence"
-        detail["geocode_outcome"] = "geocode_failed"
-        detail["trusted_match_status"] = "rejected"
-        detail["geocode_trust_tier"] = "low"
-        detail["rejection_reason"] = str(low_confidence_candidate.get("rejection_reason") or "candidate_below_auto_use_confidence")
-        detail["trusted_match_failure_reason"] = "candidate_below_auto_use_confidence"
-        detail["rejection_category"] = "location_needs_confirmation"
-        detail["message"] = (
-            "Geocoding found candidate locations, but confidence was not high enough for automatic property "
-            "coordinates. Please confirm by selecting your home on the map."
-        )
+
+    strong_candidates = [row for row in resolver_candidates if _confidence_rank(str(row.get("confidence_tier"))) >= 2]
+    disagreement_rows: list[dict[str, Any]] = []
+    for idx, first in enumerate(strong_candidates):
+        nearest = None
+        for second in strong_candidates[idx + 1 :]:
+            distance = _candidate_distance_m(first, second)
+            disagreement_rows.append(
+                {
+                    "first_source": first.get("source_stage"),
+                    "second_source": second.get("source_stage"),
+                    "distance_m": round(distance, 2),
+                }
+            )
+            if nearest is None or distance < nearest:
+                nearest = distance
+        first["nearest_strong_candidate_distance_m"] = round(nearest, 2) if nearest is not None else None
+
+    auto_candidates = [row for row in resolver_candidates if bool(row.get("auto_eligible"))]
+    in_region_auto = [row for row in auto_candidates if bool(row.get("coverage_available"))]
+    candidate_needs_confirmation = resolver_candidates[0] if resolver_candidates else None
+
+    selected_candidate: dict[str, Any] | None = None
+    if in_region_auto:
+        selected_candidate = in_region_auto[0]
+    elif auto_candidates:
+        selected_candidate = auto_candidates[0]
+
+    ambiguous_conflict = False
+    if selected_candidate is not None:
+        selection_pool = in_region_auto if in_region_auto else auto_candidates
+        if len(selection_pool) >= 2:
+            second = selection_pool[1]
+            distance = _candidate_distance_m(selected_candidate, second)
+            score_gap = abs(float(selected_candidate.get("rank_score") or 0.0) - float(second.get("rank_score") or 0.0))
+            if (
+                distance > conflict_distance_m
+                and score_gap <= conflict_score_margin
+                and selected_candidate.get("source_stage") != "user_selected_point"
+            ):
+                ambiguous_conflict = True
+
+    if selected_candidate is None or ambiguous_conflict:
+        if last_failure is not None and isinstance(last_failure.detail, dict):
+            detail = dict(last_failure.detail)
+            status_code = int(last_failure.status_code)
+        else:
+            detail = {
+                "error": "geocoding_failed",
+                "geocode_status": "no_match",
+                "geocode_outcome": "geocode_failed",
+                "trusted_match_status": "rejected",
+                "geocode_trust_tier": "low",
+                "rejection_reason": "unresolved_no_safe_candidate",
+                "message": _geocode_error_message("no_match", purpose),
+                "submitted_address": submitted_address,
+                "normalized_address": normalized_address,
+            }
+            status_code = 422
+
+        detail["provider_attempts"] = provider_attempts
+        detail["provider_statuses"] = provider_statuses
+        detail["candidate_sources_attempted"] = [str(row.get("stage")) for row in provider_attempts]
+        detail["candidates_found"] = len(resolver_candidates)
+        detail["resolver_candidates"] = [
+            {
+                "latitude": row.get("latitude"),
+                "longitude": row.get("longitude"),
+                "source": row.get("source"),
+                "source_stage": row.get("source_stage"),
+                "source_type": row.get("source_type"),
+                "source_record_id": row.get("source_record_id"),
+                "formatted_address": row.get("formatted_address"),
+                "normalized_address": row.get("normalized_address"),
+                "match_method": row.get("match_method"),
+                "confidence_score": row.get("confidence_score"),
+                "confidence_tier": row.get("confidence_tier"),
+                "precision_type": row.get("precision_type"),
+                "rank_score": row.get("rank_score"),
+                "coverage_available": row.get("coverage_available"),
+                "resolved_region_id": row.get("resolved_region_id"),
+            }
+            for row in resolver_candidates[:10]
+        ]
+        detail["candidate_disagreement_distances"] = disagreement_rows
+        detail["local_fallback_attempted"] = bool(local_fallback_attempted)
+        detail["authoritative_fallback_result"] = authoritative_fallback_result
+        detail["statewide_parcel_result"] = statewide_parcel_result
+        detail["local_fallback_result"] = local_fallback_result
+        detail["resolution_method"] = "none"
+        detail["coordinate_source"] = None
+        detail["final_coordinate_source"] = None
+        detail["final_coordinates_used"] = None
+        detail["match_confidence"] = "low"
+        detail["final_location_confidence"] = "low"
+        detail["fallback_used"] = False
+        detail["needs_user_confirmation"] = True
         detail["recommended_action"] = "Select your home location on the map to continue assessment."
-        detail["candidate_needs_confirmation"] = low_confidence_candidate
-        status_code = 422
-    elif str(detail.get("geocode_status") or "") == "no_match":
-        detail["message"] = (
-            "Geocoding failed for assessment. We could not resolve this address from configured providers or "
-            "local fallback data. Please select your home on the map to continue."
-            if purpose == "assessment"
-            else _geocode_error_message("no_match", purpose)
-        )
-        detail["recommended_action"] = (
-            "Provide a user-selected map point/property_anchor_point to continue assessment."
-            if purpose == "assessment"
-            else "Verify the address or provide coordinates directly."
-        )
-        detail["rejection_category"] = "no_geocode_candidates"
+
+        if ambiguous_conflict:
+            detail["resolution_status"] = "ambiguous_conflict"
+            detail["geocode_status"] = "low_confidence"
+            detail["geocode_outcome"] = "geocode_failed"
+            detail["trusted_match_status"] = "rejected"
+            detail["trusted_match_failure_reason"] = "candidate_conflict_across_sources"
+            detail["rejection_reason"] = "candidate_conflict_across_sources"
+            detail["rejection_category"] = "ambiguous_conflict"
+            detail["message"] = (
+                "Multiple plausible property coordinates from different sources disagree materially. "
+                "Please confirm your home location on the map."
+            )
+            if selected_candidate is not None:
+                detail["candidate_needs_confirmation"] = {
+                    "latitude": selected_candidate.get("latitude"),
+                    "longitude": selected_candidate.get("longitude"),
+                    "source_stage": selected_candidate.get("source_stage"),
+                    "confidence_tier": selected_candidate.get("confidence_tier"),
+                }
+            status_code = 422
+        elif resolver_candidates:
+            detail["resolution_status"] = "unresolved_no_safe_candidate"
+            detail["geocode_status"] = "low_confidence"
+            detail["geocode_outcome"] = "geocode_failed"
+            detail["trusted_match_status"] = "rejected"
+            detail["trusted_match_failure_reason"] = "candidate_below_auto_use_confidence"
+            detail["rejection_reason"] = "candidate_below_auto_use_confidence"
+            detail["rejection_category"] = "location_needs_confirmation"
+            detail["message"] = (
+                "Address candidates were found, but none were safe enough for automatic property coordinates. "
+                "Please continue by selecting your home location on the map."
+            )
+            detail["candidate_needs_confirmation"] = {
+                "latitude": candidate_needs_confirmation.get("latitude") if candidate_needs_confirmation else None,
+                "longitude": candidate_needs_confirmation.get("longitude") if candidate_needs_confirmation else None,
+                "source_stage": candidate_needs_confirmation.get("source_stage") if candidate_needs_confirmation else None,
+                "confidence_tier": candidate_needs_confirmation.get("confidence_tier") if candidate_needs_confirmation else None,
+                "match_method": candidate_needs_confirmation.get("match_method") if candidate_needs_confirmation else None,
+            }
+            status_code = 422
+        else:
+            detail["resolution_status"] = "unresolved"
+            if str(detail.get("geocode_status") or "") == "no_match":
+                detail["rejection_category"] = "no_geocode_candidates"
+                detail["message"] = (
+                    "Geocoding failed for assessment. No safe candidate was found across configured providers "
+                    "or local authoritative datasets."
+                )
+                status_code = 422
+
+        if _is_dev_mode():
+            LOGGER.warning(
+                "route_geocode_resolution %s",
+                json.dumps(
+                    {
+                        "event": "route_geocode_resolution",
+                        "route_name": route_name,
+                        "status_code": status_code,
+                        "submitted_address": str(detail.get("submitted_address") or submitted_address),
+                        "normalized_address": str(detail.get("normalized_address") or normalized_address),
+                        "geocode_status": detail.get("geocode_status") or "provider_error",
+                        "geocode_outcome": detail.get("geocode_outcome") or "geocode_failed",
+                        "trusted_match_status": detail.get("trusted_match_status") or "rejected",
+                        "resolution_status": detail.get("resolution_status"),
+                        "rejection_reason": detail.get("rejection_reason"),
+                        "provider_attempts": provider_attempts,
+                        "candidates_found": len(resolver_candidates),
+                    },
+                    sort_keys=True,
+                ),
+            )
+        raise HTTPException(status_code=status_code, detail=detail)
+
+    # Finalize selected candidate.
+    selected_meta = dict(selected_candidate.get("geocode_meta") or {})
+    selected_lat = float(selected_candidate["latitude"])
+    selected_lon = float(selected_candidate["longitude"])
+    selected_source = str(selected_candidate.get("source") or selected_candidate.get("source_stage") or "resolver")
+    selected_coverage = _region_coverage_for_coordinates(selected_lat, selected_lon)
+    selected_confidence = str(selected_candidate.get("confidence_tier") or "low")
+    selected_trust_status = "trusted" if _confidence_rank(selected_confidence) >= 3 else "untrusted_fallback"
+    resolution_status = "resolved_high_confidence" if selected_confidence == "high" else "resolved_medium_confidence"
+
+    selected_meta.update(
+        {
+            "submitted_address": submitted_address,
+            "normalized_address": selected_meta.get("normalized_address") or normalized_address,
+            "resolved_latitude": selected_lat,
+            "resolved_longitude": selected_lon,
+            "geocode_status": "accepted",
+            "geocode_outcome": "geocode_succeeded_trusted" if selected_trust_status == "trusted" else "geocode_succeeded_untrusted",
+            "trusted_match_status": selected_trust_status,
+            "geocode_trust_tier": selected_confidence,
+            "geocode_decision": resolution_status,
+            "resolution_status": resolution_status,
+            "resolution_method": str(selected_candidate.get("source_stage") or selected_source),
+            "fallback_used": str(selected_candidate.get("source_stage") or "") not in {"primary_geocoder"},
+            "final_location_confidence": selected_confidence,
+            "coordinate_source": str(selected_candidate.get("source_stage") or selected_source),
+            "match_confidence": selected_confidence,
+            "match_method": selected_candidate.get("match_method"),
+            "provider_attempts": provider_attempts,
+            "provider_statuses": provider_statuses,
+            "local_fallback_attempted": bool(local_fallback_attempted),
+            "authoritative_fallback_result": authoritative_fallback_result,
+            "statewide_parcel_result": statewide_parcel_result,
+            "local_fallback_result": local_fallback_result,
+            "local_address_lookup_attempted": authoritative_fallback_result is not None,
+            "local_address_lookup_result": authoritative_fallback_result,
+            "address_point_match_found": bool((authoritative_fallback_result or {}).get("matched")),
+            "parcel_lookup_attempted": statewide_parcel_result is not None,
+            "parcel_lookup_result": statewide_parcel_result,
+            "parcel_situs_match": bool((statewide_parcel_result or {}).get("matched")),
+            "fallback_records_checked": bool(local_fallback_attempted),
+            "fallback_match_method": (local_fallback_result or {}).get("match_method"),
+            "candidate_sources_attempted": [str(row.get("stage")) for row in provider_attempts],
+            "candidates_found": len(resolver_candidates),
+            "final_coordinates_used": {"latitude": selected_lat, "longitude": selected_lon},
+            "final_coordinate_source": str(selected_candidate.get("source_stage") or selected_source),
+            "candidate_regions_containing_point": list(selected_coverage.get("candidate_regions_containing_point") or []),
+            "region_lookup_result": (
+                "inside_prepared_region"
+                if bool(selected_coverage.get("coverage_available"))
+                else "outside_prepared_regions"
+            ),
+            "region_distance_to_boundary_m": selected_coverage.get("region_distance_to_boundary_m"),
+            "nearest_region_id": selected_coverage.get("nearest_region_id"),
+            "unsupported_location_reason": (
+                None
+                if bool(selected_coverage.get("coverage_available"))
+                else selected_coverage.get("reason")
+            ),
+            "selected_region_id": selected_coverage.get("resolved_region_id") if bool(selected_coverage.get("coverage_available")) else None,
+            "selected_region_display_name": selected_coverage.get("resolved_region_display_name") if bool(selected_coverage.get("coverage_available")) else None,
+            "needs_user_confirmation": False,
+            "resolver_settings": {
+                "conflict_distance_m": conflict_distance_m,
+                "conflict_score_margin": conflict_score_margin,
+                "in_region_boost": in_region_boost,
+                "allow_interpolated_auto": allow_interpolated_auto,
+            },
+            "resolver_candidates": [
+                {
+                    "latitude": row.get("latitude"),
+                    "longitude": row.get("longitude"),
+                    "source": row.get("source"),
+                    "source_stage": row.get("source_stage"),
+                    "source_type": row.get("source_type"),
+                    "source_record_id": row.get("source_record_id"),
+                    "formatted_address": row.get("formatted_address"),
+                    "normalized_address": row.get("normalized_address"),
+                    "match_method": row.get("match_method"),
+                    "confidence_score": row.get("confidence_score"),
+                    "confidence_tier": row.get("confidence_tier"),
+                    "precision_type": row.get("precision_type"),
+                    "rank_score": row.get("rank_score"),
+                    "coverage_available": row.get("coverage_available"),
+                    "resolved_region_id": row.get("resolved_region_id"),
+                    "candidate_regions_containing_point": row.get("candidate_regions_containing_point"),
+                }
+                for row in resolver_candidates[:12]
+            ],
+            "candidate_disagreement_distances": disagreement_rows,
+        }
+    )
+
+    selected_candidate_payload = {
+        "display_name": selected_meta.get("matched_address"),
+        "confidence_score": selected_meta.get("confidence_score"),
+        "provider": selected_meta.get("provider"),
+    }
+    if not selected_candidate_payload["display_name"] and selected_candidate_payload["confidence_score"] is None:
+        selected_candidate_payload = None
+
+    resolution = GeocodeResolution(
+        raw_input=submitted_address,
+        normalized_address=str(selected_meta.get("normalized_address") or normalized_address),
+        geocode_status="accepted",
+        candidate_count=int(selected_meta.get("candidate_count") or max(1, len(resolver_candidates))),
+        selected_candidate=selected_candidate_payload,
+        confidence_score=(
+            float(selected_meta["confidence_score"])
+            if selected_meta.get("confidence_score") is not None
+            else None
+        ),
+        latitude=selected_lat,
+        longitude=selected_lon,
+        geocode_source=selected_source,
+        geocode_meta=selected_meta,
+        geocode_outcome=str(selected_meta.get("geocode_outcome") or "geocode_succeeded_untrusted"),
+        trusted_match_status=str(selected_meta.get("trusted_match_status") or "untrusted_fallback"),
+        rejection_reason=selected_meta.get("rejection_reason"),
+    )
     if _is_dev_mode():
-        LOGGER.warning(
+        LOGGER.info(
             "route_geocode_resolution %s",
             json.dumps(
                 {
                     "event": "route_geocode_resolution",
                     "route_name": route_name,
-                    "status_code": status_code,
-                    "submitted_address": str(detail.get("submitted_address") or submitted_address),
-                    "normalized_address": str(detail.get("normalized_address") or normalized_address),
-                    "geocode_status": detail.get("geocode_status") or "provider_error",
-                    "geocode_outcome": detail.get("geocode_outcome") or "geocode_failed",
-                    "trusted_match_status": detail.get("trusted_match_status") or "rejected",
-                    "geocode_trust_tier": detail.get("geocode_trust_tier"),
-                    "geocode_decision": detail.get("geocode_decision"),
-                    "rejection_reason": detail.get("rejection_reason"),
-                    "trusted_match_failure_reason": detail.get("trusted_match_failure_reason"),
+                    "submitted_address": resolution.raw_input,
+                    "normalized_address": resolution.normalized_address,
+                    "geocode_status": resolution.geocode_status,
+                    "geocode_outcome": resolution.geocode_outcome,
+                    "trusted_match_status": resolution.trusted_match_status,
+                    "resolution_status": selected_meta.get("resolution_status"),
+                    "resolution_method": selected_meta.get("resolution_method"),
+                    "coordinate_source": selected_meta.get("coordinate_source"),
+                    "match_confidence": selected_meta.get("match_confidence"),
+                    "match_method": selected_meta.get("match_method"),
                     "provider_attempts": provider_attempts,
-                    "local_fallback_attempted": local_fallback_attempted,
+                    "candidates_found": len(resolver_candidates),
+                    "candidate_disagreement_distances": disagreement_rows[:5],
+                    "latitude": round(resolution.latitude, 6),
+                    "longitude": round(resolution.longitude, 6),
                 },
                 sort_keys=True,
             ),
         )
-    raise HTTPException(status_code=status_code, detail=detail)
+    return resolution
 
 
 def _resolve_prepared_region(
@@ -6024,7 +6076,12 @@ def _build_geocode_debug_payload(address: str) -> dict[str, Any]:
             "unsupported_location_reason": meta.get("unsupported_location_reason"),
             "local_fallback_attempted": meta.get("local_fallback_attempted"),
             "authoritative_fallback_result": meta.get("authoritative_fallback_result"),
+            "statewide_parcel_result": meta.get("statewide_parcel_result"),
             "local_fallback_result": meta.get("local_fallback_result"),
+            "resolver_candidates": meta.get("resolver_candidates"),
+            "candidate_disagreement_distances": meta.get("candidate_disagreement_distances"),
+            "needs_user_confirmation": bool(meta.get("needs_user_confirmation", False)),
+            "resolver_settings": meta.get("resolver_settings"),
             "region_resolution": {
                 "coverage_available": bool(coverage.get("coverage_available", False)),
                 "resolved_region_id": coverage.get("resolved_region_id"),
@@ -6092,7 +6149,12 @@ def _build_geocode_debug_payload(address: str) -> dict[str, Any]:
             "unsupported_location_reason": detail.get("unsupported_location_reason"),
             "local_fallback_attempted": detail.get("local_fallback_attempted"),
             "authoritative_fallback_result": detail.get("authoritative_fallback_result"),
+            "statewide_parcel_result": detail.get("statewide_parcel_result"),
             "local_fallback_result": detail.get("local_fallback_result"),
+            "resolver_candidates": detail.get("resolver_candidates"),
+            "candidate_disagreement_distances": detail.get("candidate_disagreement_distances"),
+            "needs_user_confirmation": bool(detail.get("needs_user_confirmation", False)),
+            "resolver_settings": detail.get("resolver_settings"),
             "region_resolution": None,
         }
     except Exception as exc:
@@ -6147,7 +6209,12 @@ def _build_geocode_debug_payload(address: str) -> dict[str, Any]:
             "unsupported_location_reason": None,
             "local_fallback_attempted": False,
             "authoritative_fallback_result": None,
+            "statewide_parcel_result": None,
             "local_fallback_result": None,
+            "resolver_candidates": None,
+            "candidate_disagreement_distances": None,
+            "needs_user_confirmation": False,
+            "resolver_settings": None,
             "region_resolution": None,
         }
 
