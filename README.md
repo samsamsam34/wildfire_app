@@ -284,10 +284,16 @@ Error classes are now explicit:
 
 For local geocode/trust troubleshooting (including Winthrop edge cases), use:
 - `POST /risk/geocode-debug` (or `/debug/geocode`) for candidate/trust/region diagnostics
+- `POST /risk/address-candidates` for ZIP/locality-based manual address disambiguation candidates before map-click fallback
 - `python scripts/debug_geocode_trust_pipeline.py --address "6 Pineview Rd, Winthrop, WA 98862" --pretty`
 - `python scripts/debug_address_resolution.py --address "6 Pineview Rd, Winthrop, WA 98862" --pretty`
 - `python scripts/debug_address_resolution.py --csv path/to/wa_addresses.csv --pretty`
 - `python scripts/ingest_county_address_points.py --input path/to/okanogan_address_points.csv --output data/address_points/okanogan/okanogan_address_points.geojson`
+
+Frontend verify-before-submit flow now branches as:
+1. auto verification succeeds -> confirm and run assessment
+2. auto verification uncertain -> show manual `Choose your address` candidate list (ZIP/locality-aware), then confirm selected candidate
+3. no usable candidates -> show `Can’t find it? Click your home on the map` fallback
 
 ## Data / Storage Notes
 

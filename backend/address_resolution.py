@@ -611,6 +611,17 @@ def _source_type_allowed(source_type: str, allowed_source_types: set[str] | None
     return str(source_type or "") in allowed_source_types
 
 
+def _normalize_locality_preferences(values: list[str] | tuple[str, ...] | None) -> set[str]:
+    if not values:
+        return set()
+    out: set[str] = set()
+    for value in values:
+        normalized = normalize_address_for_matching(str(value or ""))
+        if normalized:
+            out.add(normalized)
+    return out
+
+
 def resolve_local_address_candidate(
     *,
     address: str,
@@ -620,6 +631,10 @@ def resolve_local_address_candidate(
     include_alias_sources: bool = True,
     min_auto_confidence_tier: str = "medium",
     allowed_source_types: set[str] | None = None,
+    preferred_localities: list[str] | tuple[str, ...] | None = None,
+    preferred_postal: str | None = None,
+    required_state: str | None = None,
+    top_candidate_limit: int = 3,
 ) -> dict[str, Any]:
     address_components = _extract_address_components(address)
     min_score_raw = str(os.getenv("WF_LOCAL_ADDRESS_MATCH_MIN_SCORE", "0.76")).strip()
@@ -633,6 +648,10 @@ def resolve_local_address_candidate(
         chosen_alias_path = Path.cwd() / chosen_alias_path
 
     required_rank = _CONFIDENCE_RANK.get(str(min_auto_confidence_tier).strip().lower(), _CONFIDENCE_RANK["medium"])
+    preferred_locality_norms = _normalize_locality_preferences(preferred_localities)
+    preferred_postal_zip = _zip5(preferred_postal or "")
+    required_state_norm = normalize_address_for_matching(required_state or "")
+    top_candidate_limit = max(1, min(50, int(top_candidate_limit or 3)))
     candidates: list[dict[str, Any]] = []
     searched_sources: list[str] = []
     attempted_sources: list[str] = []
@@ -675,6 +694,7 @@ def resolve_local_address_candidate(
                         "latitude": float(lon_lat[1]),
                         "longitude": float(lon_lat[0]),
                         "match_score": round(score, 4),
+                        "ranking_score": round(score, 4),
                         "matched_address": addr,
                         "region_id": props.get("region_id"),
                         "source": "local_alias",
@@ -739,13 +759,14 @@ def resolve_local_address_candidate(
                     if not _candidate_is_relevant(str(match_eval["match_type"]), float(score)):
                         continue
                     auto_usable = bool(match_eval["auto_usable"]) and _CONFIDENCE_RANK.get(confidence, -1) >= required_rank
-                    candidates.append(
-                        {
-                            "latitude": float(lon_lat[1]),
-                            "longitude": float(lon_lat[0]),
-                            "match_score": round(score, 4),
-                            "matched_address": addr,
-                            "region_id": region_id or None,
+                candidates.append(
+                    {
+                        "latitude": float(lon_lat[1]),
+                        "longitude": float(lon_lat[0]),
+                        "match_score": round(score, 4),
+                        "ranking_score": round(score, 4),
+                        "matched_address": addr,
+                        "region_id": region_id or None,
                             "source": layer_key,
                             "source_type": source_type,
                             "source_path": str(path_obj),
@@ -798,6 +819,7 @@ def resolve_local_address_candidate(
                         "latitude": float(lon_lat[1]),
                         "longitude": float(lon_lat[0]),
                         "match_score": round(score, 4),
+                        "ranking_score": round(score, 4),
                         "matched_address": addr,
                         "region_id": props.get("region_id"),
                         "source": source_name,
@@ -823,11 +845,36 @@ def resolve_local_address_candidate(
             return 2
         return 3
 
+    for row in candidates:
+        ranking_score = float(row.get("match_score") or 0.0)
+        components = row.get("candidate_components") if isinstance(row.get("candidate_components"), dict) else {}
+        candidate_city = normalize_address_for_matching(str((components or {}).get("city") or ""))
+        candidate_state = normalize_address_for_matching(str((components or {}).get("state") or ""))
+        candidate_postal = _zip5(str((components or {}).get("postal") or ""))
+
+        if preferred_locality_norms and candidate_city:
+            if candidate_city in preferred_locality_norms:
+                ranking_score += 0.08
+            else:
+                ranking_score -= 0.03
+        if preferred_postal_zip and candidate_postal:
+            if candidate_postal == preferred_postal_zip:
+                ranking_score += 0.06
+            else:
+                ranking_score -= 0.05
+        if required_state_norm and candidate_state:
+            if candidate_state == required_state_norm:
+                ranking_score += 0.02
+            else:
+                ranking_score -= 0.12
+
+        row["ranking_score"] = round(max(0.0, min(1.0, ranking_score)), 4)
+
     candidates.sort(
         key=lambda row: (
             -int(bool(row.get("auto_usable"))),
             -_CONFIDENCE_RANK.get(str(row.get("confidence_tier") or "unknown"), -1),
-            -float(row.get("match_score") or 0.0),
+            -float(row.get("ranking_score") or row.get("match_score") or 0.0),
             _source_priority(row),
             str(row.get("region_id") or ""),
             str(row.get("matched_address") or ""),
@@ -898,7 +945,7 @@ def resolve_local_address_candidate(
         "candidates_found": len(candidates),
         "best_match": top if matched else None,
         "best_candidate": top,
-        "top_candidates": candidates[:3],
+        "top_candidates": candidates[:top_candidate_limit],
         "diagnostics": diagnostics,
         "match_method": str(top.get("match_type") or "none") if top else "none",
         "auto_usable": bool(top.get("auto_usable")) if top else False,
@@ -913,4 +960,109 @@ def resolve_local_address_candidate(
                 else "no_local_candidates"
             )
         ),
+    }
+
+
+def _iter_authoritative_source_paths(regions_root: str) -> list[tuple[str, Path, str]]:
+    paths: list[tuple[str, Path, str]] = []
+    manifests = list_prepared_regions(base_dir=regions_root)
+    for manifest in manifests:
+        region_id = str(manifest.get("region_id") or "")
+        for layer_key in ("address_points", "parcel_address_points", "parcels"):
+            local_path = resolve_region_file(manifest, layer_key, base_dir=regions_root)
+            if not local_path:
+                continue
+            path_obj = Path(local_path).expanduser()
+            if not path_obj.exists():
+                continue
+            if layer_key == "address_points":
+                source_type = "prepared_region_address_dataset"
+            elif layer_key == "parcel_address_points":
+                source_type = "prepared_region_parcel_address_dataset"
+            else:
+                source_type = "prepared_region_parcel_dataset"
+            paths.append((f"{region_id}:{layer_key}", path_obj, source_type))
+
+    configured_sources = _load_location_resolution_source_config()
+    configured_sources.extend(_env_source_paths())
+    for source_entry in configured_sources:
+        path_obj = Path(str(source_entry.get("path") or "")).expanduser()
+        if not path_obj.exists():
+            continue
+        source_name = str(source_entry.get("name") or path_obj.stem)
+        source_type = str(source_entry.get("source_type") or "local_authoritative_dataset")
+        paths.append((source_name, path_obj, source_type))
+    return paths
+
+
+def infer_localities_for_zip(
+    *,
+    zip_code: str,
+    regions_root: str,
+    state_hint: str | None = "wa",
+    max_localities: int = 6,
+) -> dict[str, Any]:
+    postal = _zip5(zip_code or "")
+    state_norm = normalize_address_for_matching(state_hint or "")
+    max_localities = max(1, min(20, int(max_localities or 6)))
+    if not postal:
+        return {
+            "zip_code": "",
+            "localities": [],
+            "searched_sources": [],
+            "diagnostics": ["ZIP code was missing or invalid; locality inference skipped."],
+        }
+
+    locality_counts: dict[str, int] = {}
+    locality_labels: dict[str, str] = {}
+    searched_sources: list[str] = []
+    diagnostics: list[str] = []
+
+    max_features_per_source_raw = str(os.getenv("WF_ZIP_LOCALITY_SCAN_MAX_FEATURES", "60000")).strip()
+    try:
+        max_features_per_source = max(5000, int(max_features_per_source_raw))
+    except ValueError:
+        max_features_per_source = 60000
+
+    for source_name, path_obj, source_type in _iter_authoritative_source_paths(regions_root):
+        features = _load_geojson_features(path_obj)
+        if not features:
+            continue
+        searched_sources.append(f"{source_name}:{source_type}")
+        scanned = 0
+        matched = 0
+        for feature in features:
+            if scanned >= max_features_per_source:
+                diagnostics.append(f"{source_name} scan capped at {max_features_per_source} records.")
+                break
+            scanned += 1
+            props = feature.get("properties") if isinstance(feature.get("properties"), dict) else {}
+            candidate_postal = _zip5(_first_non_empty(props, _ZIP_KEYS))
+            if candidate_postal != postal:
+                continue
+            candidate_state = normalize_address_for_matching(_first_non_empty(props, _STATE_KEYS))
+            if state_norm and candidate_state and candidate_state != state_norm:
+                continue
+            locality_raw = _first_non_empty(props, _CITY_KEYS)
+            if not locality_raw:
+                locality_raw = _extract_address_components(_candidate_address(feature)).get("city") or ""
+            locality_norm = normalize_address_for_matching(locality_raw)
+            if not locality_norm:
+                continue
+            matched += 1
+            locality_counts[locality_norm] = locality_counts.get(locality_norm, 0) + 1
+            locality_labels.setdefault(locality_norm, str(locality_raw).strip() or locality_norm.title())
+        if matched > 0 and len(locality_counts) >= max_localities:
+            break
+
+    ranked = sorted(locality_counts.items(), key=lambda row: (-row[1], row[0]))
+    localities = [locality_labels.get(norm, norm.title()) for norm, _count in ranked[:max_localities]]
+    if not localities:
+        diagnostics.append(f"No localities found for ZIP {postal} in authoritative sources.")
+
+    return {
+        "zip_code": postal,
+        "localities": localities,
+        "searched_sources": searched_sources[:20],
+        "diagnostics": diagnostics[:20],
     }

@@ -51,6 +51,18 @@ def test_frontend_verification_modal_supports_interactive_location_confirmation_
     assert "Selection source: Manually adjusted" in html
 
 
+def test_frontend_verification_modal_supports_manual_address_candidate_selection() -> None:
+    html = _frontend_html()
+    assert "Choose your address" in html
+    assert 'id="verifyZipInput"' in html
+    assert 'id="verifyLocalitySelect"' in html
+    assert 'id="verifySearchCandidatesBtn"' in html
+    assert "/risk/address-candidates" in html
+    assert "runManualAddressCandidateSearch" in html
+    assert "manual_address_selection" in html
+    assert "Can’t find it? Click your home on the map" in html
+
+
 def test_frontend_region_debug_metadata_is_dev_mode_only() -> None:
     html = _frontend_html()
     assert "window.WILDFIRE_DEBUG_MODE" in html

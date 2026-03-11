@@ -482,3 +482,108 @@ def test_batch_of_valid_addresses_not_all_forced_to_manual_confirmation(monkeypa
         outcomes.append(bool(body.get("final_acceptance_decision")))
         assert body.get("error_class") == "ready_for_assessment"
     assert any(outcomes) is True
+
+
+def test_manual_address_candidate_search_returns_ranked_candidates(monkeypatch):
+    auth.API_KEYS = set()
+    monkeypatch.setattr(
+        app_main,
+        "infer_localities_for_zip",
+        lambda **_kwargs: {
+            "zip_code": "98862",
+            "localities": ["Winthrop", "Twisp"],
+            "diagnostics": [],
+            "searched_sources": ["prepared_region:address_points"],
+        },
+    )
+    monkeypatch.setattr(
+        app_main,
+        "resolve_local_address_candidate",
+        lambda **_kwargs: {
+            "diagnostics": ["test local resolver"],
+            "top_candidates": [
+                {
+                    "candidate_id": "cand-local-1",
+                    "latitude": 48.4772,
+                    "longitude": -120.1864,
+                    "matched_address": "6 Pineview Rd, Winthrop, WA 98862",
+                    "confidence_tier": "high",
+                    "match_type": "exact_normalized_address",
+                    "source": "county_address_points",
+                    "source_type": "county_address_dataset",
+                    "candidate_components": {"city": "winthrop", "postal": "98862", "state": "wa"},
+                }
+            ],
+        },
+    )
+    monkeypatch.setattr(
+        app_main,
+        "_build_geocode_debug_payload",
+        lambda _address: {"resolver_candidates": [], "final_status": "candidates_found_but_not_safe_enough"},
+    )
+    monkeypatch.setattr(
+        app_main,
+        "_region_coverage_for_coordinates",
+        lambda lat, lon: {
+            "coverage_available": True,
+            "resolved_region_id": "winthrop_pilot",
+            "resolved_region_display_name": "Winthrop Pilot",
+            "reason": "prepared_region_found",
+        }
+        if abs(lat - 48.4772) < 0.01 and abs(lon + 120.1864) < 0.01
+        else {
+            "coverage_available": False,
+            "resolved_region_id": None,
+            "resolved_region_display_name": None,
+            "reason": "no_prepared_region_for_location",
+        },
+    )
+
+    res = client.post(
+        "/risk/address-candidates",
+        json={"address": "6 Pineview Rd, Winthrop, WA 98862", "zip_code": "98862", "state": "WA"},
+    )
+    assert res.status_code == 200
+    body = res.json()
+    assert body["status"] == "address_unresolved_needs_manual_selection"
+    assert body["zip_code"] == "98862"
+    assert body["inferred_localities"][:2] == ["Winthrop", "Twisp"]
+    assert body["map_click_fallback_recommended"] is False
+    assert len(body["candidates"]) == 1
+    assert body["candidates"][0]["coverage_available"] is True
+    assert body["candidates"][0]["resolved_region_id"] == "winthrop_pilot"
+
+
+def test_manual_address_candidate_search_supports_multi_locality_zip_and_map_fallback(monkeypatch):
+    auth.API_KEYS = set()
+    monkeypatch.setattr(
+        app_main,
+        "infer_localities_for_zip",
+        lambda **_kwargs: {
+            "zip_code": "98862",
+            "localities": ["Winthrop", "Mazama", "Twisp"],
+            "diagnostics": [],
+            "searched_sources": ["configured_source:county"],
+        },
+    )
+    monkeypatch.setattr(
+        app_main,
+        "resolve_local_address_candidate",
+        lambda **_kwargs: {"diagnostics": ["no local candidates"], "top_candidates": []},
+    )
+    monkeypatch.setattr(
+        app_main,
+        "_build_geocode_debug_payload",
+        lambda _address: {"resolver_candidates": [], "final_status": "address_unresolved"},
+    )
+
+    res = client.post(
+        "/risk/address-candidates",
+        json={"address": "Unknown Address, Winthrop, WA 98862", "zip_code": "98862", "state": "WA"},
+    )
+    assert res.status_code == 200
+    body = res.json()
+    assert body["status"] == "ready_for_map_click_fallback"
+    assert body["map_click_fallback_recommended"] is True
+    assert body["candidates"] == []
+    assert body["inferred_localities"] == ["Winthrop", "Mazama", "Twisp"]

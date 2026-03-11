@@ -17,7 +17,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, PlainTextResponse, Response
 
 from backend.auth import require_api_key
-from backend.address_resolution import resolve_local_address_candidate
+from backend.address_resolution import infer_localities_for_zip, resolve_local_address_candidate
 from backend.assessment_map import build_assessment_map_payload
 from backend.benchmarking import (
     build_benchmark_hints_for_assessment,
@@ -54,6 +54,9 @@ from backend.models import (
     AssessmentSummaryResponse,
     AssessmentWorkflowInfo,
     AssessmentWorkflowUpdateRequest,
+    AddressCandidateSearchRequest,
+    AddressCandidateSearchResponse,
+    ManualAddressCandidate,
     AssumptionsBlock,
     Audience,
     AuditEvent,
@@ -4924,6 +4927,228 @@ def _resolve_statewide_parcel_coordinates(address_input: str) -> dict[str, Any]:
     )
 
 
+def _extract_zip5(value: str | None) -> str:
+    match = re.search(r"\b(\d{5})(?:-\d{4})?\b", str(value or ""))
+    return match.group(1) if match else ""
+
+
+def _infer_locality_from_address_text(address: str) -> str | None:
+    parts = [part.strip() for part in str(address or "").split(",") if part.strip()]
+    if len(parts) >= 2:
+        locality = parts[1]
+        if locality:
+            return locality
+    return None
+
+
+def _manual_candidate_rank_score(candidate: dict[str, Any]) -> float:
+    confidence = str(candidate.get("confidence") or "low").lower()
+    confidence_rank = {"high": 3.0, "medium": 2.0, "low": 1.0}.get(confidence, 0.0)
+    source_type = str(candidate.get("source_type") or "")
+    source_bonus = 0.0
+    if source_type in {"county_address_dataset", "prepared_region_address_dataset", "prepared_region_parcel_address_dataset"}:
+        source_bonus = 1.4
+    elif source_type in {"statewide_parcel_dataset", "prepared_region_parcel_dataset"}:
+        source_bonus = 0.9
+    elif source_type in {"primary_geocoder", "secondary_geocoder", "provider_backoff_query"}:
+        source_bonus = 0.5
+    elif source_type == "explicit_fallback_record":
+        source_bonus = 0.35
+    if bool(candidate.get("coverage_available")):
+        source_bonus += 0.8
+    return float(confidence_rank + source_bonus)
+
+
+def _normalize_manual_candidate(
+    *,
+    row: dict[str, Any],
+    fallback_id: str,
+    source_kind: str,
+) -> dict[str, Any] | None:
+    try:
+        lat = float(row.get("latitude"))
+        lon = float(row.get("longitude"))
+    except (TypeError, ValueError):
+        return None
+    if not (-90.0 <= lat <= 90.0 and -180.0 <= lon <= 180.0):
+        return None
+
+    components = row.get("candidate_components") if isinstance(row.get("candidate_components"), dict) else {}
+    locality = str(
+        row.get("locality")
+        or row.get("city")
+        or (components or {}).get("city")
+        or ""
+    ).strip()
+    postal = _extract_zip5(
+        str(
+            row.get("postal")
+            or row.get("postal_code")
+            or (components or {}).get("postal")
+            or ""
+        )
+    ) or None
+    state = str(
+        row.get("state")
+        or (components or {}).get("state")
+        or "WA"
+    ).strip() or None
+    formatted = str(
+        row.get("formatted_address")
+        or row.get("matched_address")
+        or row.get("display_name")
+        or ""
+    ).strip()
+    if not formatted:
+        return None
+
+    source_stage = str(row.get("source_stage") or source_kind).strip() or source_kind
+    source_type = str(row.get("source_type") or source_stage).strip() or source_stage
+    candidate_id = str(row.get("candidate_id") or row.get("source_record_id") or fallback_id)
+    confidence = str(
+        row.get("confidence")
+        or row.get("confidence_tier")
+        or row.get("match_confidence")
+        or "low"
+    ).lower()
+
+    return {
+        "candidate_id": candidate_id,
+        "formatted_address": formatted,
+        "locality": locality or None,
+        "postal_code": postal,
+        "state": state,
+        "source": source_stage,
+        "source_type": source_type,
+        "confidence": confidence if confidence in {"high", "medium", "low"} else "low",
+        "match_method": str(row.get("match_method") or row.get("match_type") or "").strip() or None,
+        "latitude": lat,
+        "longitude": lon,
+        "diagnostics": list(row.get("diagnostics") or []),
+        "source_record_id": row.get("source_record_id"),
+    }
+
+
+def _build_manual_address_candidates(
+    *,
+    address: str,
+    zip_code: str | None,
+    locality: str | None,
+    state: str | None,
+    limit: int,
+) -> dict[str, Any]:
+    normalized_input = normalize_address(address)
+    zip5 = _extract_zip5(zip_code or address)
+    inferred_locality_raw = _infer_locality_from_address_text(address)
+    inferred = infer_localities_for_zip(
+        zip_code=zip5,
+        regions_root=_region_data_root(),
+        state_hint=state or "WA",
+        max_localities=10,
+    )
+    inferred_localities = list(inferred.get("localities") or [])
+    selected_locality = str(locality or "").strip() or inferred_locality_raw or (inferred_localities[0] if inferred_localities else None)
+
+    preferred_localities = []
+    if selected_locality:
+        preferred_localities.append(selected_locality)
+    for row in inferred_localities:
+        if row and row not in preferred_localities:
+            preferred_localities.append(row)
+
+    local_result = resolve_local_address_candidate(
+        address=address,
+        regions_root=_region_data_root(),
+        include_authoritative_sources=True,
+        include_alias_sources=True,
+        min_auto_confidence_tier="low",
+        preferred_localities=preferred_localities or None,
+        preferred_postal=zip5 or None,
+        required_state=state or "WA",
+        top_candidate_limit=max(limit * 3, 12),
+    )
+
+    geocode_debug = _build_geocode_debug_payload(address)
+    candidates_by_key: dict[str, dict[str, Any]] = {}
+
+    def _upsert(candidate: dict[str, Any]) -> None:
+        key = (
+            normalize_address(candidate.get("formatted_address") or ""),
+            round(float(candidate.get("latitude") or 0.0), 6),
+            round(float(candidate.get("longitude") or 0.0), 6),
+        )
+        existing = candidates_by_key.get(str(key))
+        if existing is None:
+            candidates_by_key[str(key)] = candidate
+            return
+        if _manual_candidate_rank_score(candidate) > _manual_candidate_rank_score(existing):
+            candidates_by_key[str(key)] = candidate
+
+    for idx, row in enumerate(local_result.get("top_candidates") or []):
+        normalized = _normalize_manual_candidate(
+            row=dict(row or {}),
+            fallback_id=f"local_{idx + 1}",
+            source_kind="manual_local_search",
+        )
+        if normalized is not None:
+            _upsert(normalized)
+
+    for idx, row in enumerate((geocode_debug.get("resolver_candidates") or [])):
+        normalized = _normalize_manual_candidate(
+            row=dict(row or {}),
+            fallback_id=f"resolver_{idx + 1}",
+            source_kind="resolver_candidate",
+        )
+        if normalized is not None:
+            _upsert(normalized)
+
+    candidates = list(candidates_by_key.values())
+    for row in candidates:
+        coverage = _region_coverage_for_coordinates(float(row["latitude"]), float(row["longitude"]))
+        row["coverage_available"] = bool(coverage.get("coverage_available"))
+        row["resolved_region_id"] = coverage.get("resolved_region_id")
+        row["resolved_region_display_name"] = coverage.get("resolved_region_display_name")
+        row["region_reason"] = coverage.get("reason")
+        row["coverage_rank_score"] = _manual_candidate_rank_score(row)
+
+    candidates.sort(
+        key=lambda row: (
+            -float(row.get("coverage_rank_score") or 0.0),
+            -int(bool(row.get("coverage_available"))),
+            str(row.get("formatted_address") or ""),
+        )
+    )
+
+    trimmed = candidates[: max(1, min(25, int(limit or 8)))]
+    for row in trimmed:
+        row.pop("coverage_rank_score", None)
+        row.pop("source_record_id", None)
+
+    status = "ready_for_map_click_fallback"
+    if trimmed:
+        status = "address_unresolved_needs_manual_selection"
+        if all(not bool(row.get("coverage_available")) for row in trimmed):
+            status = "outside_prepared_region"
+
+    diagnostics = list(local_result.get("diagnostics") or [])[:8]
+    diagnostics.extend(list(inferred.get("diagnostics") or [])[:8])
+    if not trimmed:
+        diagnostics.append("No usable manual address candidates were found. Map-click fallback is recommended.")
+
+    return {
+        "status": status,
+        "input_address": address,
+        "normalized_address": normalized_input,
+        "zip_code": zip5 or None,
+        "inferred_localities": inferred_localities[:10],
+        "selected_locality": selected_locality,
+        "candidates": trimmed,
+        "map_click_fallback_recommended": not bool(trimmed),
+        "diagnostics": diagnostics[:20],
+        "final_status": geocode_debug.get("final_status") or geocode_debug.get("resolution_status"),
+    }
+
+
 def _resolve_trusted_geocode(
     *,
     address_input: str,
@@ -6825,6 +7050,54 @@ def geocode_debug(payload: GeocodeDebugRequest, _: ActorContext = Depends(get_ac
 def geocode_debug_alias(payload: GeocodeDebugRequest, _: ActorContext = Depends(get_actor_context)) -> dict[str, Any]:
     # Alias for direct development debugging without risk-route naming.
     return _build_geocode_debug_payload(payload.address)
+
+
+@app.post(
+    "/risk/address-candidates",
+    response_model=AddressCandidateSearchResponse,
+    dependencies=[Depends(require_api_key)],
+)
+def search_manual_address_candidates(
+    payload: AddressCandidateSearchRequest,
+    _: ActorContext = Depends(get_actor_context),
+) -> AddressCandidateSearchResponse:
+    response_payload = _build_manual_address_candidates(
+        address=str(payload.address or "").strip(),
+        zip_code=payload.zip_code,
+        locality=payload.locality,
+        state=payload.state or "WA",
+        limit=int(payload.limit or 8),
+    )
+    if _is_dev_mode():
+        LOGGER.info(
+            "manual_address_candidate_search %s",
+            json.dumps(
+                {
+                    "event": "manual_address_candidate_search",
+                    "input_address": response_payload.get("input_address"),
+                    "normalized_address": response_payload.get("normalized_address"),
+                    "zip_code": response_payload.get("zip_code"),
+                    "selected_locality": response_payload.get("selected_locality"),
+                    "candidate_count": len(response_payload.get("candidates") or []),
+                    "status": response_payload.get("status"),
+                    "map_click_fallback_recommended": bool(response_payload.get("map_click_fallback_recommended")),
+                },
+                sort_keys=True,
+            ),
+        )
+    candidates = [ManualAddressCandidate.model_validate(row) for row in response_payload.get("candidates") or []]
+    return AddressCandidateSearchResponse(
+        status=str(response_payload.get("status") or "ready_for_map_click_fallback"),
+        input_address=str(response_payload.get("input_address") or payload.address),
+        normalized_address=str(response_payload.get("normalized_address") or normalize_address(payload.address)),
+        zip_code=response_payload.get("zip_code"),
+        inferred_localities=list(response_payload.get("inferred_localities") or []),
+        selected_locality=response_payload.get("selected_locality"),
+        candidates=candidates,
+        map_click_fallback_recommended=bool(response_payload.get("map_click_fallback_recommended", False)),
+        diagnostics=list(response_payload.get("diagnostics") or []),
+        final_status=response_payload.get("final_status"),
+    )
 
 
 def _region_data_root() -> str:

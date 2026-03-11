@@ -183,6 +183,46 @@ class GeocodeDebugRequest(BaseModel):
     address: str = Field(..., min_length=1)
 
 
+class AddressCandidateSearchRequest(BaseModel):
+    address: str = Field(..., min_length=3)
+    zip_code: Optional[str] = None
+    locality: Optional[str] = None
+    state: Optional[str] = "WA"
+    limit: int = Field(default=8, ge=1, le=25)
+
+
+class ManualAddressCandidate(BaseModel):
+    candidate_id: str
+    formatted_address: str
+    locality: Optional[str] = None
+    postal_code: Optional[str] = None
+    state: Optional[str] = None
+    source: str
+    source_type: Optional[str] = None
+    confidence: str
+    match_method: Optional[str] = None
+    latitude: float
+    longitude: float
+    coverage_available: bool = False
+    resolved_region_id: Optional[str] = None
+    resolved_region_display_name: Optional[str] = None
+    region_reason: Optional[str] = None
+    diagnostics: List[str] = Field(default_factory=list)
+
+
+class AddressCandidateSearchResponse(BaseModel):
+    status: str
+    input_address: str
+    normalized_address: str
+    zip_code: Optional[str] = None
+    inferred_localities: List[str] = Field(default_factory=list)
+    selected_locality: Optional[str] = None
+    candidates: List[ManualAddressCandidate] = Field(default_factory=list)
+    map_click_fallback_recommended: bool = False
+    diagnostics: List[str] = Field(default_factory=list)
+    final_status: Optional[str] = None
+
+
 class RegionCoverageStatus(BaseModel):
     covered: bool
     region_id: Optional[str] = None
