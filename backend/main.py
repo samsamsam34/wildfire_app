@@ -4941,6 +4941,22 @@ def _resolve_trusted_geocode(
         in_region_boost = max(0.0, float(os.getenv("WF_RESOLVER_IN_REGION_BOOST", "35")))
     except ValueError:
         in_region_boost = 35.0
+    try:
+        authoritative_source_bonus = max(0.0, float(os.getenv("WF_RESOLVER_AUTHORITATIVE_SOURCE_BONUS", "18")))
+    except ValueError:
+        authoritative_source_bonus = 18.0
+    try:
+        clear_winner_min_margin = max(0.0, float(os.getenv("WF_RESOLVER_CLEAR_WINNER_MIN_MARGIN", "12")))
+    except ValueError:
+        clear_winner_min_margin = 12.0
+    try:
+        clear_winner_min_score = max(0.0, float(os.getenv("WF_RESOLVER_CLEAR_WINNER_MIN_SCORE", "230")))
+    except ValueError:
+        clear_winner_min_score = 230.0
+    try:
+        in_region_preference_margin = max(0.0, float(os.getenv("WF_RESOLVER_IN_REGION_PREFERENCE_MARGIN", "18")))
+    except ValueError:
+        in_region_preference_margin = 18.0
     allow_interpolated_auto = _env_flag("WF_RESOLVER_ALLOW_INTERPOLATED_AUTO", True)
     try:
         min_geocoder_token_similarity = max(
@@ -5054,19 +5070,57 @@ def _resolve_trusted_geocode(
             "no_viable_match",
         }
 
-    def _candidate_is_auto_eligible(candidate: dict[str, Any]) -> bool:
+    def _candidate_auto_gate_reason(candidate: dict[str, Any]) -> str:
         if candidate.get("source") == "user_selected_point":
-            return True
+            return "user_selected_point"
         if _confidence_rank(str(candidate.get("confidence_tier") or "low")) < 2:
+            return "confidence_below_medium"
+        precision = str(candidate.get("precision_type") or "unknown")
+        if precision in {"locality", "zip_centroid", "unknown"}:
+            return "precision_too_coarse"
+        if not allow_interpolated_auto and precision in {"interpolated", "road"}:
+            return "interpolated_auto_disabled"
+        if _candidate_is_street_only(candidate.get("match_method")):
+            return "street_only_or_partial_match"
+        return "eligible"
+
+    def _candidate_is_auto_eligible(candidate: dict[str, Any]) -> bool:
+        return _candidate_auto_gate_reason(candidate) == "eligible"
+
+    def _is_authoritative_source(candidate: dict[str, Any]) -> bool:
+        source_type = str(candidate.get("source_type") or "")
+        return source_type in {
+            "county_address_dataset",
+            "prepared_region_address_dataset",
+            "prepared_region_parcel_address_dataset",
+            "statewide_parcel_dataset",
+            "prepared_region_parcel_dataset",
+        }
+
+    def _candidate_allows_medium_auto(candidate: dict[str, Any]) -> bool:
+        confidence_tier = str(candidate.get("confidence_tier") or "low")
+        if _confidence_rank(confidence_tier) < 2:
+            return False
+        if _candidate_is_street_only(candidate.get("match_method")):
             return False
         precision = str(candidate.get("precision_type") or "unknown")
         if precision in {"locality", "zip_centroid", "unknown"}:
             return False
         if not allow_interpolated_auto and precision in {"interpolated", "road"}:
             return False
-        if _candidate_is_street_only(candidate.get("match_method")):
-            return False
         return True
+
+    def _is_clearly_best_candidate(candidate: dict[str, Any], pool: list[dict[str, Any]]) -> bool:
+        if not pool:
+            return False
+        top_score = float(candidate.get("rank_score") or 0.0)
+        if top_score < clear_winner_min_score:
+            return False
+        ordered = sorted(pool, key=lambda row: float(row.get("rank_score") or 0.0), reverse=True)
+        if len(ordered) == 1:
+            return True
+        second_score = float(ordered[1].get("rank_score") or 0.0)
+        return (top_score - second_score) >= clear_winner_min_margin
 
     def _upsert_stage_status(stage: str, status: str) -> None:
         rank = {"accepted": 3, "low_confidence": 2, "no_match": 1, "provider_error": 0, "parser_error": 0}
@@ -5162,7 +5216,7 @@ def _resolve_trusted_geocode(
             "address_similarity_exact_match": exact_normalized_match,
         }
         confidence_rank = _confidence_rank(candidate["confidence_tier"])
-        score = (
+        base_score = (
             float(confidence_rank * 100)
             + _precision_rank(candidate["precision_type"])
             + _source_rank(stage, candidate.get("source_type"))
@@ -5173,11 +5227,16 @@ def _resolve_trusted_geocode(
                 else 0.0
             )
         )
+        source_bonus = authoritative_source_bonus if _is_authoritative_source(candidate) else 0.0
         exact_address_bonus = 0.0
         if str(candidate.get("match_method") or "") == "exact_normalized_address":
             exact_address_bonus = 12.0
-        candidate["rank_score"] = round(score + exact_address_bonus, 4)
-        candidate["auto_eligible"] = _candidate_is_auto_eligible(candidate)
+        candidate["raw_score"] = round(base_score, 4)
+        candidate["source_bonus"] = round(source_bonus, 4)
+        candidate["rank_score"] = round(base_score + source_bonus + exact_address_bonus, 4)
+        gate_reason = _candidate_auto_gate_reason(candidate)
+        candidate["auto_gate_reason"] = gate_reason
+        candidate["auto_eligible"] = gate_reason == "eligible"
         resolver_candidates.append(candidate)
 
     def _record_failure(stage: str, query: str, provider_name: str, exc: HTTPException) -> dict[str, Any]:
@@ -5647,6 +5706,8 @@ def _resolve_trusted_geocode(
             str(row.get("source_stage") or ""),
         )
     )
+    for idx, row in enumerate(resolver_candidates, start=1):
+        row["candidate_id"] = str(row.get("candidate_id") or f"cand_{idx}")
 
     strong_candidates = [row for row in resolver_candidates if _confidence_rank(str(row.get("confidence_tier"))) >= 2]
     disagreement_rows: list[dict[str, Any]] = []
@@ -5654,19 +5715,37 @@ def _resolve_trusted_geocode(
         nearest = None
         for second in strong_candidates[idx + 1 :]:
             distance = _candidate_distance_m(first, second)
+            score_gap = abs(float(first.get("rank_score") or 0.0) - float(second.get("rank_score") or 0.0))
             disagreement_rows.append(
                 {
+                    "first_candidate_id": first.get("candidate_id"),
+                    "second_candidate_id": second.get("candidate_id"),
                     "first_source": first.get("source_stage"),
                     "second_source": second.get("source_stage"),
                     "distance_m": round(distance, 2),
+                    "score_gap": round(score_gap, 2),
                 }
             )
             if nearest is None or distance < nearest:
                 nearest = distance
         first["nearest_strong_candidate_distance_m"] = round(nearest, 2) if nearest is not None else None
 
+    in_region_medium_candidates = [
+        row for row in resolver_candidates if bool(row.get("coverage_available")) and _candidate_allows_medium_auto(row)
+    ]
+
     auto_candidates = [row for row in resolver_candidates if bool(row.get("auto_eligible"))]
     in_region_auto = [row for row in auto_candidates if bool(row.get("coverage_available"))]
+
+    # Permit medium-confidence in-region auto-resolution when clearly best.
+    if not in_region_auto and in_region_medium_candidates:
+        top_in_region_medium = in_region_medium_candidates[0]
+        if _is_clearly_best_candidate(top_in_region_medium, resolver_candidates):
+            top_in_region_medium["auto_eligible"] = True
+            top_in_region_medium["auto_gate_reason"] = "medium_in_region_clearly_best"
+            auto_candidates = [row for row in resolver_candidates if bool(row.get("auto_eligible"))]
+            in_region_auto = [row for row in auto_candidates if bool(row.get("coverage_available"))]
+
     candidate_needs_confirmation = resolver_candidates[0] if resolver_candidates else None
     address_exists = bool(resolver_candidates)
     if not resolver_candidates:
@@ -5700,19 +5779,92 @@ def _resolve_trusted_geocode(
     elif auto_candidates:
         selected_candidate = auto_candidates[0]
 
+    # If a non-covered candidate currently wins, prefer a strong in-region medium candidate when close in score.
+    if (
+        selected_candidate is not None
+        and not bool(selected_candidate.get("coverage_available"))
+        and in_region_medium_candidates
+    ):
+        in_region_best = in_region_medium_candidates[0]
+        score_gap = float(selected_candidate.get("rank_score") or 0.0) - float(in_region_best.get("rank_score") or 0.0)
+        if score_gap <= in_region_preference_margin:
+            in_region_best["auto_eligible"] = True
+            in_region_best["auto_gate_reason"] = "in_region_preference_override"
+            selected_candidate = in_region_best
+
     ambiguous_conflict = False
     if selected_candidate is not None:
-        selection_pool = in_region_auto if in_region_auto else auto_candidates
+        selection_pool = [
+            row
+            for row in resolver_candidates
+            if bool(row.get("auto_eligible"))
+            and (
+                bool(row.get("coverage_available"))
+                if bool(selected_candidate.get("coverage_available"))
+                else True
+            )
+        ]
         if len(selection_pool) >= 2:
-            second = selection_pool[1]
+            second = next((row for row in selection_pool if row is not selected_candidate), None)
+            if second is None:
+                second = selection_pool[1]
             distance = _candidate_distance_m(selected_candidate, second)
             score_gap = abs(float(selected_candidate.get("rank_score") or 0.0) - float(second.get("rank_score") or 0.0))
+            authoritative_preferred = (
+                _is_authoritative_source(selected_candidate)
+                and not _is_authoritative_source(second)
+                and bool(selected_candidate.get("coverage_available"))
+            )
             if (
                 distance > conflict_distance_m
                 and score_gap <= conflict_score_margin
                 and selected_candidate.get("source_stage") != "user_selected_point"
+                and not authoritative_preferred
+                and not _is_clearly_best_candidate(selected_candidate, selection_pool)
             ):
                 ambiguous_conflict = True
+
+    def _candidate_debug_payload(row: dict[str, Any]) -> dict[str, Any]:
+        containing_regions = list(row.get("candidate_regions_containing_point") or [])
+        return {
+            "candidate_id": row.get("candidate_id"),
+            "source": row.get("source"),
+            "source_stage": row.get("source_stage"),
+            "source_type": row.get("source_type"),
+            "source_record_id": row.get("source_record_id"),
+            "formatted_address": row.get("formatted_address"),
+            "normalized_address": row.get("normalized_address"),
+            "latitude": row.get("latitude"),
+            "longitude": row.get("longitude"),
+            "precision_type": row.get("precision_type"),
+            "match_method": row.get("match_method"),
+            "raw_score": row.get("raw_score"),
+            "source_bonus": row.get("source_bonus"),
+            "rank_score": row.get("rank_score"),
+            "confidence_score": row.get("confidence_score"),
+            "confidence_tier": row.get("confidence_tier"),
+            "auto_eligible": bool(row.get("auto_eligible")),
+            "auto_gate_reason": row.get("auto_gate_reason"),
+            "in_region_result": (
+                "inside_prepared_region"
+                if bool(row.get("coverage_available"))
+                else "outside_prepared_regions"
+            ),
+            "containing_regions": containing_regions,
+            "resolved_region_id": row.get("resolved_region_id"),
+            "distance_to_nearest_prepared_region_m": row.get("region_distance_to_boundary_m"),
+            "nearest_region_id": row.get("nearest_region_id"),
+            "disagreement_distance_to_other_strong_candidates_m": row.get("nearest_strong_candidate_distance_m"),
+            "rejection_reason": row.get("rejection_reason"),
+        }
+
+    for row in resolver_candidates:
+        if selected_candidate is not None and not ambiguous_conflict and row is selected_candidate:
+            row["rejection_reason"] = None
+        elif not bool(row.get("auto_eligible")):
+            row["rejection_reason"] = str(row.get("auto_gate_reason") or "candidate_below_auto_use_confidence")
+        else:
+            row["rejection_reason"] = "not_selected_higher_rank_candidate_available"
 
     if selected_candidate is None or ambiguous_conflict:
         if last_failure is not None and isinstance(last_failure.detail, dict):
@@ -5736,26 +5888,7 @@ def _resolve_trusted_geocode(
         detail["provider_statuses"] = provider_statuses
         detail["candidate_sources_attempted"] = [str(row.get("stage")) for row in provider_attempts]
         detail["candidates_found"] = len(resolver_candidates)
-        detail["resolver_candidates"] = [
-            {
-                "latitude": row.get("latitude"),
-                "longitude": row.get("longitude"),
-                "source": row.get("source"),
-                "source_stage": row.get("source_stage"),
-                "source_type": row.get("source_type"),
-                "source_record_id": row.get("source_record_id"),
-                "formatted_address": row.get("formatted_address"),
-                "normalized_address": row.get("normalized_address"),
-                "match_method": row.get("match_method"),
-                "confidence_score": row.get("confidence_score"),
-                "confidence_tier": row.get("confidence_tier"),
-                "precision_type": row.get("precision_type"),
-                "rank_score": row.get("rank_score"),
-                "coverage_available": row.get("coverage_available"),
-                "resolved_region_id": row.get("resolved_region_id"),
-            }
-            for row in resolver_candidates[:10]
-        ]
+        detail["resolver_candidates"] = [_candidate_debug_payload(row) for row in resolver_candidates[:12]]
         detail["candidate_disagreement_distances"] = disagreement_rows
         detail["local_fallback_attempted"] = bool(local_fallback_attempted)
         detail["authoritative_fallback_result"] = authoritative_fallback_result
@@ -5774,6 +5907,17 @@ def _resolve_trusted_geocode(
         detail["address_confidence"] = address_confidence
         detail["address_validation_sources"] = address_validation_sources
         detail["recommended_action"] = "Select your home location on the map to continue assessment."
+        detail["final_candidate_selected"] = None
+        detail["resolver_settings"] = {
+            "conflict_distance_m": conflict_distance_m,
+            "conflict_score_margin": conflict_score_margin,
+            "in_region_boost": in_region_boost,
+            "authoritative_source_bonus": authoritative_source_bonus,
+            "clear_winner_min_margin": clear_winner_min_margin,
+            "clear_winner_min_score": clear_winner_min_score,
+            "in_region_preference_margin": in_region_preference_margin,
+            "allow_interpolated_auto": allow_interpolated_auto,
+        }
 
         if ambiguous_conflict:
             detail["resolution_status"] = "ambiguous_conflict"
@@ -5789,15 +5933,11 @@ def _resolve_trusted_geocode(
                 "Please confirm your home location on the map."
             )
             if selected_candidate is not None:
-                detail["candidate_needs_confirmation"] = {
-                    "latitude": selected_candidate.get("latitude"),
-                    "longitude": selected_candidate.get("longitude"),
-                    "source_stage": selected_candidate.get("source_stage"),
-                    "confidence_tier": selected_candidate.get("confidence_tier"),
-                }
+                detail["candidate_needs_confirmation"] = _candidate_debug_payload(selected_candidate)
+                detail["final_candidate_selected"] = _candidate_debug_payload(selected_candidate)
             status_code = 422
         elif resolver_candidates:
-            detail["resolution_status"] = "unresolved_no_safe_candidate"
+            detail["resolution_status"] = "candidates_found_but_not_safe_enough"
             detail["geocode_status"] = "low_confidence"
             detail["geocode_outcome"] = "geocode_failed"
             detail["trusted_match_status"] = "rejected"
@@ -5809,13 +5949,12 @@ def _resolve_trusted_geocode(
                 "Address candidates were found, but none were safe enough for automatic property coordinates. "
                 "Please continue by selecting your home location on the map."
             )
-            detail["candidate_needs_confirmation"] = {
-                "latitude": candidate_needs_confirmation.get("latitude") if candidate_needs_confirmation else None,
-                "longitude": candidate_needs_confirmation.get("longitude") if candidate_needs_confirmation else None,
-                "source_stage": candidate_needs_confirmation.get("source_stage") if candidate_needs_confirmation else None,
-                "confidence_tier": candidate_needs_confirmation.get("confidence_tier") if candidate_needs_confirmation else None,
-                "match_method": candidate_needs_confirmation.get("match_method") if candidate_needs_confirmation else None,
-            }
+            detail["candidate_needs_confirmation"] = (
+                _candidate_debug_payload(candidate_needs_confirmation)
+                if candidate_needs_confirmation is not None
+                else None
+            )
+            detail["final_candidate_selected"] = detail["candidate_needs_confirmation"]
             status_code = 422
         else:
             detail["resolution_status"] = "unresolved"
@@ -5827,6 +5966,7 @@ def _resolve_trusted_geocode(
                     "or local authoritative datasets."
                 )
                 status_code = 422
+        detail["final_status"] = detail.get("resolution_status")
         if not address_exists:
             detail["error_class"] = "address_not_found"
             detail["rejection_category"] = detail.get("rejection_category") or "no_geocode_candidates"
@@ -5926,35 +6066,25 @@ def _resolve_trusted_geocode(
                 if bool(selected_coverage.get("coverage_available"))
                 else "outside_prepared_region"
             ),
+            "final_status": (
+                "ready_for_assessment"
+                if bool(selected_coverage.get("coverage_available"))
+                else "outside_prepared_region"
+            ),
             "needs_user_confirmation": False,
             "resolver_settings": {
                 "conflict_distance_m": conflict_distance_m,
                 "conflict_score_margin": conflict_score_margin,
                 "in_region_boost": in_region_boost,
+                "authoritative_source_bonus": authoritative_source_bonus,
+                "clear_winner_min_margin": clear_winner_min_margin,
+                "clear_winner_min_score": clear_winner_min_score,
+                "in_region_preference_margin": in_region_preference_margin,
                 "allow_interpolated_auto": allow_interpolated_auto,
             },
-            "resolver_candidates": [
-                {
-                    "latitude": row.get("latitude"),
-                    "longitude": row.get("longitude"),
-                    "source": row.get("source"),
-                    "source_stage": row.get("source_stage"),
-                    "source_type": row.get("source_type"),
-                    "source_record_id": row.get("source_record_id"),
-                    "formatted_address": row.get("formatted_address"),
-                    "normalized_address": row.get("normalized_address"),
-                    "match_method": row.get("match_method"),
-                    "confidence_score": row.get("confidence_score"),
-                    "confidence_tier": row.get("confidence_tier"),
-                    "precision_type": row.get("precision_type"),
-                    "rank_score": row.get("rank_score"),
-                    "coverage_available": row.get("coverage_available"),
-                    "resolved_region_id": row.get("resolved_region_id"),
-                    "candidate_regions_containing_point": row.get("candidate_regions_containing_point"),
-                }
-                for row in resolver_candidates[:12]
-            ],
+            "resolver_candidates": [_candidate_debug_payload(row) for row in resolver_candidates[:12]],
             "candidate_disagreement_distances": disagreement_rows,
+            "final_candidate_selected": _candidate_debug_payload(selected_candidate),
         }
     )
 
@@ -6092,6 +6222,21 @@ def _resolve_location_for_route(
         )
         lat = geocode_resolution.latitude
         lon = geocode_resolution.longitude
+        final_coords = (
+            dict(geocode_resolution.geocode_meta.get("final_coordinates_used") or {})
+            if isinstance(geocode_resolution.geocode_meta, dict)
+            else {}
+        )
+        if final_coords:
+            try:
+                final_lat = float(final_coords.get("latitude"))
+                final_lon = float(final_coords.get("longitude"))
+                if abs(float(lat) - final_lat) > 1e-9 or abs(float(lon) - final_lon) > 1e-9:
+                    raise AssertionError(
+                        "Resolver final candidate coordinates diverged from route geocode coordinates."
+                    )
+            except (TypeError, ValueError):
+                pass
 
     coverage_resolution = _resolve_prepared_region(
         latitude=float(lat),
@@ -6185,6 +6330,7 @@ def _build_geocode_debug_payload(address: str) -> dict[str, Any]:
             "final_coordinates_used": meta.get("final_coordinates_used"),
             "match_confidence": meta.get("match_confidence"),
             "match_method": meta.get("match_method"),
+            "final_status": meta.get("final_status"),
             "unsupported_location_reason": meta.get("unsupported_location_reason"),
             "local_fallback_attempted": meta.get("local_fallback_attempted"),
             "authoritative_fallback_result": meta.get("authoritative_fallback_result"),
@@ -6192,6 +6338,8 @@ def _build_geocode_debug_payload(address: str) -> dict[str, Any]:
             "local_fallback_result": meta.get("local_fallback_result"),
             "resolver_candidates": meta.get("resolver_candidates"),
             "candidate_disagreement_distances": meta.get("candidate_disagreement_distances"),
+            "candidate_needs_confirmation": meta.get("candidate_needs_confirmation"),
+            "final_candidate_selected": meta.get("final_candidate_selected"),
             "needs_user_confirmation": bool(meta.get("needs_user_confirmation", False)),
             "resolver_settings": meta.get("resolver_settings"),
             "region_resolution": {
@@ -6264,6 +6412,7 @@ def _build_geocode_debug_payload(address: str) -> dict[str, Any]:
             "final_coordinates_used": detail.get("final_coordinates_used"),
             "match_confidence": detail.get("match_confidence"),
             "match_method": detail.get("match_method"),
+            "final_status": detail.get("final_status"),
             "unsupported_location_reason": detail.get("unsupported_location_reason"),
             "local_fallback_attempted": detail.get("local_fallback_attempted"),
             "authoritative_fallback_result": detail.get("authoritative_fallback_result"),
@@ -6271,6 +6420,8 @@ def _build_geocode_debug_payload(address: str) -> dict[str, Any]:
             "local_fallback_result": detail.get("local_fallback_result"),
             "resolver_candidates": detail.get("resolver_candidates"),
             "candidate_disagreement_distances": detail.get("candidate_disagreement_distances"),
+            "candidate_needs_confirmation": detail.get("candidate_needs_confirmation"),
+            "final_candidate_selected": detail.get("final_candidate_selected"),
             "needs_user_confirmation": bool(detail.get("needs_user_confirmation", False)),
             "resolver_settings": detail.get("resolver_settings"),
             "region_resolution": None,
@@ -6329,6 +6480,7 @@ def _build_geocode_debug_payload(address: str) -> dict[str, Any]:
             "final_coordinates_used": None,
             "match_confidence": "low",
             "match_method": "unresolved",
+            "final_status": "unresolved",
             "unsupported_location_reason": None,
             "local_fallback_attempted": False,
             "authoritative_fallback_result": None,
@@ -6336,6 +6488,8 @@ def _build_geocode_debug_payload(address: str) -> dict[str, Any]:
             "local_fallback_result": None,
             "resolver_candidates": None,
             "candidate_disagreement_distances": None,
+            "candidate_needs_confirmation": None,
+            "final_candidate_selected": None,
             "needs_user_confirmation": False,
             "resolver_settings": None,
             "region_resolution": None,
@@ -7025,6 +7179,13 @@ def check_region_coverage(
         coverage["address_confidence"] = geocode_meta.get("address_confidence")
         coverage["address_validation_sources"] = geocode_meta.get("address_validation_sources")
         coverage["coordinate_confidence"] = geocode_meta.get("coordinate_confidence")
+        coverage["needs_user_confirmation"] = geocode_meta.get("needs_user_confirmation")
+        coverage["final_status"] = geocode_meta.get("final_status")
+        coverage["resolver_candidates"] = geocode_meta.get("resolver_candidates")
+        coverage["candidate_disagreement_distances"] = geocode_meta.get("candidate_disagreement_distances")
+        coverage["candidate_needs_confirmation"] = geocode_meta.get("candidate_needs_confirmation")
+        coverage["final_candidate_selected"] = geocode_meta.get("final_candidate_selected")
+        coverage["resolver_settings"] = geocode_meta.get("resolver_settings")
         coverage["error_class"] = (
             geocode_meta.get("error_class")
             if bool(coverage.get("coverage_available"))

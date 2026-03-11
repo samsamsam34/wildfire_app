@@ -212,6 +212,10 @@ Common runtime settings:
   - `WF_RESOLVER_CONFLICT_DISTANCE_M` (default: `1500`, cross-source disagreement distance threshold for ambiguity protection)
   - `WF_RESOLVER_CONFLICT_SCORE_MARGIN` (default: `18`, score-gap threshold used with disagreement distance checks)
   - `WF_RESOLVER_IN_REGION_BOOST` (default: `35`, score boost for candidates inside prepared-region coverage)
+  - `WF_RESOLVER_AUTHORITATIVE_SOURCE_BONUS` (default: `18`, bonus for county/prepared/parcel authoritative sources)
+  - `WF_RESOLVER_CLEAR_WINNER_MIN_MARGIN` (default: `12`, minimum score margin to auto-promote a clearly best in-region medium candidate)
+  - `WF_RESOLVER_CLEAR_WINNER_MIN_SCORE` (default: `230`, minimum score required for clear-winner auto-promotion)
+  - `WF_RESOLVER_IN_REGION_PREFERENCE_MARGIN` (default: `18`, allows close-score in-region candidates to outrank outside-region candidates)
   - `WF_RESOLVER_ALLOW_INTERPOLATED_AUTO` (default: `true`, controls whether interpolated geocoder candidates can auto-resolve)
   - `WF_RESOLVER_MIN_GEOCODER_TOKEN_SIMILARITY` (default: `0.55`, minimum token-similarity required before geocoder-only candidates can auto-resolve property coordinates)
   - `WF_REGION_EDGE_TOLERANCE_M` (default: `0`, optional region-boundary tolerance for near-edge points)
@@ -251,7 +255,8 @@ Resolver status labels:
 - `resolved_high_confidence`
 - `resolved_medium_confidence`
 - `ambiguous_conflict` (requires map confirmation)
-- `unresolved` / `unresolved_no_safe_candidate`
+- `candidates_found_but_not_safe_enough`
+- `unresolved`
 
 Error classes are now explicit:
 - `address_not_found`: no candidate from any enabled source
@@ -275,6 +280,7 @@ For local geocode/trust troubleshooting (including Winthrop edge cases), use:
 - `POST /risk/geocode-debug` (or `/debug/geocode`) for candidate/trust/region diagnostics
 - `python scripts/debug_geocode_trust_pipeline.py --address "6 Pineview Rd, Winthrop, WA 98862" --pretty`
 - `python scripts/debug_address_resolution.py --address "6 Pineview Rd, Winthrop, WA 98862" --pretty`
+- `python scripts/debug_address_resolution.py --csv path/to/wa_addresses.csv --pretty`
 - `python scripts/ingest_county_address_points.py --input path/to/okanogan_address_points.csv --output data/address_points/okanogan/okanogan_address_points.geojson`
 
 ## Data / Storage Notes

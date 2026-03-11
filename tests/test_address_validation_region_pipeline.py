@@ -107,6 +107,8 @@ def test_valid_address_outside_prepared_region_returns_outside_prepared_region(m
     assert body["error_class"] == "outside_prepared_region"
     assert body["address_exists"] is True
     assert body["final_coordinates_used"] is not None
+    assert body["final_status"] == "outside_prepared_region"
+    assert body["final_candidate_selected"] is not None
 
 
 def test_geocoder_miss_can_resolve_via_statewide_parcel_dataset(monkeypatch) -> None:
@@ -179,6 +181,7 @@ def test_address_exists_but_coordinates_not_safe_returns_address_unresolved(monk
     assert resp.status_code == 422
     detail = resp.json()["detail"]
     assert detail["error_class"] == "address_unresolved"
+    assert detail["resolution_status"] == "candidates_found_but_not_safe_enough"
     assert detail["address_exists"] is True
     assert detail["final_coordinates_used"] is None
 

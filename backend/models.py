@@ -236,6 +236,13 @@ class RegionCoverageStatus(BaseModel):
     address_validation_sources: Optional[List[str]] = None
     coordinate_confidence: Optional[str] = None
     error_class: Optional[str] = None
+    needs_user_confirmation: Optional[bool] = None
+    final_status: Optional[str] = None
+    resolver_candidates: Optional[List[Dict[str, Any]]] = None
+    candidate_disagreement_distances: Optional[List[Dict[str, Any]]] = None
+    candidate_needs_confirmation: Optional[Dict[str, Any]] = None
+    final_candidate_selected: Optional[Dict[str, Any]] = None
+    resolver_settings: Optional[Dict[str, Any]] = None
 
 
 class GeocodingDetails(BaseModel):
@@ -286,6 +293,13 @@ class GeocodingDetails(BaseModel):
     address_validation_sources: Optional[List[str]] = None
     coordinate_confidence: Optional[str] = None
     error_class: Optional[str] = None
+    needs_user_confirmation: Optional[bool] = None
+    final_status: Optional[str] = None
+    resolver_candidates: Optional[List[Dict[str, Any]]] = None
+    candidate_disagreement_distances: Optional[List[Dict[str, Any]]] = None
+    candidate_needs_confirmation: Optional[Dict[str, Any]] = None
+    final_candidate_selected: Optional[Dict[str, Any]] = None
+    resolver_settings: Optional[Dict[str, Any]] = None
 
 
 class RegionResolution(BaseModel):
