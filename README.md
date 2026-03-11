@@ -213,6 +213,7 @@ Common runtime settings:
   - `WF_RESOLVER_CONFLICT_SCORE_MARGIN` (default: `18`, score-gap threshold used with disagreement distance checks)
   - `WF_RESOLVER_IN_REGION_BOOST` (default: `35`, score boost for candidates inside prepared-region coverage)
   - `WF_RESOLVER_ALLOW_INTERPOLATED_AUTO` (default: `true`, controls whether interpolated geocoder candidates can auto-resolve)
+  - `WF_RESOLVER_MIN_GEOCODER_TOKEN_SIMILARITY` (default: `0.55`, minimum token-similarity required before geocoder-only candidates can auto-resolve property coordinates)
   - `WF_REGION_EDGE_TOLERANCE_M` (default: `0`, optional region-boundary tolerance for near-edge points)
 - `WILDFIRE_APP_CACHE_ROOT`, `WILDFIRE_APP_DATA_ROOT`, `WILDFIRE_APP_TMP_ROOT` (offline prep script paths)
 
@@ -227,10 +228,17 @@ Address resolution uses a staged, confidence-scored pipeline:
 6. Provider backoff query variants
 7. User-selected `property_anchor_point` fallback (for assessment routes)
 
+The runtime now evaluates these stages separately:
+1. Address existence validation (`address_exists`, `address_confidence`)
+2. Coordinate resolution (`final_coordinates_used`, `coordinate_source`, `coordinate_confidence`)
+3. Prepared-region containment check (`coverage_available`, `resolved_region_id`)
+4. Assessment execution (only after the first 3 stages succeed)
+
 Candidate guardrails:
 - only `high`/`medium` confidence candidates are auto-used for property coordinates
 - street-only/locality-only matches are not auto-used
 - cross-source disagreement checks prevent silently selecting materially conflicting candidates
+- geocoder-only candidates with weak address-token similarity are downgraded and require confirmation
 - if a candidate is outside prepared coverage, resolver keeps searching later stages before finalizing
 - if multiple prepared regions contain a point, the smallest covering region is selected
 
@@ -245,11 +253,20 @@ Resolver status labels:
 - `ambiguous_conflict` (requires map confirmation)
 - `unresolved` / `unresolved_no_safe_candidate`
 
+Error classes are now explicit:
+- `address_not_found`: no candidate from any enabled source
+- `address_unresolved`: address appears to exist but no safe coordinates were auto-selected
+- `outside_prepared_region`: coordinates resolved but no prepared region contains the point
+- `ready_for_assessment`: coordinates resolved and point is inside a prepared region
+
+`unsupported_location` is only returned for `outside_prepared_region` cases (resolved coordinates outside prepared coverage). Invalid or unresolved addresses are no longer collapsed into unsupported-location responses.
+
 `/risk/assess`, `/risk/debug`, and `/regions/coverage-check` now share this same canonical resolution flow and expose:
 - `resolution_status`, `resolution_method`, `fallback_used`
+- `error_class`, `address_exists`, `address_confidence`, `address_validation_sources`
 - `provider_attempts`, `provider_statuses`
 - `candidate_sources_attempted`, `candidates_found`
-- `final_coordinates_used`, `final_coordinate_source`
+- `final_coordinates_used`, `final_coordinate_source`, `coordinate_confidence`
 - `candidate_regions_containing_point`
 - `local_fallback_attempted`, `authoritative_fallback_result`, `local_fallback_result`
 - `resolver_candidates` and `candidate_disagreement_distances` in debug payloads

@@ -231,6 +231,11 @@ class RegionCoverageStatus(BaseModel):
     nearest_region_id: Optional[str] = None
     edge_tolerance_m: Optional[float] = None
     candidate_regions_containing_point: Optional[List[str]] = None
+    address_exists: Optional[bool] = None
+    address_confidence: Optional[str] = None
+    address_validation_sources: Optional[List[str]] = None
+    coordinate_confidence: Optional[str] = None
+    error_class: Optional[str] = None
 
 
 class GeocodingDetails(BaseModel):
@@ -276,6 +281,11 @@ class GeocodingDetails(BaseModel):
     local_fallback_result: Optional[Dict[str, Any]] = None
     candidate_regions_containing_point: Optional[List[str]] = None
     unsupported_location_reason: Optional[str] = None
+    address_exists: Optional[bool] = None
+    address_confidence: Optional[str] = None
+    address_validation_sources: Optional[List[str]] = None
+    coordinate_confidence: Optional[str] = None
+    error_class: Optional[str] = None
 
 
 class RegionResolution(BaseModel):
