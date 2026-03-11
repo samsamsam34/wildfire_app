@@ -4970,6 +4970,30 @@ def _resolve_trusted_geocode(
         in_region_preference_margin = max(0.0, float(os.getenv("WF_RESOLVER_IN_REGION_PREFERENCE_MARGIN", "18")))
     except ValueError:
         in_region_preference_margin = 18.0
+    try:
+        conflict_min_authority_gap = max(
+            0.0, float(os.getenv("WF_RESOLVER_CONFLICT_MIN_AUTHORITY_GAP", "8"))
+        )
+    except ValueError:
+        conflict_min_authority_gap = 8.0
+    try:
+        conflict_dominant_score_margin = max(
+            0.0, float(os.getenv("WF_RESOLVER_CONFLICT_DOMINANT_SCORE_MARGIN", "20"))
+        )
+    except ValueError:
+        conflict_dominant_score_margin = 20.0
+    try:
+        centroid_tolerance_multiplier = max(
+            1.0, float(os.getenv("WF_RESOLVER_CENTROID_TOLERANCE_MULTIPLIER", "2.5"))
+        )
+    except ValueError:
+        centroid_tolerance_multiplier = 2.5
+    try:
+        interpolated_tolerance_multiplier = max(
+            1.0, float(os.getenv("WF_RESOLVER_INTERPOLATED_TOLERANCE_MULTIPLIER", "1.8"))
+        )
+    except ValueError:
+        interpolated_tolerance_multiplier = 1.8
     allow_interpolated_auto = _env_flag("WF_RESOLVER_ALLOW_INTERPOLATED_AUTO", True)
     try:
         min_geocoder_token_similarity = max(
@@ -5130,6 +5154,49 @@ def _resolve_trusted_geocode(
             "statewide_parcel_dataset",
             "prepared_region_parcel_dataset",
         }
+
+    def _is_parcel_backed(candidate: dict[str, Any]) -> bool:
+        source_type = str(candidate.get("source_type") or "")
+        precision = str(candidate.get("precision_type") or "")
+        match_method = str(candidate.get("match_method") or "").lower()
+        return (
+            source_type in {"prepared_region_parcel_address_dataset", "statewide_parcel_dataset", "prepared_region_parcel_dataset"}
+            or precision in {"parcel", "parcel_or_address_point"}
+            or "parcel" in match_method
+            or "situs" in match_method
+        )
+
+    def _is_centroid_or_interpolated(candidate: dict[str, Any]) -> bool:
+        precision = str(candidate.get("precision_type") or "")
+        match_method = str(candidate.get("match_method") or "").lower()
+        return (
+            precision in {"interpolated", "road", "locality", "zip_centroid", "parcel"}
+            or "centroid" in match_method
+            or "interpolated" in match_method
+        )
+
+    def _candidate_authority_rank(candidate: dict[str, Any]) -> float:
+        authority = _source_rank(
+            str(candidate.get("source_stage") or ""),
+            str(candidate.get("source_type") or ""),
+        )
+        if bool(candidate.get("coverage_available")):
+            authority += 6.0
+        if _is_authoritative_source(candidate):
+            authority += 6.0
+        if str(candidate.get("match_method") or "") == "exact_normalized_address":
+            authority += 4.0
+        if str(candidate.get("source_stage") or "") == "user_selected_point":
+            authority += 20.0
+        return round(authority, 4)
+
+    def _pair_distance_tolerance_m(first: dict[str, Any], second: dict[str, Any]) -> float:
+        tolerance = conflict_distance_m
+        if _is_centroid_or_interpolated(first) or _is_centroid_or_interpolated(second):
+            tolerance *= interpolated_tolerance_multiplier
+        if _is_parcel_backed(first) != _is_parcel_backed(second):
+            tolerance *= centroid_tolerance_multiplier
+        return float(tolerance)
 
     def _candidate_allows_medium_auto(candidate: dict[str, Any]) -> bool:
         confidence_tier = str(candidate.get("confidence_tier") or "low")
@@ -5773,8 +5840,11 @@ def _resolve_trusted_geocode(
             round(rank_score - next_score, 4) if next_score is not None else None
         )
         row["authoritative_source_flag"] = _is_authoritative_source(row)
+        row["authority_rank"] = _candidate_authority_rank(row)
         row["in_region_boost_applied"] = bool(row.get("coverage_available"))
         row["exact_match_flag"] = str(row.get("match_method") or "") == "exact_normalized_address"
+        row["parcel_backed_flag"] = _is_parcel_backed(row)
+        row["centroid_or_interpolated_flag"] = _is_centroid_or_interpolated(row)
         row["conflict_penalty_applied"] = False
 
     strong_candidates = [row for row in resolver_candidates if _confidence_rank(str(row.get("confidence_tier"))) >= 2]
@@ -5784,6 +5854,36 @@ def _resolve_trusted_geocode(
         for second in strong_candidates[idx + 1 :]:
             distance = _candidate_distance_m(first, second)
             score_gap = abs(float(first.get("rank_score") or 0.0) - float(second.get("rank_score") or 0.0))
+            tolerance_m = _pair_distance_tolerance_m(first, second)
+            threshold_exceeded = distance > tolerance_m
+            first_authority = float(first.get("authority_rank") or _candidate_authority_rank(first))
+            second_authority = float(second.get("authority_rank") or _candidate_authority_rank(second))
+            authority_gap = abs(first_authority - second_authority)
+            precision_mismatch_explainable = (
+                threshold_exceeded
+                and (
+                    (_is_centroid_or_interpolated(first) != _is_centroid_or_interpolated(second))
+                    or (_is_parcel_backed(first) != _is_parcel_backed(second))
+                )
+            )
+            first_dominates = (
+                (first_authority - second_authority) >= conflict_min_authority_gap
+                or (
+                    bool(first.get("coverage_available"))
+                    and not bool(second.get("coverage_available"))
+                    and score_gap >= 0.0
+                )
+                or score_gap >= conflict_dominant_score_margin
+            )
+            second_dominates = (
+                (second_authority - first_authority) >= conflict_min_authority_gap
+                or (
+                    bool(second.get("coverage_available"))
+                    and not bool(first.get("coverage_available"))
+                    and score_gap >= 0.0
+                )
+                or score_gap >= conflict_dominant_score_margin
+            )
             disagreement_rows.append(
                 {
                     "first_candidate_id": first.get("candidate_id"),
@@ -5791,6 +5891,14 @@ def _resolve_trusted_geocode(
                     "first_source": first.get("source_stage"),
                     "second_source": second.get("source_stage"),
                     "distance_m": round(distance, 2),
+                    "distance_threshold_m": round(tolerance_m, 2),
+                    "disagreement_threshold_exceeded": bool(threshold_exceeded),
+                    "precision_mismatch_explainable": bool(precision_mismatch_explainable),
+                    "first_authority_rank": round(first_authority, 4),
+                    "second_authority_rank": round(second_authority, 4),
+                    "authority_gap": round(authority_gap, 4),
+                    "first_dominates": bool(first_dominates),
+                    "second_dominates": bool(second_dominates),
                     "score_gap": round(score_gap, 2),
                 }
             )
@@ -5875,6 +5983,7 @@ def _resolve_trusted_geocode(
             selected_candidate = fallback_candidate
 
     ambiguous_conflict = False
+    conflict_reason: str | None = None
     if selected_candidate is not None:
         selection_pool = [
             row
@@ -5892,21 +6001,77 @@ def _resolve_trusted_geocode(
                 second = selection_pool[1]
             distance = _candidate_distance_m(selected_candidate, second)
             score_gap = abs(float(selected_candidate.get("rank_score") or 0.0) - float(second.get("rank_score") or 0.0))
-            authoritative_preferred = (
-                _is_authoritative_source(selected_candidate)
-                and not _is_authoritative_source(second)
-                and bool(selected_candidate.get("coverage_available"))
+            tolerance_m = _pair_distance_tolerance_m(selected_candidate, second)
+            threshold_exceeded = distance > tolerance_m
+            selected_authority = float(selected_candidate.get("authority_rank") or _candidate_authority_rank(selected_candidate))
+            second_authority = float(second.get("authority_rank") or _candidate_authority_rank(second))
+            authority_gap = selected_authority - second_authority
+            precision_mismatch_explainable = (
+                threshold_exceeded
+                and (
+                    (_is_centroid_or_interpolated(selected_candidate) != _is_centroid_or_interpolated(second))
+                    or (_is_parcel_backed(selected_candidate) != _is_parcel_backed(second))
+                )
             )
-            if (
-                distance > conflict_distance_m
+            selected_dominates = (
+                authority_gap >= conflict_min_authority_gap
+                or score_gap >= conflict_dominant_score_margin
+                or (
+                    bool(selected_candidate.get("coverage_available"))
+                    and not bool(second.get("coverage_available"))
+                    and score_gap >= 0.0
+                )
+                or (
+                    bool(selected_candidate.get("exact_match_flag"))
+                    and not bool(second.get("exact_match_flag"))
+                    and bool(selected_candidate.get("authoritative_source_flag"))
+                )
+            )
+            if precision_mismatch_explainable and selected_dominates:
+                conflict_reason = "precision_mismatch_explainable_dominant_candidate"
+            elif (
+                threshold_exceeded
                 and score_gap <= conflict_score_margin
                 and selected_candidate.get("source_stage") != "user_selected_point"
-                and not authoritative_preferred
+                and not selected_dominates
                 and not _is_clearly_best_candidate(selected_candidate, selection_pool)
             ):
                 ambiguous_conflict = True
+                conflict_reason = "similar_authority_candidates_disagree_materially"
                 selected_candidate["conflict_penalty_applied"] = True
                 second["conflict_penalty_applied"] = True
+            elif threshold_exceeded:
+                conflict_reason = "distance_exceeded_but_dominant_candidate_selected"
+            else:
+                conflict_reason = "no_material_conflict"
+            selected_candidate["conflict_diagnostics"] = {
+                "distance_m": round(distance, 2),
+                "distance_threshold_m": round(tolerance_m, 2),
+                "threshold_exceeded": bool(threshold_exceeded),
+                "score_gap": round(score_gap, 2),
+                "selected_authority_rank": round(selected_authority, 4),
+                "second_authority_rank": round(second_authority, 4),
+                "authority_gap": round(authority_gap, 4),
+                "selected_dominates": bool(selected_dominates),
+                "precision_mismatch_explainable": bool(precision_mismatch_explainable),
+                "reason": conflict_reason,
+            }
+            if (
+                second is not None
+                and "conflict_diagnostics" not in second
+            ):
+                second["conflict_diagnostics"] = {
+                    "distance_m": round(distance, 2),
+                    "distance_threshold_m": round(tolerance_m, 2),
+                    "threshold_exceeded": bool(threshold_exceeded),
+                    "score_gap": round(score_gap, 2),
+                    "selected_authority_rank": round(second_authority, 4),
+                    "second_authority_rank": round(selected_authority, 4),
+                    "authority_gap": round(abs(authority_gap), 4),
+                    "selected_dominates": bool(not selected_dominates),
+                    "precision_mismatch_explainable": bool(precision_mismatch_explainable),
+                    "reason": conflict_reason,
+                }
 
     def _candidate_debug_payload(row: dict[str, Any]) -> dict[str, Any]:
         containing_regions = list(row.get("candidate_regions_containing_point") or [])
