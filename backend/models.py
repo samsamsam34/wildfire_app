@@ -216,7 +216,13 @@ class RegionCoverageStatus(BaseModel):
     final_location_confidence: Optional[str] = None
     provider_attempts: Optional[List[Dict[str, Any]]] = None
     provider_statuses: Optional[Dict[str, str]] = None
+    candidate_sources_attempted: Optional[List[str]] = None
+    candidates_found: Optional[int] = None
+    coordinate_source: Optional[str] = None
+    match_confidence: Optional[str] = None
+    match_method: Optional[str] = None
     local_fallback_attempted: Optional[bool] = None
+    authoritative_fallback_result: Optional[Dict[str, Any]] = None
     local_fallback_result: Optional[Dict[str, Any]] = None
     region_distance_to_boundary_m: Optional[float] = None
     nearest_region_id: Optional[str] = None
@@ -254,7 +260,13 @@ class GeocodingDetails(BaseModel):
     rejection_reason: Optional[str] = None
     provider_attempts: Optional[List[Dict[str, Any]]] = None
     provider_statuses: Optional[Dict[str, str]] = None
+    candidate_sources_attempted: Optional[List[str]] = None
+    candidates_found: Optional[int] = None
+    coordinate_source: Optional[str] = None
+    match_confidence: Optional[str] = None
+    match_method: Optional[str] = None
     local_fallback_attempted: Optional[bool] = None
+    authoritative_fallback_result: Optional[Dict[str, Any]] = None
     local_fallback_result: Optional[Dict[str, Any]] = None
 
 

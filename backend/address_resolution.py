@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import difflib
 import json
+import logging
+import math
 import os
 import re
 from pathlib import Path
@@ -10,6 +12,7 @@ from typing import Any
 from backend.region_registry import list_prepared_regions, resolve_region_file
 
 
+LOGGER = logging.getLogger("wildfire_app.address_resolution")
 DEFAULT_LOCAL_ALIAS_PATH = Path("config") / "local_address_fallbacks.json"
 
 _NORMALIZATION_REPLACEMENTS = {
@@ -48,6 +51,9 @@ _ZIP_KEYS = ("zip", "zipcode", "postal", "postcode", "prop_zip")
 _LAT_KEYS = ("latitude", "lat", "y", "lat_dd", "lat_wgs84")
 _LON_KEYS = ("longitude", "lon", "lng", "x", "lon_dd", "lon_wgs84")
 
+_AUTO_USABLE_TIERS = {"high", "medium"}
+_CONFIDENCE_RANK = {"high": 2, "medium": 1, "low": 0, "unknown": -1}
+
 
 def normalize_address_for_matching(value: str) -> str:
     normalized = str(value or "").strip().lower()
@@ -55,6 +61,11 @@ def normalize_address_for_matching(value: str) -> str:
     for pattern, replacement in _NORMALIZATION_REPLACEMENTS.items():
         normalized = re.sub(pattern, replacement, normalized)
     return " ".join(normalized.split())
+
+
+def _zip5(value: str) -> str:
+    match = re.search(r"\b(\d{5})(?:-\d{4})?\b", str(value or ""))
+    return match.group(1) if match else ""
 
 
 def _extract_address_components(address: str) -> dict[str, str]:
@@ -65,8 +76,7 @@ def _extract_address_components(address: str) -> dict[str, str]:
     number_match = re.match(r"^\s*(\d+[a-zA-Z0-9-]*)\s+(.*)$", first_part)
     house_number = number_match.group(1).strip().lower() if number_match else ""
     street = number_match.group(2).strip() if number_match else first_part
-    zip_match = re.search(r"\b(\d{5})(?:-\d{4})?\b", submitted)
-    postal = zip_match.group(1) if zip_match else ""
+    postal = _zip5(submitted)
     city = parts[1].strip().lower() if len(parts) >= 2 else ""
     tail = parts[2] if len(parts) >= 3 else (parts[1] if len(parts) == 2 else "")
     tail_norm = normalize_address_for_matching(tail)
@@ -151,6 +161,12 @@ def _candidate_component(props: dict[str, Any], keys: tuple[str, ...]) -> str:
     return normalize_address_for_matching(_first_non_empty(props, keys))
 
 
+def _street_similarity(a: str, b: str) -> float:
+    if not a or not b:
+        return 0.0
+    return float(difflib.SequenceMatcher(None, a, b).ratio())
+
+
 def _match_score(
     *,
     input_components: dict[str, str],
@@ -163,11 +179,10 @@ def _match_score(
         return 0.0
 
     score = difflib.SequenceMatcher(None, input_norm, candidate_norm).ratio()
-    street_score = difflib.SequenceMatcher(
-        None,
+    street_score = _street_similarity(
         input_components["street"],
         _candidate_component(feature_props, _STREET_KEYS) or candidate_norm,
-    ).ratio()
+    )
     score = (score * 0.7) + (street_score * 0.3)
 
     input_house = input_components["house_number"]
@@ -256,6 +271,87 @@ def _load_alias_candidates(alias_path: Path) -> list[dict[str, Any]]:
     return rows
 
 
+def _distance_m(a_lat: float, a_lon: float, b_lat: float, b_lon: float) -> float:
+    lat_mid = math.radians((a_lat + b_lat) / 2.0)
+    meters_per_deg_lat = 111_320.0
+    meters_per_deg_lon = max(1.0, 111_320.0 * math.cos(lat_mid))
+    return float(math.hypot((a_lat - b_lat) * meters_per_deg_lat, (a_lon - b_lon) * meters_per_deg_lon))
+
+
+def validate_local_fallback_records(alias_path: str | Path | None = None) -> dict[str, Any]:
+    chosen = Path(alias_path).expanduser() if alias_path else DEFAULT_LOCAL_ALIAS_PATH
+    if not chosen.is_absolute():
+        chosen = Path.cwd() / chosen
+
+    records = _load_alias_candidates(chosen)
+    warnings: list[str] = []
+    errors: list[str] = []
+
+    if not records:
+        return {
+            "alias_path": str(chosen),
+            "record_count": 0,
+            "warnings": ["No fallback alias records found."],
+            "errors": [],
+            "valid": True,
+        }
+
+    normalized_index: dict[str, list[tuple[float, float, int]]] = {}
+    for feature in records:
+        props = feature.get("properties") if isinstance(feature.get("properties"), dict) else {}
+        address = str(props.get("address") or "").strip()
+        components = _extract_address_components(address)
+        row_index = int(props.get("row_index") or 0)
+        coords = _feature_lon_lat(feature)
+        if coords is None:
+            errors.append(f"Row {row_index} is missing valid coordinates.")
+            continue
+        if not components["house_number"] or not components["street"]:
+            warnings.append(
+                f"Row {row_index} fallback '{address}' is street/locality-only and will not be auto-used for property coordinates."
+            )
+
+        normalized = components["normalized_address"]
+        normalized_index.setdefault(normalized, []).append((coords[1], coords[0], row_index))
+
+    for normalized, rows in normalized_index.items():
+        if len(rows) <= 1:
+            continue
+        unique_coords: list[tuple[float, float]] = []
+        for lat, lon, _ in rows:
+            if (lat, lon) not in unique_coords:
+                unique_coords.append((lat, lon))
+        if len(unique_coords) <= 1:
+            warnings.append(f"Duplicate fallback address '{normalized}' appears {len(rows)} times with same coordinates.")
+            continue
+        max_sep = 0.0
+        for idx, (lat1, lon1) in enumerate(unique_coords):
+            for lat2, lon2 in unique_coords[idx + 1 :]:
+                max_sep = max(max_sep, _distance_m(lat1, lon1, lat2, lon2))
+        if max_sep >= 30.0:
+            errors.append(
+                f"Fallback address '{normalized}' has conflicting coordinates separated by ~{max_sep:.1f} m."
+            )
+        else:
+            warnings.append(
+                f"Fallback address '{normalized}' has duplicate entries with minor coordinate deltas (~{max_sep:.1f} m)."
+            )
+
+    valid = not errors
+    if warnings:
+        LOGGER.warning("local_fallback_validation_warnings %s", json.dumps({"alias_path": str(chosen), "warnings": warnings[:10]}))
+    if errors:
+        LOGGER.error("local_fallback_validation_errors %s", json.dumps({"alias_path": str(chosen), "errors": errors[:10]}))
+
+    return {
+        "alias_path": str(chosen),
+        "record_count": len(records),
+        "warnings": warnings,
+        "errors": errors,
+        "valid": valid,
+    }
+
+
 def _region_candidate_priority(address_components: dict[str, str], manifest: dict[str, Any]) -> int:
     normalized = address_components["normalized_address"]
     region_id = normalize_address_for_matching(str(manifest.get("region_id") or ""))
@@ -270,11 +366,133 @@ def _region_candidate_priority(address_components: dict[str, str], manifest: dic
     return score
 
 
+def _candidate_components(candidate_address: str, feature_props: dict[str, Any]) -> dict[str, str]:
+    parsed = _extract_address_components(candidate_address)
+    house = _candidate_component(feature_props, _HOUSE_KEYS) or parsed["house_number"]
+    street = _candidate_component(feature_props, _STREET_KEYS) or parsed["street"]
+    city = _candidate_component(feature_props, _CITY_KEYS) or parsed["city"]
+    state = _candidate_component(feature_props, _STATE_KEYS) or parsed["state"]
+    postal = _first_non_empty(feature_props, _ZIP_KEYS) or parsed["postal"]
+    return {
+        "normalized_address": parsed["normalized_address"],
+        "house_number": normalize_address_for_matching(house),
+        "street": normalize_address_for_matching(street),
+        "city": normalize_address_for_matching(city),
+        "state": normalize_address_for_matching(state),
+        "postal": _zip5(postal),
+    }
+
+
+def _classify_candidate_match(
+    *,
+    input_components: dict[str, str],
+    candidate_components: dict[str, str],
+    candidate_score: float,
+    min_score: float,
+) -> dict[str, Any]:
+    input_house = input_components["house_number"]
+    candidate_house = candidate_components["house_number"]
+    input_street = input_components["street"]
+    candidate_street = candidate_components["street"]
+
+    house_match = bool(input_house and candidate_house and input_house == candidate_house)
+    house_mismatch = bool(input_house and candidate_house and input_house != candidate_house)
+    street_ratio = _street_similarity(input_street, candidate_street)
+
+    city_match = bool(input_components["city"] and candidate_components["city"] and input_components["city"] == candidate_components["city"])
+    state_match = bool(input_components["state"] and candidate_components["state"] and input_components["state"] == candidate_components["state"])
+    postal_match = bool(input_components["postal"] and candidate_components["postal"] and input_components["postal"] == candidate_components["postal"])
+    regional_match = city_match or postal_match or state_match
+
+    exact_match = bool(
+        input_components["normalized_address"]
+        and candidate_components["normalized_address"]
+        and input_components["normalized_address"] == candidate_components["normalized_address"]
+    )
+
+    if exact_match:
+        return {
+            "match_type": "exact_normalized_address",
+            "confidence_tier": "high",
+            "auto_usable": True,
+            "score_gate_passed": True,
+            "street_similarity": round(street_ratio, 3),
+        }
+
+    if house_mismatch and street_ratio >= 0.86:
+        return {
+            "match_type": "house_number_mismatch",
+            "confidence_tier": "low",
+            "auto_usable": False,
+            "score_gate_passed": False,
+            "street_similarity": round(street_ratio, 3),
+        }
+
+    if house_match and street_ratio >= 0.86 and regional_match:
+        score_gate = bool(candidate_score >= min_score)
+        return {
+            "match_type": "address_component_match",
+            "confidence_tier": "medium" if score_gate else "low",
+            "auto_usable": bool(score_gate),
+            "score_gate_passed": score_gate,
+            "street_similarity": round(street_ratio, 3),
+        }
+
+    if house_match and street_ratio >= 0.86:
+        return {
+            "match_type": "house_and_street_partial",
+            "confidence_tier": "low",
+            "auto_usable": False,
+            "score_gate_passed": bool(candidate_score >= min_score),
+            "street_similarity": round(street_ratio, 3),
+        }
+
+    if street_ratio >= 0.9:
+        return {
+            "match_type": "street_only_match",
+            "confidence_tier": "low",
+            "auto_usable": False,
+            "score_gate_passed": False,
+            "street_similarity": round(street_ratio, 3),
+        }
+
+    if regional_match:
+        return {
+            "match_type": "locality_or_postal_only",
+            "confidence_tier": "low",
+            "auto_usable": False,
+            "score_gate_passed": False,
+            "street_similarity": round(street_ratio, 3),
+        }
+
+    return {
+        "match_type": "no_viable_match",
+        "confidence_tier": "low",
+        "auto_usable": False,
+        "score_gate_passed": False,
+        "street_similarity": round(street_ratio, 3),
+    }
+
+
+def _candidate_is_relevant(match_type: str, score: float) -> bool:
+    match_type = str(match_type or "")
+    if match_type in {"exact_normalized_address", "address_component_match", "house_number_mismatch"}:
+        return True
+    if match_type in {"street_only_match", "house_and_street_partial"}:
+        return score >= 0.72
+    if match_type == "locality_or_postal_only":
+        return score >= 0.8
+    return score >= 0.85
+
+
 def resolve_local_address_candidate(
     *,
     address: str,
     regions_root: str,
     alias_path: str | None = None,
+    include_authoritative_sources: bool = True,
+    include_alias_sources: bool = True,
+    min_auto_confidence_tier: str = "medium",
 ) -> dict[str, Any]:
     address_components = _extract_address_components(address)
     min_score_raw = str(os.getenv("WF_LOCAL_ADDRESS_MATCH_MIN_SCORE", "0.76")).strip()
@@ -287,54 +505,19 @@ def resolve_local_address_candidate(
     if not chosen_alias_path.is_absolute():
         chosen_alias_path = Path.cwd() / chosen_alias_path
 
+    required_rank = _CONFIDENCE_RANK.get(str(min_auto_confidence_tier).strip().lower(), _CONFIDENCE_RANK["medium"])
     candidates: list[dict[str, Any]] = []
     searched_sources: list[str] = []
+    attempted_sources: list[str] = []
 
-    alias_features = _load_alias_candidates(chosen_alias_path)
-    if alias_features:
-        searched_sources.append(str(chosen_alias_path))
-        for feature in alias_features:
-            lon_lat = _feature_lon_lat(feature)
-            if lon_lat is None:
-                continue
-            props = feature.get("properties") if isinstance(feature.get("properties"), dict) else {}
-            addr = _candidate_address(feature)
-            score = _match_score(
-                input_components=address_components,
-                candidate_address=addr,
-                feature_props=props,
-            )
-            candidates.append(
-                {
-                    "latitude": float(lon_lat[1]),
-                    "longitude": float(lon_lat[0]),
-                    "match_score": round(score, 4),
-                    "matched_address": addr,
-                    "region_id": props.get("region_id"),
-                    "source": "local_alias",
-                    "source_path": str(chosen_alias_path),
-                    "feature_properties": props,
-                }
-            )
-
-    manifests = list_prepared_regions(base_dir=regions_root)
-    manifests.sort(
-        key=lambda manifest: (
-            -_region_candidate_priority(address_components, manifest),
-            str(manifest.get("region_id") or ""),
-        )
-    )
-    for manifest in manifests:
-        region_id = str(manifest.get("region_id") or "")
-        for layer_key in ("address_points", "parcel_address_points"):
-            local_path = resolve_region_file(manifest, layer_key, base_dir=regions_root)
-            if not local_path:
-                continue
-            path_obj = Path(local_path)
-            if not path_obj.exists():
-                continue
-            searched_sources.append(str(path_obj))
-            for feature in _load_geojson_features(path_obj):
+    validation_report: dict[str, Any] | None = None
+    if include_alias_sources:
+        attempted_sources.append("explicit_fallback_records")
+        validation_report = validate_local_fallback_records(chosen_alias_path)
+        alias_features = _load_alias_candidates(chosen_alias_path)
+        if alias_features:
+            searched_sources.append(str(chosen_alias_path))
+            for feature in alias_features:
                 lon_lat = _feature_lon_lat(feature)
                 if lon_lat is None:
                     continue
@@ -345,56 +528,167 @@ def resolve_local_address_candidate(
                     candidate_address=addr,
                     feature_props=props,
                 )
+                components = _candidate_components(addr, props)
+                match_eval = _classify_candidate_match(
+                    input_components=address_components,
+                    candidate_components=components,
+                    candidate_score=score,
+                    min_score=min_score,
+                )
+                confidence = str(match_eval["confidence_tier"])
+                if not _candidate_is_relevant(str(match_eval["match_type"]), float(score)):
+                    continue
+                auto_usable = bool(match_eval["auto_usable"]) and _CONFIDENCE_RANK.get(confidence, -1) >= required_rank
                 candidates.append(
                     {
                         "latitude": float(lon_lat[1]),
                         "longitude": float(lon_lat[0]),
                         "match_score": round(score, 4),
                         "matched_address": addr,
-                        "region_id": region_id or None,
-                        "source": layer_key,
-                        "source_path": str(path_obj),
+                        "region_id": props.get("region_id"),
+                        "source": "local_alias",
+                        "source_type": "explicit_fallback_record",
+                        "source_path": str(chosen_alias_path),
                         "feature_properties": props,
+                        "match_type": match_eval["match_type"],
+                        "confidence_tier": confidence,
+                        "auto_usable": auto_usable,
+                        "street_similarity": match_eval["street_similarity"],
+                        "candidate_components": components,
                     }
                 )
 
+    if include_authoritative_sources:
+        attempted_sources.append("local_authoritative_datasets")
+        manifests = list_prepared_regions(base_dir=regions_root)
+        manifests.sort(
+            key=lambda manifest: (
+                -_region_candidate_priority(address_components, manifest),
+                str(manifest.get("region_id") or ""),
+            )
+        )
+        for manifest in manifests:
+            region_id = str(manifest.get("region_id") or "")
+            for layer_key in ("address_points", "parcel_address_points"):
+                local_path = resolve_region_file(manifest, layer_key, base_dir=regions_root)
+                if not local_path:
+                    continue
+                path_obj = Path(local_path)
+                if not path_obj.exists():
+                    continue
+                searched_sources.append(str(path_obj))
+                for feature in _load_geojson_features(path_obj):
+                    lon_lat = _feature_lon_lat(feature)
+                    if lon_lat is None:
+                        continue
+                    props = feature.get("properties") if isinstance(feature.get("properties"), dict) else {}
+                    addr = _candidate_address(feature)
+                    score = _match_score(
+                        input_components=address_components,
+                        candidate_address=addr,
+                        feature_props=props,
+                    )
+                    components = _candidate_components(addr, props)
+                    match_eval = _classify_candidate_match(
+                        input_components=address_components,
+                        candidate_components=components,
+                        candidate_score=score,
+                        min_score=min_score,
+                    )
+                    confidence = str(match_eval["confidence_tier"])
+                    if not _candidate_is_relevant(str(match_eval["match_type"]), float(score)):
+                        continue
+                    auto_usable = bool(match_eval["auto_usable"]) and _CONFIDENCE_RANK.get(confidence, -1) >= required_rank
+                    candidates.append(
+                        {
+                            "latitude": float(lon_lat[1]),
+                            "longitude": float(lon_lat[0]),
+                            "match_score": round(score, 4),
+                            "matched_address": addr,
+                            "region_id": region_id or None,
+                            "source": layer_key,
+                            "source_type": "local_authoritative_dataset",
+                            "source_path": str(path_obj),
+                            "feature_properties": props,
+                            "match_type": match_eval["match_type"],
+                            "confidence_tier": confidence,
+                            "auto_usable": auto_usable,
+                            "street_similarity": match_eval["street_similarity"],
+                            "candidate_components": components,
+                        }
+                    )
+
+    def _source_priority(row: dict[str, Any]) -> int:
+        source_type = str(row.get("source_type") or "")
+        if source_type == "local_authoritative_dataset":
+            return 0
+        if source_type == "explicit_fallback_record":
+            return 1
+        return 2
+
     candidates.sort(
         key=lambda row: (
+            -int(bool(row.get("auto_usable"))),
+            -_CONFIDENCE_RANK.get(str(row.get("confidence_tier") or "unknown"), -1),
             -float(row.get("match_score") or 0.0),
+            _source_priority(row),
             str(row.get("region_id") or ""),
             str(row.get("matched_address") or ""),
         )
     )
+
     top = candidates[0] if candidates else None
-    matched = bool(top and float(top.get("match_score") or 0.0) >= min_score)
-    confidence = "low"
-    if matched:
-        score = float(top.get("match_score") or 0.0)
-        if score >= 0.9:
-            confidence = "high"
-        elif score >= 0.8:
-            confidence = "medium"
+    matched = bool(top and top.get("auto_usable"))
+    confidence = str(top.get("confidence_tier")) if matched and top else None
+
     diagnostics: list[str] = []
+    if validation_report:
+        for warning in list(validation_report.get("warnings") or [])[:5]:
+            diagnostics.append(warning)
+        for error in list(validation_report.get("errors") or [])[:5]:
+            diagnostics.append(error)
+
     if not searched_sources:
-        diagnostics.append("No local address-point datasets or alias files were configured for fallback matching.")
+        diagnostics.append("No local address-point datasets or fallback records were available for local resolution.")
+
     if candidates and not matched:
+        best = candidates[0]
         diagnostics.append(
-            f"Local candidates found but top score {float(top.get('match_score') or 0.0):.2f} "
-            f"was below threshold {min_score:.2f}."
+            "Local candidates were found but none passed confidence requirements "
+            f"(top match_type={best.get('match_type')}, confidence={best.get('confidence_tier')}, "
+            f"score={float(best.get('match_score') or 0.0):.2f})."
         )
+
     if matched and top:
         diagnostics.append(
-            f"Resolved via local fallback source {top.get('source')} (score={float(top.get('match_score') or 0.0):.2f})."
+            f"Resolved via local source {top.get('source')} with {top.get('match_type')} "
+            f"(confidence={top.get('confidence_tier')}, score={float(top.get('match_score') or 0.0):.2f})."
         )
+
     return {
         "matched": matched,
-        "confidence": confidence if matched else None,
+        "confidence": confidence,
         "threshold": min_score,
         "input_address": address_components["submitted_address"],
         "normalized_address": address_components["normalized_address"],
         "candidate_count": len(candidates),
         "searched_sources": searched_sources[:10],
+        "candidate_sources_attempted": attempted_sources,
+        "candidates_found": len(candidates),
         "best_match": top if matched else None,
+        "best_candidate": top,
         "top_candidates": candidates[:3],
         "diagnostics": diagnostics,
+        "match_method": str(top.get("match_type") or "none") if top else "none",
+        "auto_usable": bool(top.get("auto_usable")) if top else False,
+        "validation": validation_report,
+        "failure_reason": (
+            None
+            if matched
+            else (
+                str(top.get("match_type"))
+                if top
+                else "no_local_candidates"
+            )
+        ),
     }
