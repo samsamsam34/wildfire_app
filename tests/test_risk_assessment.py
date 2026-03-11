@@ -1899,6 +1899,100 @@ def test_winthrop_known_address_no_primary_match_uses_fallback_pipeline(monkeypa
     assert body["coverage_available"] is True
 
 
+def test_in_region_local_authoritative_candidate_overrides_outside_primary_geocode(monkeypatch, tmp_path):
+    auth.API_KEYS = set()
+    monkeypatch.setattr(app_main, "store", AssessmentStore(str(tmp_path / "winthrop_override_outside_geocode.db")))
+    monkeypatch.setattr(app_main.wildfire_data, "collect_context", lambda _lat, _lon: _ctx(env=44.0, wildland=52.0, historic=41.0))
+    monkeypatch.setenv("WF_GEOCODE_SECONDARY_ENABLED", "false")
+    monkeypatch.setenv("WF_GEOCODE_ENABLE_PROVIDER_BACKOFF_QUERY", "false")
+
+    def _outside_geocode(_addr):
+        app_main.geocoder.last_result = {
+            "geocode_status": "accepted",
+            "normalized_address": "6 Pineview Rd, Winthrop, WA 98862",
+            "provider": "test-geocoder",
+            "matched_address": "6 Pineview Rd, Winthrop, WA 98862, USA",
+            "confidence_score": 0.45,
+            "candidate_count": 1,
+            "geocode_precision": "parcel_or_address_point",
+            "rejection_reason": None,
+        }
+        # Intentionally outside prepared Winthrop regions.
+        return (47.01, -122.90, "test-geocoder")
+
+    monkeypatch.setattr(app_main.geocoder, "geocode", _outside_geocode)
+    monkeypatch.setattr(
+        app_main,
+        "_resolve_local_authoritative_coordinates",
+        lambda _addr: {
+            "matched": True,
+            "confidence": "medium",
+            "candidate_count": 1,
+            "best_match": {
+                "latitude": 48.4772,
+                "longitude": -120.1864,
+                "match_score": 0.87,
+                "matched_address": "6 Pineview Rd, Winthrop, WA 98862",
+                "source": "address_points",
+            },
+            "top_candidates": [],
+            "normalized_address": "6 pineview rd winthrop wa 98862",
+            "diagnostics": ["resolved via local authoritative test match"],
+        },
+    )
+    monkeypatch.setattr(
+        app_main,
+        "_resolve_local_fallback_coordinates",
+        lambda _addr: {
+            "matched": False,
+            "candidate_count": 0,
+            "top_candidates": [],
+            "diagnostics": ["not used"],
+            "failure_reason": "no_explicit_fallback_match",
+        },
+    )
+
+    def _lookup(lat, lon, regions_root=None):  # noqa: ARG001
+        if abs(lat - 48.4772) < 0.01 and abs(lon + 120.1864) < 0.01:
+            return {
+                "covered": True,
+                "region_id": "winthrop_pilot",
+                "display_name": "Winthrop Pilot",
+                "diagnostics": [],
+                "containing_region_ids": ["winthrop_pilot", "winthrop_large"],
+            }
+        return {
+            "covered": False,
+            "diagnostics": ["No prepared region bounds contain point."],
+            "nearest_region_id": "winthrop_large",
+            "region_distance_to_boundary_m": 180000.0,
+            "containing_region_ids": [],
+        }
+
+    monkeypatch.setattr(app_main, "lookup_region_for_point", _lookup)
+
+    payload = {
+        "address": "6 Pineview Rd, Winthrop, WA 98862",
+        "attributes": {"roof_type": "class a"},
+        "confirmed_fields": ["roof_type"],
+        "audience": "homeowner",
+    }
+    coverage = client.post("/regions/coverage-check", json={"address": payload["address"]})
+    assess = client.post("/risk/assess", json=payload)
+
+    assert coverage.status_code == 200
+    assert assess.status_code == 200
+    coverage_body = coverage.json()
+    assess_body = assess.json()
+    assert coverage_body["coverage_available"] is True
+    assert coverage_body["resolved_region_id"] == "winthrop_pilot"
+    assert coverage_body["resolution_method"] == "local_authoritative_fallback"
+    assert assess_body["coverage_available"] is True
+    assert assess_body["resolved_region_id"] == "winthrop_pilot"
+    assert assess_body["geocoding"]["resolution_method"] == "local_authoritative_fallback"
+    assert assess_body["geocoding"]["candidate_regions_containing_point"] == ["winthrop_pilot", "winthrop_large"]
+
+
 def test_geocode_debug_returns_structured_accepted_payload_with_region_resolution(monkeypatch, tmp_path):
     auth.API_KEYS = set()
     monkeypatch.setattr(app_main, "store", AssessmentStore(str(tmp_path / "geocode_debug_ok.db")))
@@ -2037,6 +2131,10 @@ def test_route_geocode_and_coverage_are_consistent_for_valid_covered_address(mon
     assert assess_body["geocoding"]["geocode_status"] == "accepted"
     assert assess_body["coverage_available"] is True
     assert assess_body["resolved_region_id"] == "missoula_pilot"
+    assert debug_body["geocoding"]["resolved_latitude"] == pytest.approx(coverage_body["latitude"])
+    assert debug_body["geocoding"]["resolved_longitude"] == pytest.approx(coverage_body["longitude"])
+    assert assess_body["geocoding"]["resolved_latitude"] == pytest.approx(coverage_body["latitude"])
+    assert assess_body["geocoding"]["resolved_longitude"] == pytest.approx(coverage_body["longitude"])
     assert assess_body["display_point_source"] in {"property_anchor_point", "matched_structure_centroid"}
     assert assess_body["structure_match_status"] in {"none", "matched", "ambiguous", "provider_unavailable", "error"}
 
@@ -2090,6 +2188,8 @@ def test_route_geocode_and_coverage_are_consistent_for_valid_uncovered_address(m
     assert assess_detail["geocode_status"] == "accepted"
     assert assess_detail["coverage_available"] is False
     assert assess_detail["reason"] == "no_prepared_region_for_location"
+    assert assess_detail["resolved_latitude"] == pytest.approx(coverage_body["latitude"])
+    assert assess_detail["resolved_longitude"] == pytest.approx(coverage_body["longitude"])
     assert "error" not in assess_detail
     assert assess_detail["normalized_address"]
 

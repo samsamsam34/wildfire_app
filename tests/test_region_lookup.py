@@ -38,6 +38,24 @@ def test_find_region_for_point_prefers_smallest_covering_region(tmp_path: Path) 
     assert match["covered"] is True
     assert match["region_id"] == "small_region"
     assert match["match_reason"] == "smallest_covering_region"
+    assert match["containing_region_ids"] == ["small_region", "large_region"]
+
+
+def test_find_region_for_point_prefers_winthrop_pilot_over_winthrop_large(tmp_path: Path) -> None:
+    _write_manifest(
+        tmp_path,
+        "winthrop_large",
+        {"min_lon": -120.45, "min_lat": 48.25, "max_lon": -119.95, "max_lat": 48.75},
+    )
+    _write_manifest(
+        tmp_path,
+        "winthrop_pilot",
+        {"min_lon": -120.31, "min_lat": 48.35, "max_lon": -120.06, "max_lat": 48.60},
+    )
+    match = find_region_for_point(lat=48.4772, lon=-120.1864, regions_root=tmp_path)
+    assert match["covered"] is True
+    assert match["region_id"] == "winthrop_pilot"
+    assert match["containing_region_ids"] == ["winthrop_pilot", "winthrop_large"]
 
 
 def test_find_region_for_point_uncovered_includes_diagnostics(tmp_path: Path) -> None:
@@ -50,6 +68,7 @@ def test_find_region_for_point_uncovered_includes_diagnostics(tmp_path: Path) ->
     assert match["covered"] is False
     assert match["region_id"] is None
     assert match["match_reason"] == "no_covering_region"
+    assert match["containing_region_ids"] == []
     assert match["diagnostics"]
 
 

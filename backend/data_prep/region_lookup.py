@@ -161,11 +161,13 @@ def find_region_for_point(lat: float, lon: float, regions_root: str | Path | Non
             "candidate_count": len(coverages),
             "nearest_region_id": nearest_region["region_id"] if nearest_region else None,
             "nearest_region_display_name": nearest_region["display_name"] if nearest_region else None,
+            "containing_region_ids": [],
             "region_distance_to_boundary_m": round(float(nearest_distance_m), 2)
             if nearest_distance_m is not None
             else None,
         }
     chosen = sorted(matches, key=lambda c: (float(c["area_deg2"]), str(c["region_id"])))[0]
+    containing_region_ids = [str(c.get("region_id") or "") for c in sorted(matches, key=lambda c: (float(c["area_deg2"]), str(c["region_id"])))]
     strict_match = _contains_point(
         (
             float(chosen["bounds"]["min_lon"]),
@@ -189,6 +191,7 @@ def find_region_for_point(lat: float, lon: float, regions_root: str | Path | Non
         "edge_tolerance_m": edge_tolerance_m,
         "region_distance_to_boundary_m": 0.0,
         "nearest_region_id": chosen["region_id"],
+        "containing_region_ids": containing_region_ids,
     }
 
 

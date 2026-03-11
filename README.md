@@ -206,16 +206,27 @@ Common runtime settings:
   - `WF_GEOCODE_ENABLE_PROVIDER_BACKOFF_QUERY` (default: `true`, enables street/locality backoff queries when full-address lookup returns no match)
   - `WF_LOCAL_ADDRESS_FALLBACK_PATH` (optional local alias/address-point file, default: `config/local_address_fallbacks.json`)
   - `WF_LOCAL_ADDRESS_MATCH_MIN_SCORE` (default: `0.76`, fuzzy-match threshold for local fallback candidates)
+  - `WF_LOCATION_RESOLUTION_SOURCE_CONFIG` (optional source config, default: `config/location_resolution_sources.json`)
+  - `WF_WA_STATEWIDE_PARCEL_PATH` (optional direct path override for Washington statewide parcel/address dataset exports)
+  - `WF_OKANOGAN_ADDRESS_POINTS_PATH` (optional direct path override for Okanogan local addressing exports)
   - `WF_REGION_EDGE_TOLERANCE_M` (default: `0`, optional region-boundary tolerance for near-edge points)
 - `WILDFIRE_APP_CACHE_ROOT`, `WILDFIRE_APP_DATA_ROOT`, `WILDFIRE_APP_TMP_ROOT` (offline prep script paths)
 
 Legacy direct-layer paths are still supported via `WF_LAYER_*` env vars (`DEM`, `SLOPE`, `FUEL`, `CANOPY`, fire perimeters, building footprints, etc.), but prepared-region runtime is the primary path.
 
-Address resolution uses a staged pipeline:
+Address resolution uses a staged, confidence-scored pipeline:
 1. Primary geocoder
 2. Optional secondary geocoder
-3. Local fallback (configured address-point/parcel datasets and local alias file)
-4. User-selected `property_anchor_point` fallback (for assessment routes)
+3. Local authoritative datasets (`address_points`, `parcel_address_points`, `parcels`, plus optional configured statewide/county sources)
+4. Explicit local fallback records (`config/local_address_fallbacks.json`)
+5. Provider backoff query variants
+6. User-selected `property_anchor_point` fallback (for assessment routes)
+
+Candidate guardrails:
+- only `high`/`medium` confidence candidates are auto-used for property coordinates
+- street-only/locality-only matches are not auto-used
+- if a candidate is outside prepared coverage, resolver keeps searching later stages before finalizing
+- if multiple prepared regions contain a point, the smallest covering region is selected
 
 Geocode outcomes remain explicit:
 - `geocode_failed`: no usable location after all enabled stages
@@ -225,7 +236,10 @@ Geocode outcomes remain explicit:
 `/risk/assess`, `/risk/debug`, and `/regions/coverage-check` now share this same canonical resolution flow and expose:
 - `resolution_status`, `resolution_method`, `fallback_used`
 - `provider_attempts`, `provider_statuses`
-- `local_fallback_attempted`, `local_fallback_result`
+- `candidate_sources_attempted`, `candidates_found`
+- `final_coordinates_used`, `final_coordinate_source`
+- `candidate_regions_containing_point`
+- `local_fallback_attempted`, `authoritative_fallback_result`, `local_fallback_result`
 
 For local geocode/trust troubleshooting (including Winthrop edge cases), use:
 - `POST /risk/geocode-debug` (or `/debug/geocode`) for candidate/trust/region diagnostics

@@ -228,6 +228,70 @@ def _load_geojson_features(path: Path) -> list[dict[str, Any]]:
     return [row for row in rows if isinstance(row, dict)]
 
 
+def _load_location_resolution_source_config() -> list[dict[str, Any]]:
+    config_path_raw = str(os.getenv("WF_LOCATION_RESOLUTION_SOURCE_CONFIG") or "").strip()
+    config_path = Path(config_path_raw) if config_path_raw else Path("config") / "location_resolution_sources.json"
+    if not config_path.is_absolute():
+        config_path = Path.cwd() / config_path
+    if not config_path.exists():
+        return []
+    try:
+        payload = json.loads(config_path.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    records = payload.get("sources") if isinstance(payload, dict) else []
+    if not isinstance(records, list):
+        return []
+    sources: list[dict[str, Any]] = []
+    for row in records:
+        if not isinstance(row, dict):
+            continue
+        path_value = str(row.get("path") or "").strip()
+        if not path_value:
+            continue
+        path_obj = Path(path_value).expanduser()
+        if not path_obj.is_absolute():
+            path_obj = Path.cwd() / path_obj
+        sources.append(
+            {
+                "name": str(row.get("name") or path_obj.stem),
+                "path": str(path_obj),
+                "source_type": str(row.get("source_type") or "local_authoritative_dataset"),
+                "priority": int(row.get("priority") or 100),
+                "enabled": bool(row.get("enabled", True)),
+                "metadata": row.get("metadata") if isinstance(row.get("metadata"), dict) else {},
+            }
+        )
+    sources.sort(key=lambda r: (int(r.get("priority") or 100), str(r.get("name") or "")))
+    return [row for row in sources if row.get("enabled")]
+
+
+def _env_source_paths() -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    mapping = [
+        ("WF_WA_STATEWIDE_PARCEL_PATH", "wa_state_current_parcels", "statewide_parcel_dataset"),
+        ("WF_OKANOGAN_ADDRESS_POINTS_PATH", "okanogan_county_addressing", "county_address_dataset"),
+    ]
+    for env_key, name, source_type in mapping:
+        raw = str(os.getenv(env_key) or "").strip()
+        if not raw:
+            continue
+        path_obj = Path(raw).expanduser()
+        if not path_obj.is_absolute():
+            path_obj = Path.cwd() / path_obj
+        rows.append(
+            {
+                "name": name,
+                "path": str(path_obj),
+                "source_type": source_type,
+                "priority": 50,
+                "enabled": True,
+                "metadata": {"env_var": env_key},
+            }
+        )
+    return rows
+
+
 def _load_alias_candidates(alias_path: Path) -> list[dict[str, Any]]:
     if not alias_path.exists():
         return []
@@ -569,7 +633,7 @@ def resolve_local_address_candidate(
         )
         for manifest in manifests:
             region_id = str(manifest.get("region_id") or "")
-            for layer_key in ("address_points", "parcel_address_points"):
+            for layer_key in ("address_points", "parcel_address_points", "parcels"):
                 local_path = resolve_region_file(manifest, layer_key, base_dir=regions_root)
                 if not local_path:
                     continue
@@ -617,6 +681,58 @@ def resolve_local_address_candidate(
                             "candidate_components": components,
                         }
                     )
+
+        configured_sources = _load_location_resolution_source_config()
+        configured_sources.extend(_env_source_paths())
+        for source_entry in configured_sources:
+            path_obj = Path(str(source_entry.get("path") or "")).expanduser()
+            if not path_obj.exists():
+                continue
+            source_name = str(source_entry.get("name") or path_obj.stem)
+            source_type = str(source_entry.get("source_type") or "local_authoritative_dataset")
+            searched_sources.append(str(path_obj))
+            attempted_sources.append(source_name)
+            for feature in _load_geojson_features(path_obj):
+                lon_lat = _feature_lon_lat(feature)
+                if lon_lat is None:
+                    continue
+                props = feature.get("properties") if isinstance(feature.get("properties"), dict) else {}
+                addr = _candidate_address(feature)
+                score = _match_score(
+                    input_components=address_components,
+                    candidate_address=addr,
+                    feature_props=props,
+                )
+                components = _candidate_components(addr, props)
+                match_eval = _classify_candidate_match(
+                    input_components=address_components,
+                    candidate_components=components,
+                    candidate_score=score,
+                    min_score=min_score,
+                )
+                confidence = str(match_eval["confidence_tier"])
+                if not _candidate_is_relevant(str(match_eval["match_type"]), float(score)):
+                    continue
+                auto_usable = bool(match_eval["auto_usable"]) and _CONFIDENCE_RANK.get(confidence, -1) >= required_rank
+                candidates.append(
+                    {
+                        "latitude": float(lon_lat[1]),
+                        "longitude": float(lon_lat[0]),
+                        "match_score": round(score, 4),
+                        "matched_address": addr,
+                        "region_id": props.get("region_id"),
+                        "source": source_name,
+                        "source_type": source_type,
+                        "source_path": str(path_obj),
+                        "feature_properties": props,
+                        "match_type": match_eval["match_type"],
+                        "confidence_tier": confidence,
+                        "auto_usable": auto_usable,
+                        "street_similarity": match_eval["street_similarity"],
+                        "candidate_components": components,
+                        "source_metadata": dict(source_entry.get("metadata") or {}),
+                    }
+                )
 
     def _source_priority(row: dict[str, Any]) -> int:
         source_type = str(row.get("source_type") or "")

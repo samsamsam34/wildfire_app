@@ -219,14 +219,18 @@ class RegionCoverageStatus(BaseModel):
     candidate_sources_attempted: Optional[List[str]] = None
     candidates_found: Optional[int] = None
     coordinate_source: Optional[str] = None
+    final_coordinate_source: Optional[str] = None
+    final_coordinates_used: Optional[Dict[str, float]] = None
     match_confidence: Optional[str] = None
     match_method: Optional[str] = None
+    unsupported_location_reason: Optional[str] = None
     local_fallback_attempted: Optional[bool] = None
     authoritative_fallback_result: Optional[Dict[str, Any]] = None
     local_fallback_result: Optional[Dict[str, Any]] = None
     region_distance_to_boundary_m: Optional[float] = None
     nearest_region_id: Optional[str] = None
     edge_tolerance_m: Optional[float] = None
+    candidate_regions_containing_point: Optional[List[str]] = None
 
 
 class GeocodingDetails(BaseModel):
@@ -263,11 +267,15 @@ class GeocodingDetails(BaseModel):
     candidate_sources_attempted: Optional[List[str]] = None
     candidates_found: Optional[int] = None
     coordinate_source: Optional[str] = None
+    final_coordinate_source: Optional[str] = None
+    final_coordinates_used: Optional[Dict[str, float]] = None
     match_confidence: Optional[str] = None
     match_method: Optional[str] = None
     local_fallback_attempted: Optional[bool] = None
     authoritative_fallback_result: Optional[Dict[str, Any]] = None
     local_fallback_result: Optional[Dict[str, Any]] = None
+    candidate_regions_containing_point: Optional[List[str]] = None
+    unsupported_location_reason: Optional[str] = None
 
 
 class RegionResolution(BaseModel):
