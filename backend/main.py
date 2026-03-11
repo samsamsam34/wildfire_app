@@ -4880,6 +4880,25 @@ def _resolve_local_authoritative_coordinates(address_input: str) -> dict[str, An
         alias_path=str(os.getenv("WF_LOCAL_ADDRESS_FALLBACK_PATH", "")).strip() or None,
         include_authoritative_sources=True,
         include_alias_sources=False,
+        allowed_source_types={
+            "prepared_region_address_dataset",
+            "prepared_region_parcel_address_dataset",
+            "county_address_dataset",
+        },
+    )
+
+
+def _resolve_statewide_parcel_coordinates(address_input: str) -> dict[str, Any]:
+    return resolve_local_address_candidate(
+        address=address_input,
+        regions_root=_region_data_root(),
+        alias_path=str(os.getenv("WF_LOCAL_ADDRESS_FALLBACK_PATH", "")).strip() or None,
+        include_authoritative_sources=True,
+        include_alias_sources=False,
+        allowed_source_types={
+            "statewide_parcel_dataset",
+            "prepared_region_parcel_dataset",
+        },
     )
 
 
@@ -4897,6 +4916,7 @@ def _resolve_trusted_geocode(
     local_fallback_attempted = False
     local_fallback_result: dict[str, Any] | None = None
     authoritative_fallback_result: dict[str, Any] | None = None
+    statewide_parcel_result: dict[str, Any] | None = None
     last_failure: HTTPException | None = None
     low_confidence_candidate: dict[str, Any] | None = None
     outside_region_candidate: dict[str, Any] | None = None
@@ -5016,6 +5036,7 @@ def _resolve_trusted_geocode(
         geocode_meta["provider_statuses"] = provider_statuses
         geocode_meta["local_fallback_attempted"] = bool(local_fallback_attempted)
         geocode_meta["authoritative_fallback_result"] = authoritative_fallback_result
+        geocode_meta["statewide_parcel_result"] = statewide_parcel_result
         geocode_meta["local_fallback_result"] = local_fallback_result
         geocode_meta["candidate_sources_attempted"] = [str(row.get("stage")) for row in provider_attempts]
         geocode_meta["candidates_found"] = sum(
@@ -5032,6 +5053,14 @@ def _resolve_trusted_geocode(
         geocode_meta.setdefault("match_method", geocode_meta.get("geocode_decision"))
         geocode_meta["final_coordinates_used"] = {"latitude": float(lat), "longitude": float(lon)}
         geocode_meta["final_coordinate_source"] = geocode_meta.get("coordinate_source")
+        geocode_meta.setdefault("local_address_lookup_attempted", authoritative_fallback_result is not None)
+        geocode_meta.setdefault("local_address_lookup_result", authoritative_fallback_result)
+        geocode_meta.setdefault("address_point_match_found", bool((authoritative_fallback_result or {}).get("matched")))
+        geocode_meta.setdefault("parcel_lookup_attempted", statewide_parcel_result is not None)
+        geocode_meta.setdefault("parcel_lookup_result", statewide_parcel_result)
+        geocode_meta.setdefault("parcel_situs_match", bool((statewide_parcel_result or {}).get("matched")))
+        geocode_meta.setdefault("fallback_records_checked", bool(local_fallback_attempted))
+        geocode_meta.setdefault("fallback_match_method", (local_fallback_result or {}).get("match_method"))
 
         selected_candidate = {
             "display_name": geocode_meta.get("matched_address"),
@@ -5299,7 +5328,7 @@ def _resolve_trusted_geocode(
             last_failure = exc
             _record_failure("secondary_geocoder", submitted_address, _secondary_provider_name(), exc)
 
-    # Stage C: local authoritative address/parcel fallback.
+    # Stage C: county/local authoritative address points fallback.
     local_fallback_attempted = True
     try:
         authoritative_fallback_result = _resolve_local_authoritative_coordinates(submitted_address)
@@ -5324,6 +5353,17 @@ def _resolve_trusted_geocode(
             local_confidence = str((authoritative_fallback_result or {}).get("confidence") or "low")
             if _confidence_allows_auto_use(local_confidence):
                 source_key = str(best_match.get("source") or "")
+                source_type = str(best_match.get("source_type") or "")
+                stage_label = (
+                    "county_address_points"
+                    if source_type == "county_address_dataset"
+                    else "local_authoritative_fallback"
+                )
+                decision_label = (
+                    "resolved_via_county_address_points"
+                    if source_type == "county_address_dataset"
+                    else "resolved_via_local_authoritative_fallback"
+                )
                 trust_status = (
                     "trusted"
                     if local_confidence == "high" and source_key in {"address_points", "parcel_address_points"}
@@ -5334,12 +5374,12 @@ def _resolve_trusted_geocode(
                     "geocode_outcome": "geocode_succeeded_untrusted",
                     "trusted_match_status": trust_status,
                     "geocode_trust_tier": local_confidence,
-                    "geocode_decision": "resolved_via_local_authoritative_fallback",
+                    "geocode_decision": decision_label,
                     "submitted_address": submitted_address,
                     "normalized_address": (authoritative_fallback_result or {}).get("normalized_address") or normalized_address,
-                    "geocode_source": "local_authoritative_fallback",
-                    "geocode_provider": "local_authoritative_fallback",
-                    "provider": "local_authoritative_fallback",
+                    "geocode_source": stage_label,
+                    "geocode_provider": stage_label,
+                    "provider": stage_label,
                     "geocoded_address": best_match.get("matched_address"),
                     "matched_address": best_match.get("matched_address"),
                     "geocoded_point": {"latitude": float(lat), "longitude": float(lon)},
@@ -5354,17 +5394,20 @@ def _resolve_trusted_geocode(
                     "rejection_reason": None,
                     "trusted_match_failure_reason": None,
                     "fallback_eligibility": True,
-                    "resolution_method": "local_authoritative_fallback",
+                    "resolution_method": stage_label,
                     "resolution_status": "accepted",
                     "fallback_used": True,
                     "final_location_confidence": local_confidence,
+                    "local_address_lookup_attempted": True,
+                    "local_address_lookup_result": authoritative_fallback_result,
+                    "address_point_match_found": True,
                     "local_fallback_result": authoritative_fallback_result,
                 }
-                provider_statuses["local_authoritative_fallback"] = "accepted"
+                provider_statuses[stage_label] = "accepted"
                 provider_attempts.append(
                     _build_provider_attempt(
-                        stage="local_authoritative_fallback",
-                        provider_name="local_authoritative_fallback",
+                        stage=stage_label,
+                        provider_name=stage_label,
                         query=submitted_address,
                         accepted=True,
                         geocode_status="accepted",
@@ -5374,19 +5417,19 @@ def _resolve_trusted_geocode(
                     )
                 )
                 accepted = _finalize_if_prepared_region(
-                    stage="local_authoritative_fallback",
+                    stage=stage_label,
                     lat=float(lat),
                     lon=float(lon),
-                    source="local_authoritative_fallback",
+                    source=stage_label,
                     geocode_meta=geocode_meta,
                 )
                 if accepted is not None:
                     return accepted
             _capture_low_confidence_candidate(
-                stage="local_authoritative_fallback",
+                stage="county_address_points",
                 lat=float(lat),
                 lon=float(lon),
-                provider_name="local_authoritative_fallback",
+                provider_name="county_address_points",
                 confidence_tier=local_confidence,
                 matched_address=str(best_match.get("matched_address") or ""),
                 candidate_count=int((authoritative_fallback_result or {}).get("candidate_count") or 0),
@@ -5402,24 +5445,24 @@ def _resolve_trusted_geocode(
             lon = None  # type: ignore[assignment]
         if lat is not None and lon is not None:
             _capture_low_confidence_candidate(
-                stage="local_authoritative_fallback",
+                stage="county_address_points",
                 lat=float(lat),
                 lon=float(lon),
-                provider_name="local_authoritative_fallback",
+                provider_name="county_address_points",
                 confidence_tier=str(best_candidate.get("confidence_tier") or "low"),
                 matched_address=str(best_candidate.get("matched_address") or ""),
                 candidate_count=int((authoritative_fallback_result or {}).get("candidate_count") or 0),
                 rejection_reason=str((authoritative_fallback_result or {}).get("failure_reason") or "low_confidence_local_authoritative_candidate"),
             )
-    provider_statuses["local_authoritative_fallback"] = (
+    provider_statuses["county_address_points"] = (
         "low_confidence"
         if bool((authoritative_fallback_result or {}).get("candidate_count"))
         else "no_match"
     )
     provider_attempts.append(
         _build_provider_attempt(
-            stage="local_authoritative_fallback",
-            provider_name="local_authoritative_fallback",
+            stage="county_address_points",
+            provider_name="county_address_points",
             query=submitted_address,
             accepted=False,
             geocode_status=(

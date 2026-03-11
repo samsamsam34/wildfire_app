@@ -416,6 +416,62 @@ def validate_local_fallback_records(alias_path: str | Path | None = None) -> dic
     }
 
 
+def validate_address_point_source(path: str | Path, source_name: str) -> dict[str, Any]:
+    path_obj = Path(path).expanduser()
+    if not path_obj.is_absolute():
+        path_obj = Path.cwd() / path_obj
+
+    features = _load_geojson_features(path_obj)
+    warnings: list[str] = []
+    errors: list[str] = []
+    normalized_index: dict[str, list[tuple[float, float]]] = {}
+
+    for idx, feature in enumerate(features):
+        lon_lat = _feature_lon_lat(feature)
+        if lon_lat is None:
+            errors.append(f"{source_name}: feature[{idx}] missing valid coordinates.")
+            continue
+        props = feature.get("properties") if isinstance(feature.get("properties"), dict) else {}
+        candidate_addr = _candidate_address(feature)
+        components = _extract_address_components(candidate_addr)
+        normalized = components["normalized_address"]
+        if not components["house_number"] or not components["street"]:
+            warnings.append(
+                f"{source_name}: feature[{idx}] has incomplete address components (house/street missing)."
+            )
+            continue
+        normalized_index.setdefault(normalized, []).append((float(lon_lat[1]), float(lon_lat[0])))
+
+    for normalized, rows in normalized_index.items():
+        if len(rows) <= 1:
+            continue
+        unique = sorted(set(rows))
+        if len(unique) > 1:
+            max_sep = 0.0
+            for i, (lat1, lon1) in enumerate(unique):
+                for lat2, lon2 in unique[i + 1 :]:
+                    max_sep = max(max_sep, _distance_m(lat1, lon1, lat2, lon2))
+            if max_sep >= 20.0:
+                errors.append(
+                    f"{source_name}: normalized address '{normalized}' has conflicting coordinates (~{max_sep:.1f} m apart)."
+                )
+            else:
+                warnings.append(
+                    f"{source_name}: normalized address '{normalized}' is duplicated with minor coordinate deltas (~{max_sep:.1f} m)."
+                )
+        else:
+            warnings.append(f"{source_name}: normalized address '{normalized}' is duplicated.")
+
+    return {
+        "source_name": source_name,
+        "path": str(path_obj),
+        "record_count": len(features),
+        "warnings": warnings,
+        "errors": errors,
+        "valid": not errors,
+    }
+
+
 def _region_candidate_priority(address_components: dict[str, str], manifest: dict[str, Any]) -> int:
     normalized = address_components["normalized_address"]
     region_id = normalize_address_for_matching(str(manifest.get("region_id") or ""))
@@ -549,6 +605,12 @@ def _candidate_is_relevant(match_type: str, score: float) -> bool:
     return score >= 0.85
 
 
+def _source_type_allowed(source_type: str, allowed_source_types: set[str] | None) -> bool:
+    if not allowed_source_types:
+        return True
+    return str(source_type or "") in allowed_source_types
+
+
 def resolve_local_address_candidate(
     *,
     address: str,
@@ -557,6 +619,7 @@ def resolve_local_address_candidate(
     include_authoritative_sources: bool = True,
     include_alias_sources: bool = True,
     min_auto_confidence_tier: str = "medium",
+    allowed_source_types: set[str] | None = None,
 ) -> dict[str, Any]:
     address_components = _extract_address_components(address)
     min_score_raw = str(os.getenv("WF_LOCAL_ADDRESS_MATCH_MIN_SCORE", "0.76")).strip()
@@ -573,6 +636,7 @@ def resolve_local_address_candidate(
     candidates: list[dict[str, Any]] = []
     searched_sources: list[str] = []
     attempted_sources: list[str] = []
+    source_validations: list[dict[str, Any]] = []
 
     validation_report: dict[str, Any] | None = None
     if include_alias_sources:
@@ -602,6 +666,9 @@ def resolve_local_address_candidate(
                 confidence = str(match_eval["confidence_tier"])
                 if not _candidate_is_relevant(str(match_eval["match_type"]), float(score)):
                     continue
+                source_type = "explicit_fallback_record"
+                if not _source_type_allowed(source_type, allowed_source_types):
+                    continue
                 auto_usable = bool(match_eval["auto_usable"]) and _CONFIDENCE_RANK.get(confidence, -1) >= required_rank
                 candidates.append(
                     {
@@ -611,7 +678,7 @@ def resolve_local_address_candidate(
                         "matched_address": addr,
                         "region_id": props.get("region_id"),
                         "source": "local_alias",
-                        "source_type": "explicit_fallback_record",
+                        "source_type": source_type,
                         "source_path": str(chosen_alias_path),
                         "feature_properties": props,
                         "match_type": match_eval["match_type"],
@@ -641,6 +708,15 @@ def resolve_local_address_candidate(
                 if not path_obj.exists():
                     continue
                 searched_sources.append(str(path_obj))
+                if layer_key == "address_points":
+                    source_type = "prepared_region_address_dataset"
+                elif layer_key == "parcel_address_points":
+                    source_type = "prepared_region_parcel_address_dataset"
+                else:
+                    source_type = "prepared_region_parcel_dataset"
+                if not _source_type_allowed(source_type, allowed_source_types):
+                    continue
+                source_validations.append(validate_address_point_source(path_obj, f"{region_id}:{layer_key}"))
                 for feature in _load_geojson_features(path_obj):
                     lon_lat = _feature_lon_lat(feature)
                     if lon_lat is None:
@@ -671,7 +747,7 @@ def resolve_local_address_candidate(
                             "matched_address": addr,
                             "region_id": region_id or None,
                             "source": layer_key,
-                            "source_type": "local_authoritative_dataset",
+                            "source_type": source_type,
                             "source_path": str(path_obj),
                             "feature_properties": props,
                             "match_type": match_eval["match_type"],
@@ -692,6 +768,9 @@ def resolve_local_address_candidate(
             source_type = str(source_entry.get("source_type") or "local_authoritative_dataset")
             searched_sources.append(str(path_obj))
             attempted_sources.append(source_name)
+            source_validations.append(validate_address_point_source(path_obj, source_name))
+            if not _source_type_allowed(source_type, allowed_source_types):
+                continue
             for feature in _load_geojson_features(path_obj):
                 lon_lat = _feature_lon_lat(feature)
                 if lon_lat is None:
@@ -736,11 +815,13 @@ def resolve_local_address_candidate(
 
     def _source_priority(row: dict[str, Any]) -> int:
         source_type = str(row.get("source_type") or "")
-        if source_type == "local_authoritative_dataset":
+        if source_type in {"county_address_dataset", "prepared_region_address_dataset", "prepared_region_parcel_address_dataset"}:
             return 0
-        if source_type == "explicit_fallback_record":
+        if source_type in {"statewide_parcel_dataset", "prepared_region_parcel_dataset"}:
             return 1
-        return 2
+        if source_type == "explicit_fallback_record":
+            return 2
+        return 3
 
     candidates.sort(
         key=lambda row: (
@@ -763,6 +844,11 @@ def resolve_local_address_candidate(
             diagnostics.append(warning)
         for error in list(validation_report.get("errors") or [])[:5]:
             diagnostics.append(error)
+    for report in source_validations:
+        for warning in list(report.get("warnings") or [])[:3]:
+            diagnostics.append(warning)
+        for error in list(report.get("errors") or [])[:3]:
+            diagnostics.append(error)
 
     if not searched_sources:
         diagnostics.append("No local address-point datasets or fallback records were available for local resolution.")
@@ -779,6 +865,25 @@ def resolve_local_address_candidate(
         diagnostics.append(
             f"Resolved via local source {top.get('source')} with {top.get('match_type')} "
             f"(confidence={top.get('confidence_tier')}, score={float(top.get('match_score') or 0.0):.2f})."
+        )
+
+    if any((report.get("errors") or []) for report in source_validations):
+        LOGGER.warning(
+            "local_address_source_validation %s",
+            json.dumps(
+                {
+                    "source_reports": [
+                        {
+                            "source_name": report.get("source_name"),
+                            "record_count": report.get("record_count"),
+                            "warning_count": len(report.get("warnings") or []),
+                            "error_count": len(report.get("errors") or []),
+                        }
+                        for report in source_validations
+                    ]
+                },
+                sort_keys=True,
+            ),
         )
 
     return {
@@ -798,6 +903,7 @@ def resolve_local_address_candidate(
         "match_method": str(top.get("match_type") or "none") if top else "none",
         "auto_usable": bool(top.get("auto_usable")) if top else False,
         "validation": validation_report,
+        "source_validations": source_validations,
         "failure_reason": (
             None
             if matched
