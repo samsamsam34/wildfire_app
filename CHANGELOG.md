@@ -2,6 +2,36 @@
 
 This file tracks release-level governance changes for `WildfireRisk Advisor`.
 
+## [0.14.0] - 2026-03-11
+### Version changes
+- `product_version`: `0.14.0` (minor)
+- `api_version`: `1.2.0` (minor; additive debug diagnostics fields)
+- `scoring_model_version`: `1.8.0` (minor; variance/discriminativeness update)
+- `ruleset_version`: tracked per assessment ruleset
+- `rules_logic_version`: `1.1.0` (unchanged)
+- `factor_schema_version`: `1.2.0` (unchanged)
+- `benchmark_pack_version`: `1.0.0` (unchanged)
+- `calibration_version`: `0.1.0` (unchanged)
+- `region_data_version`: tracked per assessment/region build
+- `data_bundle_version`: `unversioned` default unless overridden
+
+### Reason
+- Reduce score compression so property/location differences produce meaningful separation and improve model competitiveness for property-level wildfire guidance.
+
+### Expected effect on outputs
+- Wider spread in `wildfire_risk_score`, `site_hazard_score`, and `home_ignition_vulnerability_score` across materially different properties.
+- Blended wildfire scoring now includes a bounded readiness-risk component.
+- `POST /risk/debug` includes new score-variance diagnostics blocks (`score_variance_diagnostics`, raw/transformed vectors, contribution breakdown, compression flags).
+
+### Migration/interpretation notes
+- Historical comparisons against `scoring_model_version` `1.7.x` should be treated as directional due to transform/weight changes.
+- Debug consumers can safely ignore new additive diagnostics fields if unused.
+
+### Historical comparison validity
+- `not_directly_comparable` when scoring/rules/schema dimensions differ.
+- `comparable_with_review` when data/calibration dimensions differ.
+- `directly_comparable` when governance dimensions match.
+
 ## [0.13.0] - 2026-03-10
 ### Version changes
 - `product_version`: `0.13.0` (minor)

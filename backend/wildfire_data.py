@@ -157,6 +157,26 @@ class WildfireDataClient:
         return round(100.0 * (v - src_min) / (src_max - src_min), 1)
 
     @staticmethod
+    def _local_percentile_rank(value: float | None, samples: Iterable[float]) -> float | None:
+        if value is None:
+            return None
+        vals = [float(v) for v in samples if v is not None]
+        if not vals:
+            return None
+        less_or_equal = sum(1 for v in vals if v <= float(value))
+        return round((less_or_equal / float(len(vals))) * 100.0, 1)
+
+    @staticmethod
+    def _blend_indices(terms: list[tuple[float, float | None]]) -> float | None:
+        available = [(w, float(v)) for w, v in terms if v is not None and w > 0.0]
+        if not available:
+            return None
+        denom = sum(w for w, _ in available)
+        if denom <= 0.0:
+            return None
+        return round(sum(w * v for w, v in available) / denom, 1)
+
+    @staticmethod
     def _meters_to_lat_deg(meters: float) -> float:
         return meters / 111_320.0
 
@@ -1123,17 +1143,17 @@ class WildfireDataClient:
         for raw in vals:
             code = int(round(raw))
             if 1 <= code <= 3:
-                weighted.append(25.0)
+                weighted.append(20.0 + (code - 1) * 4.0)  # 20-28
             elif 4 <= code <= 9:
-                weighted.append(45.0)
+                weighted.append(34.0 + (code - 4) * 4.2)  # 34-55
             elif 10 <= code <= 13:
-                weighted.append(65.0)
+                weighted.append(58.0 + (code - 10) * 6.0)  # 58-76
             elif 101 <= code <= 109:
-                weighted.append(75.0)
+                weighted.append(68.0 + (code - 101) * 2.0)  # 68-84
             elif 121 <= code <= 124:
-                weighted.append(85.0)
+                weighted.append(82.0 + (code - 121) * 3.0)  # 82-91
             elif 141 <= code <= 149:
-                weighted.append(70.0)
+                weighted.append(62.0 + (code - 141) * 2.5)  # 62-82
             else:
                 weighted.append(50.0)
         return round(sum(weighted) / len(weighted), 1)
@@ -1271,6 +1291,7 @@ class WildfireDataClient:
             "moisture_context": {},
             "historical_fire_context": {},
             "access_context": {},
+            "feature_sampling": {},
             "property_anchor_point": {"latitude": float(lat), "longitude": float(lon)},
             "property_anchor_source": "geocoded_address_point",
             "property_anchor_precision": "unknown",
@@ -1769,6 +1790,11 @@ class WildfireDataClient:
             )
         environmental_layer_status["slope"] = _status_for_env(slope_status_detail)
         slope_index = None if slope is None else self._to_index(slope, 0.0, 45.0)
+        slope_feature_details: dict[str, Any] = {
+            "raw_point_value": slope,
+            "index": slope_index,
+            "scope": "property_specific" if slope is not None else "fallback",
+        }
         if slope is not None and "DEM-derived slope/aspect" not in sources:
             sources.append("Slope raster")
 
@@ -1776,23 +1802,50 @@ class WildfireDataClient:
             aspect_index = None
         else:
             a = float(aspect) % 360.0
-            if 180.0 <= a <= 315.0:
-                aspect_index = 75.0
-            elif 135.0 <= a < 180.0 or 315.0 < a <= 360.0:
-                aspect_index = 60.0
-            else:
-                aspect_index = 40.0
+            # Continuous aspect-exposure transform centered on southwest-facing terrain
+            # to avoid coarse 3-bin compression in topography-driven spread signal.
+            sw_peak = 225.0
+            angular_diff = abs(((a - sw_peak + 180.0) % 360.0) - 180.0)  # 0..180
+            aspect_index = round(40.0 + (35.0 * (1.0 - (angular_diff / 180.0))), 1)
             if "DEM-derived slope/aspect" not in sources:
                 sources.append("Aspect raster")
+        aspect_feature_details: dict[str, Any] = {
+            "raw_point_value": aspect,
+            "index": aspect_index,
+            "scope": "property_specific" if aspect is not None else "fallback",
+        }
 
         fuel_path = runtime_paths["fuel"]
         fuel_center, fuel_status_detail, fuel_reason = self._sample_layer_value_detailed(fuel_path, lat, lon)
         fuel_samples = self._sample_circle(fuel_path, lat, lon, radius_m=100.0) if self._file_exists(fuel_path) else []
+        fuel_feature_details: dict[str, Any] = {
+            "raw_point_value": fuel_center,
+            "sample_count": len(fuel_samples),
+            "sampling_radius_m": 100.0,
+        }
         if fuel_samples:
-            fuel_index = self._fuel_combustibility_index(fuel_samples)
+            fuel_neighborhood_index = self._fuel_combustibility_index(fuel_samples)
+            fuel_center_index = self._fuel_combustibility_index([fuel_center]) if fuel_center is not None else None
+            fuel_local_percentile = self._local_percentile_rank(fuel_center, fuel_samples)
+            fuel_index = self._blend_indices(
+                [
+                    (0.55, fuel_neighborhood_index),
+                    (0.30, fuel_center_index),
+                    (0.15, fuel_local_percentile),
+                ]
+            )
             fuel_model = round(sum(fuel_samples) / len(fuel_samples), 2)
             environmental_layer_status["fuel"] = "ok"
             sources.append("Fuel model raster")
+            fuel_feature_details.update(
+                {
+                    "neighborhood_index": fuel_neighborhood_index,
+                    "point_index": fuel_center_index,
+                    "local_percentile": fuel_local_percentile,
+                    "blended_index": fuel_index,
+                    "scope": "neighborhood_level",
+                }
+            )
             update_layer_audit(
                 layer_audit,
                 "fuel",
@@ -1805,6 +1858,15 @@ class WildfireDataClient:
             fuel_index = None
             fuel_model = None
             environmental_layer_status["fuel"] = _status_for_env(fuel_status_detail)
+            fuel_feature_details.update(
+                {
+                    "neighborhood_index": None,
+                    "point_index": None,
+                    "local_percentile": None,
+                    "blended_index": None,
+                    "scope": "fallback",
+                }
+            )
             update_layer_audit(
                 layer_audit,
                 "fuel",
@@ -1825,12 +1887,35 @@ class WildfireDataClient:
         canopy_path = runtime_paths["canopy"]
         canopy_center, canopy_status_detail, canopy_reason = self._sample_layer_value_detailed(canopy_path, lat, lon)
         canopy_samples = self._sample_circle(canopy_path, lat, lon, radius_m=100.0) if self._file_exists(canopy_path) else []
+        canopy_feature_details: dict[str, Any] = {
+            "raw_point_value": canopy_center,
+            "sample_count": len(canopy_samples),
+            "sampling_radius_m": 100.0,
+        }
         if canopy_samples:
             canopy_mean = sum(canopy_samples) / len(canopy_samples)
-            canopy_index = self._to_index(canopy_mean, 0.0, 100.0)
+            canopy_neighborhood_index = self._to_index(canopy_mean, 0.0, 100.0)
+            canopy_center_index = self._to_index(float(canopy_center), 0.0, 100.0) if canopy_center is not None else None
+            canopy_local_percentile = self._local_percentile_rank(canopy_center, canopy_samples)
+            canopy_index = self._blend_indices(
+                [
+                    (0.50, canopy_neighborhood_index),
+                    (0.35, canopy_center_index),
+                    (0.15, canopy_local_percentile),
+                ]
+            )
             canopy_cover = round(canopy_mean, 2)
             environmental_layer_status["canopy"] = "ok"
             sources.append("Canopy density raster")
+            canopy_feature_details.update(
+                {
+                    "neighborhood_index": canopy_neighborhood_index,
+                    "point_index": canopy_center_index,
+                    "local_percentile": canopy_local_percentile,
+                    "blended_index": canopy_index,
+                    "scope": "neighborhood_level",
+                }
+            )
             update_layer_audit(
                 layer_audit,
                 "canopy",
@@ -1843,6 +1928,15 @@ class WildfireDataClient:
             canopy_index = None
             canopy_cover = None
             environmental_layer_status["canopy"] = _status_for_env(canopy_status_detail)
+            canopy_feature_details.update(
+                {
+                    "neighborhood_index": None,
+                    "point_index": None,
+                    "local_percentile": None,
+                    "blended_index": None,
+                    "scope": "fallback",
+                }
+            )
             update_layer_audit(
                 layer_audit,
                 "canopy",
@@ -2047,6 +2141,37 @@ class WildfireDataClient:
                 "moisture_context": moisture_context,
                 "historical_fire_context": historical_fire_context,
                 "access_context": access_context,
+                "feature_sampling": {
+                    "burn_probability": {
+                        "raw_point_value": burn_prob,
+                        "index": burn_probability_index,
+                        "scope": "region_level" if burn_prob is not None else "fallback",
+                    },
+                    "hazard_severity": {
+                        "raw_point_value": hazard,
+                        "index": hazard_severity_index,
+                        "scope": "region_level" if hazard is not None else "fallback",
+                    },
+                    "slope": slope_feature_details,
+                    "aspect": aspect_feature_details,
+                    "fuel_model": fuel_feature_details,
+                    "canopy_cover": canopy_feature_details,
+                    "moisture_dryness": {
+                        "raw_point_value": moisture,
+                        "index": moisture_index,
+                        "scope": "region_level" if moisture is not None else "fallback",
+                    },
+                    "wildland_distance": {
+                        "raw_point_value": wildland_distance,
+                        "index": wildland_distance_index,
+                        "scope": "neighborhood_level" if wildland_distance is not None else "fallback",
+                    },
+                    "historic_fire": {
+                        "raw_point_value": historic_fire_distance,
+                        "index": historic_fire_index,
+                        "scope": "region_level" if historic_fire_index is not None else "fallback",
+                    },
+                },
             }
         )
         layer_audit_rows = [layer_audit[k] for k in sorted(layer_audit.keys())]

@@ -32,6 +32,8 @@ class SubmodelResult:
     explanation: str
     key_inputs: Dict[str, object]
     assumptions: List[str] = field(default_factory=list)
+    raw_score: float | None = None
+    clamped_score: float | None = None
 
 
 @dataclass
@@ -72,6 +74,11 @@ class RiskEngine:
         attrs = normalize_property_attributes(attrs)
         submodels: Dict[str, SubmodelResult] = {}
 
+        def clamp_score(value: float | None) -> float:
+            if value is None:
+                return 0.0
+            return round(max(0.0, min(100.0, float(value))), 2)
+
         roof = (attrs.roof_type or "unknown").lower()
         vent = (attrs.vent_type or "unknown").lower()
         defensible_ft = attrs.defensible_space_ft
@@ -98,7 +105,7 @@ class RiskEngine:
             denominator = sum(weight for weight, _ in available)
             if denominator <= 0:
                 return 0.0
-            return round(numerator / denominator, 1)
+            return numerator / denominator
 
         def ring_density(ring_key: str) -> float | None:
             alias = ring_key.replace("ring_", "zone_")
@@ -114,6 +121,7 @@ class RiskEngine:
         ring_0_5_density = ring_density("ring_0_5_ft")
         ring_5_30_density = ring_density("ring_5_30_ft")
         ring_30_100_density = ring_density("ring_30_100_ft")
+        ring_100_300_density = ring_density("ring_100_300_ft")
         nearest_vegetation_distance_ft = None
         try:
             raw_distance = (context.property_level_context or {}).get("nearest_vegetation_distance_ft")
@@ -124,7 +132,7 @@ class RiskEngine:
 
         available_ring_densities = [
             density
-            for density in [ring_0_5_density, ring_5_30_density, ring_30_100_density]
+            for density in [ring_0_5_density, ring_5_30_density, ring_30_100_density, ring_100_300_density]
             if density is not None
         ]
         ring_density_average = (
@@ -194,8 +202,9 @@ class RiskEngine:
             ],
             ember_assumptions,
         )
+        ember_clamped = clamp_score(ember_score)
         submodels["ember_exposure_risk"] = SubmodelResult(
-            score=max(0.0, min(100.0, ember_score)),
+            score=ember_clamped,
             explanation="Ember exposure reflects ember storm likelihood and structure ember vulnerability.",
             key_inputs={
                 "burn_probability": burn_probability_index,
@@ -204,6 +213,8 @@ class RiskEngine:
                 "vent_ignition_proxy": vent_ignition,
             },
             assumptions=ember_assumptions + context_assumptions,
+            raw_score=round(float(ember_score), 4),
+            clamped_score=ember_clamped,
         )
 
         flame_assumptions: List[str] = []
@@ -236,8 +247,9 @@ class RiskEngine:
             ],
             flame_assumptions,
         )
+        flame_clamped = clamp_score(flame_score)
         submodels["flame_contact_risk"] = SubmodelResult(
-            score=max(0.0, min(100.0, flame_score)),
+            score=flame_clamped,
             explanation="Flame-contact risk reflects near-structure fuels and vegetation continuity.",
             key_inputs={
                 "fuel_index": fuel_index,
@@ -245,9 +257,12 @@ class RiskEngine:
                 "defensible_space_ft": defensible_ft,
                 "ring_0_5_ft_vegetation_density": ring_0_5_density,
                 "ring_5_30_ft_vegetation_density": ring_5_30_density,
+                "ring_30_100_ft_vegetation_density": ring_30_100_density,
                 "nearest_vegetation_distance_ft": nearest_vegetation_distance_ft,
             },
             assumptions=flame_assumptions + context_assumptions,
+            raw_score=round(float(flame_score), 4),
+            clamped_score=flame_clamped,
         )
 
         slope_assumptions: List[str] = []
@@ -258,35 +273,48 @@ class RiskEngine:
             ],
             slope_assumptions,
         )
+        slope_clamped = clamp_score(slope_score)
         submodels["slope_topography_risk"] = SubmodelResult(
-            score=max(0.0, min(100.0, slope_score)),
+            score=slope_clamped,
             explanation="Slope/topography risk captures terrain-driven spread amplification.",
             key_inputs={"slope_index": slope_index, "aspect_index": aspect_index},
             assumptions=slope_assumptions + list(context_assumptions),
+            raw_score=round(float(slope_score), 4),
+            clamped_score=slope_clamped,
         )
 
         fuel_proximity_assumptions: List[str] = []
-        if ring_30_100_density is None:
+        if ring_30_100_density is None and ring_100_300_density is None:
             fuel_proximity_assumptions.append(
-                "Structure-ring 30-100 ft vegetation metrics unavailable; fuel proximity used point-based distance index."
+                "Structure-ring vegetation metrics unavailable for 30-300 ft; fuel proximity used point-based distance index."
             )
 
-        outer_ring_pressure = ring_30_100_density if ring_30_100_density is not None else canopy_index
+        outer_ring_pressure_values = [d for d in [ring_30_100_density, ring_100_300_density] if d is not None]
+        outer_ring_pressure = (
+            sum(outer_ring_pressure_values) / len(outer_ring_pressure_values)
+            if outer_ring_pressure_values
+            else canopy_index
+        )
         fuel_proximity_score = weighted_score(
             [
-                (0.75, wildland_distance_index, "Wildland distance unavailable for fuel proximity model."),
-                (0.25, outer_ring_pressure, "30-100 ft ring/cover unavailable for fuel proximity model."),
+                (0.62, wildland_distance_index, "Wildland distance unavailable for fuel proximity model."),
+                (0.26, outer_ring_pressure, "30-300 ft ring/cover unavailable for fuel proximity model."),
+                (0.12, ring_0_5_density, "Immediate ring density unavailable for fuel-proximity refinement."),
             ],
             fuel_proximity_assumptions,
         )
+        fuel_proximity_clamped = clamp_score(fuel_proximity_score)
         submodels["fuel_proximity_risk"] = SubmodelResult(
-            score=max(0.0, min(100.0, fuel_proximity_score)),
+            score=fuel_proximity_clamped,
             explanation="Fuel proximity risk reflects distance to contiguous wildland vegetation.",
             key_inputs={
                 "wildland_distance_index": wildland_distance_index,
                 "ring_30_100_ft_vegetation_density": ring_30_100_density,
+                "ring_100_300_ft_vegetation_density": ring_100_300_density,
             },
             assumptions=fuel_proximity_assumptions + context_assumptions,
+            raw_score=round(float(fuel_proximity_score), 4),
+            clamped_score=fuel_proximity_clamped,
         )
 
         vegetation_assumptions: List[str] = []
@@ -297,33 +325,42 @@ class RiskEngine:
         structure_ring_veg = ring_density_average if ring_density_average is not None else canopy_index
         vegetation_score = weighted_score(
             [
-                (0.35, fuel_index, "Fuel model unavailable for vegetation intensity model."),
-                (0.20, canopy_index, "Canopy cover unavailable for vegetation intensity model."),
-                (0.20, moisture_index, "Moisture input unavailable for vegetation intensity model."),
-                (0.25, structure_ring_veg, "Ring vegetation unavailable for vegetation intensity model."),
+                (0.30, fuel_index, "Fuel model unavailable for vegetation intensity model."),
+                (0.18, canopy_index, "Canopy cover unavailable for vegetation intensity model."),
+                (0.18, moisture_index, "Moisture input unavailable for vegetation intensity model."),
+                (0.24, structure_ring_veg, "Ring vegetation unavailable for vegetation intensity model."),
+                (0.10, ring_0_5_density, "Immediate ring density unavailable for vegetation intensity model."),
             ],
             vegetation_assumptions,
         )
+        vegetation_clamped = clamp_score(vegetation_score)
         submodels["vegetation_intensity_risk"] = SubmodelResult(
-            score=max(0.0, min(100.0, vegetation_score)),
+            score=vegetation_clamped,
             explanation="Vegetation intensity risk captures fuel loading, canopy continuity, and dryness.",
             key_inputs={
                 "fuel_index": fuel_index,
                 "canopy_index": canopy_index,
                 "moisture_index": moisture_index,
                 "ring_vegetation_density_avg": ring_density_average,
+                "ring_0_5_ft_vegetation_density": ring_0_5_density,
             },
             assumptions=vegetation_assumptions + context_assumptions,
+            raw_score=round(float(vegetation_score), 4),
+            clamped_score=vegetation_clamped,
         )
 
         historic_assumptions: List[str] = []
         if historic_fire_index is None:
             historic_assumptions.append("Historic fire recurrence unavailable for this location.")
+        historic_raw = 0.0 if historic_fire_index is None else float(historic_fire_index)
+        historic_clamped = clamp_score(historic_raw)
         submodels["historic_fire_risk"] = SubmodelResult(
-            score=max(0.0, min(100.0, 0.0 if historic_fire_index is None else round(historic_fire_index, 1))),
+            score=historic_clamped,
             explanation="Historic fire risk reflects nearby fire recurrence and perimeter history.",
             key_inputs={"historic_fire_index": historic_fire_index},
             assumptions=historic_assumptions + list(context_assumptions),
+            raw_score=round(historic_raw, 4),
+            clamped_score=historic_clamped,
         )
 
         structure_assumptions: List[str] = []
@@ -335,7 +372,9 @@ class RiskEngine:
         elif attrs.construction_year >= 2008:
             construction_risk = 42.0
         else:
-            construction_risk = 55.0
+            # Continuous aging risk so older stock does not collapse into one bucket.
+            years_pre_2008 = max(0, 2008 - int(attrs.construction_year))
+            construction_risk = min(75.0, 50.0 + (years_pre_2008 * 0.55))
 
         structure_score = weighted_score(
             [
@@ -345,8 +384,9 @@ class RiskEngine:
             ],
             structure_assumptions,
         )
+        structure_clamped = clamp_score(structure_score)
         submodels["structure_vulnerability_risk"] = SubmodelResult(
-            score=max(0.0, min(100.0, structure_score)),
+            score=structure_clamped,
             explanation="Structure vulnerability risk reflects hardening quality against ember and radiant heat intrusion.",
             key_inputs={
                 "roof_ignition_proxy": roof_ignition,
@@ -354,6 +394,8 @@ class RiskEngine:
                 "construction_risk_proxy": construction_risk,
             },
             assumptions=structure_assumptions,
+            raw_score=round(float(structure_score), 4),
+            clamped_score=structure_clamped,
         )
 
         defensible_assumptions: List[str] = []
@@ -377,23 +419,28 @@ class RiskEngine:
         )
         defensible_score = weighted_score(
             [
-                (0.55, defensible_clearance_component, "Defensible space value unavailable for defensible-space model."),
-                (0.25, fuel_index, "Fuel model unavailable for defensible-space model."),
+                (0.52, defensible_clearance_component, "Defensible space value unavailable for defensible-space model."),
+                (0.20, fuel_index, "Fuel model unavailable for defensible-space model."),
                 (0.20, zone_pressure, "Ring vegetation unavailable for defensible-space model."),
+                (0.08, ring_0_5_density, "Immediate ring density unavailable for defensible-space model."),
             ],
             defensible_assumptions,
         )
+        defensible_clamped = clamp_score(defensible_score)
         submodels["defensible_space_risk"] = SubmodelResult(
-            score=max(0.0, min(100.0, defensible_score)),
+            score=defensible_clamped,
             explanation="Defensible space risk reflects clearance sufficiency under local fuel pressure.",
             key_inputs={
                 "defensible_space_ft": defensible_ft,
                 "fuel_index": fuel_index,
                 "ring_0_5_ft_vegetation_density": ring_0_5_density,
                 "ring_5_30_ft_vegetation_density": ring_5_30_density,
+                "ring_30_100_ft_vegetation_density": ring_30_100_density,
                 "nearest_vegetation_distance_ft": nearest_vegetation_distance_ft,
             },
             assumptions=defensible_assumptions + context_assumptions,
+            raw_score=round(float(defensible_score), 4),
+            clamped_score=defensible_clamped,
         )
 
         return submodels
@@ -408,7 +455,7 @@ class RiskEngine:
         for name, result in submodels.items():
             weight = self.config.submodel_weights[name]
             contribution = round(weight * result.score, 2)
-            weighted_contributions[name] = {"weight": weight, "score": round(result.score, 1), "contribution": contribution}
+            weighted_contributions[name] = {"weight": weight, "score": round(result.score, 2), "contribution": contribution}
             total += contribution
             assumptions.extend(result.assumptions)
 
@@ -478,6 +525,7 @@ class RiskEngine:
         zone_0_5 = _to_float(defensible_inputs.get("ring_0_5_ft_vegetation_density"))
         zone_5_30 = _to_float(defensible_inputs.get("ring_5_30_ft_vegetation_density"))
         zone_30_100 = _to_float(fuel_inputs.get("ring_30_100_ft_vegetation_density"))
+        zone_100_300 = _to_float(fuel_inputs.get("ring_100_300_ft_vegetation_density"))
         nearest_vegetation_distance_ft = _to_float(
             defensible_inputs.get("nearest_vegetation_distance_ft") or flame_inputs.get("nearest_vegetation_distance_ft")
         )
@@ -502,6 +550,7 @@ class RiskEngine:
         ring_penalty += _penalty("zone_0_5_ft", zone_0_5, 55.0, 0.18)
         ring_penalty += _penalty("zone_5_30_ft", zone_5_30, 60.0, 0.12)
         ring_penalty += _penalty("zone_30_100_ft", zone_30_100, 65.0, 0.08)
+        ring_penalty += _penalty("zone_100_300_ft", zone_100_300, 70.0, 0.05)
 
         distance_cfg = ring_cfg.get("nearest_vegetation_distance_ft") if isinstance(ring_cfg.get("nearest_vegetation_distance_ft"), dict) else {}
         try:
@@ -528,22 +577,40 @@ class RiskEngine:
 
         return round(max(0.0, min(100.0, base + ring_penalty)), 1)
 
-    def compute_blended_wildfire_score(self, site_hazard_score: float, home_ignition_vulnerability_score: float) -> float:
+    def compute_blended_wildfire_score(
+        self,
+        site_hazard_score: float,
+        home_ignition_vulnerability_score: float,
+        insurance_readiness_score: float | None = None,
+    ) -> float:
         blend_weights = self.config.risk_blending_weights or {}
         try:
             env_weight = float(blend_weights.get("environmental", 0.0))
             struct_weight = float(blend_weights.get("structural", 0.0))
+            readiness_weight = float(blend_weights.get("readiness", 0.0))
         except (TypeError, ValueError):
             env_weight = 0.0
             struct_weight = 0.0
+            readiness_weight = 0.0
         if env_weight <= 0 or struct_weight <= 0:
             env_weight = self._group_weight(ENVIRONMENT_SUBMODELS)
             struct_weight = self._group_weight(STRUCTURE_SUBMODELS)
-        denom = env_weight + struct_weight
+        if insurance_readiness_score is None:
+            readiness_weight = 0.0
+        denom = env_weight + struct_weight + max(0.0, readiness_weight)
         if denom <= 0:
             return 0.0
 
-        blended = (site_hazard_score * env_weight + home_ignition_vulnerability_score * struct_weight) / denom
+        readiness_risk_equivalent = (
+            max(0.0, min(100.0, 100.0 - float(insurance_readiness_score)))
+            if insurance_readiness_score is not None
+            else 0.0
+        )
+        blended = (
+            site_hazard_score * env_weight
+            + home_ignition_vulnerability_score * struct_weight
+            + readiness_risk_equivalent * max(0.0, readiness_weight)
+        ) / denom
         return round(max(0.0, min(100.0, blended)), 1)
 
     def compute_insurance_readiness(self, attrs: PropertyAttributes, context: WildfireContext, risk: RiskComputation) -> ReadinessRuleResult:

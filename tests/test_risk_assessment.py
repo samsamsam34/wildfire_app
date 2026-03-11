@@ -964,6 +964,7 @@ def test_score_decomposition_and_blended_wildfire_score(monkeypatch, tmp_path):
     expected_blended = app_main.risk_engine.compute_blended_wildfire_score(
         assessed["site_hazard_score"],
         assessed["home_ignition_vulnerability_score"],
+        assessed["insurance_readiness_score"],
     )
     env_names = set(app_main.ENVIRONMENTAL_SUBMODELS)
     struct_names = set(app_main.STRUCTURAL_SUBMODELS)

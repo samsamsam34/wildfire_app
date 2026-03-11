@@ -137,6 +137,7 @@ from backend.version import (
     compare_model_governance,
 )
 from backend.wildfire_data import (
+    WildfireContext,
     WildfireDataClient,
     compute_environmental_data_completeness,
 )
@@ -1193,11 +1194,24 @@ def _build_score_evidence_ledger(
             )
         )
 
-    env_weight = sum(weighted_contributions[key].weight for key in weighted_contributions if key in ENVIRONMENTAL_SUBMODELS)
-    struct_weight_total = sum(
-        weighted_contributions[key].weight for key in weighted_contributions if key in STRUCTURAL_SUBMODELS
-    )
-    denom = env_weight + struct_weight_total
+    blend_cfg = scoring_config.risk_blending_weights or {}
+    try:
+        env_weight = float(blend_cfg.get("environmental", 0.0))
+        struct_weight_total = float(blend_cfg.get("structural", 0.0))
+        readiness_weight = float(blend_cfg.get("readiness", 0.0))
+    except (TypeError, ValueError):
+        env_weight = 0.0
+        struct_weight_total = 0.0
+        readiness_weight = 0.0
+    if env_weight <= 0 or struct_weight_total <= 0:
+        env_weight = sum(weighted_contributions[key].weight for key in weighted_contributions if key in ENVIRONMENTAL_SUBMODELS)
+        struct_weight_total = sum(
+            weighted_contributions[key].weight for key in weighted_contributions if key in STRUCTURAL_SUBMODELS
+        )
+    if readiness_score is None:
+        readiness_weight = 0.0
+
+    denom = env_weight + struct_weight_total + max(0.0, readiness_weight)
     wildfire_entries: list[ScoreEvidenceFactor] = []
     if denom > 0 and wildfire_risk_score is not None:
         if site_hazard_score is not None:
@@ -1234,6 +1248,26 @@ def _build_score_evidence_ledger(
                     source_field="home_ignition_vulnerability_score",
                     source_layer="home_ignition_vulnerability_score",
                     notes=["Weighted contribution of Home Ignition Vulnerability to blended wildfire score."],
+                )
+            )
+        if readiness_score is not None and readiness_weight > 0:
+            readiness_ratio = readiness_weight / denom
+            readiness_risk_equivalent = max(0.0, min(100.0, 100.0 - float(readiness_score)))
+            readiness_status = _combine_evidence_status([f.evidence_status for f in readiness_entries])
+            wildfire_entries.append(
+                ScoreEvidenceFactor(
+                    factor_key="readiness_risk_component",
+                    display_name="Insurance Readiness Risk Equivalent",
+                    category="structural",
+                    raw_value=readiness_risk_equivalent,
+                    normalized_value=readiness_risk_equivalent,
+                    weight=round(readiness_ratio, 4),
+                    contribution=round(readiness_risk_equivalent * readiness_ratio, 2),
+                    direction="composes_score",
+                    evidence_status=readiness_status,
+                    source_field="insurance_readiness_score",
+                    source_layer="insurance_readiness_score",
+                    notes=["Bounded conversion of readiness score into blended wildfire risk composition."],
                 )
             )
 
@@ -2697,6 +2731,162 @@ def _build_factor_breakdown(submodels: dict[str, SubmodelScore], risk: RiskCompu
     )
 
 
+def _numeric_stddev(values: list[float]) -> float:
+    if len(values) < 2:
+        return 0.0
+    mean = sum(values) / float(len(values))
+    variance = sum((v - mean) ** 2 for v in values) / float(len(values))
+    return variance ** 0.5
+
+
+def _factor_scope_from_fields(source_fields: list[str], input_source_metadata: dict[str, InputSourceMetadata]) -> str:
+    if not source_fields:
+        return "fallback"
+    source_types = {str((input_source_metadata.get(field).source_type if input_source_metadata.get(field) else "missing")) for field in source_fields}
+    if source_types & {"missing", "heuristic"}:
+        return "fallback"
+    if source_fields and any(field.startswith("zone_") or field in {"roof_type", "vent_type", "defensible_space_ft"} for field in source_fields):
+        return "property_specific"
+    if source_fields and any(field in {"fuel_model", "canopy_cover", "wildland_distance"} for field in source_fields):
+        return "neighborhood_level"
+    return "region_level"
+
+
+def _build_score_variance_diagnostics(
+    *,
+    context: WildfireContext,
+    risk: RiskComputation,
+    submodel_scores: dict[str, SubmodelScore],
+    weighted_contributions: dict[str, WeightedContribution],
+    property_level_context: dict[str, Any],
+    input_source_metadata: dict[str, InputSourceMetadata],
+    resolved_region_id: str | None,
+) -> dict[str, Any]:
+    ring_metrics = (property_level_context or {}).get("ring_metrics") if isinstance(property_level_context, dict) else {}
+    ring_metrics = ring_metrics if isinstance(ring_metrics, dict) else {}
+    feature_sampling = (property_level_context or {}).get("feature_sampling") if isinstance(property_level_context, dict) else {}
+    feature_sampling = feature_sampling if isinstance(feature_sampling, dict) else {}
+
+    raw_feature_vector = {
+        "burn_probability": context.burn_probability,
+        "wildfire_hazard": context.wildfire_hazard,
+        "slope": context.slope,
+        "fuel_model": context.fuel_model,
+        "canopy_cover": context.canopy_cover,
+        "historic_fire_distance_km": context.historic_fire_distance,
+        "wildland_distance_m": context.wildland_distance,
+        "ring_0_5_ft_vegetation_density": _safe_float((ring_metrics.get("ring_0_5_ft") or {}).get("vegetation_density")),
+        "ring_5_30_ft_vegetation_density": _safe_float((ring_metrics.get("ring_5_30_ft") or {}).get("vegetation_density")),
+        "ring_30_100_ft_vegetation_density": _safe_float((ring_metrics.get("ring_30_100_ft") or {}).get("vegetation_density")),
+        "ring_100_300_ft_vegetation_density": _safe_float((ring_metrics.get("ring_100_300_ft") or {}).get("vegetation_density")),
+        "nearest_vegetation_distance_ft": _safe_float((property_level_context or {}).get("nearest_vegetation_distance_ft")),
+    }
+
+    transformed_feature_vector = {
+        "burn_probability_index": context.burn_probability_index,
+        "hazard_severity_index": context.hazard_severity_index,
+        "slope_index": context.slope_index,
+        "aspect_index": context.aspect_index,
+        "fuel_index": context.fuel_index,
+        "moisture_index": context.moisture_index,
+        "canopy_index": context.canopy_index,
+        "wildland_distance_index": context.wildland_distance_index,
+        "historic_fire_index": context.historic_fire_index,
+        "feature_sampling": feature_sampling,
+    }
+
+    factor_contribution_breakdown: dict[str, Any] = {}
+    fallback_count = 0
+    property_specific_count = 0
+    for name, sm in submodel_scores.items():
+        canonical = name if name in CANONICAL_SUBMODELS else SUBMODEL_ALIASES.get(name)
+        if canonical not in CANONICAL_SUBMODELS:
+            continue
+        wc = weighted_contributions.get(canonical)
+        if wc is None:
+            continue
+        result_meta = risk.submodel_scores.get(canonical)
+        source_fields = [
+            field for field in (_map_key_input_to_source_field(k) for k in (sm.key_inputs or {}).keys()) if field
+        ]
+        scope = _factor_scope_from_fields(source_fields, input_source_metadata)
+        fallback_flag = bool(
+            scope == "fallback"
+            or any(v is None for v in (sm.key_inputs or {}).values())
+            or any(tok in " ".join(sm.assumptions).lower() for tok in ("fallback", "missing", "unavailable"))
+        )
+        if fallback_flag:
+            fallback_count += 1
+        if scope == "property_specific":
+            property_specific_count += 1
+        factor_contribution_breakdown[canonical] = {
+            "weight": wc.weight,
+            "score": wc.score,
+            "contribution": wc.contribution,
+            "raw_submodel_score_before_clamp": getattr(result_meta, "raw_score", None),
+            "clamped_submodel_score": getattr(result_meta, "clamped_score", wc.score),
+            "scope": scope,
+            "fallback_or_default_used": fallback_flag,
+            "source_fields": source_fields,
+            "source_metadata": {
+                field: {
+                    "source_name": (input_source_metadata.get(field).source_name if input_source_metadata.get(field) else None),
+                    "source_type": (input_source_metadata.get(field).source_type if input_source_metadata.get(field) else None),
+                    "spatial_resolution_m": (
+                        input_source_metadata.get(field).spatial_resolution_m if input_source_metadata.get(field) else None
+                    ),
+                }
+                for field in source_fields
+            },
+            "key_inputs": sm.key_inputs,
+        }
+
+    contributions = [float(v.get("contribution") or 0.0) for v in factor_contribution_breakdown.values()]
+    contribution_stddev = _numeric_stddev(contributions)
+    absolute_contributions = [abs(v) for v in contributions]
+    top_two_share = 0.0
+    if absolute_contributions:
+        total_abs = max(1e-6, sum(absolute_contributions))
+        top_two_share = sum(sorted(absolute_contributions, reverse=True)[:2]) / total_abs
+
+    compression_flags: list[str] = []
+    if fallback_count >= 3:
+        compression_flags.append("fallback_heavy_factor_inputs")
+    if contribution_stddev < 2.5:
+        compression_flags.append("low_submodel_contribution_spread")
+    if top_two_share >= 0.72:
+        compression_flags.append("top_components_dominate_total")
+    if property_specific_count <= 2:
+        compression_flags.append("limited_property_specific_signal")
+    if raw_feature_vector["ring_0_5_ft_vegetation_density"] is None and raw_feature_vector["ring_5_30_ft_vegetation_density"] is None:
+        compression_flags.append("near_structure_ring_metrics_missing")
+
+    compression_analysis_summary: list[str] = []
+    if "fallback_heavy_factor_inputs" in compression_flags:
+        compression_analysis_summary.append("Multiple submodels used fallback/default inputs, which narrows property-to-property separation.")
+    if "low_submodel_contribution_spread" in compression_flags:
+        compression_analysis_summary.append("Submodel contributions cluster tightly, indicating compressed score spread.")
+    if "top_components_dominate_total" in compression_flags:
+        compression_analysis_summary.append("A small number of components dominate total risk, reducing sensitivity to other property signals.")
+    if "limited_property_specific_signal" in compression_flags:
+        compression_analysis_summary.append("Few property-specific factors are active; neighborhood/regional context is dominating.")
+    if not compression_analysis_summary:
+        compression_analysis_summary.append("No major compression pattern detected for this assessment.")
+
+    return {
+        "resolved_region_id": resolved_region_id,
+        "raw_feature_vector": raw_feature_vector,
+        "transformed_feature_vector": transformed_feature_vector,
+        "factor_contribution_breakdown": factor_contribution_breakdown,
+        "compression_flags": compression_flags,
+        "compression_analysis_summary": compression_analysis_summary,
+        "factor_fallback_count": fallback_count,
+        "factor_count": len(factor_contribution_breakdown),
+        "contribution_stddev": round(contribution_stddev, 4),
+        "top_two_component_share": round(top_two_share, 4),
+    }
+
+
 def _build_top_protective_factors(attrs: PropertyAttributes, submodels: dict[str, SubmodelScore]) -> list[str]:
     factors: list[str] = []
 
@@ -3134,6 +3324,7 @@ def _run_assessment(
     raw_blended_wildfire_risk_score = risk_engine.compute_blended_wildfire_score(
         site_hazard_score=raw_site_hazard_score,
         home_ignition_vulnerability_score=raw_home_ignition_vulnerability_score,
+        insurance_readiness_score=readiness.insurance_readiness_score,
     )
     score_outputs, score_availability_notes = _apply_score_availability(
         site_hazard_score=raw_site_hazard_score,
@@ -3602,6 +3793,15 @@ def _run_assessment(
     )
 
     result = _apply_ruleset_to_result(result, ruleset)
+    score_variance_diagnostics = _build_score_variance_diagnostics(
+        context=context,
+        risk=risk,
+        submodel_scores=submodel_scores,
+        weighted_contributions=weighted_contributions,
+        property_level_context=property_level_context,
+        input_source_metadata=input_source_metadata,
+        resolved_region_id=result.resolved_region_id,
+    )
 
     debug_payload = {
         "address": payload.address,
@@ -3630,6 +3830,16 @@ def _run_assessment(
                 "explanation": sm.explanation,
                 "key_inputs": sm.key_inputs,
                 "assumptions": sm.assumptions,
+                "raw_score_before_clamp": (
+                    risk.submodel_scores.get(name).raw_score
+                    if risk.submodel_scores.get(name) is not None
+                    else None
+                ),
+                "clamped_score": (
+                    risk.submodel_scores.get(name).clamped_score
+                    if risk.submodel_scores.get(name) is not None
+                    else sm.score
+                ),
             }
             for name, sm in submodel_scores.items()
         },
@@ -3682,6 +3892,11 @@ def _run_assessment(
         },
         "layer_coverage_audit": [row.model_dump() for row in result.layer_coverage_audit],
         "coverage_summary": result.coverage_summary.model_dump(),
+        "raw_feature_vector": score_variance_diagnostics.get("raw_feature_vector", {}),
+        "transformed_feature_vector": score_variance_diagnostics.get("transformed_feature_vector", {}),
+        "factor_contribution_breakdown": score_variance_diagnostics.get("factor_contribution_breakdown", {}),
+        "compression_flags": score_variance_diagnostics.get("compression_flags", []),
+        "score_variance_diagnostics": score_variance_diagnostics,
         "defensible_space_analysis": result.defensible_space_analysis,
         "top_near_structure_risk_drivers": result.top_near_structure_risk_drivers,
         "prioritized_vegetation_actions": [a.model_dump() for a in result.prioritized_vegetation_actions],

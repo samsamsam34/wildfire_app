@@ -1,0 +1,220 @@
+{
+  "scenarios": [
+    {
+      "scenario_id": "dense_forest_wui_slope",
+      "address": "101 High Ridge Dr, Winthrop, WA",
+      "attributes": {
+        "roof_type": "wood",
+        "vent_type": "standard",
+        "defensible_space_ft": 6,
+        "construction_year": 1995,
+        "vegetation_condition": "dense"
+      },
+      "context": {
+        "burn_probability_index": 84.0,
+        "hazard_severity_index": 88.0,
+        "slope_index": 79.0,
+        "aspect_index": 73.0,
+        "fuel_index": 86.0,
+        "moisture_index": 82.0,
+        "canopy_index": 90.0,
+        "wildland_distance_index": 94.0,
+        "historic_fire_index": 68.0,
+        "burn_probability": 0.84,
+        "wildfire_hazard": 4.8,
+        "slope": 34.0,
+        "fuel_model": 122.0,
+        "canopy_cover": 82.0,
+        "historic_fire_distance": 0.9,
+        "wildland_distance": 45.0,
+        "access_exposure_index": 62.0,
+        "structure_ring_metrics": {
+          "ring_0_5_ft": {"vegetation_density": 88.0},
+          "ring_5_30_ft": {"vegetation_density": 84.0},
+          "ring_30_100_ft": {"vegetation_density": 79.0},
+          "ring_100_300_ft": {"vegetation_density": 74.0}
+        }
+      }
+    },
+    {
+      "scenario_id": "suburban_low_vegetation",
+      "address": "202 Meadow Loop, Bend, OR",
+      "attributes": {
+        "roof_type": "class a",
+        "vent_type": "ember-resistant",
+        "defensible_space_ft": 45,
+        "construction_year": 2019,
+        "vegetation_condition": "managed"
+      },
+      "context": {
+        "burn_probability_index": 26.0,
+        "hazard_severity_index": 30.0,
+        "slope_index": 21.0,
+        "aspect_index": 48.0,
+        "fuel_index": 24.0,
+        "moisture_index": 36.0,
+        "canopy_index": 18.0,
+        "wildland_distance_index": 18.0,
+        "historic_fire_index": 14.0,
+        "burn_probability": 0.26,
+        "wildfire_hazard": 1.7,
+        "slope": 8.0,
+        "fuel_model": 6.0,
+        "canopy_cover": 14.0,
+        "historic_fire_distance": 6.2,
+        "wildland_distance": 1380.0,
+        "access_exposure_index": 18.0,
+        "structure_ring_metrics": {
+          "ring_0_5_ft": {"vegetation_density": 12.0},
+          "ring_5_30_ft": {"vegetation_density": 20.0},
+          "ring_30_100_ft": {"vegetation_density": 25.0},
+          "ring_100_300_ft": {"vegetation_density": 29.0}
+        }
+      }
+    },
+    {
+      "scenario_id": "grassland_exposed",
+      "address": "303 Prairie View Rd, Billings, MT",
+      "attributes": {
+        "roof_type": "composite",
+        "vent_type": "standard",
+        "defensible_space_ft": 18,
+        "construction_year": 2006,
+        "vegetation_condition": "moderate"
+      },
+      "context": {
+        "burn_probability_index": 58.0,
+        "hazard_severity_index": 61.0,
+        "slope_index": 39.0,
+        "aspect_index": 61.0,
+        "fuel_index": 56.0,
+        "moisture_index": 64.0,
+        "canopy_index": 22.0,
+        "wildland_distance_index": 76.0,
+        "historic_fire_index": 41.0,
+        "burn_probability": 0.58,
+        "wildfire_hazard": 3.1,
+        "slope": 16.0,
+        "fuel_model": 103.0,
+        "canopy_cover": 18.0,
+        "historic_fire_distance": 2.8,
+        "wildland_distance": 520.0,
+        "access_exposure_index": 44.0,
+        "structure_ring_metrics": {
+          "ring_0_5_ft": {"vegetation_density": 42.0},
+          "ring_5_30_ft": {"vegetation_density": 50.0},
+          "ring_30_100_ft": {"vegetation_density": 58.0},
+          "ring_100_300_ft": {"vegetation_density": 62.0}
+        }
+      }
+    },
+    {
+      "scenario_id": "burn_scar_adjacent",
+      "address": "404 Canyon Trace, Missoula, MT",
+      "attributes": {
+        "roof_type": "composite",
+        "vent_type": "ember-resistant",
+        "defensible_space_ft": 22,
+        "construction_year": 2012,
+        "vegetation_condition": "moderate"
+      },
+      "context": {
+        "burn_probability_index": 64.0,
+        "hazard_severity_index": 69.0,
+        "slope_index": 54.0,
+        "aspect_index": 67.0,
+        "fuel_index": 61.0,
+        "moisture_index": 59.0,
+        "canopy_index": 63.0,
+        "wildland_distance_index": 65.0,
+        "historic_fire_index": 90.0,
+        "burn_probability": 0.64,
+        "wildfire_hazard": 3.6,
+        "slope": 23.0,
+        "fuel_model": 109.0,
+        "canopy_cover": 55.0,
+        "historic_fire_distance": 0.4,
+        "wildland_distance": 410.0,
+        "access_exposure_index": 40.0,
+        "structure_ring_metrics": {
+          "ring_0_5_ft": {"vegetation_density": 38.0},
+          "ring_5_30_ft": {"vegetation_density": 46.0},
+          "ring_30_100_ft": {"vegetation_density": 57.0},
+          "ring_100_300_ft": {"vegetation_density": 68.0}
+        }
+      }
+    },
+    {
+      "scenario_id": "same_site_hardened_home",
+      "address": "505 Pine Hollow Ln, Bozeman, MT",
+      "attributes": {
+        "roof_type": "class a",
+        "vent_type": "ember-resistant",
+        "defensible_space_ft": 38,
+        "construction_year": 2020,
+        "vegetation_condition": "managed"
+      },
+      "context": {
+        "burn_probability_index": 62.0,
+        "hazard_severity_index": 66.0,
+        "slope_index": 51.0,
+        "aspect_index": 63.0,
+        "fuel_index": 60.0,
+        "moisture_index": 58.0,
+        "canopy_index": 57.0,
+        "wildland_distance_index": 64.0,
+        "historic_fire_index": 49.0,
+        "burn_probability": 0.62,
+        "wildfire_hazard": 3.4,
+        "slope": 20.0,
+        "fuel_model": 107.0,
+        "canopy_cover": 50.0,
+        "historic_fire_distance": 1.8,
+        "wildland_distance": 450.0,
+        "access_exposure_index": 35.0,
+        "structure_ring_metrics": {
+          "ring_0_5_ft": {"vegetation_density": 30.0},
+          "ring_5_30_ft": {"vegetation_density": 38.0},
+          "ring_30_100_ft": {"vegetation_density": 45.0},
+          "ring_100_300_ft": {"vegetation_density": 55.0}
+        }
+      }
+    },
+    {
+      "scenario_id": "same_site_poor_hardening",
+      "address": "506 Pine Hollow Ln, Bozeman, MT",
+      "attributes": {
+        "roof_type": "wood",
+        "vent_type": "standard",
+        "defensible_space_ft": 8,
+        "construction_year": 1992,
+        "vegetation_condition": "dense"
+      },
+      "context": {
+        "burn_probability_index": 62.0,
+        "hazard_severity_index": 66.0,
+        "slope_index": 51.0,
+        "aspect_index": 63.0,
+        "fuel_index": 60.0,
+        "moisture_index": 58.0,
+        "canopy_index": 57.0,
+        "wildland_distance_index": 64.0,
+        "historic_fire_index": 49.0,
+        "burn_probability": 0.62,
+        "wildfire_hazard": 3.4,
+        "slope": 20.0,
+        "fuel_model": 107.0,
+        "canopy_cover": 50.0,
+        "historic_fire_distance": 1.8,
+        "wildland_distance": 450.0,
+        "access_exposure_index": 35.0,
+        "structure_ring_metrics": {
+          "ring_0_5_ft": {"vegetation_density": 72.0},
+          "ring_5_30_ft": {"vegetation_density": 75.0},
+          "ring_30_100_ft": {"vegetation_density": 69.0},
+          "ring_100_300_ft": {"vegetation_density": 64.0}
+        }
+      }
+    }
+  ]
+}

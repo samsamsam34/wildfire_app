@@ -15,20 +15,21 @@ class ScoringConfig:
     # Deterministic heuristic configuration (not underwriting-approved).
     submodel_weights: Dict[str, float] = field(
         default_factory=lambda: {
-            "vegetation_intensity_risk": 0.12,
-            "fuel_proximity_risk": 0.14,
-            "slope_topography_risk": 0.12,
-            "ember_exposure_risk": 0.15,
-            "flame_contact_risk": 0.14,
-            "historic_fire_risk": 0.11,
-            "structure_vulnerability_risk": 0.12,
-            "defensible_space_risk": 0.10,
+            "vegetation_intensity_risk": 0.14,
+            "fuel_proximity_risk": 0.13,
+            "slope_topography_risk": 0.10,
+            "ember_exposure_risk": 0.14,
+            "flame_contact_risk": 0.15,
+            "historic_fire_risk": 0.09,
+            "structure_vulnerability_risk": 0.13,
+            "defensible_space_risk": 0.12,
         }
     )
     risk_blending_weights: Dict[str, float] = field(
         default_factory=lambda: {
-            "environmental": 0.75,
-            "structural": 0.25,
+            "environmental": 0.58,
+            "structural": 0.30,
+            "readiness": 0.12,
         }
     )
     vulnerability_ring_penalties: Dict[str, Dict[str, float]] = field(

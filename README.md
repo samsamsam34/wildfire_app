@@ -150,6 +150,22 @@ Region resolution fields:
 - Uncovered locations can return `region_not_ready` details (HTTP 409 when prepared coverage is required) or `insufficient_data` with `region_resolution.reason=no_prepared_region_for_location`.
 - When footprint geometry is unavailable, defensible-space zone metrics can still run in point-proxy mode, and responses include explicit limitations.
 
+Score variance diagnostics:
+- `POST /risk/debug` now includes:
+  - `score_variance_diagnostics`
+  - `raw_feature_vector`
+  - `transformed_feature_vector`
+  - `factor_contribution_breakdown`
+  - `compression_flags`
+- Use these fields to inspect score compression, fallback-heavy factors, and contribution spread for a single assessment.
+- Batch variance check script:
+
+```bash
+python scripts/analyze_score_variance.py \
+  --fixture tests/fixtures/score_variance_scenarios.json \
+  --csv-out /tmp/score_variance.csv
+```
+
 ## Local Development / Setup
 
 ```bash
