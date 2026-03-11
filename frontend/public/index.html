@@ -194,6 +194,25 @@
         color: var(--bad);
         font-size: 0.86rem;
       }
+      #verifyLocationMap {
+        height: 240px;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        margin-top: 0.65rem;
+        overflow: hidden;
+      }
+      .verify-tip {
+        margin-top: 0.55rem;
+        font-size: 0.82rem;
+        color: #6b7280;
+      }
+      .verify-live {
+        margin-top: 0.65rem;
+        font-size: 0.86rem;
+        color: var(--text);
+        display: grid;
+        gap: 0.18rem;
+      }
       @media (max-width: 640px) {
         .facts-grid { grid-template-columns: 1fr; }
         .actions button { width: 100%; }
@@ -531,11 +550,21 @@
           <dt>Prepared region</dt>
           <dd id="verifyPreparedRegion">-</dd>
         </dl>
+        <p class="verify-tip">Tip: drag the pin or click the map if the location is slightly off.</p>
+        <div id="verifyLocationMap" aria-label="Address verification map"></div>
+        <div id="verifyLiveLocationDetails" class="verify-live">
+          <div id="verifySelectedCoordinates">Selected coordinates: -</div>
+          <div id="verifySelectionSource">Selection source: Suggested geocode</div>
+          <div id="verifyDistanceFromSuggested">Distance from suggested: 0 m</div>
+          <div id="verifyCoverageStatus">Coverage status: checking...</div>
+        </div>
         <div id="verifyWarningBox" class="modal-warning" style="display:none;"></div>
         <p id="verifyModalError" class="modal-error" style="display:none;"></p>
         <div class="actions">
-          <button id="confirmAddressBtn" type="button">Confirm address</button>
+          <button id="confirmAddressBtn" type="button">Confirm location and continue</button>
+          <button id="resetVerifyLocationBtn" type="button" class="secondary">Reset to suggested location</button>
           <button id="editAddressBtn" type="button" class="secondary">Edit address</button>
+          <button id="cancelAddressBtn" type="button" class="secondary">Cancel</button>
         </div>
       </div>
     </div>
@@ -571,6 +600,14 @@
       let pendingAssessmentPayload = null;
       let verifiedAddressPayload = null;
       let previousFocusElement = null;
+      let verifyLocationMap = null;
+      let verifyLocationMapBaseLayer = null;
+      let verifyLocationMarker = null;
+      let verificationSuggestedCoords = null;
+      let verificationSelectedCoords = null;
+      let verificationManuallyAdjusted = false;
+      let verificationCoverageResult = null;
+      let verifyCoverageDebounceTimer = null;
 
       const mapLayerStyle = {
         property_anchor_point: {
@@ -1784,6 +1821,46 @@
         return api("/regions/coverage-check", { address: String(address || "").trim() }, "POST");
       }
 
+      async function fetchCoverageForCoordinates(latitude, longitude, address = "") {
+        return api(
+          "/regions/coverage-check",
+          {
+            latitude: Number(latitude),
+            longitude: Number(longitude),
+            address: String(address || "").trim() || undefined,
+          },
+          "POST"
+        );
+      }
+
+      function isValidCoordinatePair(lat, lon) {
+        return Number.isFinite(lat)
+          && Number.isFinite(lon)
+          && lat >= -90
+          && lat <= 90
+          && lon >= -180
+          && lon <= 180;
+      }
+
+      function haversineMeters(a, b) {
+        const toRad = (deg) => (deg * Math.PI) / 180;
+        const R = 6371000;
+        const dLat = toRad(b.lat - a.lat);
+        const dLon = toRad(b.lon - a.lon);
+        const lat1 = toRad(a.lat);
+        const lat2 = toRad(b.lat);
+        const h = Math.sin(dLat / 2) ** 2
+          + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) ** 2;
+        return 2 * R * Math.atan2(Math.sqrt(h), Math.sqrt(1 - h));
+      }
+
+      function clearVerificationCoverageDebounce() {
+        if (verifyCoverageDebounceTimer) {
+          clearTimeout(verifyCoverageDebounceTimer);
+          verifyCoverageDebounceTimer = null;
+        }
+      }
+
       function setAssessmentActionsDisabled(disabled) {
         const assessBtn = document.getElementById("assessBtn");
         const reassessBtn = document.getElementById("reassessBtn");
@@ -1821,7 +1898,7 @@
         return a !== b;
       }
 
-      function buildVerificationWarnings(enteredAddress, verification) {
+      function buildVerificationWarnings(enteredAddress, verification, coverageResult = null) {
         const warnings = [];
         const resolvedAddress = verification?.normalized_address || verification?.display_name || "";
         const confidence = String(
@@ -1830,6 +1907,8 @@
           || verification?.match_confidence
           || "unknown"
         ).toLowerCase();
+        const selected = verificationSelectedCoords;
+        const suggested = verificationSuggestedCoords;
         if (hasMaterialAddressDifference(enteredAddress, resolvedAddress)) {
           warnings.push("Please confirm this is the correct property before continuing.");
         }
@@ -1839,10 +1918,230 @@
         if (verification?.geocode_outcome === "geocode_succeeded_untrusted") {
           warnings.push("Address was accepted through a fallback path.");
         }
-        if (verification?.coverage_available === false) {
+        if (verificationManuallyAdjusted) {
+          warnings.push("Location pin was manually adjusted.");
+        }
+        if (suggested && selected) {
+          const distanceM = haversineMeters(
+            { lat: suggested.latitude, lon: suggested.longitude },
+            { lat: selected.latitude, lon: selected.longitude }
+          );
+          if (distanceM >= 150) {
+            warnings.push(
+              "You moved the location significantly from the suggested address match. Please confirm this is the correct property."
+            );
+          }
+        }
+        const coverageAvailable = coverageResult?.coverage_available;
+        if (coverageAvailable === false) {
+          warnings.push("Selected location is not currently covered by prepared region data.");
+        } else if (verification?.coverage_available === false && coverageAvailable !== true) {
           warnings.push("Location is not currently covered by prepared region data. Assessment may return a not-ready response.");
         }
         return warnings;
+      }
+
+      function setVerificationModalError(message) {
+        const errorEl = document.getElementById("verifyModalError");
+        if (!errorEl) return;
+        if (message) {
+          errorEl.style.display = "block";
+          errorEl.textContent = String(message);
+        } else {
+          errorEl.style.display = "none";
+          errorEl.textContent = "";
+        }
+      }
+
+      function updateVerificationLiveDetails() {
+        const coordsEl = document.getElementById("verifySelectedCoordinates");
+        const sourceEl = document.getElementById("verifySelectionSource");
+        const distanceEl = document.getElementById("verifyDistanceFromSuggested");
+        const coverageEl = document.getElementById("verifyCoverageStatus");
+        if (!coordsEl || !sourceEl || !distanceEl || !coverageEl) return;
+
+        const selected = verificationSelectedCoords;
+        const suggested = verificationSuggestedCoords;
+        if (!selected) {
+          coordsEl.textContent = "Selected coordinates: -";
+          sourceEl.textContent = "Selection source: Suggested geocode";
+          distanceEl.textContent = "Distance from suggested: -";
+          coverageEl.textContent = "Coverage status: unknown";
+          return;
+        }
+
+        coordsEl.textContent = `Selected coordinates: ${formatCoordinate(selected.latitude)}, ${formatCoordinate(selected.longitude)}`;
+        sourceEl.textContent = verificationManuallyAdjusted
+          ? "Selection source: Manually adjusted"
+          : "Selection source: Suggested geocode";
+
+        if (suggested) {
+          const distanceM = haversineMeters(
+            { lat: suggested.latitude, lon: suggested.longitude },
+            { lat: selected.latitude, lon: selected.longitude }
+          );
+          distanceEl.textContent = `Distance from suggested: ${distanceM.toFixed(distanceM >= 100 ? 0 : 1)} m`;
+        } else {
+          distanceEl.textContent = "Distance from suggested: n/a";
+        }
+
+        if (!verificationCoverageResult) {
+          coverageEl.textContent = "Coverage status: checking...";
+          return;
+        }
+        const coverage = verificationCoverageResult;
+        if (coverage.coverage_available === true || coverage.covered === true) {
+          const regionName = coverage.display_name || coverage.selected_region_display_name || coverage.resolved_region_id || "unknown";
+          const regionId = coverage.resolved_region_id || coverage.region_id || "";
+          coverageEl.textContent = `Coverage status: inside prepared region (${regionName}${regionId ? ` / ${regionId}` : ""})`;
+        } else {
+          coverageEl.textContent = "Coverage status: outside prepared region coverage";
+        }
+      }
+
+      function renderVerificationWarnings(enteredAddress, verification) {
+        const warningBox = document.getElementById("verifyWarningBox");
+        if (!warningBox) return;
+        const warnings = buildVerificationWarnings(enteredAddress, verification, verificationCoverageResult);
+        if (warnings.length > 0) {
+          warningBox.style.display = "block";
+          warningBox.textContent = warnings.join("\n");
+        } else {
+          warningBox.style.display = "none";
+          warningBox.textContent = "";
+        }
+      }
+
+      function renderVerifyLocationMarker() {
+        if (!verifyLocationMap || !window.L || !verificationSelectedCoords) return;
+        const lat = Number(verificationSelectedCoords.latitude);
+        const lon = Number(verificationSelectedCoords.longitude);
+        if (!isValidCoordinatePair(lat, lon)) return;
+
+        if (!verifyLocationMarker) {
+          verifyLocationMarker = L.marker([lat, lon], { draggable: true });
+          verifyLocationMarker.on("dragend", () => {
+            const current = verifyLocationMarker.getLatLng();
+            setVerificationSelectedLocation({
+              latitude: Number(current.lat),
+              longitude: Number(current.lng),
+              manuallyAdjusted: true,
+              recenterMap: false,
+              refreshCoverage: true,
+            });
+          });
+          verifyLocationMarker.addTo(verifyLocationMap);
+        } else {
+          verifyLocationMarker.setLatLng([lat, lon]);
+        }
+      }
+
+      function ensureVerifyLocationMap() {
+        if (!window.L) return null;
+        if (!verifyLocationMap) {
+          verifyLocationMap = L.map("verifyLocationMap", { zoomControl: true });
+          verifyLocationMapBaseLayer = L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+            attribution: "&copy; OpenStreetMap contributors",
+            maxZoom: 19,
+          });
+          verifyLocationMapBaseLayer.addTo(verifyLocationMap);
+          verifyLocationMap.on("click", (evt) => {
+            const lat = Number(evt?.latlng?.lat);
+            const lon = Number(evt?.latlng?.lng);
+            if (!isValidCoordinatePair(lat, lon)) return;
+            setVerificationSelectedLocation({
+              latitude: lat,
+              longitude: lon,
+              manuallyAdjusted: true,
+              recenterMap: false,
+              refreshCoverage: true,
+            });
+          });
+        }
+        return verifyLocationMap;
+      }
+
+      function setVerificationSelectedLocation({
+        latitude,
+        longitude,
+        manuallyAdjusted = false,
+        recenterMap = true,
+        refreshCoverage = true,
+      } = {}) {
+        const lat = Number(latitude);
+        const lon = Number(longitude);
+        if (!isValidCoordinatePair(lat, lon)) {
+          setVerificationModalError("Selected location is invalid. Please choose a valid point.");
+          return;
+        }
+        setVerificationModalError("");
+        verificationSelectedCoords = { latitude: lat, longitude: lon };
+        verificationManuallyAdjusted = !!manuallyAdjusted;
+
+        const map = ensureVerifyLocationMap();
+        if (map) {
+          renderVerifyLocationMarker();
+          if (recenterMap) {
+            map.setView([lat, lon], Math.max(map.getZoom() || 16, 16));
+          }
+        }
+        updateVerificationLiveDetails();
+        if (verifiedAddressPayload && pendingAssessmentPayload) {
+          renderVerificationWarnings(pendingAssessmentPayload.address, verifiedAddressPayload);
+        }
+        if (refreshCoverage) {
+          scheduleVerificationCoverageRefresh();
+        }
+      }
+
+      async function refreshVerificationCoverageNow() {
+        if (!verificationSelectedCoords || !pendingAssessmentPayload) return;
+        const lat = Number(verificationSelectedCoords.latitude);
+        const lon = Number(verificationSelectedCoords.longitude);
+        if (!isValidCoordinatePair(lat, lon)) return;
+
+        try {
+          verificationCoverageResult = await fetchCoverageForCoordinates(lat, lon, pendingAssessmentPayload.address);
+          const regionEl = document.getElementById("verifyPreparedRegion");
+          if (regionEl) {
+            const coverage = verificationCoverageResult;
+            if (coverage?.coverage_available === true || coverage?.covered === true) {
+              const regionName = coverage.display_name || coverage.selected_region_display_name || coverage.resolved_region_id || "unknown";
+              const regionId = coverage.resolved_region_id || coverage.region_id || null;
+              regionEl.textContent = `Prepared region: ${regionName}${regionId ? ` (${regionId})` : ""}`;
+            } else {
+              regionEl.textContent = "Location not currently covered by prepared region data";
+            }
+          }
+        } catch (_err) {
+          verificationCoverageResult = null;
+        } finally {
+          updateVerificationLiveDetails();
+          if (verifiedAddressPayload && pendingAssessmentPayload) {
+            renderVerificationWarnings(pendingAssessmentPayload.address, verifiedAddressPayload);
+          }
+        }
+      }
+
+      function scheduleVerificationCoverageRefresh() {
+        clearVerificationCoverageDebounce();
+        verificationCoverageResult = null;
+        updateVerificationLiveDetails();
+        verifyCoverageDebounceTimer = setTimeout(() => {
+          verifyCoverageDebounceTimer = null;
+          refreshVerificationCoverageNow();
+        }, 250);
+      }
+
+      function resetVerificationLocationToSuggested() {
+        if (!verificationSuggestedCoords) return;
+        setVerificationSelectedLocation({
+          latitude: verificationSuggestedCoords.latitude,
+          longitude: verificationSuggestedCoords.longitude,
+          manuallyAdjusted: false,
+          recenterMap: true,
+          refreshCoverage: true,
+        });
       }
 
       function renderAddressVerificationModal(assessmentPayload, verification) {
@@ -1852,8 +2151,6 @@
         const geocoderSourceEl = document.getElementById("verifyGeocoderSource");
         const confidenceEl = document.getElementById("verifyConfidence");
         const regionEl = document.getElementById("verifyPreparedRegion");
-        const warningBox = document.getElementById("verifyWarningBox");
-        const errorEl = document.getElementById("verifyModalError");
         const enteredAddress = assessmentPayload?.address || "";
         const resolvedAddress = verification?.normalized_address
           || verification?.display_name
@@ -1867,7 +2164,6 @@
         const regionName = verification?.display_name || verification?.selected_region_display_name || verification?.resolved_region_id || null;
         const regionId = verification?.resolved_region_id || verification?.region_id || null;
         const hasCoverage = verification?.coverage_available === true || verification?.covered === true;
-        const warnings = buildVerificationWarnings(enteredAddress, verification);
 
         if (enteredAddressEl) enteredAddressEl.textContent = enteredAddress || "(none)";
         if (resolvedAddressEl) resolvedAddressEl.textContent = resolvedAddress;
@@ -1884,18 +2180,31 @@
             ? `Prepared region: ${regionName || "unknown"}${regionId ? ` (${regionId})` : ""}`
             : "Location not currently covered by prepared region data";
         }
-        if (warningBox) {
-          if (warnings.length > 0) {
-            warningBox.style.display = "block";
-            warningBox.textContent = warnings.join("\n");
-          } else {
-            warningBox.style.display = "none";
-            warningBox.textContent = "";
-          }
-        }
-        if (errorEl) {
-          errorEl.style.display = "none";
-          errorEl.textContent = "";
+
+        verificationSuggestedCoords = (
+          isValidCoordinatePair(Number(verification?.latitude), Number(verification?.longitude))
+            ? {
+                latitude: Number(verification.latitude),
+                longitude: Number(verification.longitude),
+              }
+            : null
+        );
+        verificationSelectedCoords = verificationSuggestedCoords
+          ? { ...verificationSuggestedCoords }
+          : null;
+        verificationManuallyAdjusted = false;
+        verificationCoverageResult = verification || null;
+        clearVerificationCoverageDebounce();
+        setVerificationModalError("");
+        updateVerificationLiveDetails();
+        renderVerificationWarnings(enteredAddress, verification);
+
+        const map = ensureVerifyLocationMap();
+        if (map && verificationSelectedCoords) {
+          map.setView([verificationSelectedCoords.latitude, verificationSelectedCoords.longitude], 16);
+          renderVerifyLocationMarker();
+          setTimeout(() => map.invalidateSize(), 0);
+          scheduleVerificationCoverageRefresh();
         }
       }
 
@@ -1905,6 +2214,7 @@
         modal.classList.remove("open");
         modal.setAttribute("aria-hidden", "true");
         addressVerificationModalOpen = false;
+        clearVerificationCoverageDebounce();
         syncAssessmentActionState();
         if (restoreFocus && previousFocusElement && typeof previousFocusElement.focus === "function") {
           previousFocusElement.focus();
@@ -1921,6 +2231,9 @@
         modal.setAttribute("aria-hidden", "false");
         addressVerificationModalOpen = true;
         syncAssessmentActionState();
+        if (verifyLocationMap) {
+          setTimeout(() => verifyLocationMap.invalidateSize(), 0);
+        }
         if (confirmBtn) confirmBtn.focus();
       }
 
@@ -1950,9 +2263,6 @@
 
           pendingAssessmentPayload = { ...payload };
           verifiedAddressPayload = verification;
-          if (!pendingAssessmentPayload.user_selected_point && !pendingAssessmentPayload.property_anchor_point) {
-            pendingAssessmentPayload.property_anchor_point = { latitude: lat, longitude: lon };
-          }
           renderAddressVerificationModal(payload, verification);
           openAddressVerificationModal();
           setRequestStatus("Address verified. Confirm address to continue.");
@@ -1968,16 +2278,36 @@
 
       async function confirmVerifiedAddressAndRunAssessment() {
         if (!pendingAssessmentPayload || isAssessmentSubmitting) return;
+        if (!verificationSelectedCoords) {
+          setVerificationModalError("Select a valid location before continuing.");
+          return;
+        }
+        const lat = Number(verificationSelectedCoords.latitude);
+        const lon = Number(verificationSelectedCoords.longitude);
+        if (!isValidCoordinatePair(lat, lon)) {
+          setVerificationModalError("Selected location is invalid. Please choose a valid point.");
+          return;
+        }
         const payload = pendingAssessmentPayload;
+        payload.property_anchor_point = { latitude: lat, longitude: lon };
         closeAddressVerificationModal({ restoreFocus: false });
         pendingAssessmentPayload = null;
         verifiedAddressPayload = null;
+        verificationSuggestedCoords = null;
+        verificationSelectedCoords = null;
+        verificationManuallyAdjusted = false;
+        verificationCoverageResult = null;
         await runAssessment(false, payload);
       }
 
       function cancelAddressVerification() {
         pendingAssessmentPayload = null;
         verifiedAddressPayload = null;
+        verificationSuggestedCoords = null;
+        verificationSelectedCoords = null;
+        verificationManuallyAdjusted = false;
+        verificationCoverageResult = null;
+        setVerificationModalError("");
         closeAddressVerificationModal();
         setRequestStatus("Address confirmation canceled. Edit the address and retry.");
       }
@@ -2324,7 +2654,12 @@
       document.getElementById("confirmHomeSelectBtn")?.addEventListener("click", startManualStructureSelection);
       document.getElementById("confirmHomePointBtn")?.addEventListener("click", startPointStructureSelection);
       document.getElementById("confirmAddressBtn")?.addEventListener("click", confirmVerifiedAddressAndRunAssessment);
-      document.getElementById("editAddressBtn")?.addEventListener("click", cancelAddressVerification);
+      document.getElementById("resetVerifyLocationBtn")?.addEventListener("click", resetVerificationLocationToSuggested);
+      document.getElementById("editAddressBtn")?.addEventListener("click", () => {
+        cancelAddressVerification();
+        document.getElementById("address")?.focus();
+      });
+      document.getElementById("cancelAddressBtn")?.addEventListener("click", cancelAddressVerification);
       document.getElementById("addressVerifyModal")?.addEventListener("click", (evt) => {
         if (evt.target?.id === "addressVerifyModal") {
           cancelAddressVerification();

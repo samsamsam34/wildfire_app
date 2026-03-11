@@ -35,8 +35,20 @@ def test_frontend_does_not_require_manual_region_selection() -> None:
 def test_frontend_trims_address_and_probes_coverage_on_geocode_failures() -> None:
     html = _frontend_html()
     assert 'address: String(document.getElementById("address").value || "").trim()' in html
-    assert "fetchCoverageForAddress(document.getElementById(\"address\")?.value || \"\")" in html
+    assert "fetchCoverageForAddress(submittedAddress)" in html
     assert "String(coverage.geocode_status || \"\").toLowerCase() === \"accepted\"" in html
+
+
+def test_frontend_verification_modal_supports_interactive_location_confirmation_map() -> None:
+    html = _frontend_html()
+    assert 'id="verifyLocationMap"' in html
+    assert "drag the pin or click the map if the location is slightly off" in html
+    assert "function ensureVerifyLocationMap()" in html
+    assert 'verifyLocationMarker = L.marker' in html
+    assert 'verifyLocationMap.on("click", (evt) => {' in html
+    assert "Confirm location and continue" in html
+    assert "Reset to suggested location" in html
+    assert "Selection source: Manually adjusted" in html
 
 
 def test_frontend_region_debug_metadata_is_dev_mode_only() -> None:
