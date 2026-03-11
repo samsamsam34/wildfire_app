@@ -4312,11 +4312,24 @@ def _build_address_component_comparison(submitted_address: str, candidate_addres
     overlap = sorted(submitted_set & candidate_set)
     union_count = len(submitted_set | candidate_set)
     similarity = (len(overlap) / union_count) if union_count else 0.0
+    coverage = (len(overlap) / max(1, len(submitted_set))) if submitted_set else 0.0
+    submitted_house = (
+        re.match(r"^\s*(\d+[a-zA-Z0-9-]*)\b", submitted_norm).group(1)
+        if re.match(r"^\s*(\d+[a-zA-Z0-9-]*)\b", submitted_norm)
+        else ""
+    )
+    candidate_house = (
+        re.match(r"^\s*(\d+[a-zA-Z0-9-]*)\b", candidate_norm).group(1)
+        if re.match(r"^\s*(\d+[a-zA-Z0-9-]*)\b", candidate_norm)
+        else ""
+    )
     return {
         "submitted_normalized": submitted_norm,
         "candidate_normalized": candidate_norm,
         "exact_normalized_match": submitted_norm == candidate_norm if submitted_norm and candidate_norm else False,
         "token_similarity_ratio": round(similarity, 3),
+        "token_coverage_ratio": round(coverage, 3),
+        "house_number_match": bool(submitted_house and candidate_house and submitted_house == candidate_house),
         "matched_tokens": overlap[:12],
         "missing_from_candidate": sorted(submitted_set - candidate_set)[:8],
         "extra_in_candidate": sorted(candidate_set - submitted_set)[:8],
@@ -4964,6 +4977,25 @@ def _resolve_trusted_geocode(
         )
     except ValueError:
         min_geocoder_token_similarity = 0.55
+    try:
+        min_geocoder_token_coverage = max(
+            0.0, min(1.0, float(os.getenv("WF_RESOLVER_MIN_GEOCODER_TOKEN_COVERAGE", "0.72")))
+        )
+    except ValueError:
+        min_geocoder_token_coverage = 0.72
+    try:
+        min_auto_candidate_score = max(0.0, float(os.getenv("WF_RESOLVER_MIN_AUTO_CANDIDATE_SCORE", "150")))
+    except ValueError:
+        min_auto_candidate_score = 150.0
+    emergency_in_region_guardrail = _env_flag("WF_RESOLVER_EMERGENCY_IN_REGION_MEDIUM_AUTORESOLVE", True)
+    try:
+        emergency_min_score = max(0.0, float(os.getenv("WF_RESOLVER_EMERGENCY_MIN_SCORE", "155")))
+    except ValueError:
+        emergency_min_score = 155.0
+    try:
+        emergency_min_margin = max(0.0, float(os.getenv("WF_RESOLVER_EMERGENCY_MIN_MARGIN", "8")))
+    except ValueError:
+        emergency_min_margin = 8.0
 
     submitted_token_count = len([tok for tok in normalize_address(submitted_address).split() if tok])
     submitted_has_street_number = bool(re.match(r"^\s*\d+[a-zA-Z0-9-]*\b", submitted_address or ""))
@@ -5072,7 +5104,7 @@ def _resolve_trusted_geocode(
 
     def _candidate_auto_gate_reason(candidate: dict[str, Any]) -> str:
         if candidate.get("source") == "user_selected_point":
-            return "user_selected_point"
+            return "eligible"
         if _confidence_rank(str(candidate.get("confidence_tier") or "low")) < 2:
             return "confidence_below_medium"
         precision = str(candidate.get("precision_type") or "unknown")
@@ -5082,6 +5114,8 @@ def _resolve_trusted_geocode(
             return "interpolated_auto_disabled"
         if _candidate_is_street_only(candidate.get("match_method")):
             return "street_only_or_partial_match"
+        if float(candidate.get("rank_score") or 0.0) < min_auto_candidate_score:
+            return "score_below_min_auto_threshold"
         return "eligible"
 
     def _candidate_is_auto_eligible(candidate: dict[str, Any]) -> bool:
@@ -5169,6 +5203,16 @@ def _resolve_trusted_geocode(
             )
         except (TypeError, ValueError):
             token_similarity = None
+        token_coverage = None
+        try:
+            token_coverage = (
+                float(address_cmp.get("token_coverage_ratio"))
+                if address_cmp.get("token_coverage_ratio") is not None
+                else None
+            )
+        except (TypeError, ValueError):
+            token_coverage = None
+        house_number_match = bool(address_cmp.get("house_number_match"))
         exact_normalized_match = bool(address_cmp.get("exact_normalized_match"))
         geocoder_stage = stage in {"primary_geocoder", "secondary_geocoder", "provider_backoff_query"}
         if (
@@ -5177,14 +5221,20 @@ def _resolve_trusted_geocode(
             and submitted_token_count >= 3
             and bool(str(address_cmp.get("candidate_normalized") or "").strip())
             and token_similarity is not None
+            and token_coverage is not None
             and token_similarity < min_geocoder_token_similarity
+            and token_coverage < min_geocoder_token_coverage
+            and not house_number_match
             and not exact_normalized_match
         ):
             # Guardrail: geocoder string similarity is too weak for property-level coordinate auto-use.
             confidence_tier = "low"
             diagnostics.append(
                 "Geocoder candidate failed address-similarity validation "
-                f"(token_similarity={token_similarity:.2f} < {min_geocoder_token_similarity:.2f})."
+                "(token_similarity="
+                f"{token_similarity:.2f} < {min_geocoder_token_similarity:.2f}, "
+                "token_coverage="
+                f"{token_coverage:.2f} < {min_geocoder_token_coverage:.2f})."
             )
         candidate = {
             "latitude": float(latitude),
@@ -5213,7 +5263,9 @@ def _resolve_trusted_geocode(
             "geocode_meta": dict(geocode_meta or {}),
             "address_component_comparison": address_cmp or None,
             "address_similarity_token_ratio": token_similarity,
+            "address_similarity_token_coverage": token_coverage,
             "address_similarity_exact_match": exact_normalized_match,
+            "house_number_match": house_number_match,
         }
         confidence_rank = _confidence_rank(candidate["confidence_tier"])
         base_score = (
@@ -5708,6 +5760,22 @@ def _resolve_trusted_geocode(
     )
     for idx, row in enumerate(resolver_candidates, start=1):
         row["candidate_id"] = str(row.get("candidate_id") or f"cand_{idx}")
+    top_rank_score = float(resolver_candidates[0].get("rank_score") or 0.0) if resolver_candidates else 0.0
+    for idx, row in enumerate(resolver_candidates):
+        rank_score = float(row.get("rank_score") or 0.0)
+        row["normalized_score"] = round((rank_score / top_rank_score), 4) if top_rank_score > 0 else 0.0
+        next_score = (
+            float(resolver_candidates[idx + 1].get("rank_score") or 0.0)
+            if idx + 1 < len(resolver_candidates)
+            else None
+        )
+        row["score_margin_vs_next_candidate"] = (
+            round(rank_score - next_score, 4) if next_score is not None else None
+        )
+        row["authoritative_source_flag"] = _is_authoritative_source(row)
+        row["in_region_boost_applied"] = bool(row.get("coverage_available"))
+        row["exact_match_flag"] = str(row.get("match_method") or "") == "exact_normalized_address"
+        row["conflict_penalty_applied"] = False
 
     strong_candidates = [row for row in resolver_candidates if _confidence_rank(str(row.get("confidence_tier"))) >= 2]
     disagreement_rows: list[dict[str, Any]] = []
@@ -5772,6 +5840,10 @@ def _resolve_trusted_geocode(
             if row.get("stage")
         }
     )
+    top_candidate_score = float(resolver_candidates[0].get("rank_score") or 0.0) if resolver_candidates else None
+    second_candidate_score = (
+        float(resolver_candidates[1].get("rank_score") or 0.0) if len(resolver_candidates) > 1 else None
+    )
 
     selected_candidate: dict[str, Any] | None = None
     if in_region_auto:
@@ -5791,6 +5863,16 @@ def _resolve_trusted_geocode(
             in_region_best["auto_eligible"] = True
             in_region_best["auto_gate_reason"] = "in_region_preference_override"
             selected_candidate = in_region_best
+
+    # Emergency guardrail: prevent blanket "needs map confirmation" regressions for clearly best in-region medium candidates.
+    if selected_candidate is None and emergency_in_region_guardrail and in_region_medium_candidates:
+        fallback_candidate = in_region_medium_candidates[0]
+        top_score = float(fallback_candidate.get("rank_score") or 0.0)
+        margin = float(fallback_candidate.get("score_margin_vs_next_candidate") or 0.0)
+        if top_score >= emergency_min_score and margin >= emergency_min_margin:
+            fallback_candidate["auto_eligible"] = True
+            fallback_candidate["auto_gate_reason"] = "emergency_in_region_medium_autoresolve"
+            selected_candidate = fallback_candidate
 
     ambiguous_conflict = False
     if selected_candidate is not None:
@@ -5823,6 +5905,8 @@ def _resolve_trusted_geocode(
                 and not _is_clearly_best_candidate(selected_candidate, selection_pool)
             ):
                 ambiguous_conflict = True
+                selected_candidate["conflict_penalty_applied"] = True
+                second["conflict_penalty_applied"] = True
 
     def _candidate_debug_payload(row: dict[str, Any]) -> dict[str, Any]:
         containing_regions = list(row.get("candidate_regions_containing_point") or [])
@@ -5839,12 +5923,18 @@ def _resolve_trusted_geocode(
             "precision_type": row.get("precision_type"),
             "match_method": row.get("match_method"),
             "raw_score": row.get("raw_score"),
+            "normalized_score": row.get("normalized_score"),
             "source_bonus": row.get("source_bonus"),
             "rank_score": row.get("rank_score"),
+            "score_margin_vs_next_candidate": row.get("score_margin_vs_next_candidate"),
             "confidence_score": row.get("confidence_score"),
             "confidence_tier": row.get("confidence_tier"),
             "auto_eligible": bool(row.get("auto_eligible")),
             "auto_gate_reason": row.get("auto_gate_reason"),
+            "authoritative_source_flag": bool(row.get("authoritative_source_flag")),
+            "in_region_boost_applied": bool(row.get("in_region_boost_applied")),
+            "exact_match_flag": bool(row.get("exact_match_flag")),
+            "conflict_penalty_applied": bool(row.get("conflict_penalty_applied")),
             "in_region_result": (
                 "inside_prepared_region"
                 if bool(row.get("coverage_available"))
@@ -5908,6 +5998,12 @@ def _resolve_trusted_geocode(
         detail["address_validation_sources"] = address_validation_sources
         detail["recommended_action"] = "Select your home location on the map to continue assessment."
         detail["final_candidate_selected"] = None
+        detail["acceptance_threshold"] = min_auto_candidate_score
+        detail["medium_confidence_threshold"] = "medium"
+        detail["top_margin_threshold"] = clear_winner_min_margin
+        detail["top_candidate_score"] = top_candidate_score
+        detail["second_candidate_score"] = second_candidate_score
+        detail["final_acceptance_decision"] = False
         detail["resolver_settings"] = {
             "conflict_distance_m": conflict_distance_m,
             "conflict_score_margin": conflict_score_margin,
@@ -5916,7 +6012,13 @@ def _resolve_trusted_geocode(
             "clear_winner_min_margin": clear_winner_min_margin,
             "clear_winner_min_score": clear_winner_min_score,
             "in_region_preference_margin": in_region_preference_margin,
+            "min_auto_candidate_score": min_auto_candidate_score,
+            "emergency_in_region_guardrail": emergency_in_region_guardrail,
+            "emergency_min_score": emergency_min_score,
+            "emergency_min_margin": emergency_min_margin,
             "allow_interpolated_auto": allow_interpolated_auto,
+            "min_geocoder_token_similarity": min_geocoder_token_similarity,
+            "min_geocoder_token_coverage": min_geocoder_token_coverage,
         }
 
         if ambiguous_conflict:
@@ -5928,6 +6030,7 @@ def _resolve_trusted_geocode(
             detail["rejection_reason"] = "candidate_conflict_across_sources"
             detail["rejection_category"] = "ambiguous_conflict"
             detail["error_class"] = "address_unresolved"
+            detail["failure_reason"] = "candidate_conflict_across_sources"
             detail["message"] = (
                 "Multiple plausible property coordinates from different sources disagree materially. "
                 "Please confirm your home location on the map."
@@ -5945,6 +6048,7 @@ def _resolve_trusted_geocode(
             detail["rejection_reason"] = "candidate_below_auto_use_confidence"
             detail["rejection_category"] = "location_needs_confirmation"
             detail["error_class"] = "address_unresolved"
+            detail["failure_reason"] = "candidate_below_auto_use_confidence"
             detail["message"] = (
                 "Address candidates were found, but none were safe enough for automatic property coordinates. "
                 "Please continue by selecting your home location on the map."
@@ -5959,12 +6063,14 @@ def _resolve_trusted_geocode(
         else:
             detail["resolution_status"] = "unresolved"
             detail["error_class"] = "address_not_found"
+            detail["failure_reason"] = "no_candidate_coordinates"
             if str(detail.get("geocode_status") or "") == "no_match":
                 detail["rejection_category"] = "no_geocode_candidates"
                 detail["message"] = (
                     "Geocoding failed for assessment. No safe candidate was found across configured providers "
                     "or local authoritative datasets."
                 )
+                detail["failure_reason"] = "no_geocode_candidates"
                 status_code = 422
         detail["final_status"] = detail.get("resolution_status")
         if not address_exists:
@@ -5987,6 +6093,8 @@ def _resolve_trusted_geocode(
                         "geocode_outcome": detail.get("geocode_outcome") or "geocode_failed",
                         "trusted_match_status": detail.get("trusted_match_status") or "rejected",
                         "resolution_status": detail.get("resolution_status"),
+                        "final_acceptance_decision": detail.get("final_acceptance_decision"),
+                        "failure_reason": detail.get("failure_reason"),
                         "rejection_reason": detail.get("rejection_reason"),
                         "provider_attempts": provider_attempts,
                         "candidates_found": len(resolver_candidates),
@@ -6066,6 +6174,13 @@ def _resolve_trusted_geocode(
                 if bool(selected_coverage.get("coverage_available"))
                 else "outside_prepared_region"
             ),
+            "failure_reason": None,
+            "acceptance_threshold": min_auto_candidate_score,
+            "medium_confidence_threshold": "medium",
+            "top_margin_threshold": clear_winner_min_margin,
+            "top_candidate_score": top_candidate_score,
+            "second_candidate_score": second_candidate_score,
+            "final_acceptance_decision": True,
             "final_status": (
                 "ready_for_assessment"
                 if bool(selected_coverage.get("coverage_available"))
@@ -6080,7 +6195,13 @@ def _resolve_trusted_geocode(
                 "clear_winner_min_margin": clear_winner_min_margin,
                 "clear_winner_min_score": clear_winner_min_score,
                 "in_region_preference_margin": in_region_preference_margin,
+                "min_auto_candidate_score": min_auto_candidate_score,
+                "emergency_in_region_guardrail": emergency_in_region_guardrail,
+                "emergency_min_score": emergency_min_score,
+                "emergency_min_margin": emergency_min_margin,
                 "allow_interpolated_auto": allow_interpolated_auto,
+                "min_geocoder_token_similarity": min_geocoder_token_similarity,
+                "min_geocoder_token_coverage": min_geocoder_token_coverage,
             },
             "resolver_candidates": [_candidate_debug_payload(row) for row in resolver_candidates[:12]],
             "candidate_disagreement_distances": disagreement_rows,
@@ -6128,6 +6249,7 @@ def _resolve_trusted_geocode(
                     "geocode_outcome": resolution.geocode_outcome,
                     "trusted_match_status": resolution.trusted_match_status,
                     "resolution_status": selected_meta.get("resolution_status"),
+                    "final_acceptance_decision": selected_meta.get("final_acceptance_decision"),
                     "resolution_method": selected_meta.get("resolution_method"),
                     "coordinate_source": selected_meta.get("coordinate_source"),
                     "match_confidence": selected_meta.get("match_confidence"),
@@ -6341,6 +6463,13 @@ def _build_geocode_debug_payload(address: str) -> dict[str, Any]:
             "candidate_needs_confirmation": meta.get("candidate_needs_confirmation"),
             "final_candidate_selected": meta.get("final_candidate_selected"),
             "needs_user_confirmation": bool(meta.get("needs_user_confirmation", False)),
+            "acceptance_threshold": meta.get("acceptance_threshold"),
+            "medium_confidence_threshold": meta.get("medium_confidence_threshold"),
+            "top_margin_threshold": meta.get("top_margin_threshold"),
+            "top_candidate_score": meta.get("top_candidate_score"),
+            "second_candidate_score": meta.get("second_candidate_score"),
+            "final_acceptance_decision": meta.get("final_acceptance_decision"),
+            "failure_reason": meta.get("failure_reason"),
             "resolver_settings": meta.get("resolver_settings"),
             "region_resolution": {
                 "coverage_available": bool(coverage.get("coverage_available", False)),
@@ -6423,6 +6552,13 @@ def _build_geocode_debug_payload(address: str) -> dict[str, Any]:
             "candidate_needs_confirmation": detail.get("candidate_needs_confirmation"),
             "final_candidate_selected": detail.get("final_candidate_selected"),
             "needs_user_confirmation": bool(detail.get("needs_user_confirmation", False)),
+            "acceptance_threshold": detail.get("acceptance_threshold"),
+            "medium_confidence_threshold": detail.get("medium_confidence_threshold"),
+            "top_margin_threshold": detail.get("top_margin_threshold"),
+            "top_candidate_score": detail.get("top_candidate_score"),
+            "second_candidate_score": detail.get("second_candidate_score"),
+            "final_acceptance_decision": detail.get("final_acceptance_decision"),
+            "failure_reason": detail.get("failure_reason"),
             "resolver_settings": detail.get("resolver_settings"),
             "region_resolution": None,
         }
@@ -6491,6 +6627,13 @@ def _build_geocode_debug_payload(address: str) -> dict[str, Any]:
             "candidate_needs_confirmation": None,
             "final_candidate_selected": None,
             "needs_user_confirmation": False,
+            "acceptance_threshold": None,
+            "medium_confidence_threshold": None,
+            "top_margin_threshold": None,
+            "top_candidate_score": None,
+            "second_candidate_score": None,
+            "final_acceptance_decision": False,
+            "failure_reason": "resolver_exception",
             "resolver_settings": None,
             "region_resolution": None,
         }
@@ -7186,6 +7329,13 @@ def check_region_coverage(
         coverage["candidate_needs_confirmation"] = geocode_meta.get("candidate_needs_confirmation")
         coverage["final_candidate_selected"] = geocode_meta.get("final_candidate_selected")
         coverage["resolver_settings"] = geocode_meta.get("resolver_settings")
+        coverage["acceptance_threshold"] = geocode_meta.get("acceptance_threshold")
+        coverage["medium_confidence_threshold"] = geocode_meta.get("medium_confidence_threshold")
+        coverage["top_margin_threshold"] = geocode_meta.get("top_margin_threshold")
+        coverage["top_candidate_score"] = geocode_meta.get("top_candidate_score")
+        coverage["second_candidate_score"] = geocode_meta.get("second_candidate_score")
+        coverage["final_acceptance_decision"] = geocode_meta.get("final_acceptance_decision")
+        coverage["failure_reason"] = geocode_meta.get("failure_reason")
         coverage["error_class"] = (
             geocode_meta.get("error_class")
             if bool(coverage.get("coverage_available"))

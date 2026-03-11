@@ -243,6 +243,13 @@ class RegionCoverageStatus(BaseModel):
     candidate_needs_confirmation: Optional[Dict[str, Any]] = None
     final_candidate_selected: Optional[Dict[str, Any]] = None
     resolver_settings: Optional[Dict[str, Any]] = None
+    acceptance_threshold: Optional[float] = None
+    medium_confidence_threshold: Optional[str] = None
+    top_margin_threshold: Optional[float] = None
+    top_candidate_score: Optional[float] = None
+    second_candidate_score: Optional[float] = None
+    final_acceptance_decision: Optional[bool] = None
+    failure_reason: Optional[str] = None
 
 
 class GeocodingDetails(BaseModel):
@@ -300,6 +307,13 @@ class GeocodingDetails(BaseModel):
     candidate_needs_confirmation: Optional[Dict[str, Any]] = None
     final_candidate_selected: Optional[Dict[str, Any]] = None
     resolver_settings: Optional[Dict[str, Any]] = None
+    acceptance_threshold: Optional[float] = None
+    medium_confidence_threshold: Optional[str] = None
+    top_margin_threshold: Optional[float] = None
+    top_candidate_score: Optional[float] = None
+    second_candidate_score: Optional[float] = None
+    final_acceptance_decision: Optional[bool] = None
+    failure_reason: Optional[str] = None
 
 
 class RegionResolution(BaseModel):

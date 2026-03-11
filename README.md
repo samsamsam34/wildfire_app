@@ -216,6 +216,11 @@ Common runtime settings:
   - `WF_RESOLVER_CLEAR_WINNER_MIN_MARGIN` (default: `12`, minimum score margin to auto-promote a clearly best in-region medium candidate)
   - `WF_RESOLVER_CLEAR_WINNER_MIN_SCORE` (default: `230`, minimum score required for clear-winner auto-promotion)
   - `WF_RESOLVER_IN_REGION_PREFERENCE_MARGIN` (default: `18`, allows close-score in-region candidates to outrank outside-region candidates)
+  - `WF_RESOLVER_MIN_AUTO_CANDIDATE_SCORE` (default: `150`, minimum candidate rank score for automatic coordinate use)
+  - `WF_RESOLVER_MIN_GEOCODER_TOKEN_COVERAGE` (default: `0.72`, minimum submitted-token coverage for geocoder candidate safety checks)
+  - `WF_RESOLVER_EMERGENCY_IN_REGION_MEDIUM_AUTORESOLVE` (default: `true`, emergency guardrail to auto-resolve clearly best in-region medium candidates)
+  - `WF_RESOLVER_EMERGENCY_MIN_SCORE` (default: `155`, guardrail minimum score)
+  - `WF_RESOLVER_EMERGENCY_MIN_MARGIN` (default: `8`, guardrail minimum margin over next candidate)
   - `WF_RESOLVER_ALLOW_INTERPOLATED_AUTO` (default: `true`, controls whether interpolated geocoder candidates can auto-resolve)
   - `WF_RESOLVER_MIN_GEOCODER_TOKEN_SIMILARITY` (default: `0.55`, minimum token-similarity required before geocoder-only candidates can auto-resolve property coordinates)
   - `WF_REGION_EDGE_TOLERANCE_M` (default: `0`, optional region-boundary tolerance for near-edge points)
@@ -243,6 +248,7 @@ Candidate guardrails:
 - street-only/locality-only matches are not auto-used
 - cross-source disagreement checks prevent silently selecting materially conflicting candidates
 - geocoder-only candidates with weak address-token similarity are downgraded and require confirmation
+- geocoder similarity checks use both token overlap similarity and submitted-token coverage to avoid false downgrades from extra provider tokens
 - if a candidate is outside prepared coverage, resolver keeps searching later stages before finalizing
 - if multiple prepared regions contain a point, the smallest covering region is selected
 

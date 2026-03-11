@@ -92,6 +92,8 @@ def _compact(payload: dict[str, object], address: str) -> dict[str, object]:
         "match_method": payload.get("match_method"),
         "score_margin_over_second_candidate": score_margin,
         "final_candidate_selected": payload.get("final_candidate_selected"),
+        "final_acceptance_decision": payload.get("final_acceptance_decision"),
+        "failure_reason": payload.get("failure_reason"),
         "map_confirmation_required": bool(payload.get("needs_user_confirmation")),
         "needs_user_confirmation": payload.get("needs_user_confirmation"),
         "candidate_sources_attempted": payload.get("candidate_sources_attempted"),
