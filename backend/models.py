@@ -688,6 +688,9 @@ class AssessmentResult(BaseModel):
     site_hazard_score: Optional[float] = None
     home_ignition_vulnerability_score: Optional[float] = None
     insurance_readiness_score: Optional[float] = None
+    calibrated_damage_likelihood: Optional[float] = None
+    calibration_applied: bool = False
+    calibration_method: Optional[str] = None
     wildfire_risk_score_available: bool = False
     site_hazard_score_available: bool = False
     home_ignition_vulnerability_score_available: bool = False

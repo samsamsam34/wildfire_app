@@ -69,6 +69,11 @@ LAYER_SOURCE_HINTS: dict[str, dict[str, Any]] = {
         "env_vars": ["WF_DEFAULT_GRIDMET_DRYNESS_ENDPOINT", "WF_DEFAULT_GRIDMET_DRYNESS_FULL_URL"],
         "registry_keys": ["source_endpoint", "source_url", "source_path"],
     },
+    "naip_imagery": {
+        "layer_type": "raster",
+        "env_vars": ["WF_DEFAULT_NAIP_ENDPOINT", "WF_DEFAULT_NAIP_FULL_URL", "WF_DEFAULT_NAIP_PATH"],
+        "registry_keys": ["source_endpoint", "source_url", "source_path"],
+    },
     "roads": {
         "layer_type": "vector",
         "env_vars": ["WF_DEFAULT_ROADS_ENDPOINT", "WF_DEFAULT_ROADS_FULL_URL"],

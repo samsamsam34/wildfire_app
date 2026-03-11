@@ -56,6 +56,7 @@ STANDARD_LAYER_FILENAMES = {
     "whp": "whp.tif",
     "mtbs_severity": "mtbs_severity.tif",
     "gridmet_dryness": "gridmet_dryness.tif",
+    "naip_imagery": "naip_imagery.tif",
     "roads": "roads.geojson",
     "parcel_polygons": "parcel_polygons.geojson",
     "parcel_address_points": "parcel_address_points.geojson",
@@ -73,6 +74,7 @@ LAYER_TYPES = {
     "whp": "raster",
     "mtbs_severity": "raster",
     "gridmet_dryness": "raster",
+    "naip_imagery": "raster",
     "fire_perimeters": "vector",
     "building_footprints": "vector",
     "building_footprints_overture": "vector",
@@ -92,6 +94,7 @@ AUTOMATION_NOTES = {
     "whp": "Supports local file or URL source. WHP is optional enrichment for hazard context.",
     "mtbs_severity": "Supports local file or URL source. MTBS severity is optional enrichment.",
     "gridmet_dryness": "Supports local file or URL source. gridMET dryness is optional enrichment.",
+    "naip_imagery": "Supports local file or URL source. NAIP imagery supports near-structure vegetation feature derivation.",
     "parcel_polygons": "Supports local file or URL source. Parcel polygons improve structure matching confidence.",
     "parcel_address_points": "Supports local file or URL source. Address/parcel points improve property anchors.",
 }
@@ -106,6 +109,7 @@ OPTIONAL_LAYER_KEYS = (
     "whp",
     "mtbs_severity",
     "gridmet_dryness",
+    "naip_imagery",
     "parcel_polygons",
     "parcel_address_points",
 )

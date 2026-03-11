@@ -65,6 +65,15 @@ python scripts/analyze_score_variance.py \
   --csv-out /tmp/score_variance.csv
 ```
 
+Open-data upgrade spread harness:
+
+```bash
+python scripts/analyze_open_model_score_spread.py \
+  --fixture tests/fixtures/score_variance_scenarios.json \
+  --json-out /tmp/open_model_spread.json \
+  --csv-out /tmp/open_model_spread.csv
+```
+
 This prints min/max/mean/stddev for top-level scores, fallback frequency, and contribution-variance ranking.
 
 ## Before/After Examples (Representative)

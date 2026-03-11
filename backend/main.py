@@ -22,6 +22,7 @@ from backend.assessment_map import build_assessment_map_payload
 from backend.benchmarking import (
     build_benchmark_hints_for_assessment,
 )
+from backend.calibration import apply_public_calibration
 from backend.defensible_space import (
     build_defensible_space_analysis,
     build_prioritized_vegetation_actions,
@@ -224,6 +225,9 @@ CRITICAL_PROVENANCE_FIELDS = {
     "defensible_space_ft",
     "zone_0_5_ft",
     "zone_5_30_ft",
+    "near_structure_vegetation_0_5_pct",
+    "canopy_adjacency_proxy_pct",
+    "vegetation_continuity_proxy_pct",
 }
 
 SCORE_FAMILY_FIELDS = {
@@ -245,6 +249,10 @@ SCORE_FAMILY_FIELDS = {
         "zone_0_5_ft",
         "zone_5_30_ft",
         "zone_30_100_ft",
+        "near_structure_vegetation_0_5_pct",
+        "canopy_adjacency_proxy_pct",
+        "vegetation_continuity_proxy_pct",
+        "nearest_high_fuel_patch_distance_ft",
         "footprint_used",
     ],
     "insurance_readiness": [
@@ -255,6 +263,9 @@ SCORE_FAMILY_FIELDS = {
         "vegetation_condition",
         "zone_0_5_ft",
         "zone_5_30_ft",
+        "near_structure_vegetation_0_5_pct",
+        "canopy_adjacency_proxy_pct",
+        "vegetation_continuity_proxy_pct",
         "fuel_model",
         "wildland_distance",
         "historic_fire_distance",
@@ -1041,6 +1052,16 @@ def _map_key_input_to_source_field(key: str) -> str | None:
         return "zone_5_30_ft"
     if "ring_30_100" in k or "zone_30_100" in k:
         return "zone_30_100_ft"
+    if "ring_100_300" in k or "zone_100_300" in k:
+        return "zone_100_300_ft"
+    if "near_structure_vegetation_0_5" in k:
+        return "zone_0_5_ft"
+    if "canopy_adjacency_proxy" in k:
+        return "zone_0_5_ft"
+    if "vegetation_continuity_proxy" in k:
+        return "zone_30_100_ft"
+    if "nearest_high_fuel_patch" in k:
+        return "wildland_distance"
     return None
 
 
@@ -2033,6 +2054,43 @@ def _build_data_provenance(
             details=f"{details} basis={ring_basis}",
         )
 
+    imagery_source = str(property_level_context.get("naip_feature_source") or "").strip()
+    imagery_fields = [
+        "near_structure_vegetation_0_5_pct",
+        "canopy_adjacency_proxy_pct",
+        "vegetation_continuity_proxy_pct",
+        "nearest_high_fuel_patch_distance_ft",
+    ]
+    for field_name in imagery_fields:
+        raw_value = property_level_context.get(field_name) if isinstance(property_level_context, dict) else None
+        if raw_value is not None and imagery_source:
+            src_type: SourceType = "observed"
+            provider_status: ProviderStatus = "ok"
+            details = "Observed from precomputed NAIP ring-feature artifact."
+            source_name = "naip_structure_features"
+        elif raw_value is not None:
+            src_type = "heuristic"
+            provider_status = "ok"
+            details = "Derived from fallback ring context without dedicated imagery artifact."
+            source_name = "ring_context_fallback"
+        else:
+            src_type = "missing"
+            provider_status = "missing"
+            details = "Imagery-derived near-structure field unavailable."
+            source_name = "naip_structure_features"
+        property_sources[field_name] = _metadata(
+            field_name=field_name,
+            source_type=src_type,
+            source_name=source_name,
+            provider_status=provider_status,
+            source_class="open_data_derived",
+            dataset_version=os.getenv("WF_LAYER_NAIP_VERSION"),
+            observed_at=os.getenv("WF_LAYER_NAIP_DATE") or (now_iso if raw_value is not None else None),
+            used_in_scoring=True,
+            spatial_resolution_m=1.0,
+            details=details,
+        )
+
     access_context = getattr(context, "access_context", {}) or {}
     access_status = str(access_context.get("status") or "missing")
     access_source_type: SourceType = "missing"
@@ -2745,7 +2803,20 @@ def _factor_scope_from_fields(source_fields: list[str], input_source_metadata: d
     source_types = {str((input_source_metadata.get(field).source_type if input_source_metadata.get(field) else "missing")) for field in source_fields}
     if source_types & {"missing", "heuristic"}:
         return "fallback"
-    if source_fields and any(field.startswith("zone_") or field in {"roof_type", "vent_type", "defensible_space_ft"} for field in source_fields):
+    if source_fields and any(
+        field.startswith("zone_")
+        or field
+        in {
+            "roof_type",
+            "vent_type",
+            "defensible_space_ft",
+            "near_structure_vegetation_0_5_pct",
+            "canopy_adjacency_proxy_pct",
+            "vegetation_continuity_proxy_pct",
+            "nearest_high_fuel_patch_distance_ft",
+        }
+        for field in source_fields
+    ):
         return "property_specific"
     if source_fields and any(field in {"fuel_model", "canopy_cover", "wildland_distance"} for field in source_fields):
         return "neighborhood_level"
@@ -2780,6 +2851,10 @@ def _build_score_variance_diagnostics(
         "ring_30_100_ft_vegetation_density": _safe_float((ring_metrics.get("ring_30_100_ft") or {}).get("vegetation_density")),
         "ring_100_300_ft_vegetation_density": _safe_float((ring_metrics.get("ring_100_300_ft") or {}).get("vegetation_density")),
         "nearest_vegetation_distance_ft": _safe_float((property_level_context or {}).get("nearest_vegetation_distance_ft")),
+        "near_structure_vegetation_0_5_pct": _safe_float((property_level_context or {}).get("near_structure_vegetation_0_5_pct")),
+        "canopy_adjacency_proxy_pct": _safe_float((property_level_context or {}).get("canopy_adjacency_proxy_pct")),
+        "vegetation_continuity_proxy_pct": _safe_float((property_level_context or {}).get("vegetation_continuity_proxy_pct")),
+        "nearest_high_fuel_patch_distance_ft": _safe_float((property_level_context or {}).get("nearest_high_fuel_patch_distance_ft")),
     }
 
     transformed_feature_vector = {
@@ -2792,6 +2867,11 @@ def _build_score_variance_diagnostics(
         "canopy_index": context.canopy_index,
         "wildland_distance_index": context.wildland_distance_index,
         "historic_fire_index": context.historic_fire_index,
+        "imagery_local_percentiles": (
+            property_level_context.get("imagery_local_percentiles")
+            if isinstance(property_level_context.get("imagery_local_percentiles"), dict)
+            else {}
+        ),
         "feature_sampling": feature_sampling,
     }
 
@@ -2860,6 +2940,8 @@ def _build_score_variance_diagnostics(
         compression_flags.append("limited_property_specific_signal")
     if raw_feature_vector["ring_0_5_ft_vegetation_density"] is None and raw_feature_vector["ring_5_30_ft_vegetation_density"] is None:
         compression_flags.append("near_structure_ring_metrics_missing")
+    if raw_feature_vector["near_structure_vegetation_0_5_pct"] is None and raw_feature_vector["vegetation_continuity_proxy_pct"] is None:
+        compression_flags.append("imagery_feature_signal_missing")
 
     compression_analysis_summary: list[str] = []
     if "fallback_heavy_factor_inputs" in compression_flags:
@@ -2870,6 +2952,8 @@ def _build_score_variance_diagnostics(
         compression_analysis_summary.append("A small number of components dominate total risk, reducing sensitivity to other property signals.")
     if "limited_property_specific_signal" in compression_flags:
         compression_analysis_summary.append("Few property-specific factors are active; neighborhood/regional context is dominating.")
+    if "imagery_feature_signal_missing" in compression_flags:
+        compression_analysis_summary.append("Imagery-derived near-structure features were unavailable, reducing parcel-level discrimination.")
     if not compression_analysis_summary:
         compression_analysis_summary.append("No major compression pattern detected for this assessment.")
 
@@ -3341,6 +3425,9 @@ def _run_assessment(
     insurance_readiness_score = score_outputs["insurance_readiness_score"]
     blended_wildfire_risk_score = score_outputs["wildfire_risk_score"]
     legacy_weighted_wildfire_risk_score = score_outputs["legacy_weighted_wildfire_risk_score"]
+    calibration_payload = apply_public_calibration(
+        raw_wildfire_score=blended_wildfire_risk_score,
+    )
     fallback_decisions = _build_fallback_decisions(
         attribute_fallbacks=attribute_fallbacks,
         environmental_layer_status=context.environmental_layer_status,
@@ -3522,6 +3609,11 @@ def _run_assessment(
         )
     if assessment_blockers:
         scoring_notes.append("Assessment blockers: " + ", ".join(assessment_blockers[:6]) + ".")
+    if calibration_payload and calibration_payload.get("calibration_applied"):
+        scoring_notes.append(
+            "Public-outcome calibration applied to produce calibrated damage-likelihood guidance."
+        )
+        property_level_context["calibration"] = calibration_payload
 
     def _score_phrase(label: str, value: float | None) -> str:
         return f"{label}: {value:.1f}/100" if value is not None else f"{label}: not computed"
@@ -3604,6 +3696,17 @@ def _run_assessment(
         site_hazard_score=site_hazard_score,
         home_ignition_vulnerability_score=home_ignition_vulnerability_score,
         insurance_readiness_score=insurance_readiness_score,
+        calibrated_damage_likelihood=(
+            float(calibration_payload.get("calibrated_damage_likelihood"))
+            if calibration_payload and calibration_payload.get("calibrated_damage_likelihood") is not None
+            else None
+        ),
+        calibration_applied=bool(calibration_payload and calibration_payload.get("calibration_applied")),
+        calibration_method=(
+            str(calibration_payload.get("calibration_method"))
+            if calibration_payload and calibration_payload.get("calibration_method")
+            else None
+        ),
         wildfire_risk_score_available=bool(score_outputs["wildfire_risk_score_available"]),
         site_hazard_score_available=bool(score_outputs["site_hazard_score_available"]),
         home_ignition_vulnerability_score_available=bool(score_outputs["home_ignition_vulnerability_score_available"]),
@@ -3864,6 +3967,9 @@ def _run_assessment(
             "legacy_weighted_wildfire_risk_score": result.legacy_weighted_wildfire_risk_score,
             "insurance_readiness_score": result.insurance_readiness_score,
             "insurance_readiness_score_available": result.insurance_readiness_score_available,
+            "calibrated_damage_likelihood": result.calibrated_damage_likelihood,
+            "calibration_applied": result.calibration_applied,
+            "calibration_method": result.calibration_method,
         },
         "normalized_property_facts": _attributes_to_dict(scoring_attrs),
         "normalization_changes": normalization_changes,
@@ -3892,6 +3998,7 @@ def _run_assessment(
         },
         "layer_coverage_audit": [row.model_dump() for row in result.layer_coverage_audit],
         "coverage_summary": result.coverage_summary.model_dump(),
+        "calibration": calibration_payload or {"calibration_applied": False},
         "raw_feature_vector": score_variance_diagnostics.get("raw_feature_vector", {}),
         "transformed_feature_vector": score_variance_diagnostics.get("transformed_feature_vector", {}),
         "factor_contribution_breakdown": score_variance_diagnostics.get("factor_contribution_breakdown", {}),

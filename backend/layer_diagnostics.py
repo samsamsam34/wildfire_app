@@ -22,6 +22,11 @@ LAYER_SPECS: dict[str, dict[str, Any]] = {
     "whp": {"display_name": "WHP Hazard Raster", "required_for": ["site_hazard"]},
     "mtbs_severity": {"display_name": "MTBS Severity Raster", "required_for": ["site_hazard"]},
     "gridmet_dryness": {"display_name": "gridMET Dryness", "required_for": ["site_hazard"]},
+    "naip_imagery": {"display_name": "NAIP Imagery", "required_for": ["home_ignition_vulnerability"]},
+    "naip_structure_features": {
+        "display_name": "NAIP Structure Features",
+        "required_for": ["home_ignition_vulnerability", "insurance_readiness"],
+    },
     "roads": {"display_name": "Road Network", "required_for": ["home_ignition_vulnerability"]},
     "fema_structures": {"display_name": "Optional FEMA Structures", "required_for": ["home_ignition_vulnerability"]},
     "neighbor_structures": {"display_name": "Neighboring Structures Context", "required_for": ["home_ignition_vulnerability"]},
@@ -35,6 +40,8 @@ OPEN_DATA_KEYS = {
     "roads",
     "fema_structures",
     "building_footprints_overture",
+    "naip_imagery",
+    "naip_structure_features",
 }
 
 
@@ -66,6 +73,8 @@ def initialize_layer_audit(runtime_paths: dict[str, str], region_context: dict[s
         "whp": "whp",
         "mtbs_severity": "mtbs_severity",
         "gridmet_dryness": "gridmet_dryness",
+        "naip_imagery": "naip_imagery",
+        "naip_structure_features": "naip_structure_features",
         "roads": "roads",
         "fema_structures": "fema_structures",
     }

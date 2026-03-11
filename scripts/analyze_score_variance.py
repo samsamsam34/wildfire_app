@@ -65,6 +65,28 @@ def _build_context(payload: dict[str, Any]) -> WildfireContext:
             "footprint_status": "used" if ring_metrics else "not_found",
             "fallback_mode": "footprint" if ring_metrics else "point_based",
             "ring_metrics": ring_metrics,
+            "near_structure_vegetation_0_5_pct": (
+                float(payload.get("near_structure_vegetation_0_5_pct"))
+                if payload.get("near_structure_vegetation_0_5_pct") is not None
+                else None
+            ),
+            "canopy_adjacency_proxy_pct": (
+                float(payload.get("canopy_adjacency_proxy_pct"))
+                if payload.get("canopy_adjacency_proxy_pct") is not None
+                else None
+            ),
+            "vegetation_continuity_proxy_pct": (
+                float(payload.get("vegetation_continuity_proxy_pct"))
+                if payload.get("vegetation_continuity_proxy_pct") is not None
+                else None
+            ),
+            "nearest_high_fuel_patch_distance_ft": (
+                float(payload.get("nearest_high_fuel_patch_distance_ft"))
+                if payload.get("nearest_high_fuel_patch_distance_ft") is not None
+                else None
+            ),
+            "imagery_local_percentiles": payload.get("imagery_local_percentiles") or {},
+            "neighboring_structure_metrics": payload.get("neighboring_structure_metrics") or {},
             "feature_sampling": payload.get("feature_sampling") or {},
         },
     )

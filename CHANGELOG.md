@@ -2,6 +2,36 @@
 
 This file tracks release-level governance changes for `WildfireRisk Advisor`.
 
+## [0.15.0] - 2026-03-11
+### Version changes
+- `product_version`: `0.15.0` (minor)
+- `api_version`: `1.3.0` (minor; additive calibration/output metadata)
+- `scoring_model_version`: `1.9.0` (minor; open-data feature integration and blend rebalance)
+- `ruleset_version`: tracked per assessment ruleset
+- `rules_logic_version`: `1.1.0` (unchanged)
+- `factor_schema_version`: `1.3.0` (minor; new near-structure provenance fields)
+- `benchmark_pack_version`: `1.0.0` (unchanged)
+- `calibration_version`: `0.2.0` (minor; optional public-outcome calibration artifact support)
+- `region_data_version`: tracked per assessment/region build
+- `data_bundle_version`: `unversioned` default unless overridden
+
+### Reason
+- Improve property-level discrimination and competitiveness using open-data near-structure features (NAIP-derived ring metrics) while preserving deterministic explainability.
+
+### Expected effect on outputs
+- More separation across materially different properties via added near-structure continuity/canopy/high-fuel distance signals.
+- `POST /risk/debug` includes richer parcel-level feature context through existing diagnostics surfaces.
+- Optional `calibrated_damage_likelihood` can be returned when a public calibration artifact is configured.
+
+### Migration/interpretation notes
+- Historical score comparisons against `scoring_model_version` `1.8.x` should be treated as directional.
+- Calibration remains optional; when enabled, treat calibrated likelihood as additive guidance, not underwriting truth.
+
+### Historical comparison validity
+- `not_directly_comparable` when scoring/rules/schema dimensions differ.
+- `comparable_with_review` when data/calibration dimensions differ.
+- `directly_comparable` when governance dimensions match.
+
 ## [0.14.0] - 2026-03-11
 ### Version changes
 - `product_version`: `0.14.0` (minor)

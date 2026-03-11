@@ -23,6 +23,10 @@ Runtime scoring reads prepared local data. Large GIS download/prep is handled of
 - Computes insurance readiness through a separate rules path with blockers and penalties.
 - Supports homeowner inputs (`roof_type`, `vent_type`, `defensible_space_ft`, etc.), reassessment, and what-if simulation.
 - Uses structure-based ring metrics (`0-5 ft`, `5-30 ft`, `30-100 ft`, `100-300 ft`) when footprint data is available.
+- Supports optional NAIP imagery-derived near-structure features (prepared offline):
+  - ring vegetation cover/canopy/high-fuel/continuity proxies
+  - local percentile context within the prepared region
+  - nearest high-fuel patch distance proxy
 - Adds defensible-space zone analysis for near-structure vegetation/fuel context:
   - `defensible_space_analysis` (zone metrics, basis geometry, quality/limitations, mitigation flags)
   - `top_near_structure_risk_drivers`
@@ -40,6 +44,7 @@ Runtime scoring reads prepared local data. Large GIS download/prep is handled of
   - per-layer coverage audit (`layer_coverage_audit`) and coverage summary (`coverage_summary`) to explain data gaps vs sampling/config issues
   - factor-level score evidence ledger (`score_evidence_ledger`) with weight/contribution/evidence status per factor
   - evidence-quality summary (`evidence_quality_summary`) with observed/inferred/missing/fallback counts and confidence penalties
+  - optional calibrated damage-likelihood guidance when a public-outcome calibration artifact is configured
 - Includes a homeowner-facing assessment map panel in the frontend:
   - property point and building footprint (when available)
   - defensible-space rings (`0-5 ft`, `5-30 ft`, `30-100 ft`, `100-300 ft`)
@@ -164,6 +169,12 @@ Score variance diagnostics:
 python scripts/analyze_score_variance.py \
   --fixture tests/fixtures/score_variance_scenarios.json \
   --csv-out /tmp/score_variance.csv
+
+# Open-model spread regression
+python scripts/analyze_open_model_score_spread.py \
+  --fixture tests/fixtures/score_variance_scenarios.json \
+  --json-out /tmp/open_model_spread.json \
+  --csv-out /tmp/open_model_spread.csv
 ```
 
 ## Local Development / Setup
@@ -207,6 +218,8 @@ Common runtime settings:
   - `WF_LAYER_MTBS_SEVERITY_TIF`
   - `WF_LAYER_GRIDMET_DRYNESS_TIF`
   - `WF_LAYER_OSM_ROADS_GEOJSON`
+  - `WF_LAYER_NAIP_IMAGERY_TIF`
+  - `WF_LAYER_NAIP_STRUCTURE_FEATURES_JSON`
   - `WF_LAYER_FEMA_STRUCTURES_GEOJSON`
   - `WF_LAYER_BUILDING_FOOTPRINTS_OVERTURE_GEOJSON`
   - `WF_LAYER_ADDRESS_POINTS_GEOJSON`
@@ -214,6 +227,8 @@ Common runtime settings:
 - Building-source selection:
   - `WF_BUILDING_SOURCE_PRIORITY` (default: `building_footprints_overture,building_footprints,fema_structures`)
   - `WF_OVERTURE_BUILDINGS_VERSION` (optional version tag shown in debug metadata)
+- Optional public-outcome calibration:
+  - `WF_PUBLIC_CALIBRATION_ARTIFACT` (path to logistic/piecewise calibration artifact JSON)
 - Geocoding trust controls:
   - `WF_GEOCODE_ALLOW_LOW_CONFIDENCE_FALLBACK` (default: `true`, allows medium-confidence fallback when a candidate has usable coordinates)
   - `WF_GEOCODE_ALLOW_AMBIGUOUS_FALLBACK` (default: `false`)

@@ -28,6 +28,19 @@
         "historic_fire_distance": 0.9,
         "wildland_distance": 45.0,
         "access_exposure_index": 62.0,
+        "near_structure_vegetation_0_5_pct": 92.0,
+        "canopy_adjacency_proxy_pct": 88.0,
+        "vegetation_continuity_proxy_pct": 84.0,
+        "nearest_high_fuel_patch_distance_ft": 4.0,
+        "imagery_local_percentiles": {
+          "near_structure_vegetation_0_5_pct": 96.0,
+          "canopy_adjacency_proxy_pct": 94.0,
+          "vegetation_continuity_proxy_pct": 91.0
+        },
+        "neighboring_structure_metrics": {
+          "nearby_structure_count_100_ft": 3,
+          "nearby_structure_count_300_ft": 16
+        },
         "structure_ring_metrics": {
           "ring_0_5_ft": {"vegetation_density": 88.0},
           "ring_5_30_ft": {"vegetation_density": 84.0},
@@ -64,6 +77,19 @@
         "historic_fire_distance": 6.2,
         "wildland_distance": 1380.0,
         "access_exposure_index": 18.0,
+        "near_structure_vegetation_0_5_pct": 8.0,
+        "canopy_adjacency_proxy_pct": 6.0,
+        "vegetation_continuity_proxy_pct": 14.0,
+        "nearest_high_fuel_patch_distance_ft": 245.0,
+        "imagery_local_percentiles": {
+          "near_structure_vegetation_0_5_pct": 7.0,
+          "canopy_adjacency_proxy_pct": 5.0,
+          "vegetation_continuity_proxy_pct": 13.0
+        },
+        "neighboring_structure_metrics": {
+          "nearby_structure_count_100_ft": 1,
+          "nearby_structure_count_300_ft": 6
+        },
         "structure_ring_metrics": {
           "ring_0_5_ft": {"vegetation_density": 12.0},
           "ring_5_30_ft": {"vegetation_density": 20.0},
@@ -100,6 +126,19 @@
         "historic_fire_distance": 2.8,
         "wildland_distance": 520.0,
         "access_exposure_index": 44.0,
+        "near_structure_vegetation_0_5_pct": 41.0,
+        "canopy_adjacency_proxy_pct": 28.0,
+        "vegetation_continuity_proxy_pct": 56.0,
+        "nearest_high_fuel_patch_distance_ft": 46.0,
+        "imagery_local_percentiles": {
+          "near_structure_vegetation_0_5_pct": 44.0,
+          "canopy_adjacency_proxy_pct": 31.0,
+          "vegetation_continuity_proxy_pct": 62.0
+        },
+        "neighboring_structure_metrics": {
+          "nearby_structure_count_100_ft": 2,
+          "nearby_structure_count_300_ft": 9
+        },
         "structure_ring_metrics": {
           "ring_0_5_ft": {"vegetation_density": 42.0},
           "ring_5_30_ft": {"vegetation_density": 50.0},
@@ -136,6 +175,19 @@
         "historic_fire_distance": 0.4,
         "wildland_distance": 410.0,
         "access_exposure_index": 40.0,
+        "near_structure_vegetation_0_5_pct": 36.0,
+        "canopy_adjacency_proxy_pct": 42.0,
+        "vegetation_continuity_proxy_pct": 63.0,
+        "nearest_high_fuel_patch_distance_ft": 22.0,
+        "imagery_local_percentiles": {
+          "near_structure_vegetation_0_5_pct": 38.0,
+          "canopy_adjacency_proxy_pct": 52.0,
+          "vegetation_continuity_proxy_pct": 72.0
+        },
+        "neighboring_structure_metrics": {
+          "nearby_structure_count_100_ft": 2,
+          "nearby_structure_count_300_ft": 11
+        },
         "structure_ring_metrics": {
           "ring_0_5_ft": {"vegetation_density": 38.0},
           "ring_5_30_ft": {"vegetation_density": 46.0},
@@ -172,6 +224,19 @@
         "historic_fire_distance": 1.8,
         "wildland_distance": 450.0,
         "access_exposure_index": 35.0,
+        "near_structure_vegetation_0_5_pct": 24.0,
+        "canopy_adjacency_proxy_pct": 20.0,
+        "vegetation_continuity_proxy_pct": 41.0,
+        "nearest_high_fuel_patch_distance_ft": 58.0,
+        "imagery_local_percentiles": {
+          "near_structure_vegetation_0_5_pct": 26.0,
+          "canopy_adjacency_proxy_pct": 23.0,
+          "vegetation_continuity_proxy_pct": 46.0
+        },
+        "neighboring_structure_metrics": {
+          "nearby_structure_count_100_ft": 1,
+          "nearby_structure_count_300_ft": 7
+        },
         "structure_ring_metrics": {
           "ring_0_5_ft": {"vegetation_density": 30.0},
           "ring_5_30_ft": {"vegetation_density": 38.0},
@@ -208,6 +273,19 @@
         "historic_fire_distance": 1.8,
         "wildland_distance": 450.0,
         "access_exposure_index": 35.0,
+        "near_structure_vegetation_0_5_pct": 77.0,
+        "canopy_adjacency_proxy_pct": 73.0,
+        "vegetation_continuity_proxy_pct": 76.0,
+        "nearest_high_fuel_patch_distance_ft": 9.0,
+        "imagery_local_percentiles": {
+          "near_structure_vegetation_0_5_pct": 83.0,
+          "canopy_adjacency_proxy_pct": 81.0,
+          "vegetation_continuity_proxy_pct": 79.0
+        },
+        "neighboring_structure_metrics": {
+          "nearby_structure_count_100_ft": 4,
+          "nearby_structure_count_300_ft": 14
+        },
         "structure_ring_metrics": {
           "ring_0_5_ft": {"vegetation_density": 72.0},
           "ring_5_30_ft": {"vegetation_density": 75.0},

@@ -9,6 +9,12 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from backend.building_footprints import BuildingFootprintClient, compute_structure_rings
+from backend.naip_features import (
+    load_naip_feature_artifact,
+    percentile_from_quantiles,
+    resolve_naip_feature_path,
+    structure_feature_key,
+)
 from backend.layer_diagnostics import (
     initialize_layer_audit,
     summarize_layer_audit,
@@ -129,6 +135,8 @@ class WildfireDataClient:
             "address_points": os.getenv("WF_LAYER_ADDRESS_POINTS_GEOJSON", ""),
             "parcels": os.getenv("WF_LAYER_PARCELS_GEOJSON", ""),
             "roads": os.getenv("WF_LAYER_OSM_ROADS_GEOJSON", ""),
+            "naip_imagery": os.getenv("WF_LAYER_NAIP_IMAGERY_TIF", ""),
+            "naip_structure_features": os.getenv("WF_LAYER_NAIP_STRUCTURE_FEATURES_JSON", ""),
         }
         # Active runtime paths for the most recent collect_context() call.
         self.paths = dict(self.base_paths)
@@ -189,6 +197,184 @@ class WildfireDataClient:
     def _file_exists(path: str) -> bool:
         return bool(path) and Path(path).exists()
 
+    @staticmethod
+    def _coerce_float(value: Any) -> float | None:
+        try:
+            if value is None:
+                return None
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    def _resolve_naip_feature_artifact_path(
+        self,
+        *,
+        runtime_paths: dict[str, str],
+        region_context: dict[str, Any],
+    ) -> str | None:
+        manifest_path = str(region_context.get("manifest_path") or "").strip() or None
+        runtime_path = str(runtime_paths.get("naip_structure_features") or "").strip() or None
+        return resolve_naip_feature_path(
+            region_manifest_path=manifest_path,
+            runtime_path=runtime_path,
+        )
+
+    def _apply_naip_feature_enrichment(
+        self,
+        *,
+        ring_context: dict[str, Any],
+        runtime_paths: dict[str, str],
+        region_context: dict[str, Any],
+    ) -> tuple[dict[str, Any], list[str], list[str]]:
+        assumptions: list[str] = []
+        sources: list[str] = []
+
+        artifact_path = self._resolve_naip_feature_artifact_path(
+            runtime_paths=runtime_paths,
+            region_context=region_context,
+        )
+        if not artifact_path:
+            return ring_context, assumptions, sources
+
+        payload = load_naip_feature_artifact(artifact_path)
+        features_by_key = payload.get("features_by_key")
+        keys_by_structure_id = payload.get("keys_by_structure_id")
+        quantiles = payload.get("quantiles")
+        if not isinstance(features_by_key, dict) or not features_by_key:
+            assumptions.append("NAIP structure feature artifact exists but contains no usable feature rows.")
+            return ring_context, assumptions, sources
+        keys_by_structure_id = keys_by_structure_id if isinstance(keys_by_structure_id, dict) else {}
+        quantiles = quantiles if isinstance(quantiles, dict) else {}
+
+        matched_structure_id = str(ring_context.get("matched_structure_id") or "").strip() or None
+        centroid = ring_context.get("footprint_centroid")
+        centroid_lat = self._coerce_float((centroid or {}).get("latitude")) if isinstance(centroid, dict) else None
+        centroid_lon = self._coerce_float((centroid or {}).get("longitude")) if isinstance(centroid, dict) else None
+
+        selected_key: str | None = None
+        selected_feature: dict[str, Any] | None = None
+        match_method: str | None = None
+
+        if matched_structure_id and matched_structure_id in keys_by_structure_id:
+            selected_key = str(keys_by_structure_id.get(matched_structure_id))
+            raw = features_by_key.get(selected_key)
+            if isinstance(raw, dict):
+                selected_feature = raw
+                match_method = "structure_id"
+        if selected_feature is None and matched_structure_id:
+            direct_key = structure_feature_key(
+                structure_id=matched_structure_id,
+                centroid_lat=None,
+                centroid_lon=None,
+            )
+            if direct_key and isinstance(features_by_key.get(direct_key), dict):
+                selected_key = direct_key
+                selected_feature = features_by_key.get(direct_key)
+                match_method = "structure_id"
+        if selected_feature is None:
+            centroid_key = structure_feature_key(
+                structure_id=None,
+                centroid_lat=centroid_lat,
+                centroid_lon=centroid_lon,
+            )
+            if centroid_key and isinstance(features_by_key.get(centroid_key), dict):
+                selected_key = centroid_key
+                selected_feature = features_by_key.get(centroid_key)
+                match_method = "centroid"
+
+        if not isinstance(selected_feature, dict):
+            return ring_context, assumptions, sources
+
+        ring_metrics = ring_context.get("ring_metrics")
+        if not isinstance(ring_metrics, dict):
+            ring_metrics = {}
+
+        selected_ring_metrics = selected_feature.get("ring_metrics")
+        selected_ring_metrics = selected_ring_metrics if isinstance(selected_ring_metrics, dict) else {}
+        if not selected_ring_metrics:
+            assumptions.append("NAIP feature row found but no ring metrics were available for blending.")
+            return ring_context, assumptions, sources
+
+        for ring_key in RING_KEYS:
+            existing = ring_metrics.get(ring_key)
+            existing = dict(existing) if isinstance(existing, dict) else {}
+            imagery = selected_ring_metrics.get(ring_key)
+            if not isinstance(imagery, dict):
+                continue
+
+            imagery_density = self._coerce_float(imagery.get("vegetation_density_proxy"))
+            existing_density = self._coerce_float(existing.get("vegetation_density"))
+            if imagery_density is not None and existing_density is not None:
+                blended_density = round((0.60 * existing_density) + (0.40 * imagery_density), 1)
+            elif imagery_density is not None:
+                blended_density = round(imagery_density, 1)
+            else:
+                blended_density = existing_density
+
+            if blended_density is not None:
+                existing["vegetation_density"] = blended_density
+            existing["imagery_vegetation_cover_pct"] = self._coerce_float(imagery.get("vegetation_cover_pct"))
+            existing["imagery_canopy_proxy_pct"] = self._coerce_float(imagery.get("canopy_proxy_pct"))
+            existing["imagery_high_fuel_proxy_pct"] = self._coerce_float(imagery.get("high_fuel_proxy_pct"))
+            existing["imagery_impervious_low_fuel_pct"] = self._coerce_float(imagery.get("impervious_low_fuel_pct"))
+            existing["imagery_vegetation_continuity_pct"] = self._coerce_float(imagery.get("vegetation_continuity_pct"))
+            existing["imagery_ndvi_or_exg_mean"] = self._coerce_float(imagery.get("ndvi_or_exg_mean"))
+            local_pct = self._coerce_float(imagery.get("vegetation_cover_pct_local_percentile"))
+            if local_pct is None:
+                local_pct = percentile_from_quantiles(
+                    existing.get("imagery_vegetation_cover_pct"),
+                    quantiles.get(f"{ring_key}.vegetation_cover_pct") if isinstance(quantiles, dict) else None,
+                )
+            if local_pct is not None:
+                existing["imagery_vegetation_cover_local_percentile"] = round(local_pct, 1)
+            existing["basis"] = "footprint_naip_blended"
+
+            ring_metrics[ring_key] = existing
+            ring_metrics[ring_key.replace("ring_", "zone_")] = dict(existing)
+
+        ring_context["ring_metrics"] = ring_metrics
+        ring_context["naip_feature_artifact_path"] = artifact_path
+        ring_context["naip_feature_match_key"] = selected_key
+        ring_context["naip_feature_match_method"] = match_method
+        ring_context["naip_feature_source"] = "prepared_region_naip"
+        ring_context["imagery_ring_metrics"] = selected_ring_metrics
+        ring_context["near_structure_vegetation_0_5_pct"] = self._coerce_float(
+            selected_feature.get("near_structure_vegetation_0_5_pct")
+        )
+        ring_context["canopy_adjacency_proxy_pct"] = self._coerce_float(
+            selected_feature.get("canopy_adjacency_proxy_pct")
+        )
+        ring_context["vegetation_continuity_proxy_pct"] = self._coerce_float(
+            selected_feature.get("vegetation_continuity_proxy_pct")
+        )
+        ring_context["nearest_high_fuel_patch_distance_ft"] = self._coerce_float(
+            selected_feature.get("nearest_high_fuel_patch_distance_ft")
+        )
+        ring_context["imagery_local_percentiles"] = {
+            key: value
+            for key, value in {
+                "near_structure_vegetation_0_5_pct": percentile_from_quantiles(
+                    self._coerce_float(selected_feature.get("near_structure_vegetation_0_5_pct")),
+                    quantiles.get("near_structure_vegetation_0_5_pct") if isinstance(quantiles, dict) else None,
+                ),
+                "canopy_adjacency_proxy_pct": percentile_from_quantiles(
+                    self._coerce_float(selected_feature.get("canopy_adjacency_proxy_pct")),
+                    quantiles.get("canopy_adjacency_proxy_pct") if isinstance(quantiles, dict) else None,
+                ),
+                "vegetation_continuity_proxy_pct": percentile_from_quantiles(
+                    self._coerce_float(selected_feature.get("vegetation_continuity_proxy_pct")),
+                    quantiles.get("vegetation_continuity_proxy_pct") if isinstance(quantiles, dict) else None,
+                ),
+            }.items()
+            if value is not None
+        }
+
+        assumptions.append(
+            "Near-structure vegetation metrics were enriched with precomputed NAIP imagery features."
+        )
+        sources.append("NAIP imagery-derived ring features")
+        return ring_context, assumptions, sources
+
     def _legacy_layer_configured(self, configured_paths: dict[str, str]) -> bool:
         configured = [
             configured_paths.get("dem"),
@@ -203,6 +389,8 @@ class WildfireDataClient:
             configured_paths.get("whp"),
             configured_paths.get("gridmet_dryness"),
             configured_paths.get("roads"),
+            configured_paths.get("naip_structure_features"),
+            configured_paths.get("naip_imagery"),
         ]
         return any(self._file_exists(path or "") for path in configured)
 
@@ -264,6 +452,8 @@ class WildfireDataClient:
                     "address_points": ("address_points", "parcel_address_points"),
                     "parcels": ("parcel_polygons", "parcels"),
                     "roads": ("roads", "osm_roads", "road_network"),
+                    "naip_imagery": ("naip_imagery", "naip_rgb", "naip"),
+                    "naip_structure_features": ("naip_structure_features",),
                 }
                 for runtime_key, manifest_keys in layer_key_map.items():
                     resolved: str | None = None
@@ -1462,6 +1652,30 @@ class WildfireDataClient:
             selected_structure_id=selected_structure_id,
             selected_structure_geometry=selected_structure_geometry if isinstance(selected_structure_geometry, dict) else None,
         )
+        ring_context, naip_assumptions, naip_sources = self._apply_naip_feature_enrichment(
+            ring_context=ring_context,
+            runtime_paths=runtime_paths,
+            region_context=region_context,
+        )
+        ring_assumptions.extend(naip_assumptions)
+        ring_sources.extend(naip_sources)
+
+        ring_metrics_after_enrichment = ring_context.get("ring_metrics")
+        if isinstance(ring_metrics_after_enrichment, dict):
+            nearest_veg_ft = None
+            for ring_key, approx_ft in [
+                ("ring_0_5_ft", 3.0),
+                ("ring_5_30_ft", 18.0),
+                ("ring_30_100_ft", 65.0),
+                ("ring_100_300_ft", 180.0),
+            ]:
+                density = self._coerce_float((ring_metrics_after_enrichment.get(ring_key) or {}).get("vegetation_density"))
+                if density is not None and density >= 40.0:
+                    nearest_veg_ft = approx_ft
+                    break
+            if nearest_veg_ft is not None:
+                ring_context["nearest_vegetation_distance_ft"] = nearest_veg_ft
+
         property_level_context = ring_context
         property_level_context.update(
             {
@@ -1636,6 +1850,47 @@ class WildfireDataClient:
                 else ("not_configured" if footprint_status == "provider_unavailable" else "fallback_used")
             ),
             failure_reason=None if ring_context.get("footprint_used") else f"footprint_status={footprint_status}",
+        )
+        naip_artifact_path = str(property_level_context.get("naip_feature_artifact_path") or "").strip()
+        naip_feature_used = bool(property_level_context.get("naip_feature_source") == "prepared_region_naip")
+        update_layer_audit(
+            layer_audit,
+            "naip_structure_features",
+            sample_attempted=True,
+            sample_succeeded=naip_feature_used,
+            coverage_status=(
+                "observed"
+                if naip_feature_used
+                else (
+                    "not_configured"
+                    if not naip_artifact_path
+                    else "fallback_used"
+                )
+            ),
+            raw_value_preview={"artifact_path": naip_artifact_path} if naip_feature_used else None,
+            failure_reason=(
+                None
+                if naip_feature_used
+                else "NAIP structure-feature artifact unavailable for matched structure."
+            ),
+        )
+        naip_imagery_path = str(runtime_paths.get("naip_imagery") or "").strip()
+        update_layer_audit(
+            layer_audit,
+            "naip_imagery",
+            sample_attempted=bool(naip_imagery_path),
+            sample_succeeded=bool(naip_imagery_path and self._file_exists(naip_imagery_path)),
+            coverage_status=(
+                "observed"
+                if (naip_imagery_path and self._file_exists(naip_imagery_path))
+                else ("not_configured" if not naip_imagery_path else "missing_file")
+            ),
+            raw_value_preview={"path": naip_imagery_path} if naip_imagery_path else None,
+            failure_reason=(
+                None
+                if (naip_imagery_path and self._file_exists(naip_imagery_path))
+                else ("NAIP imagery path not configured." if not naip_imagery_path else "Configured NAIP imagery file is missing.")
+            ),
         )
         neighbor_metrics = ring_context.get("neighboring_structure_metrics")
         update_layer_audit(
@@ -2170,6 +2425,75 @@ class WildfireDataClient:
                         "raw_point_value": historic_fire_distance,
                         "index": historic_fire_index,
                         "scope": "region_level" if historic_fire_index is not None else "fallback",
+                    },
+                    "near_structure_vegetation_0_5_pct": {
+                        "raw_point_value": property_level_context.get("near_structure_vegetation_0_5_pct"),
+                        "index": property_level_context.get("near_structure_vegetation_0_5_pct"),
+                        "local_percentile": (
+                            (property_level_context.get("imagery_local_percentiles") or {}).get("near_structure_vegetation_0_5_pct")
+                            if isinstance(property_level_context.get("imagery_local_percentiles"), dict)
+                            else None
+                        ),
+                        "scope": (
+                            "property_specific"
+                            if property_level_context.get("near_structure_vegetation_0_5_pct") is not None
+                            else "fallback"
+                        ),
+                    },
+                    "canopy_adjacency_proxy_pct": {
+                        "raw_point_value": property_level_context.get("canopy_adjacency_proxy_pct"),
+                        "index": property_level_context.get("canopy_adjacency_proxy_pct"),
+                        "local_percentile": (
+                            (property_level_context.get("imagery_local_percentiles") or {}).get("canopy_adjacency_proxy_pct")
+                            if isinstance(property_level_context.get("imagery_local_percentiles"), dict)
+                            else None
+                        ),
+                        "scope": (
+                            "property_specific"
+                            if property_level_context.get("canopy_adjacency_proxy_pct") is not None
+                            else "fallback"
+                        ),
+                    },
+                    "vegetation_continuity_proxy_pct": {
+                        "raw_point_value": property_level_context.get("vegetation_continuity_proxy_pct"),
+                        "index": property_level_context.get("vegetation_continuity_proxy_pct"),
+                        "local_percentile": (
+                            (property_level_context.get("imagery_local_percentiles") or {}).get("vegetation_continuity_proxy_pct")
+                            if isinstance(property_level_context.get("imagery_local_percentiles"), dict)
+                            else None
+                        ),
+                        "scope": (
+                            "property_specific"
+                            if property_level_context.get("vegetation_continuity_proxy_pct") is not None
+                            else "fallback"
+                        ),
+                    },
+                    "nearest_high_fuel_patch_distance_ft": {
+                        "raw_point_value": property_level_context.get("nearest_high_fuel_patch_distance_ft"),
+                        "index": (
+                            round(
+                                max(
+                                    0.0,
+                                    min(
+                                        100.0,
+                                        100.0
+                                        - (
+                                            float(property_level_context.get("nearest_high_fuel_patch_distance_ft"))
+                                            / 300.0
+                                        )
+                                        * 100.0,
+                                    ),
+                                ),
+                                1,
+                            )
+                            if property_level_context.get("nearest_high_fuel_patch_distance_ft") is not None
+                            else None
+                        ),
+                        "scope": (
+                            "property_specific"
+                            if property_level_context.get("nearest_high_fuel_patch_distance_ft") is not None
+                            else "fallback"
+                        ),
                     },
                 },
             }
