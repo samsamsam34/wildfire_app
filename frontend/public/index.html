@@ -140,9 +140,67 @@
       summary { cursor: pointer; font-weight: 600; margin-bottom: 0.65rem; }
       table { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
       th, td { border-bottom: 1px solid var(--line); padding: 0.35rem 0.2rem; text-align: left; }
+      .modal-backdrop {
+        position: fixed;
+        inset: 0;
+        background: rgba(17, 24, 39, 0.48);
+        display: none;
+        align-items: center;
+        justify-content: center;
+        padding: 1rem;
+        z-index: 1200;
+      }
+      .modal-backdrop.open {
+        display: flex;
+      }
+      .modal-card {
+        width: min(640px, 100%);
+        background: var(--card);
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        padding: 1rem;
+        box-shadow: 0 12px 28px rgba(0, 0, 0, 0.2);
+      }
+      .modal-title {
+        margin-bottom: 0.45rem;
+      }
+      .modal-grid {
+        display: grid;
+        grid-template-columns: 180px minmax(0, 1fr);
+        gap: 0.4rem 0.8rem;
+        margin-top: 0.8rem;
+      }
+      .modal-grid dt {
+        color: var(--muted);
+        font-size: 0.84rem;
+      }
+      .modal-grid dd {
+        margin: 0;
+        font-size: 0.92rem;
+        color: var(--text);
+      }
+      .modal-warning {
+        margin-top: 0.75rem;
+        border-radius: 10px;
+        border: 1px solid #f5c89f;
+        background: #fff7ed;
+        color: #9a3412;
+        padding: 0.55rem 0.65rem;
+        font-size: 0.86rem;
+        white-space: pre-line;
+      }
+      .modal-error {
+        margin-top: 0.65rem;
+        color: var(--bad);
+        font-size: 0.86rem;
+      }
       @media (max-width: 640px) {
         .facts-grid { grid-template-columns: 1fr; }
         .actions button { width: 100%; }
+        .modal-grid {
+          grid-template-columns: 1fr;
+          gap: 0.2rem;
+        }
       }
     </style>
   </head>
@@ -448,6 +506,40 @@
       </section>
     </div>
 
+    <div
+      id="addressVerifyModal"
+      class="modal-backdrop"
+      role="dialog"
+      aria-modal="true"
+      aria-hidden="true"
+      aria-labelledby="addressVerifyModalTitle"
+    >
+      <div class="modal-card" role="document">
+        <h3 id="addressVerifyModalTitle" class="modal-title">Confirm Address Before Assessment</h3>
+        <p class="muted">Review the resolved property location before running the assessment.</p>
+        <dl class="modal-grid">
+          <dt>Entered address</dt>
+          <dd id="verifyEnteredAddress">-</dd>
+          <dt>Resolved address</dt>
+          <dd id="verifyResolvedAddress">-</dd>
+          <dt>Coordinates</dt>
+          <dd id="verifyCoordinates">-</dd>
+          <dt>Geocoder source</dt>
+          <dd id="verifyGeocoderSource">-</dd>
+          <dt>Match confidence</dt>
+          <dd id="verifyConfidence">-</dd>
+          <dt>Prepared region</dt>
+          <dd id="verifyPreparedRegion">-</dd>
+        </dl>
+        <div id="verifyWarningBox" class="modal-warning" style="display:none;"></div>
+        <p id="verifyModalError" class="modal-error" style="display:none;"></p>
+        <div class="actions">
+          <button id="confirmAddressBtn" type="button">Confirm address</button>
+          <button id="editAddressBtn" type="button" class="secondary">Edit address</button>
+        </div>
+      </div>
+    </div>
+
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <script>
       const apiBase = (window.WILDFIRE_API_BASE || "http://127.0.0.1:8000").replace(/\/$/, "");
@@ -473,6 +565,12 @@
       let selectedStructureOverride = null;
       let selectedStructureId = null;
       let manualSelectedPointLayer = null;
+      let isAddressVerificationPending = false;
+      let isAssessmentSubmitting = false;
+      let addressVerificationModalOpen = false;
+      let pendingAssessmentPayload = null;
+      let verifiedAddressPayload = null;
+      let previousFocusElement = null;
 
       const mapLayerStyle = {
         property_anchor_point: {
@@ -1686,6 +1784,204 @@
         return api("/regions/coverage-check", { address: String(address || "").trim() }, "POST");
       }
 
+      function setAssessmentActionsDisabled(disabled) {
+        const assessBtn = document.getElementById("assessBtn");
+        const reassessBtn = document.getElementById("reassessBtn");
+        if (assessBtn) assessBtn.disabled = !!disabled;
+        if (reassessBtn) reassessBtn.disabled = !!disabled;
+      }
+
+      function syncAssessmentActionState() {
+        setAssessmentActionsDisabled(
+          isAddressVerificationPending || isAssessmentSubmitting || addressVerificationModalOpen
+        );
+      }
+
+      function formatCoordinate(value) {
+        const num = Number(value);
+        return Number.isFinite(num) ? num.toFixed(6) : "n/a";
+      }
+
+      function normalizeAddressForComparison(value) {
+        return String(value || "")
+          .toLowerCase()
+          .replace(/[.,#]/g, " ")
+          .replace(/\broad\b/g, "rd")
+          .replace(/\bstreet\b/g, "st")
+          .replace(/\bavenue\b/g, "ave")
+          .replace(/\bwashington\b/g, "wa")
+          .replace(/\s+/g, " ")
+          .trim();
+      }
+
+      function hasMaterialAddressDifference(entered, resolved) {
+        const a = normalizeAddressForComparison(entered);
+        const b = normalizeAddressForComparison(resolved);
+        if (!a || !b) return false;
+        return a !== b;
+      }
+
+      function buildVerificationWarnings(enteredAddress, verification) {
+        const warnings = [];
+        const resolvedAddress = verification?.normalized_address || verification?.display_name || "";
+        const confidence = String(
+          verification?.final_location_confidence
+          || verification?.geocode_trust_tier
+          || verification?.match_confidence
+          || "unknown"
+        ).toLowerCase();
+        if (hasMaterialAddressDifference(enteredAddress, resolvedAddress)) {
+          warnings.push("Please confirm this is the correct property before continuing.");
+        }
+        if (confidence === "low" || confidence === "unknown") {
+          warnings.push("The resolved match confidence is limited.");
+        }
+        if (verification?.geocode_outcome === "geocode_succeeded_untrusted") {
+          warnings.push("Address was accepted through a fallback path.");
+        }
+        if (verification?.coverage_available === false) {
+          warnings.push("Location is not currently covered by prepared region data. Assessment may return a not-ready response.");
+        }
+        return warnings;
+      }
+
+      function renderAddressVerificationModal(assessmentPayload, verification) {
+        const enteredAddressEl = document.getElementById("verifyEnteredAddress");
+        const resolvedAddressEl = document.getElementById("verifyResolvedAddress");
+        const coordinatesEl = document.getElementById("verifyCoordinates");
+        const geocoderSourceEl = document.getElementById("verifyGeocoderSource");
+        const confidenceEl = document.getElementById("verifyConfidence");
+        const regionEl = document.getElementById("verifyPreparedRegion");
+        const warningBox = document.getElementById("verifyWarningBox");
+        const errorEl = document.getElementById("verifyModalError");
+        const enteredAddress = assessmentPayload?.address || "";
+        const resolvedAddress = verification?.normalized_address
+          || verification?.display_name
+          || verification?.geocoded_address
+          || "(not provided)";
+        const geocoderSource = verification?.geocode_source || verification?.geocode_provider || "unknown";
+        const confidence = verification?.final_location_confidence
+          || verification?.geocode_trust_tier
+          || verification?.match_confidence
+          || "unknown";
+        const regionName = verification?.display_name || verification?.selected_region_display_name || verification?.resolved_region_id || null;
+        const regionId = verification?.resolved_region_id || verification?.region_id || null;
+        const hasCoverage = verification?.coverage_available === true || verification?.covered === true;
+        const warnings = buildVerificationWarnings(enteredAddress, verification);
+
+        if (enteredAddressEl) enteredAddressEl.textContent = enteredAddress || "(none)";
+        if (resolvedAddressEl) resolvedAddressEl.textContent = resolvedAddress;
+        if (coordinatesEl) {
+          coordinatesEl.textContent = `${formatCoordinate(verification?.latitude)}, ${formatCoordinate(verification?.longitude)}`;
+        }
+        if (geocoderSourceEl) geocoderSourceEl.textContent = geocoderSource;
+        if (confidenceEl) {
+          const status = verification?.geocode_status || "unknown";
+          confidenceEl.textContent = `${String(confidence)} (status: ${status})`;
+        }
+        if (regionEl) {
+          regionEl.textContent = hasCoverage
+            ? `Prepared region: ${regionName || "unknown"}${regionId ? ` (${regionId})` : ""}`
+            : "Location not currently covered by prepared region data";
+        }
+        if (warningBox) {
+          if (warnings.length > 0) {
+            warningBox.style.display = "block";
+            warningBox.textContent = warnings.join("\n");
+          } else {
+            warningBox.style.display = "none";
+            warningBox.textContent = "";
+          }
+        }
+        if (errorEl) {
+          errorEl.style.display = "none";
+          errorEl.textContent = "";
+        }
+      }
+
+      function closeAddressVerificationModal({ restoreFocus = true } = {}) {
+        const modal = document.getElementById("addressVerifyModal");
+        if (!modal) return;
+        modal.classList.remove("open");
+        modal.setAttribute("aria-hidden", "true");
+        addressVerificationModalOpen = false;
+        syncAssessmentActionState();
+        if (restoreFocus && previousFocusElement && typeof previousFocusElement.focus === "function") {
+          previousFocusElement.focus();
+        }
+        previousFocusElement = null;
+      }
+
+      function openAddressVerificationModal() {
+        const modal = document.getElementById("addressVerifyModal");
+        const confirmBtn = document.getElementById("confirmAddressBtn");
+        if (!modal) return;
+        previousFocusElement = document.activeElement;
+        modal.classList.add("open");
+        modal.setAttribute("aria-hidden", "false");
+        addressVerificationModalOpen = true;
+        syncAssessmentActionState();
+        if (confirmBtn) confirmBtn.focus();
+      }
+
+      async function startAddressVerificationFlow() {
+        if (isAddressVerificationPending || isAssessmentSubmitting) return;
+        const payload = buildAssessmentPayload();
+        if (!payload.address?.trim()) {
+          alert("Please enter an address.");
+          setRequestStatus("Assessment not started: address is required.", "error");
+          return;
+        }
+        isAddressVerificationPending = true;
+        syncAssessmentActionState();
+        setRequestStatus("Verifying address before assessment...");
+        try {
+          const verification = await fetchCoverageForAddress(payload.address);
+          const geocodeAccepted = String(verification?.geocode_status || "").toLowerCase() === "accepted";
+          const lat = Number(verification?.latitude);
+          const lon = Number(verification?.longitude);
+          const hasCoordinates = Number.isFinite(lat) && Number.isFinite(lon);
+          if (!geocodeAccepted || !hasCoordinates) {
+            const reason = verification?.message || "We could not verify this address.";
+            setRequestStatus(reason, "error");
+            alert(reason);
+            return;
+          }
+
+          pendingAssessmentPayload = { ...payload };
+          verifiedAddressPayload = verification;
+          if (!pendingAssessmentPayload.user_selected_point && !pendingAssessmentPayload.property_anchor_point) {
+            pendingAssessmentPayload.property_anchor_point = { latitude: lat, longitude: lon };
+          }
+          renderAddressVerificationModal(payload, verification);
+          openAddressVerificationModal();
+          setRequestStatus("Address verified. Confirm address to continue.");
+        } catch (err) {
+          const message = `Address verification failed: ${err.message}`;
+          setRequestStatus(message, "error");
+          alert(message);
+        } finally {
+          isAddressVerificationPending = false;
+          syncAssessmentActionState();
+        }
+      }
+
+      async function confirmVerifiedAddressAndRunAssessment() {
+        if (!pendingAssessmentPayload || isAssessmentSubmitting) return;
+        const payload = pendingAssessmentPayload;
+        closeAddressVerificationModal({ restoreFocus: false });
+        pendingAssessmentPayload = null;
+        verifiedAddressPayload = null;
+        await runAssessment(false, payload);
+      }
+
+      function cancelAddressVerification() {
+        pendingAssessmentPayload = null;
+        verifiedAddressPayload = null;
+        closeAddressVerificationModal();
+        setRequestStatus("Address confirmation canceled. Edit the address and retry.");
+      }
+
       function buildAssessmentPayload() {
         const payload = {
           address: String(document.getElementById("address").value || "").trim(),
@@ -1805,11 +2101,14 @@
         });
       }
 
-      async function runAssessment(reassess = false) {
-        const assessBtn = document.getElementById("assessBtn");
-        const reassessBtn = document.getElementById("reassessBtn");
+      async function runAssessment(reassess = false, providedPayload = null) {
+        if (isAssessmentSubmitting) return;
+        isAssessmentSubmitting = true;
+        syncAssessmentActionState();
+        let submittedAddress = "";
         try {
-          const payload = buildAssessmentPayload();
+          const payload = providedPayload || buildAssessmentPayload();
+          submittedAddress = String(payload?.address || "").trim();
           if (!payload.address?.trim()) {
             alert("Please enter an address.");
             setRequestStatus("Assessment not started: address is required.", "error");
@@ -1817,8 +2116,6 @@
           }
 
           setRequestStatus(reassess ? "Updating assessment..." : "Running assessment...");
-          if (assessBtn) assessBtn.disabled = true;
-          if (reassessBtn) reassessBtn.disabled = true;
 
           const data = (reassess && latestAssessment)
             ? await api(`/risk/reassess/${latestAssessment.assessment_id}`, {
@@ -1844,7 +2141,7 @@
           if (isUncovered) {
             let enriched = detail;
             try {
-              const coverage = await fetchCoverageForAddress(document.getElementById("address").value);
+              const coverage = await fetchCoverageForAddress(submittedAddress);
               enriched = {
                 ...detail,
                 coverage_available: coverage?.coverage_available ?? coverage?.covered ?? false,
@@ -1862,7 +2159,7 @@
           const isGeocodeFailure = !!(detail && detail.error === "geocoding_failed");
           if (isGeocodeFailure) {
             try {
-              const coverage = await fetchCoverageForAddress(document.getElementById("address")?.value || "");
+              const coverage = await fetchCoverageForAddress(submittedAddress);
               if (
                 coverage
                 && (coverage.coverage_available === false || coverage.covered === false)
@@ -1885,13 +2182,13 @@
             } catch (_coverageErr) {
               // Ignore: keep geocode failure rendering if coverage-check probe also fails.
             }
-            renderGeocodeFailureState(detail, document.getElementById("address")?.value || "");
+            renderGeocodeFailureState(detail, submittedAddress);
           }
           setRequestStatus(`Assessment failed: ${err.message}`, "error");
           alert(err.message);
         } finally {
-          if (assessBtn) assessBtn.disabled = false;
-          if (reassessBtn) reassessBtn.disabled = false;
+          isAssessmentSubmitting = false;
+          syncAssessmentActionState();
         }
       }
 
@@ -2017,7 +2314,7 @@
       bindOtherInput("sim_deck_attachment", "sim_deck_attachment_other");
       bindOtherInput("sim_year_built", "sim_year_built_other");
 
-      document.getElementById("assessBtn").addEventListener("click", () => runAssessment(false));
+      document.getElementById("assessBtn").addEventListener("click", startAddressVerificationFlow);
       document.getElementById("reassessBtn").addEventListener("click", () => runAssessment(true));
       document.getElementById("simulateBtn").addEventListener("click", runSimulation);
       document.getElementById("openReportBtn").addEventListener("click", openReportView);
@@ -2026,6 +2323,39 @@
       document.getElementById("confirmHomeYesBtn")?.addEventListener("click", confirmAutoDetectedStructure);
       document.getElementById("confirmHomeSelectBtn")?.addEventListener("click", startManualStructureSelection);
       document.getElementById("confirmHomePointBtn")?.addEventListener("click", startPointStructureSelection);
+      document.getElementById("confirmAddressBtn")?.addEventListener("click", confirmVerifiedAddressAndRunAssessment);
+      document.getElementById("editAddressBtn")?.addEventListener("click", cancelAddressVerification);
+      document.getElementById("addressVerifyModal")?.addEventListener("click", (evt) => {
+        if (evt.target?.id === "addressVerifyModal") {
+          cancelAddressVerification();
+        }
+      });
+      document.addEventListener("keydown", (evt) => {
+        if (!addressVerificationModalOpen) return;
+        if (evt.key === "Escape") {
+          evt.preventDefault();
+          cancelAddressVerification();
+          return;
+        }
+        if (evt.key !== "Tab") return;
+        const modal = document.getElementById("addressVerifyModal");
+        if (!modal) return;
+        const focusable = Array.from(
+          modal.querySelectorAll(
+            "button, [href], input, select, textarea, [tabindex]:not([tabindex='-1'])"
+          )
+        ).filter((el) => !el.hasAttribute("disabled") && el.getAttribute("aria-hidden") !== "true");
+        if (focusable.length === 0) return;
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        if (evt.shiftKey && document.activeElement === first) {
+          evt.preventDefault();
+          last.focus();
+        } else if (!evt.shiftKey && document.activeElement === last) {
+          evt.preventDefault();
+          first.focus();
+        }
+      });
     </script>
   </body>
 </html>
