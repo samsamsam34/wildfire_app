@@ -112,7 +112,9 @@ def test_homeowner_report_and_pdf_generate_for_complete_assessment(monkeypatch, 
         "score_summary",
         "key_risk_drivers",
         "defensible_space_summary",
+        "top_recommended_actions",
         "mitigation_plan",
+        "home_hardening_readiness_summary",
         "insurance_readiness_summary",
         "confidence_and_limitations",
         "metadata",
@@ -120,7 +122,13 @@ def test_homeowner_report_and_pdf_generate_for_complete_assessment(monkeypatch, 
         assert key in report
 
     assert report["score_summary"]["wildfire_risk_score"] is not None
+    assert report["score_summary"]["overall_wildfire_risk"] is not None
+    assert report["score_summary"]["home_hardening_readiness"] is not None
     assert report["score_summary"]["insurance_readiness_score"] is not None
+    assert isinstance(report["top_recommended_actions"], list)
+    assert len(report["top_recommended_actions"]) <= 3
+    assert "blockers" in report["home_hardening_readiness_summary"]
+    assert "summary" in report["home_hardening_readiness_summary"]
     assert isinstance(report["defensible_space_summary"]["zone_findings"], list)
     assert report.get("professional_debug_metadata") is None
 
@@ -154,6 +162,7 @@ def test_homeowner_report_surfaces_fallback_limitations_and_optional_debug_block
     report = report_res.json()
     limitations = report["confidence_and_limitations"].get("limitations") or []
     assert len(limitations) >= 1
+    assert report["confidence_and_limitations"]["confidence_tier"] in {"high", "moderate", "low", "preliminary"}
     assert report["defensible_space_summary"]["analysis_status"] in {"partial", "unavailable", "complete"}
 
     debug_res = client.get(
@@ -184,6 +193,8 @@ def test_homeowner_report_handles_unavailable_scores_and_long_text_deterministic
     patched.wildfire_risk_score_available = False
     patched.insurance_readiness_score = None
     patched.insurance_readiness_score_available = False
+    patched.home_hardening_readiness = None
+    patched.home_hardening_readiness_score_available = False
     patched.address = (
         "9999 Extremely Long Address Lane With Many Unit Descriptors and Additional Context, "
         "Missoula, MT 59802-1234"
@@ -207,6 +218,7 @@ def test_homeowner_report_handles_unavailable_scores_and_long_text_deterministic
     assert report_res.status_code == 200
     report = report_res.json()
     assert report["score_summary"]["wildfire_risk_band"] == "unavailable"
+    assert report["score_summary"]["home_hardening_readiness_band"] == "unavailable"
     assert report["score_summary"]["insurance_readiness_band"] == "unavailable"
 
     pdf_res_a = client.get(f"/report/{assessed['assessment_id']}/homeowner/pdf")

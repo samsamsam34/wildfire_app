@@ -43,7 +43,7 @@ def _risk_band(score: float | None) -> str:
     return "lower"
 
 
-def _readiness_band(score: float | None) -> str:
+def _home_hardening_band(score: float | None) -> str:
     if score is None:
         return "unavailable"
     if score >= 75:
@@ -82,7 +82,7 @@ def _confidence_summary(result: AssessmentResult) -> str:
     if tier == "low":
         return "Low confidence: significant assumptions or fallback data were required for one or more score components."
     return (
-        "Preliminary confidence: this result is useful for screening, but additional data is needed before high-stakes decisions."
+        "Preliminary confidence: this result is useful for homeowner planning, but additional data is needed before high-stakes decisions."
     ) + f" Use restriction: {restriction}."
 
 
@@ -164,6 +164,15 @@ def build_homeowner_report(
 ) -> HomeownerReport:
     resolved_region_id = result.resolved_region_id or str(result.property_level_context.get("region_id") or "") or None
     report_generated_at = result.generated_at.astimezone(timezone.utc).isoformat()
+    home_hardening_score = (
+        result.home_hardening_readiness
+        if result.home_hardening_readiness is not None
+        else result.insurance_readiness_score
+    )
+    home_hardening_available = bool(
+        result.home_hardening_readiness_score_available
+        or result.insurance_readiness_score_available
+    )
 
     key_risk_drivers = [_plain_driver(row) for row in list(result.top_risk_drivers or [])]
     key_risk_drivers = [row for row in key_risk_drivers if row][:6]
@@ -201,12 +210,15 @@ def build_homeowner_report(
             "assessment_diagnostics": _dump_value(result.assessment_diagnostics),
         }
 
+    all_mitigation_actions = _mitigation_actions(result)
+    top_recommended_actions = all_mitigation_actions[:3]
+
     return HomeownerReport(
         assessment_id=result.assessment_id,
         generated_at=report_generated_at,
         report_header={
-            "title": "WildfireRisk Advisor Homeowner Report",
-            "subtitle": "Property-specific wildfire risk and mitigation guidance",
+            "title": "WildfireRisk Advisor Home Hardening Report",
+            "subtitle": "Property-specific wildfire risk and practical hardening guidance",
             "assessment_generated_at": result.generated_at.astimezone(timezone.utc).isoformat(),
             "report_generated_at": report_generated_at,
             "report_audience": "homeowner",
@@ -220,17 +232,26 @@ def build_homeowner_report(
             "region_resolution_reason": result.region_resolution.reason,
         },
         score_summary={
+            "overall_wildfire_risk": (
+                result.overall_wildfire_risk
+                if result.overall_wildfire_risk is not None
+                else result.wildfire_risk_score
+            ),
             "wildfire_risk_score": result.wildfire_risk_score,
             "wildfire_risk_band": _risk_band(result.wildfire_risk_score),
             "wildfire_risk_score_available": result.wildfire_risk_score_available,
+            "home_hardening_readiness": home_hardening_score,
+            "home_hardening_readiness_band": _home_hardening_band(home_hardening_score),
+            "home_hardening_readiness_score_available": home_hardening_available,
             "calibrated_damage_likelihood": result.calibrated_damage_likelihood,
             "empirical_damage_likelihood_proxy": result.empirical_damage_likelihood_proxy,
             "empirical_loss_likelihood_proxy": result.empirical_loss_likelihood_proxy,
             "calibration_applied": result.calibration_applied,
             "calibration_status": result.calibration_status,
             "insurance_readiness_score": result.insurance_readiness_score,
-            "insurance_readiness_band": _readiness_band(result.insurance_readiness_score),
+            "insurance_readiness_band": _home_hardening_band(result.insurance_readiness_score),
             "insurance_readiness_score_available": result.insurance_readiness_score_available,
+            "legacy_insurance_readiness_note": "Insurance-facing readiness is retained for compatibility and future-facing workflows.",
             "confidence_score": result.confidence_score,
             "confidence_tier": result.confidence_tier,
             "use_restriction": result.use_restriction,
@@ -246,13 +267,24 @@ def build_homeowner_report(
             "limitations": ds_limitations,
             "analysis_status": ((defensible_space_analysis.get("data_quality") or {}).get("analysis_status") or "unknown"),
         },
-        mitigation_plan=_mitigation_actions(result),
+        top_recommended_actions=top_recommended_actions,
+        mitigation_plan=all_mitigation_actions,
+        home_hardening_readiness_summary={
+            "home_hardening_readiness": home_hardening_score,
+            "home_hardening_readiness_score_available": home_hardening_available,
+            "summary": result.readiness_summary,
+            "blockers": list(result.readiness_blockers or []),
+            "factors": [_dump_value(row) for row in list(result.readiness_factors or [])[:8]],
+            "top_recommended_actions": [row.model_dump() for row in top_recommended_actions],
+        },
         insurance_readiness_summary={
             "insurance_readiness_score": result.insurance_readiness_score,
             "insurance_readiness_score_available": result.insurance_readiness_score_available,
             "readiness_summary": result.readiness_summary,
             "readiness_blockers": list(result.readiness_blockers or []),
             "readiness_factors": [_dump_value(row) for row in list(result.readiness_factors or [])[:8]],
+            "status": "optional_future_facing",
+            "note": "Insurance readiness outputs are optional references and not the primary homeowner outcome.",
         },
         confidence_and_limitations=confidence_and_limitations,
         metadata={
@@ -308,11 +340,12 @@ def _build_report_lines(report: HomeownerReport) -> list[str]:
     property_summary = report.property_summary or {}
     score_summary = report.score_summary or {}
     ds_summary = report.defensible_space_summary or {}
-    readiness = report.insurance_readiness_summary or {}
+    readiness = report.home_hardening_readiness_summary or {}
+    insurance_reference = report.insurance_readiness_summary or {}
     confidence = report.confidence_and_limitations or {}
     metadata = report.metadata or {}
 
-    lines.extend(_wrap_text_line(str(header.get("title") or "WildfireRisk Advisor Homeowner Report")))
+    lines.extend(_wrap_text_line(str(header.get("title") or "WildfireRisk Advisor Home Hardening Report")))
     lines.extend(_wrap_text_line(str(header.get("subtitle") or "")))
     lines.append("")
 
@@ -324,12 +357,12 @@ def _build_report_lines(report: HomeownerReport) -> list[str]:
 
     lines.extend(_wrap_text_line("Score Summary"))
     lines.extend(_wrap_text_line(
-        f"Wildfire Risk Score: {score_summary.get('wildfire_risk_score')} "
+        f"Overall Wildfire Risk: {score_summary.get('overall_wildfire_risk', score_summary.get('wildfire_risk_score'))} "
         f"({score_summary.get('wildfire_risk_band', 'unavailable')})"
     ))
     lines.extend(_wrap_text_line(
-        f"Insurance Readiness Score: {score_summary.get('insurance_readiness_score')} "
-        f"({score_summary.get('insurance_readiness_band', 'unavailable')})"
+        f"Home Hardening Readiness: {score_summary.get('home_hardening_readiness')} "
+        f"({score_summary.get('home_hardening_readiness_band', 'unavailable')})"
     ))
     lines.extend(_wrap_text_line(
         f"Confidence: {score_summary.get('confidence_score')} ({score_summary.get('confidence_tier', 'unknown')})"
@@ -378,13 +411,24 @@ def _build_report_lines(report: HomeownerReport) -> list[str]:
         lines.extend(_wrap_text_line("No prioritized actions were generated.", prefix="- "))
     lines.append("")
 
-    lines.extend(_wrap_text_line("Insurance Readiness"))
-    lines.extend(_wrap_text_line(str(readiness.get("readiness_summary") or "No readiness summary available."), prefix="- "))
-    blockers = readiness.get("readiness_blockers") if isinstance(readiness.get("readiness_blockers"), list) else []
+    lines.extend(_wrap_text_line("Home Hardening Readiness"))
+    lines.extend(_wrap_text_line(str(readiness.get("summary") or "No home hardening summary available."), prefix="- "))
+    lines.extend(_wrap_text_line("Top Recommended Actions", prefix="- "))
+    for action in report.top_recommended_actions[:3]:
+        lines.extend(_wrap_text_line(action.title, prefix="  - "))
+    blockers = readiness.get("blockers") if isinstance(readiness.get("blockers"), list) else []
     if blockers:
         lines.extend(_wrap_text_line("Key blockers:", prefix="- "))
         for blocker in blockers[:5]:
             lines.extend(_wrap_text_line(str(blocker), prefix="  - "))
+    if insurance_reference:
+        lines.extend(
+            _wrap_text_line(
+                "Optional insurance reference score: "
+                + str(insurance_reference.get("insurance_readiness_score", "unavailable")),
+                prefix="- ",
+            )
+        )
     lines.append("")
 
     lines.extend(_wrap_text_line("Confidence and Limitations"))

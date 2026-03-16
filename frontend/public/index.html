@@ -579,7 +579,7 @@
             <tbody id="submodels"><tr><td colspan="3" class="muted">No data yet.</td></tr></tbody>
           </table>
 
-          <h3 style="margin-top:0.9rem;">Insurance Readiness (Reference)</h3>
+          <h3 style="margin-top:0.9rem;">Home Hardening Readiness (Primary)</h3>
           <p id="readinessText" class="muted">-</p>
 
           <h3 style="margin-top:0.9rem;">Property-Level Context</h3>
@@ -1492,14 +1492,21 @@
           .join("");
         document.getElementById("submodels").innerHTML = rows || "<tr><td colspan='3' class='muted'>No factor data.</td></tr>";
 
-        const readinessAvailable = data.insurance_readiness_score_available !== false
-          && data.insurance_readiness_score !== null
-          && data.insurance_readiness_score !== undefined;
+        const readinessValue = (
+          data.home_hardening_readiness !== null && data.home_hardening_readiness !== undefined
+            ? data.home_hardening_readiness
+            : data.insurance_readiness_score
+        );
+        const readinessAvailable = (
+          data.home_hardening_readiness_score_available !== false
+          && readinessValue !== null
+          && readinessValue !== undefined
+        );
         if (readinessAvailable) {
-          const readiness = Number(data.insurance_readiness_score).toFixed(1);
-          document.getElementById("readinessText").textContent = `Insurance readiness score: ${readiness}`;
+          const readiness = Number(readinessValue).toFixed(1);
+          document.getElementById("readinessText").textContent = `Home hardening readiness: ${readiness}`;
         } else {
-          document.getElementById("readinessText").textContent = "Insurance readiness score: not computed (insufficient evidence)";
+          document.getElementById("readinessText").textContent = "Home hardening readiness: not computed (insufficient evidence)";
         }
         const dsSummary = data?.defensible_space_analysis?.summary;
         const dsLimitations = Array.isArray(data?.defensible_space_limitations_summary)
@@ -2673,14 +2680,29 @@
           const changed = Object.entries(sim.changed_inputs || {})
             .map(([k, v]) => `${k}: ${v.before ?? "(none)"} -> ${v.after ?? "(none)"}`)
             .join("<br>");
+          const baselineHardening = (
+            sim.baseline?.home_hardening_readiness !== null && sim.baseline?.home_hardening_readiness !== undefined
+              ? sim.baseline.home_hardening_readiness
+              : sim.baseline?.insurance_readiness_score
+          );
+          const simulatedHardening = (
+            sim.simulated?.home_hardening_readiness !== null && sim.simulated?.home_hardening_readiness !== undefined
+              ? sim.simulated.home_hardening_readiness
+              : sim.simulated?.insurance_readiness_score
+          );
+          const hardeningDelta = (
+            sim.delta?.home_hardening_readiness_delta !== null && sim.delta?.home_hardening_readiness_delta !== undefined
+              ? sim.delta.home_hardening_readiness_delta
+              : delta.insurance_readiness_score_delta
+          );
 
           document.getElementById("simResult").innerHTML =
             `<strong>Before:</strong> ${fmt(sim.baseline.wildfire_risk_score)}<br>` +
             `<strong>After:</strong> ${fmt(sim.simulated.wildfire_risk_score)}<br>` +
             `<strong>Change:</strong> ${fmt(delta.wildfire_risk_score_delta)} wildfire risk points<br><br>` +
-            `<strong>Readiness Before:</strong> ${fmt(sim.baseline.insurance_readiness_score)}<br>` +
-            `<strong>Readiness After:</strong> ${fmt(sim.simulated.insurance_readiness_score)}<br>` +
-            `<strong>Readiness Change:</strong> ${fmt(delta.insurance_readiness_score_delta)} points<br><br>` +
+            `<strong>Home Hardening Before:</strong> ${fmt(baselineHardening)}<br>` +
+            `<strong>Home Hardening After:</strong> ${fmt(simulatedHardening)}<br>` +
+            `<strong>Home Hardening Change:</strong> ${fmt(hardeningDelta)} points<br><br>` +
             `<strong>What changed:</strong><br>${changed || "No changes detected."}<br><br>` +
             `<strong>Around the home after upgrades:</strong><br>${(sim.simulated?.property_findings || []).slice(0, 2).join("<br>") || "No additional structure-specific findings."}<br><br>` +
             `<strong>Summary:</strong> ${sim.summary || "Simulation complete."}`;

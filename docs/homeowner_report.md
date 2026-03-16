@@ -23,10 +23,21 @@ The report JSON includes:
 - `score_summary`
 - `key_risk_drivers`
 - `defensible_space_summary`
+- `top_recommended_actions`
 - `mitigation_plan`
+- `home_hardening_readiness_summary`
 - `insurance_readiness_summary`
 - `confidence_and_limitations`
 - `metadata`
+
+Primary homeowner-facing score fields are:
+- `score_summary.overall_wildfire_risk`
+- `score_summary.home_hardening_readiness`
+- `key_risk_drivers`
+- `top_recommended_actions`
+- `confidence_and_limitations`
+
+`insurance_readiness_summary` is retained as an optional/future-facing compatibility block.
 
 ## Confidence and limitations
 

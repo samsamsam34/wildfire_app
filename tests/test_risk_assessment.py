@@ -168,14 +168,17 @@ def _assert_core_contract(body: dict) -> None:
         "model_version",
         "generated_at",
         "wildfire_risk_score",
+        "overall_wildfire_risk",
         "legacy_weighted_wildfire_risk_score",
         "site_hazard_score",
         "home_ignition_vulnerability_score",
         "insurance_readiness_score",
+        "home_hardening_readiness",
         "wildfire_risk_score_available",
         "site_hazard_score_available",
         "home_ignition_vulnerability_score_available",
         "insurance_readiness_score_available",
+        "home_hardening_readiness_score_available",
         "submodel_scores",
         "weighted_contributions",
         "submodel_explanations",
@@ -187,6 +190,7 @@ def _assert_core_contract(body: dict) -> None:
         "prioritized_vegetation_actions",
         "defensible_space_limitations_summary",
         "top_risk_drivers",
+        "top_recommended_actions",
         "top_protective_factors",
         "explanation_summary",
         "readiness_factors",
@@ -198,6 +202,7 @@ def _assert_core_contract(body: dict) -> None:
         "inferred_inputs",
         "missing_inputs",
         "assumptions_used",
+        "assumptions_and_unknowns",
         "confidence_score",
         "data_completeness_score",
         "environmental_data_completeness_score",
@@ -270,7 +275,9 @@ def _assert_core_contract(body: dict) -> None:
     assert body["risk_scores"]["site_hazard_score"] == body["site_hazard_score"]
     assert body["risk_scores"]["home_ignition_vulnerability_score"] == body["home_ignition_vulnerability_score"]
     assert body["risk_scores"]["wildfire_risk_score"] == body["wildfire_risk_score"]
+    assert body["risk_scores"]["overall_wildfire_risk"] == body["overall_wildfire_risk"]
     assert body["risk_scores"]["insurance_readiness_score"] == body["insurance_readiness_score"]
+    assert body["risk_scores"]["home_hardening_readiness"] == body["home_hardening_readiness"]
     assert body["risk_scores"]["site_hazard_score_available"] == body["site_hazard_score_available"]
     assert (
         body["risk_scores"]["home_ignition_vulnerability_score_available"]
@@ -280,6 +287,10 @@ def _assert_core_contract(body: dict) -> None:
     assert (
         body["risk_scores"]["insurance_readiness_score_available"]
         == body["insurance_readiness_score_available"]
+    )
+    assert (
+        body["risk_scores"]["home_hardening_readiness_score_available"]
+        == body["home_hardening_readiness_score_available"]
     )
     assert set(body["score_summaries"].keys()) == {
         "site_hazard",
@@ -304,6 +315,8 @@ def _assert_core_contract(body: dict) -> None:
             assert 0.0 <= float(section["score"]) <= 100.0
 
     assert body["confidence_tier"] in {"high", "moderate", "low", "preliminary"}
+    assert isinstance(body["top_recommended_actions"], list)
+    assert isinstance(body["assumptions_and_unknowns"], list)
     assert body["use_restriction"] in {
         "shareable",
         "homeowner_review_recommended",

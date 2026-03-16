@@ -5,13 +5,14 @@ WildfireRisk Advisor is a FastAPI backend plus a lightweight static frontend for
 It focuses on three related outputs:
 - `site_hazard_score` (landscape/environment around the property)
 - `home_ignition_vulnerability_score` (home and near-structure susceptibility)
-- `insurance_readiness_score` (rules-based readiness signal)
+- `home_hardening_readiness` (rules-based homeowner readiness signal)
 
 `wildfire_risk_score` is also returned as a blended summary for compatibility.
+Legacy `insurance_readiness_score` remains available as an optional/future-facing compatibility mirror.
 
 ## Project Overview
 
-The app geocodes an address, builds wildfire context from prepared regional layers, scores risk/readiness, and returns explainable results with assumptions, confidence, and mitigation actions.
+The app geocodes an address, builds wildfire context from prepared regional layers, scores risk/home-hardening readiness, and returns explainable results with assumptions, confidence, and mitigation actions.
 
 It also supports reassessment, simulation, report retrieval/export, portfolio workflows, and lightweight operational review features (annotations, workflow status, assignments, audit events).
 
@@ -20,7 +21,7 @@ Runtime scoring reads prepared local data. Large GIS download/prep is handled of
 ## What It Does
 
 - Runs factorized wildfire scoring across environmental and structure-focused submodels.
-- Computes insurance readiness through a separate rules path with blockers and penalties.
+- Computes home hardening readiness through a separate rules path with blockers and penalties.
 - Supports homeowner inputs (`roof_type`, `vent_type`, `defensible_space_ft`, etc.), reassessment, and what-if simulation.
 - Uses structure-based ring metrics (`0-5 ft`, `5-30 ft`, `30-100 ft`, `100-300 ft`) when footprint data is available.
 - Supports optional NAIP imagery-derived near-structure features (prepared offline):
@@ -51,6 +52,18 @@ Runtime scoring reads prepared local data. Large GIS download/prep is handled of
   - nearby wildfire context overlays (historical fire perimeters and nearby structures when available)
   - layer toggles, legends, and limitations text for missing/partial geometry
 - Persists assessment/report payloads in SQLite with compatibility handling for older rows.
+
+## Homeowner-First Primary Fields
+
+Primary homeowner-facing assessment fields now emphasize actionability:
+- `overall_wildfire_risk`
+- `home_hardening_readiness`
+- `top_risk_drivers`
+- `top_recommended_actions`
+- `assumptions_and_unknowns`
+- `confidence_tier`
+
+Compatibility fields such as `insurance_readiness_score` remain available, but are treated as optional/future-facing in homeowner views.
 
 ## Main API Capabilities
 
@@ -695,7 +708,7 @@ Completed assessments can be transformed into a homeowner-facing report and down
 
 Homeowner report sections include:
 - property summary
-- wildfire risk and insurance readiness score summary
+- wildfire risk and home hardening readiness summary
 - key risk drivers
 - defensible-space zone findings and vegetation actions
 - prioritized mitigation plan

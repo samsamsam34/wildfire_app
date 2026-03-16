@@ -370,10 +370,13 @@ class RiskScores(BaseModel):
     home_ignition_vulnerability_score: Optional[float] = None
     wildfire_risk_score: Optional[float] = None
     insurance_readiness_score: Optional[float] = None
+    overall_wildfire_risk: Optional[float] = None
+    home_hardening_readiness: Optional[float] = None
     site_hazard_score_available: bool = False
     home_ignition_vulnerability_score_available: bool = False
     wildfire_risk_score_available: bool = False
     insurance_readiness_score_available: bool = False
+    home_hardening_readiness_score_available: bool = False
 
 
 class RiskDrivers(BaseModel):
@@ -684,10 +687,12 @@ class AssessmentResult(BaseModel):
     longitude: float
     geocoding: GeocodingDetails = Field(default_factory=GeocodingDetails)
     wildfire_risk_score: Optional[float] = None
+    overall_wildfire_risk: Optional[float] = None
     legacy_weighted_wildfire_risk_score: Optional[float] = None
     site_hazard_score: Optional[float] = None
     home_ignition_vulnerability_score: Optional[float] = None
     insurance_readiness_score: Optional[float] = None
+    home_hardening_readiness: Optional[float] = None
     calibrated_damage_likelihood: Optional[float] = None
     empirical_damage_likelihood_proxy: Optional[float] = None
     empirical_loss_likelihood_proxy: Optional[float] = None
@@ -700,6 +705,7 @@ class AssessmentResult(BaseModel):
     site_hazard_score_available: bool = False
     home_ignition_vulnerability_score_available: bool = False
     insurance_readiness_score_available: bool = False
+    home_hardening_readiness_score_available: bool = False
     risk_drivers: RiskDrivers
     factor_breakdown: FactorBreakdown
     submodel_scores: Dict[str, SubmodelScore] = Field(default_factory=dict)
@@ -711,6 +717,7 @@ class AssessmentResult(BaseModel):
     prioritized_vegetation_actions: List[NearStructureAction] = Field(default_factory=list)
     defensible_space_limitations_summary: List[str] = Field(default_factory=list)
     top_risk_drivers: List[str]
+    top_recommended_actions: List[str] = Field(default_factory=list)
     top_protective_factors: List[str]
     explanation_summary: str
     confirmed_inputs: Dict[str, object] = Field(default_factory=dict)
@@ -718,6 +725,7 @@ class AssessmentResult(BaseModel):
     inferred_inputs: Dict[str, object] = Field(default_factory=dict)
     missing_inputs: List[str] = Field(default_factory=list)
     assumptions_used: List[str] = Field(default_factory=list)
+    assumptions_and_unknowns: List[str] = Field(default_factory=list)
     confidence_score: float
     data_completeness_score: float = 0.0
     environmental_data_completeness_score: float = 0.0
@@ -812,6 +820,7 @@ class AssessmentResult(BaseModel):
 class SimulationDelta(BaseModel):
     wildfire_risk_score_delta: Optional[float] = None
     insurance_readiness_score_delta: Optional[float] = None
+    home_hardening_readiness_delta: Optional[float] = None
 
 
 class SimulationResult(BaseModel):
@@ -877,6 +886,7 @@ class ReportExport(BaseModel):
     property_summary: Dict[str, object]
     location_summary: Dict[str, object]
     wildfire_risk_summary: Dict[str, object]
+    home_hardening_readiness_summary: Dict[str, object] = Field(default_factory=dict)
     insurance_readiness_summary: Dict[str, object]
     defensible_space_analysis: Dict[str, object] = Field(default_factory=dict)
     top_near_structure_risk_drivers: List[str] = Field(default_factory=list)
@@ -912,7 +922,9 @@ class HomeownerReport(BaseModel):
     score_summary: Dict[str, object] = Field(default_factory=dict)
     key_risk_drivers: List[str] = Field(default_factory=list)
     defensible_space_summary: Dict[str, object] = Field(default_factory=dict)
+    top_recommended_actions: List[HomeownerReportAction] = Field(default_factory=list)
     mitigation_plan: List[HomeownerReportAction] = Field(default_factory=list)
+    home_hardening_readiness_summary: Dict[str, object] = Field(default_factory=dict)
     insurance_readiness_summary: Dict[str, object] = Field(default_factory=dict)
     confidence_and_limitations: Dict[str, object] = Field(default_factory=dict)
     metadata: Dict[str, object] = Field(default_factory=dict)
