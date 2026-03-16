@@ -25,6 +25,7 @@ WorkflowState = Literal[
     "escalated",
 ]
 ConfidenceTier = Literal["high", "moderate", "low", "preliminary"]
+AssessmentSpecificityTier = Literal["property_specific", "address_level", "regional_estimate"]
 UseRestriction = Literal[
     "shareable",
     "homeowner_review_recommended",
@@ -622,6 +623,10 @@ class WeightedContribution(BaseModel):
     weight: float
     score: float
     contribution: float
+    base_weight: Optional[float] = None
+    effective_weight: Optional[float] = None
+    observed_fraction: Optional[float] = None
+    omitted_due_to_missing: bool = False
 
 
 class ReadinessFactor(BaseModel):
@@ -773,6 +778,16 @@ class AssessmentResult(BaseModel):
     insurance_readiness_input_quality: ScoreFamilyInputQuality = Field(default_factory=ScoreFamilyInputQuality)
     score_evidence_ledger: ScoreEvidenceLedger = Field(default_factory=ScoreEvidenceLedger)
     evidence_quality_summary: EvidenceQualitySummary = Field(default_factory=EvidenceQualitySummary)
+    feature_coverage_summary: Dict[str, bool] = Field(default_factory=dict)
+    feature_coverage_percent: float = 0.0
+    assessment_specificity_tier: AssessmentSpecificityTier = "regional_estimate"
+    limited_assessment_flag: bool = False
+    observed_factor_count: int = 0
+    missing_factor_count: int = 0
+    fallback_factor_count: int = 0
+    observed_weight_fraction: float = 0.0
+    fallback_dominance_ratio: float = 0.0
+    score_specificity_warning: Optional[str] = None
     layer_coverage_audit: List[LayerCoverageAuditItem] = Field(default_factory=list)
     coverage_summary: LayerCoverageSummary = Field(default_factory=LayerCoverageSummary)
     region_resolution: RegionResolution = Field(default_factory=RegionResolution)

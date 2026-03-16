@@ -458,58 +458,47 @@ def _apply_attribute_fallbacks(
     fallback_decisions: list[dict[str, object]] = []
 
     if updated.defensible_space_ft is None:
-        proxy = _estimate_defensible_space_proxy(property_level_context)
-        if proxy is not None:
-            updated.defensible_space_ft = round(proxy, 1)
-            fallback_decisions.append(
-                {
-                    "fallback_type": "derived_proxy",
-                    "missing_input": "defensible_space_ft",
-                    "substitute_input": "structure_ring_vegetation_density",
-                    "confidence_penalty_hint": 3.0,
-                    "quality_label": "inferred",
-                    "note": (
-                        "Defensible space was estimated from near-structure vegetation rings to keep vulnerability/readiness "
-                        "scoring available."
-                    ),
-                }
-            )
-        else:
-            updated.defensible_space_ft = 15.0
-            fallback_decisions.append(
-                {
-                    "fallback_type": "conservative_default",
-                    "missing_input": "defensible_space_ft",
-                    "substitute_input": "default_15ft_proxy",
-                    "confidence_penalty_hint": 4.0,
-                    "quality_label": "conservative",
-                    "note": "Defensible space defaulted to a conservative baseline because no ring proxy was available.",
-                }
-            )
-
-    if updated.roof_type is None:
-        updated.roof_type = "composite"
         fallback_decisions.append(
             {
-                "fallback_type": "neutral_default",
+                "fallback_type": "missing_factor_omitted",
+                "missing_input": "defensible_space_ft",
+                "substitute_input": "none",
+                "confidence_penalty_hint": 4.0,
+                "quality_label": "missing",
+                "note": (
+                    "Defensible space input is missing. Numeric defaults are no longer injected; "
+                    "this factor is omitted from direct weighting and confidence is reduced."
+                ),
+            }
+        )
+
+    if updated.roof_type is None:
+        fallback_decisions.append(
+            {
+                "fallback_type": "missing_factor_omitted",
                 "missing_input": "roof_type",
-                "substitute_input": "composite_baseline",
+                "substitute_input": "none",
                 "confidence_penalty_hint": 2.0,
-                "quality_label": "inferred",
-                "note": "Roof type missing; neutral composite baseline used for structure vulnerability scoring.",
+                "quality_label": "missing",
+                "note": (
+                    "Roof type is missing. Numeric defaults are no longer injected; "
+                    "the model uses observed factors only and lowers specificity/confidence."
+                ),
             }
         )
 
     if updated.vent_type is None:
-        updated.vent_type = "standard"
         fallback_decisions.append(
             {
-                "fallback_type": "neutral_default",
+                "fallback_type": "missing_factor_omitted",
                 "missing_input": "vent_type",
-                "substitute_input": "standard_vent_baseline",
+                "substitute_input": "none",
                 "confidence_penalty_hint": 2.0,
-                "quality_label": "inferred",
-                "note": "Vent type missing; standard vent baseline used for structure vulnerability scoring.",
+                "quality_label": "missing",
+                "note": (
+                    "Vent type is missing. Numeric defaults are no longer injected; "
+                    "the model uses observed factors only and lowers specificity/confidence."
+                ),
             }
         )
 
@@ -567,27 +556,17 @@ def _build_assumption_tracking(
     attrs = payload.attributes
 
     if attrs.roof_type is None:
-        inferred_inputs["roof_type"] = "composition_shingle_baseline"
         missing_inputs.append("roof_type")
+        assumptions_used.append("Roof type missing; factor omitted from direct structure weighting.")
     if attrs.vent_type is None:
-        inferred_inputs["vent_type"] = "standard"
         missing_inputs.append("vent_type")
+        assumptions_used.append("Vent type missing; factor omitted from direct structure weighting.")
     if attrs.defensible_space_ft is None:
-        defensible_proxy = _estimate_defensible_space_proxy(property_level_context)
-        if defensible_proxy is not None:
-            inferred_inputs["defensible_space_ft"] = round(defensible_proxy, 1)
-            assumptions_used.append(
-                "Defensible space was inferred from structure-ring vegetation context."
-            )
-        else:
-            inferred_inputs["defensible_space_ft"] = 15
-            assumptions_used.append(
-                "Defensible space missing; conservative default baseline was used."
-            )
         missing_inputs.append("defensible_space_ft")
+        assumptions_used.append("Defensible space missing; factor omitted from direct structure weighting.")
     if attrs.construction_year is None:
-        inferred_inputs["construction_year"] = "pre_2008_proxy"
         missing_inputs.append("construction_year")
+        assumptions_used.append("Construction year missing; age modifier omitted from direct structure weighting.")
 
     if attrs.siding_type is None:
         missing_inputs.append("siding_type")
@@ -648,15 +627,12 @@ def _build_confidence(
             if k in CORE_FACT_FIELDS and k not in missing_inputs_set
         ]
     )
-    external_fail_count = sum(
-        1
-        for note in assumptions.assumptions_used
-        if any(k in note.lower() for k in ["unavailable", "failed", "fallback"])
-    )
+    provider_error_count = sum(1 for status in (environmental_layer_status or {}).values() if status == "error")
+    provider_missing_count = sum(1 for status in (environmental_layer_status or {}).values() if status == "missing")
+    external_fail_count = provider_error_count + provider_missing_count
 
     data_completeness_score = round(max(0.0, min(100.0, 100.0 - (len(assumptions.missing_inputs) * 3.0))), 1)
 
-    provider_error_count = sum(1 for status in (environmental_layer_status or {}).values() if status == "error")
     provider_health_score = 100.0
     provider_health_score -= provider_error_count * 25.0
     provider_health_score -= external_fail_count * 10.0
@@ -1732,6 +1708,87 @@ def _normalize_layer_coverage(
     return rows, summary
 
 
+def _build_feature_coverage_preflight(
+    *,
+    context: WildfireContext,
+    property_level_context: dict[str, Any],
+    coverage_summary: LayerCoverageSummary,
+) -> dict[str, Any]:
+    rings = property_level_context.get("ring_metrics") if isinstance(property_level_context, dict) else None
+    rings = rings if isinstance(rings, dict) else {}
+    near_structure_ring_available = any(
+        isinstance(rings.get(key), dict)
+        and (rings.get(key) or {}).get("vegetation_density") is not None
+        for key in ["ring_0_5_ft", "zone_0_5_ft", "ring_5_30_ft", "zone_5_30_ft", "ring_30_100_ft", "zone_30_100_ft"]
+    )
+    near_structure_proxy_available = any(
+        _safe_float(property_level_context.get(field)) is not None
+        for field in [
+            "near_structure_vegetation_0_5_pct",
+            "canopy_adjacency_proxy_pct",
+            "vegetation_continuity_proxy_pct",
+        ]
+    )
+    parcel_polygon_available = isinstance(property_level_context.get("parcel_geometry"), dict)
+    footprint_available = bool(property_level_context.get("footprint_used"))
+    hazard_available = getattr(context, "hazard_severity_index", None) is not None
+    burn_prob_available = getattr(context, "burn_probability_index", None) is not None
+    dryness_available = getattr(context, "moisture_index", None) is not None
+    access_context = getattr(context, "access_context", {}) or {}
+    road_network_available = (
+        getattr(context, "access_exposure_index", None) is not None
+        or str(access_context.get("status") or "") in {"ok", "partial"}
+    )
+    near_structure_available = near_structure_ring_available or near_structure_proxy_available
+
+    feature_coverage_summary = {
+        "parcel_polygon_available": parcel_polygon_available,
+        "building_footprint_available": footprint_available,
+        "hazard_severity_available": hazard_available,
+        "burn_probability_available": burn_prob_available,
+        "dryness_available": dryness_available,
+        "road_network_available": road_network_available,
+        "near_structure_vegetation_available": near_structure_available,
+    }
+    observed_count = sum(1 for available in feature_coverage_summary.values() if available)
+    total_count = max(1, len(feature_coverage_summary))
+    feature_coverage_percent = round((observed_count / float(total_count)) * 100.0, 1)
+    missing_core_layer_count = total_count - observed_count
+
+    if (
+        feature_coverage_percent >= 70.0
+        and footprint_available
+        and near_structure_available
+        and coverage_summary.failed_count <= 1
+    ):
+        assessment_specificity_tier = "property_specific"
+    elif feature_coverage_percent >= 45.0:
+        assessment_specificity_tier = "address_level"
+    else:
+        assessment_specificity_tier = "regional_estimate"
+
+    limited_assessment_flag = (
+        assessment_specificity_tier != "property_specific"
+        or missing_core_layer_count >= 3
+        or bool(coverage_summary.critical_missing_layers)
+    )
+    specificity_warning = None
+    if limited_assessment_flag:
+        specificity_warning = (
+            "Assessment uses partial/fallback evidence. Missing data now reduces specificity and confidence "
+            "instead of injecting conservative numeric defaults."
+        )
+
+    return {
+        "feature_coverage_summary": feature_coverage_summary,
+        "feature_coverage_percent": feature_coverage_percent,
+        "assessment_specificity_tier": assessment_specificity_tier,
+        "limited_assessment_flag": limited_assessment_flag,
+        "missing_core_layer_count": missing_core_layer_count,
+        "score_specificity_warning": specificity_warning,
+    }
+
+
 def _build_data_provenance(
     *,
     payload: AddressRequest,
@@ -2370,6 +2427,64 @@ def _build_score_eligibility(
     return site_eligibility, home_eligibility, readiness_eligibility, assessment_status, assessment_blockers
 
 
+def _apply_preflight_specificity_gate(
+    *,
+    site_eligibility: ScoreEligibility,
+    home_eligibility: ScoreEligibility,
+    readiness_eligibility: ScoreEligibility,
+    assessment_status: AssessmentStatus,
+    assessment_blockers: list[str],
+    preflight: dict[str, Any],
+) -> tuple[ScoreEligibility, ScoreEligibility, ScoreEligibility, AssessmentStatus, list[str]]:
+    tier = str(preflight.get("assessment_specificity_tier") or "regional_estimate")
+    limited = bool(preflight.get("limited_assessment_flag"))
+    if not limited:
+        return (
+            site_eligibility,
+            home_eligibility,
+            readiness_eligibility,
+            assessment_status,
+            assessment_blockers,
+        )
+
+    site_updated = site_eligibility.model_copy(deep=True)
+    home_updated = home_eligibility.model_copy(deep=True)
+    readiness_updated = readiness_eligibility.model_copy(deep=True)
+    blockers = list(assessment_blockers)
+    pct = float(preflight.get("feature_coverage_percent") or 0.0)
+    core_missing = int(preflight.get("missing_core_layer_count") or 0)
+    warning = (
+        f"Limited assessment specificity ({tier}, {pct:.1f}% feature coverage, {core_missing} core features missing)."
+    )
+
+    if warning not in home_updated.caveats:
+        home_updated.caveats.append(warning)
+    if warning not in readiness_updated.caveats:
+        readiness_updated.caveats.append(warning)
+
+    if tier == "regional_estimate":
+        if home_updated.eligibility_status == "full":
+            home_updated.eligibility_status = "partial"
+            home_updated.eligible = True
+        if readiness_updated.eligibility_status == "full":
+            readiness_updated.eligibility_status = "partial"
+            readiness_updated.eligible = True
+        if assessment_status == "fully_scored":
+            assessment_status = "partially_scored"
+        blockers.append("Property-level specificity is limited to regional estimate due to missing core coverage.")
+    elif tier == "address_level" and assessment_status == "fully_scored":
+        assessment_status = "partially_scored"
+        blockers.append("Assessment downgraded to address-level specificity due to partial feature coverage.")
+
+    return (
+        site_updated,
+        home_updated,
+        readiness_updated,
+        assessment_status,
+        sorted(set(blockers)),
+    )
+
+
 def _apply_hard_trust_guardrails(
     confidence: ConfidenceBlock,
     *,
@@ -2378,6 +2493,7 @@ def _apply_hard_trust_guardrails(
     readiness_eligibility: ScoreEligibility,
     assessment_status: AssessmentStatus,
     coverage_summary: LayerCoverageSummary | None = None,
+    preflight: dict[str, Any] | None = None,
 ) -> tuple[ConfidenceBlock, list[str], list[str]]:
     updated = confidence.model_copy(deep=True)
     downgrade_reasons: list[str] = []
@@ -2431,6 +2547,20 @@ def _apply_hard_trust_guardrails(
             trust_tier_blockers.append(
                 "Critical missing layers: " + ", ".join(coverage_summary.critical_missing_layers[:6])
             )
+
+    if preflight and bool(preflight.get("limited_assessment_flag")):
+        tier = str(preflight.get("assessment_specificity_tier") or "regional_estimate")
+        pct = float(preflight.get("feature_coverage_percent") or 0.0)
+        reason = f"Coverage preflight indicates {tier} specificity ({pct:.1f}% feature coverage)."
+        downgrade_reasons.append(reason)
+        trust_tier_blockers.append(reason)
+        if tier == "regional_estimate":
+            updated.confidence_tier = "low" if updated.confidence_tier != "preliminary" else "preliminary"
+            updated.use_restriction = "not_for_underwriting_or_binding"
+        elif updated.confidence_tier == "high":
+            updated.confidence_tier = "moderate"
+            if updated.use_restriction == "shareable":
+                updated.use_restriction = "homeowner_review_recommended"
 
     if readiness_eligibility.eligibility_status == "insufficient":
         updated.use_restriction = "not_for_underwriting_or_binding"
@@ -2838,6 +2968,7 @@ def _build_score_variance_diagnostics(
     property_level_context: dict[str, Any],
     input_source_metadata: dict[str, InputSourceMetadata],
     resolved_region_id: str | None,
+    coverage_preflight: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     ring_metrics = (property_level_context or {}).get("ring_metrics") if isinstance(property_level_context, dict) else {}
     ring_metrics = ring_metrics if isinstance(ring_metrics, dict) else {}
@@ -2907,6 +3038,10 @@ def _build_score_variance_diagnostics(
             property_specific_count += 1
         factor_contribution_breakdown[canonical] = {
             "weight": wc.weight,
+            "base_weight": wc.base_weight,
+            "effective_weight": wc.effective_weight,
+            "observed_fraction": wc.observed_fraction,
+            "omitted_due_to_missing": wc.omitted_due_to_missing,
             "score": wc.score,
             "contribution": wc.contribution,
             "raw_submodel_score_before_clamp": getattr(result_meta, "raw_score", None),
@@ -2948,6 +3083,12 @@ def _build_score_variance_diagnostics(
         compression_flags.append("near_structure_ring_metrics_missing")
     if raw_feature_vector["near_structure_vegetation_0_5_pct"] is None and raw_feature_vector["vegetation_continuity_proxy_pct"] is None:
         compression_flags.append("imagery_feature_signal_missing")
+    if risk.observed_weight_fraction < 0.70:
+        compression_flags.append("low_observed_weight_fraction")
+    if risk.fallback_dominance_ratio >= 0.60:
+        compression_flags.append("fallback_dominance_high")
+    if coverage_preflight and bool(coverage_preflight.get("limited_assessment_flag")):
+        compression_flags.append("limited_assessment_specificity")
 
     compression_analysis_summary: list[str] = []
     if "fallback_heavy_factor_inputs" in compression_flags:
@@ -2960,6 +3101,12 @@ def _build_score_variance_diagnostics(
         compression_analysis_summary.append("Few property-specific factors are active; neighborhood/regional context is dominating.")
     if "imagery_feature_signal_missing" in compression_flags:
         compression_analysis_summary.append("Imagery-derived near-structure features were unavailable, reducing parcel-level discrimination.")
+    if "low_observed_weight_fraction" in compression_flags:
+        compression_analysis_summary.append("A low fraction of score weight is backed by observed evidence; omitted factors reduced specificity.")
+    if "fallback_dominance_high" in compression_flags:
+        compression_analysis_summary.append("Fallback-driven factors dominate active inputs; score precision is limited.")
+    if "limited_assessment_specificity" in compression_flags:
+        compression_analysis_summary.append("Coverage preflight downgraded this run to limited specificity.")
     if not compression_analysis_summary:
         compression_analysis_summary.append("No major compression pattern detected for this assessment.")
 
@@ -2974,6 +3121,17 @@ def _build_score_variance_diagnostics(
         "factor_count": len(factor_contribution_breakdown),
         "contribution_stddev": round(contribution_stddev, 4),
         "top_two_component_share": round(top_two_share, 4),
+        "observed_factor_count": risk.observed_factor_count,
+        "missing_factor_count": risk.missing_factor_count,
+        "fallback_factor_count": risk.fallback_factor_count,
+        "observed_weight_fraction": risk.observed_weight_fraction,
+        "fallback_dominance_ratio": risk.fallback_dominance_ratio,
+        "uncertainty_penalty": risk.uncertainty_penalty,
+        "missing_core_layer_count": int((coverage_preflight or {}).get("missing_core_layer_count") or 0),
+        "observed_weight_fraction_from_weights": round(
+            sum(float(v.get("effective_weight") or 0.0) for v in factor_contribution_breakdown.values()),
+            4,
+        ),
     }
 
 
@@ -3263,6 +3421,10 @@ def _run_assessment(
             weight=risk.weighted_contributions[name]["weight"],
             score=risk.weighted_contributions[name]["score"],
             contribution=contribution,
+            base_weight=risk.weighted_contributions[name].get("base_weight"),
+            effective_weight=risk.weighted_contributions[name].get("effective_weight"),
+            observed_fraction=risk.weighted_contributions[name].get("observed_fraction"),
+            omitted_due_to_missing=bool(risk.weighted_contributions[name].get("omitted_due_to_missing", False)),
         )
 
     breakdown = _build_factor_breakdown(submodel_scores, risk)
@@ -3316,6 +3478,11 @@ def _run_assessment(
     layer_coverage_audit, coverage_summary = _normalize_layer_coverage(
         property_level_context,
         environmental_layer_status=context.environmental_layer_status,
+    )
+    coverage_preflight = _build_feature_coverage_preflight(
+        context=context,
+        property_level_context=property_level_context,
+        coverage_summary=coverage_summary,
     )
     defensible_space_analysis = build_defensible_space_analysis(
         property_level_context=property_level_context,
@@ -3386,6 +3553,20 @@ def _run_assessment(
         geocode_verified=True,
     )
     (
+        site_hazard_eligibility,
+        home_vulnerability_eligibility,
+        insurance_readiness_eligibility,
+        assessment_status,
+        assessment_blockers,
+    ) = _apply_preflight_specificity_gate(
+        site_eligibility=site_hazard_eligibility,
+        home_eligibility=home_vulnerability_eligibility,
+        readiness_eligibility=insurance_readiness_eligibility,
+        assessment_status=assessment_status,
+        assessment_blockers=assessment_blockers,
+        preflight=coverage_preflight,
+    )
+    (
         site_hazard_input_quality,
         home_vulnerability_input_quality,
         insurance_readiness_input_quality,
@@ -3398,6 +3579,24 @@ def _run_assessment(
         environmental_layer_status=context.environmental_layer_status,
         data_provenance=data_provenance,
     )
+    if risk.uncertainty_penalty > 0:
+        confidence_adjustment = round(min(8.0, float(risk.uncertainty_penalty) * 0.35), 1)
+        confidence_block = confidence_block.model_copy(deep=True)
+        confidence_block.confidence_score = round(
+            max(0.0, confidence_block.confidence_score - confidence_adjustment),
+            1,
+        )
+        confidence_block.low_confidence_flags = sorted(
+            set(
+                list(confidence_block.low_confidence_flags)
+                + [
+                    (
+                        "Missing-factor omission reduced observed scoring coverage; "
+                        "confidence is downgraded by an explicit uncertainty penalty."
+                    )
+                ]
+            )
+        )
     confidence_block, confidence_downgrade_reasons, trust_tier_blockers = _apply_hard_trust_guardrails(
         confidence_block,
         site_eligibility=site_hazard_eligibility,
@@ -3405,6 +3604,7 @@ def _run_assessment(
         readiness_eligibility=insurance_readiness_eligibility,
         assessment_status=assessment_status,
         coverage_summary=coverage_summary,
+        preflight=coverage_preflight,
     )
     confidence_penalties = _derive_confidence_penalties(
         assumptions_block,
@@ -3415,6 +3615,17 @@ def _run_assessment(
         data_provenance=data_provenance,
         coverage_summary=coverage_summary,
     )
+    if risk.uncertainty_penalty > 0:
+        confidence_penalties.append(
+            ConfidencePenalty(
+                penalty_key="missing_factor_uncertainty",
+                reason=(
+                    "Missing factors were omitted from numeric weighting and converted into an explicit "
+                    "uncertainty penalty."
+                ),
+                amount=round(float(risk.uncertainty_penalty), 1),
+            )
+        )
     ranked_driver_titles, ranked_driver_details = build_ranked_risk_drivers(
         submodel_scores=submodel_scores,
         weighted_contributions=weighted_contributions,
@@ -3586,6 +3797,11 @@ def _run_assessment(
     if coverage_summary.critical_missing_layers:
         scoring_notes.append(
             "Critical layer gaps: " + ", ".join(coverage_summary.critical_missing_layers[:6]) + "."
+        )
+    if bool(coverage_preflight.get("limited_assessment_flag")):
+        scoring_notes.append(
+            f"Coverage preflight downgraded specificity to {coverage_preflight.get('assessment_specificity_tier')} "
+            f"({float(coverage_preflight.get('feature_coverage_percent') or 0.0):.1f}% feature coverage)."
         )
     optional_not_configured_layers = sorted(
         {
@@ -3828,6 +4044,20 @@ def _run_assessment(
         insurance_readiness_input_quality=insurance_readiness_input_quality,
         score_evidence_ledger=score_evidence_ledger,
         evidence_quality_summary=evidence_quality_summary,
+        feature_coverage_summary=dict(coverage_preflight.get("feature_coverage_summary") or {}),
+        feature_coverage_percent=float(coverage_preflight.get("feature_coverage_percent") or 0.0),
+        assessment_specificity_tier=str(coverage_preflight.get("assessment_specificity_tier") or "regional_estimate"),
+        limited_assessment_flag=bool(coverage_preflight.get("limited_assessment_flag")),
+        observed_factor_count=int(risk.observed_factor_count),
+        missing_factor_count=int(risk.missing_factor_count),
+        fallback_factor_count=int(risk.fallback_factor_count),
+        observed_weight_fraction=float(risk.observed_weight_fraction),
+        fallback_dominance_ratio=float(risk.fallback_dominance_ratio),
+        score_specificity_warning=(
+            str(coverage_preflight.get("score_specificity_warning"))
+            if coverage_preflight.get("score_specificity_warning")
+            else None
+        ),
         layer_coverage_audit=layer_coverage_audit,
         coverage_summary=coverage_summary,
         region_resolution=region_resolution,
@@ -3985,6 +4215,7 @@ def _run_assessment(
         property_level_context=property_level_context,
         input_source_metadata=input_source_metadata,
         resolved_region_id=result.resolved_region_id,
+        coverage_preflight=coverage_preflight,
     )
 
     debug_payload = {
@@ -4028,7 +4259,15 @@ def _run_assessment(
             for name, sm in submodel_scores.items()
         },
         "weighted_contributions": {
-            name: {"weight": wc.weight, "score": wc.score, "contribution": wc.contribution}
+            name: {
+                "weight": wc.weight,
+                "base_weight": wc.base_weight,
+                "effective_weight": wc.effective_weight,
+                "observed_fraction": wc.observed_fraction,
+                "omitted_due_to_missing": wc.omitted_due_to_missing,
+                "score": wc.score,
+                "contribution": wc.contribution,
+            }
             for name, wc in weighted_contributions.items()
         },
         "readiness": {
@@ -4083,6 +4322,11 @@ def _run_assessment(
             "missing_data_share": result.missing_data_share,
             "stale_data_share": result.data_provenance.summary.stale_data_share,
             "heuristic_input_count": result.data_provenance.summary.heuristic_input_count,
+            "feature_coverage_summary": result.feature_coverage_summary,
+            "feature_coverage_percent": result.feature_coverage_percent,
+            "assessment_specificity_tier": result.assessment_specificity_tier,
+            "limited_assessment_flag": result.limited_assessment_flag,
+            "score_specificity_warning": result.score_specificity_warning,
         },
         "layer_coverage_audit": [row.model_dump() for row in result.layer_coverage_audit],
         "coverage_summary": result.coverage_summary.model_dump(),
@@ -4100,6 +4344,10 @@ def _run_assessment(
         "factor_contribution_breakdown": score_variance_diagnostics.get("factor_contribution_breakdown", {}),
         "compression_flags": score_variance_diagnostics.get("compression_flags", []),
         "score_variance_diagnostics": score_variance_diagnostics,
+        "fallback_dominance_ratio": result.fallback_dominance_ratio,
+        "missing_core_layer_count": int(coverage_preflight.get("missing_core_layer_count") or 0),
+        "observed_weight_fraction": result.observed_weight_fraction,
+        "score_specificity_warning": result.score_specificity_warning,
         "defensible_space_analysis": result.defensible_space_analysis,
         "top_risk_drivers": result.top_risk_drivers,
         "top_risk_drivers_detailed": [row.model_dump() for row in result.top_risk_drivers_detailed],
@@ -4319,6 +4567,16 @@ def _build_report_export(
         "home_vulnerability_input_quality": result.home_vulnerability_input_quality.model_dump(),
         "insurance_readiness_input_quality": result.insurance_readiness_input_quality.model_dump(),
         "evidence_quality_summary": result.evidence_quality_summary.model_dump(),
+        "feature_coverage_summary": result.feature_coverage_summary,
+        "feature_coverage_percent": result.feature_coverage_percent,
+        "assessment_specificity_tier": result.assessment_specificity_tier,
+        "limited_assessment_flag": result.limited_assessment_flag,
+        "observed_factor_count": result.observed_factor_count,
+        "missing_factor_count": result.missing_factor_count,
+        "fallback_factor_count": result.fallback_factor_count,
+        "observed_weight_fraction": result.observed_weight_fraction,
+        "fallback_dominance_ratio": result.fallback_dominance_ratio,
+        "score_specificity_warning": result.score_specificity_warning,
     }
     if benchmark_hints is not None:
         assumptions_confidence["benchmark_hints"] = benchmark_hints

@@ -225,6 +225,15 @@ def _assert_core_contract(body: dict) -> None:
         "insurance_readiness_input_quality",
         "score_evidence_ledger",
         "evidence_quality_summary",
+        "feature_coverage_summary",
+        "feature_coverage_percent",
+        "assessment_specificity_tier",
+        "limited_assessment_flag",
+        "observed_factor_count",
+        "missing_factor_count",
+        "fallback_factor_count",
+        "observed_weight_fraction",
+        "fallback_dominance_ratio",
         "layer_coverage_audit",
         "coverage_summary",
         "site_hazard_eligibility",
@@ -413,6 +422,15 @@ def _assert_core_contract(body: dict) -> None:
         assert key in summary
     assert summary["use_restriction"] in {"consumer_estimate", "screening_only", "review_required"}
     assert 0.0 <= float(summary["evidence_quality_score"]) <= 100.0
+    assert isinstance(body["feature_coverage_summary"], dict)
+    assert 0.0 <= float(body["feature_coverage_percent"]) <= 100.0
+    assert body["assessment_specificity_tier"] in {"property_specific", "address_level", "regional_estimate"}
+    assert isinstance(body["limited_assessment_flag"], bool)
+    assert int(body["observed_factor_count"]) >= 0
+    assert int(body["missing_factor_count"]) >= 0
+    assert int(body["fallback_factor_count"]) >= 0
+    assert 0.0 <= float(body["observed_weight_fraction"]) <= 1.0
+    assert float(body["fallback_dominance_ratio"]) >= 0.0
     coverage_rows = body["layer_coverage_audit"]
     assert isinstance(coverage_rows, list)
     for row in coverage_rows:
@@ -987,10 +1005,9 @@ def test_score_decomposition_and_blended_wildfire_score(monkeypatch, tmp_path):
     )
     env_names = set(app_main.ENVIRONMENTAL_SUBMODELS)
     struct_names = set(app_main.STRUCTURAL_SUBMODELS)
-    weights = app_main.scoring_config.submodel_weights
     weighted = assessed["weighted_contributions"]
-    env_weight = sum(weights[name] for name in env_names)
-    struct_weight = sum(weights[name] for name in struct_names)
+    env_weight = sum(float(weighted[name]["weight"]) for name in env_names)
+    struct_weight = sum(float(weighted[name]["weight"]) for name in struct_names)
     expected_site = round(
         sum(weighted[name]["contribution"] for name in env_names) / env_weight,
         1,
@@ -2479,7 +2496,8 @@ def test_baseline_confidence_non_zero_with_geospatial_context_and_no_optional_ho
     assert assessed["confidence_score"] > 0.0
     assert assessed["confidence"]["environmental_data_present"] is True
     assert assessed["confidence"]["property_context_present"] is True
-    assert assessed["confidence"]["inferred_fields_count"] >= 1
+    assert assessed["confidence"]["inferred_fields_count"] >= 0
+    assert assessed["missing_factor_count"] >= 1
     assert "missing_critical_fields" in assessed["confidence"]
 
 
@@ -4472,6 +4490,86 @@ def test_stale_critical_inputs_reduce_confidence_and_block_shareable(monkeypatch
     assert stale["confidence_tier"] in {"moderate", "low", "preliminary"}
     assert stale["use_restriction"] != "shareable"
     assert stale["data_provenance"]["summary"]["stale_data_share"] > 0.0
+
+
+def test_preflight_coverage_tier_marks_high_vs_limited_specificity(monkeypatch, tmp_path):
+    high_ctx = _ctx(
+        env=57.0,
+        wildland=52.0,
+        historic=45.0,
+        ring_metrics={
+            "ring_0_5_ft": {"vegetation_density": 28.0},
+            "ring_5_30_ft": {"vegetation_density": 33.0},
+            "ring_30_100_ft": {"vegetation_density": 42.0},
+        },
+    )
+    high_ctx.access_exposure_index = 24.0
+    high_ctx.access_context = {"status": "ok", "source": "osm_road_network"}
+    _setup(monkeypatch, tmp_path, high_ctx)
+    high = _run(
+        _payload(
+            "High Coverage Way",
+            {"roof_type": "class a", "vent_type": "ember-resistant", "defensible_space_ft": 35},
+            confirmed=["roof_type", "vent_type", "defensible_space_ft"],
+        )
+    )
+    assert high["assessment_specificity_tier"] == "property_specific"
+    assert high["limited_assessment_flag"] is False
+    assert high["feature_coverage_percent"] >= 70.0
+
+    low_ctx = _ctx(env=57.0, wildland=52.0, historic=45.0, ring_metrics={})
+    low_ctx.burn_probability_index = None
+    low_ctx.hazard_severity_index = None
+    low_ctx.moisture_index = None
+    low_ctx.access_exposure_index = None
+    low_ctx.access_context = {"status": "missing"}
+    low_ctx.environmental_layer_status = {
+        "burn_probability": "missing",
+        "hazard": "missing",
+        "slope": "ok",
+        "fuel": "ok",
+        "canopy": "missing",
+        "fire_history": "missing",
+    }
+    low_ctx.property_level_context = {
+        "footprint_used": False,
+        "footprint_status": "not_found",
+        "fallback_mode": "point_based",
+        "ring_metrics": {},
+    }
+    _setup(monkeypatch, tmp_path, low_ctx)
+    low = _run(_payload("Low Coverage Way", {}, confirmed=[]))
+
+    assert low["limited_assessment_flag"] is True
+    assert low["assessment_specificity_tier"] in {"address_level", "regional_estimate"}
+    assert low["score_specificity_warning"]
+    assert low["confidence_tier"] in {"moderate", "low", "preliminary"}
+
+
+def test_missing_factor_omission_reports_weight_and_counts(monkeypatch, tmp_path):
+    ctx = _ctx(
+        env=54.0,
+        wildland=49.0,
+        historic=41.0,
+        ring_metrics={
+            "ring_0_5_ft": {"vegetation_density": 44.0},
+            "ring_5_30_ft": {"vegetation_density": 52.0},
+            "ring_30_100_ft": {"vegetation_density": 50.0},
+        },
+    )
+    _setup(monkeypatch, tmp_path, ctx)
+    assessed = _run(_payload("Omission Path Rd", {}, confirmed=[]))
+
+    assert assessed["observed_factor_count"] >= 1
+    assert assessed["missing_factor_count"] >= 1
+    assert assessed["observed_weight_fraction"] < 1.0
+    assert assessed["fallback_dominance_ratio"] >= 0.0
+    diagnostics = assessed["assessment_diagnostics"]
+    fallback_decisions = diagnostics.get("fallback_decisions") or []
+    assert any(str(row.get("fallback_type")) == "missing_factor_omitted" for row in fallback_decisions)
+    weighted = assessed["weighted_contributions"]
+    assert any("effective_weight" in row for row in weighted.values())
+    assert any(bool(row.get("omitted_due_to_missing")) for row in weighted.values())
 
 
 def test_old_rows_without_provenance_defaults_are_readable(tmp_path):

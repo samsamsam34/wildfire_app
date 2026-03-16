@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass, field
-from typing import Dict, List, Tuple
+from typing import Any, Dict, List, Tuple
 
 from backend.models import PropertyAttributes, RiskDrivers
 from backend.normalization import normalize_property_attributes
@@ -52,6 +52,12 @@ class RiskComputation:
     assumptions: List[str]
     submodel_scores: Dict[str, SubmodelResult]
     weighted_contributions: Dict[str, dict]
+    observed_factor_count: int = 0
+    missing_factor_count: int = 0
+    fallback_factor_count: int = 0
+    observed_weight_fraction: float = 0.0
+    fallback_dominance_ratio: float = 0.0
+    uncertainty_penalty: float = 0.0
     access_provisional: bool = True
     access_note: str = (
         "Access exposure is derived separately from wildfire total scoring and may be limited by available road-network data."
@@ -552,21 +558,88 @@ class RiskEngine:
         submodels = self._build_submodels(attrs, context)
 
         weighted_contributions: Dict[str, dict] = {}
-        total = 0.0
         assumptions: List[str] = list(context.assumptions)
+        observed_factor_count = 0
+        missing_factor_count = 0
+        fallback_factor_count = 0
+        total_base_weight = 0.0
+        total_effective_weight = 0.0
 
         for name, result in submodels.items():
             weight = self.config.submodel_weights[name]
-            contribution = round(weight * result.score, 2)
-            weighted_contributions[name] = {"weight": weight, "score": round(result.score, 2), "contribution": contribution}
-            total += contribution
+            total_base_weight += weight
+            key_inputs = result.key_inputs if isinstance(result.key_inputs, dict) else {}
+            expected_input_count = max(1, len(key_inputs))
+            observed_input_count = sum(1 for value in key_inputs.values() if value is not None)
+            observed_fraction = max(
+                0.0,
+                min(1.0, float(observed_input_count) / float(expected_input_count)),
+            )
+            omitted_due_to_missing = observed_input_count <= 0
+            effective_weight = 0.0 if omitted_due_to_missing else (weight * observed_fraction)
+            if omitted_due_to_missing:
+                missing_factor_count += 1
+                assumptions.append(
+                    f"{name.replace('_', ' ')} omitted from numeric weighting because required evidence was missing."
+                )
+            else:
+                observed_factor_count += 1
+                if observed_fraction < 0.60 or any(
+                    tok in " ".join(result.assumptions).lower()
+                    for tok in ("fallback", "proxy", "missing", "unavailable", "point-based")
+                ):
+                    fallback_factor_count += 1
+            total_effective_weight += effective_weight
+            weighted_contributions[name] = {
+                "weight": 0.0,
+                "score": round(result.score, 2),
+                "contribution": 0.0,
+                "base_weight": round(weight, 6),
+                "effective_weight": round(effective_weight, 6),
+                "observed_fraction": round(observed_fraction, 4),
+                "omitted_due_to_missing": omitted_due_to_missing,
+            }
             assumptions.extend(result.assumptions)
 
-        env_weight = sum(self.config.submodel_weights[n] for n in ENVIRONMENT_SUBMODELS)
-        struct_weight = sum(self.config.submodel_weights[n] for n in STRUCTURE_SUBMODELS)
+        total = 0.0
+        for name, row in weighted_contributions.items():
+            effective_weight = float(row.get("effective_weight") or 0.0)
+            if total_effective_weight > 0.0 and effective_weight > 0.0:
+                normalized_weight = effective_weight / total_effective_weight
+                contribution = normalized_weight * float(row.get("score") or 0.0)
+            else:
+                normalized_weight = 0.0
+                contribution = 0.0
+            row["weight"] = round(normalized_weight, 6)
+            row["contribution"] = round(contribution, 2)
+            total += contribution
 
-        environmental_driver = round(sum(weighted_contributions[n]["contribution"] for n in ENVIRONMENT_SUBMODELS) / env_weight, 1)
-        structural_driver = round(sum(weighted_contributions[n]["contribution"] for n in STRUCTURE_SUBMODELS) / struct_weight, 1)
+        def _group_driver(group: set[str]) -> float:
+            group_weight = sum(float(weighted_contributions.get(n, {}).get("weight", 0.0)) for n in group)
+            if group_weight <= 0.0:
+                return 0.0
+            group_contribution = sum(float(weighted_contributions.get(n, {}).get("contribution", 0.0)) for n in group)
+            return round(max(0.0, min(100.0, group_contribution / group_weight)), 1)
+
+        environmental_driver = _group_driver(ENVIRONMENT_SUBMODELS)
+        structural_driver = _group_driver(STRUCTURE_SUBMODELS)
+
+        observed_weight_fraction = (
+            (total_effective_weight / total_base_weight)
+            if total_base_weight > 0.0
+            else 0.0
+        )
+        fallback_dominance_ratio = (
+            (float(fallback_factor_count) / float(observed_factor_count))
+            if observed_factor_count > 0
+            else (1.0 if missing_factor_count > 0 else 0.0)
+        )
+        uncertainty_penalty = min(
+            25.0,
+            max(0.0, (1.0 - observed_weight_fraction) * 20.0)
+            + (missing_factor_count * 1.5)
+            + (fallback_factor_count * 0.5),
+        )
 
         access_exposure = context.access_exposure_index
         access_provisional = True
@@ -589,6 +662,12 @@ class RiskEngine:
             assumptions=sorted(set(assumptions)),
             submodel_scores=submodels,
             weighted_contributions=weighted_contributions,
+            observed_factor_count=observed_factor_count,
+            missing_factor_count=missing_factor_count,
+            fallback_factor_count=fallback_factor_count,
+            observed_weight_fraction=round(observed_weight_fraction, 4),
+            fallback_dominance_ratio=round(fallback_dominance_ratio, 4),
+            uncertainty_penalty=round(uncertainty_penalty, 2),
             access_provisional=access_provisional,
             access_note=access_note,
         )
@@ -597,7 +676,10 @@ class RiskEngine:
         return sum(self.config.submodel_weights.get(name, 0.0) for name in group)
 
     def _group_score(self, risk: RiskComputation, group: set[str]) -> float:
-        weight = self._group_weight(group)
+        weight = sum(
+            float((risk.weighted_contributions.get(name) or {}).get("weight", 0.0))
+            for name in group
+        )
         if weight <= 0:
             return 0.0
 

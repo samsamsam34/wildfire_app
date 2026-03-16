@@ -157,6 +157,10 @@ Use `POST /risk/layer-diagnostics` (or `POST /risk/debug`) to inspect runtime da
 Key response blocks:
 - `layer_coverage_audit`: per-layer status (`configured`, `present_in_region`, `sample_attempted`, `sample_succeeded`, `coverage_status`, and failure notes)
 - `coverage_summary`: totals plus `critical_missing_layers` and actionable `recommended_actions`
+- `feature_coverage_summary`: preflight availability flags for parcel/footprint/hazard/burn/dryness/roads/near-structure metrics
+- `feature_coverage_percent`: percent of core preflight features observed
+- `assessment_specificity_tier`: `property_specific` | `address_level` | `regional_estimate`
+- `limited_assessment_flag`: true when missing-core coverage forces a lower-specificity assessment path
 
 `coverage_status` interpretation:
 - `observed`: sampled successfully
@@ -179,7 +183,17 @@ Score variance diagnostics:
   - `transformed_feature_vector`
   - `factor_contribution_breakdown`
   - `compression_flags`
+  - `fallback_dominance_ratio`
+  - `missing_core_layer_count`
+  - `observed_weight_fraction`
 - Use these fields to inspect score compression, fallback-heavy factors, and contribution spread for a single assessment.
+
+Fallback policy (current):
+- Missing data now reduces specificity/confidence more than it flattens numeric scores.
+- Missing factors are omitted from direct weighting where possible.
+- Active factor weights are renormalized across observed evidence.
+- Omission-driven uncertainty is surfaced as an explicit confidence penalty (`missing_factor_uncertainty`), not hidden as conservative numeric defaults.
+- Developer note: see [docs/fallback_specificity_policy.md](docs/fallback_specificity_policy.md).
 - Batch variance check script:
 
 ```bash
