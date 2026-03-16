@@ -4328,6 +4328,16 @@ def _run_assessment(
             "limited_assessment_flag": result.limited_assessment_flag,
             "score_specificity_warning": result.score_specificity_warning,
         },
+        "feature_bundle_data_sources": (
+            (property_level_context.get("feature_bundle_data_sources") or {})
+            if isinstance(property_level_context, dict)
+            else {}
+        ),
+        "feature_bundle_summary": (
+            (property_level_context.get("feature_bundle_summary") or {})
+            if isinstance(property_level_context, dict)
+            else {}
+        ),
         "layer_coverage_audit": [row.model_dump() for row in result.layer_coverage_audit],
         "coverage_summary": result.coverage_summary.model_dump(),
         "calibration": {
@@ -8994,6 +9004,16 @@ def layer_diagnostics(payload: AddressRequest, ctx: ActorContext = Depends(get_a
         "top_near_structure_risk_drivers": debug_payload.get("top_near_structure_risk_drivers", []),
         "prioritized_vegetation_actions": debug_payload.get("prioritized_vegetation_actions", []),
         "defensible_space_limitations_summary": debug_payload.get("defensible_space_limitations_summary", []),
+        "feature_bundle": {
+            "bundle_id": (debug_payload.get("property_level_context") or {}).get("feature_bundle_id"),
+            "cache_hit": (debug_payload.get("property_level_context") or {}).get("feature_bundle_cache_hit"),
+            "data_sources": (debug_payload.get("property_level_context") or {}).get("feature_bundle_data_sources", {}),
+            "coverage_flags": (debug_payload.get("property_level_context") or {}).get(
+                "feature_bundle_coverage_flags",
+                {},
+            ),
+            "summary": (debug_payload.get("property_level_context") or {}).get("feature_bundle_summary", {}),
+        },
         "layer_coverage_audit": debug_payload.get("layer_coverage_audit", []),
         "coverage_summary": debug_payload.get("coverage_summary", {}),
         "fallback_decisions": {

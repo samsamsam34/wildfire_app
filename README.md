@@ -161,6 +161,8 @@ Key response blocks:
 - `feature_coverage_percent`: percent of core preflight features observed
 - `assessment_specificity_tier`: `property_specific` | `address_level` | `regional_estimate`
 - `limited_assessment_flag`: true when missing-core coverage forces a lower-specificity assessment path
+- `feature_bundle`: canonical enrichment snapshot with `bundle_id`, cache hit status, and source-by-feature diagnostics
+- `feature_bundle_data_sources`: simplified source map used by homeowner/debug surfaces (e.g., building footprint, parcel, vegetation, roads, climate)
 
 `coverage_status` interpretation:
 - `observed`: sampled successfully
@@ -253,11 +255,27 @@ Common runtime settings:
   - `WF_LAYER_NAIP_STRUCTURE_FEATURES_JSON`
   - `WF_LAYER_FEMA_STRUCTURES_GEOJSON`
   - `WF_LAYER_BUILDING_FOOTPRINTS_OVERTURE_GEOJSON`
+  - `WF_LAYER_BUILDING_FOOTPRINTS_MICROSOFT_GEOJSON`
   - `WF_LAYER_ADDRESS_POINTS_GEOJSON`
   - `WF_LAYER_PARCELS_GEOJSON`
+  - `WF_LAYER_PARCEL_ADDRESS_POINTS_GEOJSON`
+  - `WF_LAYER_PARCEL_POLYGONS_GEOJSON`
 - Building-source selection:
-  - `WF_BUILDING_SOURCE_PRIORITY` (default: `building_footprints_overture,building_footprints,fema_structures`)
+  - `WF_BUILDING_SOURCE_PRIORITY` (default: `building_footprints_overture,building_footprints_microsoft,building_footprints,fema_structures`)
   - `WF_OVERTURE_BUILDINGS_VERSION` (optional version tag shown in debug metadata)
+- Runtime enrichment fallback source hooks (optional, file-path based):
+  - `WF_ENRICH_OVERTURE_BUILDINGS_PATH`, `WF_ENRICH_MICROSOFT_BUILDINGS_PATH`
+  - `WF_ENRICH_PARCELS_PATH`, `WF_ENRICH_ADDRESS_POINTS_PATH`
+  - `WF_ENRICH_LANDFIRE_FUEL_TIF`, `WF_ENRICH_LANDFIRE_CANOPY_TIF`
+  - `WF_ENRICH_MTBS_PERIMETERS_GEOJSON`, `WF_ENRICH_MTBS_SEVERITY_TIF`
+  - `WF_ENRICH_OSM_ROADS_GEOJSON`
+  - `WF_ENRICH_GRIDMET_DRYNESS_TIF`
+  - `WF_ENRICH_NAIP_IMAGERY_TIF`, `WF_ENRICH_NAIP_STRUCTURE_FEATURES_JSON`
+- Property feature-bundle cache:
+  - `WF_FEATURE_BUNDLE_CACHE_ENABLED` (default `true`)
+  - `WF_FEATURE_BUNDLE_CACHE_READ` / `WF_FEATURE_BUNDLE_CACHE_WRITE` (default `true`)
+  - `WF_FEATURE_BUNDLE_CACHE_DIR` (default `data/cache/feature_bundles`)
+  - `WF_FEATURE_BUNDLE_CACHE_TTL_SEC` (default `21600`)
 - Optional public-outcome calibration:
   - `WF_PUBLIC_CALIBRATION_ARTIFACT` (path to logistic/piecewise calibration artifact JSON)
 - Geocoding trust controls:

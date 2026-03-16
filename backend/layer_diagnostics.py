@@ -16,6 +16,10 @@ LAYER_SPECS: dict[str, dict[str, Any]] = {
         "display_name": "Overture Building Footprints",
         "required_for": ["home_ignition_vulnerability", "insurance_readiness"],
     },
+    "building_footprints_microsoft": {
+        "display_name": "Microsoft Building Footprints",
+        "required_for": ["home_ignition_vulnerability", "insurance_readiness"],
+    },
     "building_footprints": {"display_name": "Building Footprints", "required_for": ["home_ignition_vulnerability", "insurance_readiness"]},
     "address_points": {"display_name": "Address/Parcel Points", "required_for": ["home_ignition_vulnerability"]},
     "parcels": {"display_name": "Parcel Polygons", "required_for": ["home_ignition_vulnerability"]},
@@ -40,6 +44,7 @@ OPEN_DATA_KEYS = {
     "roads",
     "fema_structures",
     "building_footprints_overture",
+    "building_footprints_microsoft",
     "naip_imagery",
     "naip_structure_features",
 }
@@ -67,6 +72,7 @@ def initialize_layer_audit(runtime_paths: dict[str, str], region_context: dict[s
         "canopy": "canopy",
         "fire_perimeters": "perimeters",
         "building_footprints_overture": "footprints_overture",
+        "building_footprints_microsoft": "footprints_microsoft",
         "building_footprints": "footprints",
         "address_points": "address_points",
         "parcels": "parcels",

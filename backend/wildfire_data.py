@@ -1,14 +1,20 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import os
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-from backend.building_footprints import BuildingFootprintClient, compute_structure_rings
+from backend.building_footprints import BuildingFootprintClient, RING_KEYS, compute_structure_rings
+from backend.feature_bundle_cache import FeatureBundleCache
+from backend.feature_enrichment import (
+    apply_enrichment_source_fallbacks,
+    build_feature_bundle_summary,
+)
 from backend.naip_features import (
     load_naip_feature_artifact,
     percentile_from_quantiles,
@@ -130,10 +136,20 @@ class WildfireDataClient:
             "perimeters": os.getenv("WF_LAYER_FIRE_PERIMETERS_GEOJSON", ""),
             "mtbs_severity": os.getenv("WF_LAYER_MTBS_SEVERITY_TIF", ""),
             "footprints_overture": os.getenv("WF_LAYER_BUILDING_FOOTPRINTS_OVERTURE_GEOJSON", ""),
+            "footprints_microsoft": (
+                os.getenv("WF_LAYER_BUILDING_FOOTPRINTS_MICROSOFT_GEOJSON", "")
+                or os.getenv("WF_ENRICH_MICROSOFT_BUILDINGS_PATH", "")
+            ),
             "footprints": os.getenv("WF_LAYER_BUILDING_FOOTPRINTS_GEOJSON", ""),
             "fema_structures": os.getenv("WF_LAYER_FEMA_STRUCTURES_GEOJSON", ""),
-            "address_points": os.getenv("WF_LAYER_ADDRESS_POINTS_GEOJSON", ""),
-            "parcels": os.getenv("WF_LAYER_PARCELS_GEOJSON", ""),
+            "address_points": (
+                os.getenv("WF_LAYER_ADDRESS_POINTS_GEOJSON", "")
+                or os.getenv("WF_LAYER_PARCEL_ADDRESS_POINTS_GEOJSON", "")
+            ),
+            "parcels": (
+                os.getenv("WF_LAYER_PARCELS_GEOJSON", "")
+                or os.getenv("WF_LAYER_PARCEL_POLYGONS_GEOJSON", "")
+            ),
             "roads": os.getenv("WF_LAYER_OSM_ROADS_GEOJSON", ""),
             "naip_imagery": os.getenv("WF_LAYER_NAIP_IMAGERY_TIF", ""),
             "naip_structure_features": os.getenv("WF_LAYER_NAIP_STRUCTURE_FEATURES_JSON", ""),
@@ -156,6 +172,7 @@ class WildfireDataClient:
         self.gridmet_adapter = GridMETAdapter()
         self.mtbs_adapter = MTBSAdapter()
         self.osm_adapter = OSMRoadAdapter()
+        self.feature_bundle_cache = FeatureBundleCache()
 
     @staticmethod
     def _to_index(value: float, src_min: float, src_max: float) -> float:
@@ -383,6 +400,7 @@ class WildfireDataClient:
             configured_paths.get("canopy"),
             configured_paths.get("perimeters"),
             configured_paths.get("footprints_overture"),
+            configured_paths.get("footprints_microsoft"),
             configured_paths.get("footprints"),
             configured_paths.get("address_points"),
             configured_paths.get("parcels"),
@@ -447,6 +465,7 @@ class WildfireDataClient:
                     "perimeters": ("fire_perimeters", "perimeters"),
                     "mtbs_severity": ("mtbs_severity", "burn_severity"),
                     "footprints_overture": ("building_footprints_overture", "overture_buildings"),
+                    "footprints_microsoft": ("building_footprints_microsoft", "microsoft_buildings"),
                     "footprints": ("building_footprints", "footprints"),
                     "fema_structures": ("fema_structures",),
                     "address_points": ("address_points", "parcel_address_points"),
@@ -517,7 +536,7 @@ class WildfireDataClient:
         env_priority = str(
             os.getenv(
                 "WF_BUILDING_SOURCE_PRIORITY",
-                "building_footprints_overture,building_footprints,fema_structures",
+                "building_footprints_overture,building_footprints_microsoft,building_footprints,fema_structures",
             )
         ).strip()
         tokens = [token.strip().lower() for token in env_priority.split(",") if token.strip()]
@@ -531,6 +550,8 @@ class WildfireDataClient:
         runtime_key_map = {
             "building_footprints_overture": "footprints_overture",
             "overture_buildings": "footprints_overture",
+            "building_footprints_microsoft": "footprints_microsoft",
+            "microsoft_buildings": "footprints_microsoft",
             "building_footprints": "footprints",
             "existing_building_dataset": "footprints",
             "osm_buildings": "fema_structures",
@@ -545,7 +566,7 @@ class WildfireDataClient:
                 ordered.append(candidate)
 
         # Safety fallback if priority did not resolve.
-        for runtime_key in ("footprints_overture", "footprints", "fema_structures"):
+        for runtime_key in ("footprints_overture", "footprints_microsoft", "footprints", "fema_structures"):
             candidate = str(runtime_paths.get(runtime_key) or "").strip()
             if candidate and candidate not in ordered:
                 ordered.append(candidate)
@@ -1432,6 +1453,7 @@ class WildfireDataClient:
         geocode_precision: str | None = None,
         structure_geometry_source: str | None = None,
         selection_mode: str | None = None,
+        property_anchor_point: dict[str, Any] | None = None,
         user_selected_point: dict[str, Any] | None = None,
         selected_structure_id: str | None = None,
         selected_structure_geometry: dict[str, Any] | None = None,
@@ -1447,14 +1469,70 @@ class WildfireDataClient:
             normalized_selection_mode = "polygon"
         user_selected_point_coords: tuple[float, float] | None = None
         if normalized_selection_mode == "point":
-            user_selected_point_coords, point_error = self._coerce_user_selected_point(user_selected_point)
+            point_payload = property_anchor_point if isinstance(property_anchor_point, dict) else user_selected_point
+            user_selected_point_coords, point_error = self._coerce_user_selected_point(point_payload)
             if user_selected_point_coords is None:
                 assumptions.append(point_error or "User-selected point was invalid.")
                 normalized_selection_mode = "polygon"
         runtime_paths, region_context, runtime_assumptions, runtime_sources = self._resolve_runtime_layer_paths(lat, lon)
         assumptions.extend(runtime_assumptions)
         sources.extend(runtime_sources)
+        runtime_paths, enrichment_source_status, enrichment_notes = apply_enrichment_source_fallbacks(runtime_paths)
+        assumptions.extend(enrichment_notes[:8])
+        for group_key, status_row in enrichment_source_status.items():
+            if str(status_row.get("status") or "") != "observed":
+                continue
+            source_name = str(status_row.get("source") or "").strip()
+            if not source_name:
+                continue
+            sources.append(f"{group_key} source: {source_name}")
         self.paths = dict(runtime_paths)
+        cache_key = self.feature_bundle_cache.build_key(
+            lat=lat,
+            lon=lon,
+            runtime_paths=runtime_paths,
+            region_context=region_context,
+            extras={
+                "geocode_precision": normalized_geocode_precision,
+                "structure_geometry_source": normalized_structure_geometry_source,
+                "selection_mode": normalized_selection_mode,
+                "user_selected_point": (
+                    {
+                        "latitude": round(float(user_selected_point_coords[0]), 7),
+                        "longitude": round(float(user_selected_point_coords[1]), 7),
+                    }
+                    if user_selected_point_coords is not None
+                    else None
+                ),
+                "selected_structure_id": str(selected_structure_id or ""),
+                "selected_structure_geometry_hash": (
+                    hashlib.sha256(
+                        json.dumps(selected_structure_geometry, sort_keys=True, default=str).encode("utf-8")
+                    ).hexdigest()
+                    if isinstance(selected_structure_geometry, dict)
+                    else None
+                ),
+            },
+        )
+        cached_bundle = self.feature_bundle_cache.load(cache_key)
+        if isinstance(cached_bundle, dict):
+            cached_context = cached_bundle.get("wildfire_context")
+            if isinstance(cached_context, dict):
+                try:
+                    restored = WildfireContext(**cached_context)
+                    if not isinstance(restored.property_level_context, dict):
+                        restored.property_level_context = {}
+                    restored.property_level_context["feature_bundle_cache_hit"] = True
+                    restored.property_level_context["feature_bundle_id"] = cache_key
+                    if "Feature bundle cache" not in restored.data_sources:
+                        restored.data_sources = list(restored.data_sources) + ["Feature bundle cache"]
+                    if "Loaded precomputed feature bundle from cache." not in restored.assumptions:
+                        restored.assumptions = list(restored.assumptions) + [
+                            "Loaded precomputed feature bundle from cache.",
+                        ]
+                    return restored
+                except Exception:
+                    pass
         layer_audit = initialize_layer_audit(runtime_paths, region_context)
         environmental_layer_status: dict[str, str] = {
             "burn_probability": "missing",
@@ -1482,6 +1560,8 @@ class WildfireDataClient:
             "historical_fire_context": {},
             "access_context": {},
             "feature_sampling": {},
+            "feature_bundle_id": cache_key,
+            "feature_bundle_cache_hit": False,
             "property_anchor_point": {"latitude": float(lat), "longitude": float(lon)},
             "property_anchor_source": "geocoded_address_point",
             "property_anchor_precision": "unknown",
@@ -1563,12 +1643,27 @@ class WildfireDataClient:
             address_points_path=runtime_paths.get("address_points"),
             parcels_path=runtime_paths.get("parcels"),
         )
+        explicit_anchor_override: tuple[float, float] | None = None
+        explicit_anchor_source: str | None = None
+        explicit_anchor_precision: str | None = None
+        if isinstance(property_anchor_point, dict):
+            explicit_anchor_override, _override_error = self._coerce_user_selected_point(property_anchor_point)
+            if explicit_anchor_override is not None:
+                explicit_anchor_source = "user_selected_point"
+                explicit_anchor_precision = "user_selected_point"
+        if explicit_anchor_override is None and normalized_selection_mode == "point" and user_selected_point_coords is not None:
+            explicit_anchor_override = user_selected_point_coords
+            explicit_anchor_source = "user_selected_point"
+            explicit_anchor_precision = "user_selected_point"
         anchor = anchor_resolver.resolve(
             geocoded_lat=float(lat),
             geocoded_lon=float(lon),
             geocode_provider=None,
             geocode_precision=normalized_geocode_precision,
             geocoded_address=None,
+            property_anchor_override=explicit_anchor_override,
+            property_anchor_override_source=explicit_anchor_source,
+            property_anchor_override_precision=explicit_anchor_precision,
         )
         property_level_context.update(anchor.to_context())
         assumptions.extend(anchor.diagnostics[:2])
@@ -1637,6 +1732,11 @@ class WildfireDataClient:
             footprint_path=runtime_paths.get("footprints"),
             fallback_footprint_path=runtime_paths.get("fema_structures"),
             parcel_polygon=parcel_for_matching,
+            property_anchor_point=(
+                {"latitude": explicit_anchor_override[0], "longitude": explicit_anchor_override[1]}
+                if explicit_anchor_override is not None
+                else property_anchor_point
+            ),
             anchor_precision=(
                 "user_selected_point"
                 if (normalized_selection_mode == "point" and user_selected_point_coords is not None)
@@ -1837,6 +1937,33 @@ class WildfireDataClient:
                     and str(ring_context.get("footprint_source") or "").lower().find("overture") >= 0
                 )
                 else "Overture footprint source unavailable or not selected."
+            ),
+        )
+        update_layer_audit(
+            layer_audit,
+            "building_footprints_microsoft",
+            sample_attempted=True,
+            sample_succeeded=bool(ring_context.get("footprint_used"))
+            and str(ring_context.get("footprint_source") or "").lower().find("microsoft") >= 0,
+            coverage_status=(
+                "observed"
+                if (
+                    bool(ring_context.get("footprint_used"))
+                    and str(ring_context.get("footprint_source") or "").lower().find("microsoft") >= 0
+                )
+                else (
+                    "not_configured"
+                    if not runtime_paths.get("footprints_microsoft")
+                    else "fallback_used"
+                )
+            ),
+            failure_reason=(
+                None
+                if (
+                    bool(ring_context.get("footprint_used"))
+                    and str(ring_context.get("footprint_source") or "").lower().find("microsoft") >= 0
+                )
+                else "Microsoft footprint source unavailable or not selected."
             ),
         )
         update_layer_audit(
@@ -2396,6 +2523,7 @@ class WildfireDataClient:
                 "moisture_context": moisture_context,
                 "historical_fire_context": historical_fire_context,
                 "access_context": access_context,
+                "enrichment_source_status": enrichment_source_status,
                 "feature_sampling": {
                     "burn_probability": {
                         "raw_point_value": burn_prob,
@@ -2498,6 +2626,18 @@ class WildfireDataClient:
                 },
             }
         )
+        feature_bundle_summary = build_feature_bundle_summary(
+            lat=lat,
+            lon=lon,
+            region_context=region_context,
+            property_level_context=property_level_context,
+            source_status=enrichment_source_status,
+            runtime_paths=runtime_paths,
+            environmental_layer_status=environmental_layer_status,
+        )
+        property_level_context["feature_bundle_summary"] = feature_bundle_summary
+        property_level_context["feature_bundle_data_sources"] = dict(feature_bundle_summary.get("data_sources") or {})
+        property_level_context["feature_bundle_coverage_flags"] = dict(feature_bundle_summary.get("coverage_flags") or {})
         layer_audit_rows = [layer_audit[k] for k in sorted(layer_audit.keys())]
         coverage_summary = summarize_layer_audit(layer_audit_rows)
         property_level_context.update(
@@ -2526,7 +2666,7 @@ class WildfireDataClient:
             denominator = sum(w for w, _ in available_terms)
             environmental = round(numerator / denominator, 1)
 
-        return WildfireContext(
+        context_result = WildfireContext(
             environmental_index=environmental,
             slope_index=None if slope_index is None else round(slope_index, 1),
             aspect_index=None if aspect_index is None else round(aspect_index, 1),
@@ -2558,3 +2698,8 @@ class WildfireDataClient:
             layer_coverage_audit=layer_audit_rows,
             coverage_summary=coverage_summary,
         )
+        cache_payload = {
+            "wildfire_context": asdict(context_result),
+        }
+        self.feature_bundle_cache.save(cache_key, cache_payload)
+        return context_result
