@@ -659,6 +659,32 @@ class NearStructureAction(BaseModel):
     evidence_status: Literal["observed", "inferred", "missing", "unknown"] = "unknown"
 
 
+class HomeownerRiskDriver(BaseModel):
+    factor: str = ""
+    impact: Literal["high", "medium", "low"] = "low"
+    explanation: str = ""
+    relative_contribution_pct: Optional[float] = None
+
+
+class HomeownerPrioritizedAction(BaseModel):
+    action: str = ""
+    explanation: str = ""
+    impact_level: Literal["high", "medium", "low"] = "low"
+    effort_level: Literal["low", "medium", "high"] = "medium"
+    estimated_cost_band: Literal["low", "medium", "high"] = "medium"
+    timeline: Literal["now", "this_season", "later"] = "later"
+    priority: int = 5
+
+
+class HomeownerConfidenceSummary(BaseModel):
+    confidence: ConfidenceTier = "preliminary"
+    observed_data: List[str] = Field(default_factory=list)
+    estimated_data: List[str] = Field(default_factory=list)
+    missing_data: List[str] = Field(default_factory=list)
+    fallback_assumptions: List[str] = Field(default_factory=list)
+    accuracy_improvements: List[str] = Field(default_factory=list)
+
+
 class AssessmentResult(BaseModel):
     assessment_id: str
     address: str
@@ -717,6 +743,9 @@ class AssessmentResult(BaseModel):
     prioritized_vegetation_actions: List[NearStructureAction] = Field(default_factory=list)
     defensible_space_limitations_summary: List[str] = Field(default_factory=list)
     top_risk_drivers: List[str]
+    top_risk_drivers_detailed: List[HomeownerRiskDriver] = Field(default_factory=list)
+    prioritized_mitigation_actions: List[HomeownerPrioritizedAction] = Field(default_factory=list)
+    confidence_summary: HomeownerConfidenceSummary = Field(default_factory=HomeownerConfidenceSummary)
     top_recommended_actions: List[str] = Field(default_factory=list)
     top_protective_factors: List[str]
     explanation_summary: str
@@ -841,6 +870,7 @@ class SimulationResult(BaseModel):
     simulated_confidence: Optional[ConfidenceBlock] = None
     base_assumptions: Optional[AssumptionsBlock] = None
     simulated_assumptions: Optional[AssumptionsBlock] = None
+    simulator_explanations: Dict[str, object] = Field(default_factory=dict)
     summary: str = ""
 
 
@@ -893,6 +923,9 @@ class ReportExport(BaseModel):
     prioritized_vegetation_actions: List[NearStructureAction] = Field(default_factory=list)
     defensible_space_limitations_summary: List[str] = Field(default_factory=list)
     top_risk_drivers: List[str]
+    top_risk_drivers_detailed: List[HomeownerRiskDriver] = Field(default_factory=list)
+    prioritized_mitigation_actions: List[HomeownerPrioritizedAction] = Field(default_factory=list)
+    confidence_summary: HomeownerConfidenceSummary = Field(default_factory=HomeownerConfidenceSummary)
     top_protective_factors: List[str]
     assumptions_confidence: Dict[str, object]
     score_evidence_ledger: ScoreEvidenceLedger = Field(default_factory=ScoreEvidenceLedger)
@@ -921,11 +954,14 @@ class HomeownerReport(BaseModel):
     property_summary: Dict[str, object] = Field(default_factory=dict)
     score_summary: Dict[str, object] = Field(default_factory=dict)
     key_risk_drivers: List[str] = Field(default_factory=list)
+    top_risk_drivers_detailed: List[HomeownerRiskDriver] = Field(default_factory=list)
     defensible_space_summary: Dict[str, object] = Field(default_factory=dict)
     top_recommended_actions: List[HomeownerReportAction] = Field(default_factory=list)
+    prioritized_mitigation_actions: List[HomeownerPrioritizedAction] = Field(default_factory=list)
     mitigation_plan: List[HomeownerReportAction] = Field(default_factory=list)
     home_hardening_readiness_summary: Dict[str, object] = Field(default_factory=dict)
     insurance_readiness_summary: Dict[str, object] = Field(default_factory=dict)
+    confidence_summary: HomeownerConfidenceSummary = Field(default_factory=HomeownerConfidenceSummary)
     confidence_and_limitations: Dict[str, object] = Field(default_factory=dict)
     metadata: Dict[str, object] = Field(default_factory=dict)
     professional_debug_metadata: Optional[Dict[str, object]] = None

@@ -111,11 +111,14 @@ def test_homeowner_report_and_pdf_generate_for_complete_assessment(monkeypatch, 
         "property_summary",
         "score_summary",
         "key_risk_drivers",
+        "top_risk_drivers_detailed",
         "defensible_space_summary",
         "top_recommended_actions",
+        "prioritized_mitigation_actions",
         "mitigation_plan",
         "home_hardening_readiness_summary",
         "insurance_readiness_summary",
+        "confidence_summary",
         "confidence_and_limitations",
         "metadata",
     ):
@@ -126,6 +129,9 @@ def test_homeowner_report_and_pdf_generate_for_complete_assessment(monkeypatch, 
     assert report["score_summary"]["home_hardening_readiness"] is not None
     assert report["score_summary"]["insurance_readiness_score"] is not None
     assert isinstance(report["top_recommended_actions"], list)
+    assert isinstance(report["prioritized_mitigation_actions"], list)
+    assert isinstance(report["top_risk_drivers_detailed"], list)
+    assert isinstance(report["confidence_summary"], dict)
     assert len(report["top_recommended_actions"]) <= 3
     assert "blockers" in report["home_hardening_readiness_summary"]
     assert "summary" in report["home_hardening_readiness_summary"]

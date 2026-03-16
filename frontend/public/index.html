@@ -1444,16 +1444,37 @@
           .map(v => `<li>${v}</li>`)
           .join("") || "<li class='muted'>No structure-specific findings available for this assessment.</li>";
 
-        document.getElementById("drivers").innerHTML = (data.top_risk_drivers || [])
-          .slice(0, 3)
-          .map(v => `<li>${toHomeownerDriverText(v)}</li>`)
-          .join("") || "<li class='muted'>No factors listed.</li>";
+        const rankedDrivers = Array.isArray(data?.top_risk_drivers_detailed)
+          ? data.top_risk_drivers_detailed
+          : [];
+        if (rankedDrivers.length > 0) {
+          document.getElementById("drivers").innerHTML = rankedDrivers
+            .slice(0, 3)
+            .map((driver) => {
+              const factorText = String(driver?.factor || "risk factor").replace(/_/g, " ");
+              const impact = String(driver?.impact || "medium");
+              const explanation = String(driver?.explanation || "");
+              return `<li><strong>${factorText}</strong> (${impact}): ${explanation}</li>`;
+            })
+            .join("");
+        } else {
+          document.getElementById("drivers").innerHTML = (data.top_risk_drivers || [])
+            .slice(0, 3)
+            .map(v => `<li>${toHomeownerDriverText(v)}</li>`)
+            .join("") || "<li class='muted'>No factors listed.</li>";
+        }
         document.getElementById("protective").innerHTML = (data.top_protective_factors || []).slice(0, 3).map(v => `<li>${v}</li>`).join("") || "<li class='muted'>No factors listed.</li>";
 
         document.getElementById("nextStepsText").textContent = buildNextStepsHint(combinedFindings);
 
-        const mitigationRows = (data.mitigation_plan || []).slice(0, 3)
-          .map(m => `<li><strong>${m.title}</strong>: ${m.reason}</li>`);
+        const prioritizedActions = Array.isArray(data?.prioritized_mitigation_actions)
+          ? data.prioritized_mitigation_actions
+          : [];
+        const mitigationRows = (prioritizedActions.length > 0
+          ? prioritizedActions.slice(0, 5).map((m) => {
+              return `<li><strong>${m.action}</strong> (${m.impact_level} impact, ${m.effort_level} effort, ${m.estimated_cost_band} cost, ${m.timeline}): ${m.explanation || ""}</li>`;
+            })
+          : (data.mitigation_plan || []).slice(0, 3).map(m => `<li><strong>${m.title}</strong>: ${m.reason}</li>`));
         const prioritizedVegetationActions = Array.isArray(data?.prioritized_vegetation_actions)
           ? data.prioritized_vegetation_actions
           : [];
@@ -2695,6 +2716,11 @@
               ? sim.delta.home_hardening_readiness_delta
               : delta.insurance_readiness_score_delta
           );
+          const simExplainer = sim.simulator_explanations || {};
+          const resolvedActions = Array.isArray(simExplainer.mitigation_actions_resolved)
+            ? simExplainer.mitigation_actions_resolved
+            : [];
+          const changeSummary = simExplainer.plain_language_change_summary || sim.summary || "Simulation complete.";
 
           document.getElementById("simResult").innerHTML =
             `<strong>Before:</strong> ${fmt(sim.baseline.wildfire_risk_score)}<br>` +
@@ -2704,8 +2730,9 @@
             `<strong>Home Hardening After:</strong> ${fmt(simulatedHardening)}<br>` +
             `<strong>Home Hardening Change:</strong> ${fmt(hardeningDelta)} points<br><br>` +
             `<strong>What changed:</strong><br>${changed || "No changes detected."}<br><br>` +
+            `<strong>Actions resolved:</strong><br>${resolvedActions.join("<br>") || "No specific actions resolved yet."}<br><br>` +
             `<strong>Around the home after upgrades:</strong><br>${(sim.simulated?.property_findings || []).slice(0, 2).join("<br>") || "No additional structure-specific findings."}<br><br>` +
-            `<strong>Summary:</strong> ${sim.summary || "Simulation complete."}`;
+            `<strong>Summary:</strong> ${changeSummary}`;
         } catch (err) {
           alert(err.message);
         }

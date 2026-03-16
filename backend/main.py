@@ -33,6 +33,12 @@ from backend.data_prep.region_lookup import (
     find_region_for_point as lookup_region_for_point,
 )
 from backend.geocoding import Geocoder, GeocodingError, normalize_address
+from backend.homeowner_advisor import (
+    build_confidence_summary,
+    build_ranked_risk_drivers,
+    build_simulator_explanations,
+    prioritize_mitigation_actions,
+)
 from backend.homeowner_report import build_homeowner_report, render_homeowner_report_pdf
 from backend.layer_diagnostics import LAYER_SPECS
 from backend.mitigation import build_mitigation_plan
@@ -3054,10 +3060,11 @@ def _apply_ruleset_to_result(result: AssessmentResult, ruleset: UnderwritingRule
         result.mitigation_plan.sort(key=lambda x: x.priority)
         result.mitigation_recommendations = list(result.mitigation_plan)
 
+    result.prioritized_mitigation_actions = prioritize_mitigation_actions(result.mitigation_plan, limit=5)
     result.top_recommended_actions = [
-        str(rec.title).strip()
-        for rec in result.mitigation_plan[:3]
-        if str(rec.title or "").strip()
+        row.action
+        for row in result.prioritized_mitigation_actions[:3]
+        if str(row.action or "").strip()
     ]
 
     result.readiness_blockers = sorted(set(result.readiness_blockers))
@@ -3408,12 +3415,29 @@ def _run_assessment(
         data_provenance=data_provenance,
         coverage_summary=coverage_summary,
     )
+    ranked_driver_titles, ranked_driver_details = build_ranked_risk_drivers(
+        submodel_scores=submodel_scores,
+        weighted_contributions=weighted_contributions,
+        limit=5,
+    )
     property_findings = _build_property_findings(property_level_context)
-    top_risk_drivers = _merge_property_drivers(_build_top_risk_drivers(submodel_scores), property_findings)
+    top_risk_drivers = _merge_property_drivers(
+        ranked_driver_titles or _build_top_risk_drivers(submodel_scores),
+        property_findings,
+    )
     for driver in top_near_structure_risk_drivers:
         if driver not in top_risk_drivers:
             top_risk_drivers.insert(0, driver)
     top_risk_drivers = top_risk_drivers[:3]
+    prioritized_mitigation_actions = prioritize_mitigation_actions(mitigation_plan, limit=5)
+    top_recommended_actions = [row.action for row in prioritized_mitigation_actions[:3]]
+    confidence_summary = build_confidence_summary(
+        confidence_tier=confidence_block.confidence_tier,
+        observed_inputs=assumptions_block.observed_inputs,
+        inferred_inputs=assumptions_block.inferred_inputs,
+        missing_inputs=assumptions_block.missing_inputs,
+        assumptions_used=assumptions_block.assumptions_used,
+    )
     top_protective_factors = _build_top_protective_factors(scoring_attrs, submodel_scores)
 
     raw_site_hazard_score, raw_home_ignition_vulnerability_score = _build_score_decomposition(risk=risk)
@@ -3636,17 +3660,12 @@ def _run_assessment(
     def _score_phrase(label: str, value: float | None) -> str:
         return f"{label}: {value:.1f}/100" if value is not None else f"{label}: not computed"
 
-    top_recommended_actions = [
-        str(action.title).strip()
-        for action in mitigation_plan[:3]
-        if str(action.title or "").strip()
-    ]
     assumptions_and_unknowns = list(
         dict.fromkeys(
-            [f"Missing input: {field}" for field in assumptions_block.missing_inputs[:5]]
-            + [f"Inferred input: {field}" for field in list(assumptions_block.inferred_inputs.keys())[:5]]
-            + [str(note).strip() for note in all_assumptions[:6] if str(note).strip()]
-            + [str(flag).strip() for flag in confidence_block.low_confidence_flags[:4] if str(flag).strip()]
+            list(confidence_summary.missing_data[:6])
+            + list(confidence_summary.estimated_data[:6])
+            + list(confidence_summary.fallback_assumptions[:6])
+            + list(confidence_summary.accuracy_improvements[:4])
         )
     )[:12]
 
@@ -3779,6 +3798,9 @@ def _run_assessment(
         prioritized_vegetation_actions=prioritized_vegetation_actions,
         defensible_space_limitations_summary=defensible_space_limitations_summary,
         top_risk_drivers=top_risk_drivers,
+        top_risk_drivers_detailed=ranked_driver_details[:3],
+        prioritized_mitigation_actions=prioritized_mitigation_actions,
+        confidence_summary=confidence_summary,
         top_recommended_actions=top_recommended_actions,
         top_protective_factors=top_protective_factors,
         explanation_summary=explanation_summary,
@@ -4079,10 +4101,14 @@ def _run_assessment(
         "compression_flags": score_variance_diagnostics.get("compression_flags", []),
         "score_variance_diagnostics": score_variance_diagnostics,
         "defensible_space_analysis": result.defensible_space_analysis,
+        "top_risk_drivers": result.top_risk_drivers,
+        "top_risk_drivers_detailed": [row.model_dump() for row in result.top_risk_drivers_detailed],
         "top_near_structure_risk_drivers": result.top_near_structure_risk_drivers,
         "prioritized_vegetation_actions": [a.model_dump() for a in result.prioritized_vegetation_actions],
+        "prioritized_mitigation_actions": [row.model_dump() for row in result.prioritized_mitigation_actions],
         "defensible_space_limitations_summary": result.defensible_space_limitations_summary,
         "top_recommended_actions": result.top_recommended_actions,
+        "confidence_summary": result.confidence_summary.model_dump(),
         "assumptions_and_unknowns": result.assumptions_and_unknowns,
         "region_resolution": result.region_resolution.model_dump(),
         "score_evidence_ledger": result.score_evidence_ledger.model_dump(),
@@ -4199,8 +4225,11 @@ def _audience_focus(result: AssessmentResult, audience_mode: Audience) -> dict[s
     if audience_mode == "homeowner":
         return {
             "next_steps": [m.model_dump() for m in result.mitigation_plan[:3]],
+            "prioritized_mitigation_actions": [m.model_dump() for m in result.prioritized_mitigation_actions[:5]],
             "plain_language_summary": result.explanation_summary,
             "near_structure_summary": result.defensible_space_analysis.get("summary"),
+            "top_risk_drivers_detailed": [d.model_dump() for d in result.top_risk_drivers_detailed[:3]],
+            "confidence_summary": result.confidence_summary.model_dump(),
             "prioritized_vegetation_actions": [a.model_dump() for a in result.prioritized_vegetation_actions[:3]],
         }
     if audience_mode == "agent":
@@ -4384,6 +4413,9 @@ def _build_report_export(
         prioritized_vegetation_actions=result.prioritized_vegetation_actions,
         defensible_space_limitations_summary=result.defensible_space_limitations_summary,
         top_risk_drivers=result.top_risk_drivers,
+        top_risk_drivers_detailed=result.top_risk_drivers_detailed,
+        prioritized_mitigation_actions=result.prioritized_mitigation_actions,
+        confidence_summary=result.confidence_summary,
         top_protective_factors=result.top_protective_factors,
         assumptions_confidence=assumptions_confidence,
         score_evidence_ledger=result.score_evidence_ledger,
@@ -8566,6 +8598,10 @@ def simulate_risk(
         simulated_confidence=simulated.confidence,
         base_assumptions=baseline.assumptions,
         simulated_assumptions=simulated.assumptions,
+        simulator_explanations=build_simulator_explanations(
+            baseline=baseline.model_dump(mode="json"),
+            simulated=simulated.model_dump(mode="json"),
+        ),
         summary=(
             f"Wildfire risk changed by {wildfire_delta if wildfire_delta is not None else 'not computed'} "
             f"and home hardening readiness changed by "

@@ -59,7 +59,11 @@ Primary homeowner-facing assessment fields now emphasize actionability:
 - `overall_wildfire_risk`
 - `home_hardening_readiness`
 - `top_risk_drivers`
+- `top_risk_drivers_detailed`
+- `prioritized_mitigation_actions`
 - `top_recommended_actions`
+- `simulator_explanations` (on `/risk/simulate`)
+- `confidence_summary`
 - `assumptions_and_unknowns`
 - `confidence_tier`
 

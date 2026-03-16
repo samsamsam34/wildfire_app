@@ -35,9 +35,20 @@ Primary homeowner-facing score fields are:
 - `score_summary.home_hardening_readiness`
 - `key_risk_drivers`
 - `top_recommended_actions`
+- `prioritized_mitigation_actions`
 - `confidence_and_limitations`
+- `confidence_summary`
 
 `insurance_readiness_summary` is retained as an optional/future-facing compatibility block.
+
+The report presentation is organized for homeowner usability:
+1. Property summary
+2. Overall wildfire risk level
+3. Top risk drivers
+4. Top mitigation actions
+5. Mitigation simulator examples (guidance section)
+6. Confidence and assumptions
+7. Next-step checklist
 
 ## Confidence and limitations
 

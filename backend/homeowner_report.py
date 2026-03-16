@@ -8,6 +8,7 @@ from backend.models import (
     AssessmentResult,
     HomeownerReport,
     HomeownerReportAction,
+    HomeownerPrioritizedAction,
     MitigationAction,
     NearStructureAction,
 )
@@ -157,6 +158,33 @@ def _mitigation_actions(result: AssessmentResult) -> list[HomeownerReportAction]
     return actions[:8]
 
 
+def _prioritized_actions(result: AssessmentResult) -> list[HomeownerPrioritizedAction]:
+    if result.prioritized_mitigation_actions:
+        return list(result.prioritized_mitigation_actions)[:5]
+
+    fallback: list[HomeownerPrioritizedAction] = []
+    for action in result.mitigation_plan[:5]:
+        impact = str(action.estimated_risk_reduction_band or "low")
+        effort = str(action.effort or "medium")
+        if effort not in {"low", "medium", "high"}:
+            effort = "medium"
+        if impact not in {"low", "medium", "high"}:
+            impact = "low"
+        timeline = "now" if impact == "high" and effort == "low" else ("this_season" if impact in {"high", "medium"} else "later")
+        fallback.append(
+            HomeownerPrioritizedAction(
+                action=str(action.title or action.action or "Mitigation action"),
+                explanation=str(action.reason or action.impact_statement or ""),
+                impact_level=impact,  # type: ignore[arg-type]
+                effort_level=effort,  # type: ignore[arg-type]
+                estimated_cost_band=effort,  # type: ignore[arg-type]
+                timeline=timeline,  # type: ignore[arg-type]
+                priority=int(action.priority or 5),
+            )
+        )
+    return fallback
+
+
 def build_homeowner_report(
     result: AssessmentResult,
     *,
@@ -176,6 +204,7 @@ def build_homeowner_report(
 
     key_risk_drivers = [_plain_driver(row) for row in list(result.top_risk_drivers or [])]
     key_risk_drivers = [row for row in key_risk_drivers if row][:6]
+    prioritized_actions = _prioritized_actions(result)
 
     defensible_space_analysis = result.defensible_space_analysis if isinstance(result.defensible_space_analysis, dict) else {}
     zone_findings = _zone_findings(defensible_space_analysis)
@@ -190,6 +219,10 @@ def build_homeowner_report(
         "confidence_tier": result.confidence_tier,
         "use_restriction": result.use_restriction,
         "confidence_statement": _confidence_summary(result),
+        "observed_data": list(result.confidence_summary.observed_data or []),
+        "estimated_data": list(result.confidence_summary.estimated_data or []),
+        "missing_data": list(result.confidence_summary.missing_data or []),
+        "accuracy_improvements": list(result.confidence_summary.accuracy_improvements or []),
         "limitations": combined_limitations,
         "fallback_decisions": [
             _dump_value(row) for row in list((result.assessment_diagnostics.fallback_decisions or []))[:8]
@@ -257,6 +290,7 @@ def build_homeowner_report(
             "use_restriction": result.use_restriction,
         },
         key_risk_drivers=key_risk_drivers,
+        top_risk_drivers_detailed=list(result.top_risk_drivers_detailed or []),
         defensible_space_summary={
             "summary": defensible_space_analysis.get("summary")
             or "Defensible-space analysis was unavailable for this property.",
@@ -268,6 +302,7 @@ def build_homeowner_report(
             "analysis_status": ((defensible_space_analysis.get("data_quality") or {}).get("analysis_status") or "unknown"),
         },
         top_recommended_actions=top_recommended_actions,
+        prioritized_mitigation_actions=prioritized_actions,
         mitigation_plan=all_mitigation_actions,
         home_hardening_readiness_summary={
             "home_hardening_readiness": home_hardening_score,
@@ -286,6 +321,7 @@ def build_homeowner_report(
             "status": "optional_future_facing",
             "note": "Insurance readiness outputs are optional references and not the primary homeowner outcome.",
         },
+        confidence_summary=result.confidence_summary,
         confidence_and_limitations=confidence_and_limitations,
         metadata={
             "model_version": result.model_version,
@@ -409,6 +445,28 @@ def _build_report_lines(report: HomeownerReport) -> list[str]:
             lines.extend(_wrap_text_line(action.explanation, prefix="  "))
     if not report.mitigation_plan:
         lines.extend(_wrap_text_line("No prioritized actions were generated.", prefix="- "))
+    lines.append("")
+
+    lines.extend(_wrap_text_line("Home Hardening Checklist"))
+    if report.prioritized_mitigation_actions:
+        for row in report.prioritized_mitigation_actions[:5]:
+            lines.extend(
+                _wrap_text_line(
+                    f"{row.action} (impact={row.impact_level}, effort={row.effort_level}, cost={row.estimated_cost_band}, timeline={row.timeline})",
+                    prefix="- ",
+                )
+            )
+    else:
+        lines.extend(_wrap_text_line("No checklist items available.", prefix="- "))
+    lines.append("")
+
+    lines.extend(_wrap_text_line("Mitigation Simulator Examples"))
+    lines.extend(
+        _wrap_text_line(
+            "Use the simulator in the app to compare current risk with upgrade scenarios and see which top drivers improve.",
+            prefix="- ",
+        )
+    )
     lines.append("")
 
     lines.extend(_wrap_text_line("Home Hardening Readiness"))

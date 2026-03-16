@@ -190,6 +190,9 @@ def _assert_core_contract(body: dict) -> None:
         "prioritized_vegetation_actions",
         "defensible_space_limitations_summary",
         "top_risk_drivers",
+        "top_risk_drivers_detailed",
+        "prioritized_mitigation_actions",
+        "confidence_summary",
         "top_recommended_actions",
         "top_protective_factors",
         "explanation_summary",
@@ -316,6 +319,9 @@ def _assert_core_contract(body: dict) -> None:
 
     assert body["confidence_tier"] in {"high", "moderate", "low", "preliminary"}
     assert isinstance(body["top_recommended_actions"], list)
+    assert isinstance(body["top_risk_drivers_detailed"], list)
+    assert isinstance(body["prioritized_mitigation_actions"], list)
+    assert isinstance(body["confidence_summary"], dict)
     assert isinstance(body["assumptions_and_unknowns"], list)
     assert body["use_restriction"] in {
         "shareable",
@@ -2415,6 +2421,11 @@ def test_simulation_returns_deltas(monkeypatch, tmp_path):
     assert sim["baseline"]["assessment_id"] != sim["simulated"]["assessment_id"]
     assert sim["delta"]["wildfire_risk_score_delta"] <= 0
     assert sim["delta"]["insurance_readiness_score_delta"] >= 0
+    assert "home_hardening_readiness_delta" in sim["delta"]
+    assert isinstance(sim.get("simulator_explanations"), dict)
+    assert "current_risk_score" in sim["simulator_explanations"]
+    assert "simulated_risk_score" in sim["simulator_explanations"]
+    assert "estimated_risk_reduction" in sim["simulator_explanations"]
     assert "roof_type" in sim["changed_inputs"]
 
 
