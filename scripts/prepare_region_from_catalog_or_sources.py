@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import os
 import re
@@ -107,6 +108,20 @@ LAYER_SOURCE_HINTS: dict[str, dict[str, Any]] = {
         "registry_keys": ["source_endpoint", "source_url", "source_path"],
     },
 }
+
+DEFAULT_OPTIONAL_LAYER_KEYS: tuple[str, ...] = (
+    "whp",
+    "mtbs_severity",
+    "gridmet_dryness",
+    "roads",
+)
+ENRICHMENT_LAYER_KEYS: tuple[str, ...] = (
+    "building_footprints_overture",
+    "parcel_polygons",
+    "parcel_address_points",
+    "naip_imagery",
+)
+ENV_REF_PATTERN = re.compile(r"^\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}$")
 
 
 class RegionPrepExecutionError(RuntimeError):
@@ -237,6 +252,26 @@ def _resolve_env_refs(value: Any) -> Any:
     return value
 
 
+def _env_reference_detail(raw_value: Any) -> dict[str, Any] | None:
+    if not isinstance(raw_value, str):
+        return None
+    match = ENV_REF_PATTERN.match(raw_value.strip())
+    if not match:
+        return None
+    env_key = match.group(1).strip()
+    default_value = match.group(2) if match.group(2) is not None else None
+    env_value = os.getenv(env_key, "")
+    used_default = bool(default_value) and not bool(env_value)
+    missing_without_default = default_value is None and not bool(env_value)
+    return {
+        "env_var": env_key,
+        "default_value": default_value,
+        "env_value_present": bool(env_value),
+        "used_default": used_default,
+        "missing_without_default": missing_without_default,
+    }
+
+
 def _normalize_layer_config(candidate: Any) -> dict[str, Any]:
     cfg = candidate if isinstance(candidate, dict) else {}
     cleaned = _resolve_env_refs(cfg)
@@ -264,6 +299,7 @@ def _load_source_config(path_or_none: str | None) -> tuple[dict[str, Any], dict[
             "source_config_path": None,
             "default_source_registry_used": False,
             "source_config_candidates": [str(p) for p in DEFAULT_SOURCE_REGISTRY_CANDIDATES],
+            "raw_layer_entries": {},
         }
 
     with open(selected_path, "r", encoding="utf-8") as f:
@@ -276,11 +312,16 @@ def _load_source_config(path_or_none: str | None) -> tuple[dict[str, Any], dict[
         raw_layers = payload
     if not isinstance(raw_layers, dict):
         raw_layers = {}
+    raw_entries = {
+        str(k): (copy.deepcopy(v) if isinstance(v, dict) else {})
+        for k, v in raw_layers.items()
+    }
     layers = {str(k): _normalize_layer_config(v) for k, v in raw_layers.items()}
     return layers, {
         "source_config_path": str(selected_path),
         "default_source_registry_used": (not path_or_none),
         "source_config_candidates": [str(p) for p in DEFAULT_SOURCE_REGISTRY_CANDIDATES],
+        "raw_layer_entries": raw_entries,
     }
 
 
@@ -446,6 +487,117 @@ def _provider_default(layer_type: str) -> str:
     return "arcgis_feature_service"
 
 
+def _layer_source_entry_summary(
+    *,
+    layer_key: str,
+    layer_cfg: dict[str, Any],
+    source_config_meta: dict[str, Any],
+) -> dict[str, Any]:
+    raw_entries = source_config_meta.get("raw_layer_entries") or {}
+    raw_entry = raw_entries.get(layer_key) if isinstance(raw_entries, dict) else None
+    raw_entry = raw_entry if isinstance(raw_entry, dict) else {}
+    entry_fields = (
+        "provider_type",
+        "source_path",
+        "local_path",
+        "source_url",
+        "full_download_url",
+        "source_endpoint",
+    )
+    resolved_entry = {
+        field: layer_cfg.get(field)
+        for field in entry_fields
+        if str(layer_cfg.get(field) or "").strip()
+    }
+    raw_entry_used = {
+        field: raw_entry.get(field)
+        for field in entry_fields
+        if str(raw_entry.get(field) or "").strip()
+    }
+
+    env_refs: list[dict[str, Any]] = []
+    for field in ("source_path", "local_path", "source_url", "full_download_url", "source_endpoint"):
+        detail = _env_reference_detail(raw_entry.get(field))
+        if detail:
+            detail["field"] = field
+            env_refs.append(detail)
+
+    defaulted_env_vars = sorted({str(item["env_var"]) for item in env_refs if item.get("used_default")})
+    missing_env_vars = sorted(
+        {str(item["env_var"]) for item in env_refs if item.get("missing_without_default")}
+    )
+    env_overrides_present = sorted(
+        {str(item["env_var"]) for item in env_refs if item.get("env_value_present")}
+    )
+    return {
+        "source_registry_entry_used": raw_entry_used,
+        "source_registry_entry_resolved": resolved_entry,
+        "source_registry_defaults_used": bool(defaulted_env_vars),
+        "source_registry_defaulted_env_vars": defaulted_env_vars,
+        "source_registry_missing_env_vars": missing_env_vars,
+        "source_registry_env_overrides_present": env_overrides_present,
+        "source_registry_required_env_vars": list(LAYER_SOURCE_HINTS.get(layer_key, {}).get("env_vars", [])),
+        "source_registry_used_default_registry": bool(source_config_meta.get("default_source_registry_used")),
+    }
+
+
+def _status_followup(
+    *,
+    layer_key: str,
+    status_classification: str,
+    source_config_meta: dict[str, Any],
+) -> tuple[str, bool]:
+    source_path = str(source_config_meta.get("source_config_path") or "config/source_registry.json")
+    if status_classification == "not_configured":
+        return (
+            f"Configure source details for '{layer_key}' in {source_path}, then rerun prep.",
+            False,
+        )
+    if status_classification == "optional_and_skipped":
+        return (
+            f"Rerun prep without --skip-optional-layers to ingest '{layer_key}'.",
+            True,
+        )
+    if status_classification in {"configured_but_fetch_failed", "configured_but_outside_coverage", "configured_but_empty_result"}:
+        return (
+            f"Verify source coverage/access for '{layer_key}' and rerun prep.",
+            True,
+        )
+    if status_classification in {"present_from_existing_catalog", "present_after_acquisition"}:
+        return ("No action required.", True)
+    return ("Inspect layer diagnostics and rerun prep.", True)
+
+
+def _classify_layer_state(
+    *,
+    layer_diag: dict[str, Any],
+    coverage_status_after: str | None,
+    acquired_layers: set[str],
+    optional_skipped: bool = False,
+) -> str:
+    if optional_skipped:
+        return "optional_and_skipped"
+
+    coverage_status = str(coverage_status_after or layer_diag.get("coverage_status") or "none")
+    if coverage_status in {"full", "partial"}:
+        if str(layer_diag.get("layer_key") or "") in acquired_layers:
+            return "present_after_acquisition"
+        return "present_from_existing_catalog"
+
+    if not bool(layer_diag.get("config_valid")):
+        return "not_configured"
+
+    failure_reason = str(layer_diag.get("failure_reason") or "")
+    if failure_reason in {"empty_result"}:
+        return "configured_but_empty_result"
+    if failure_reason in {"outside_extent", "coverage_recording_or_recheck_failure"}:
+        return "configured_but_outside_coverage"
+    if failure_reason:
+        return "configured_but_fetch_failed"
+
+    return "configured_but_outside_coverage"
+
+
 def _ingest_layer_for_bbox(
     *,
     layer_key: str,
@@ -512,7 +664,9 @@ def _plan_acquisition_steps(
     required_layers: Sequence[str],
     optional_layer_keys: Sequence[str],
     source_config: dict[str, Any],
+    source_config_meta: dict[str, Any],
     allow_partial_coverage_fill: bool,
+    skip_optional_layers: bool,
 ) -> tuple[list[dict[str, Any]], bool, dict[str, dict[str, Any]]]:
     steps: list[dict[str, Any]] = []
     buildable_with_config = True
@@ -520,6 +674,8 @@ def _plan_acquisition_steps(
     layers = coverage_plan.get("layers", {})
 
     for layer_key in list(required_layers) + list(optional_layer_keys):
+        is_required = layer_key in required_layers
+        is_optional = layer_key in optional_layer_keys
         layer_state = layers.get(layer_key, {})
         status = str(layer_state.get("coverage_status") or "none")
         needs_fill = status == "none" or (status == "partial" and allow_partial_coverage_fill)
@@ -527,10 +683,15 @@ def _plan_acquisition_steps(
         validation = _validate_layer_source_config(layer_key=layer_key, layer_cfg=cfg)
         has_config = bool(validation.get("config_valid"))
         layer_type = LAYER_TYPES.get(layer_key, "vector")
+        source_entry = _layer_source_entry_summary(
+            layer_key=layer_key,
+            layer_cfg=cfg,
+            source_config_meta=source_config_meta,
+        )
         diag = {
             "layer_key": layer_key,
             "layer_type": layer_type,
-            "required": layer_key in required_layers,
+            "required": is_required,
             "coverage_status": status,
             "config_present": bool(validation.get("config_present")),
             "config_available": has_config,
@@ -543,9 +704,30 @@ def _plan_acquisition_steps(
             "advisory_warning": validation.get("advisory_warning"),
             "planned_action": "use_existing_catalog",
             "blocking_reason": None,
+            "status_classification": "present_from_existing_catalog",
+            "failure_reason": None,
+            "source_config_stage_required": False,
+            **source_entry,
         }
-        if needs_fill:
+        if is_optional and skip_optional_layers:
+            diag["planned_action"] = "optional_and_skipped"
+            diag["status_classification"] = "optional_and_skipped"
+            step = {
+                "layer_key": layer_key,
+                "current_coverage_status": status,
+                "action": "optional_and_skipped",
+                "config_available": has_config,
+                "config_status": diag["config_status"],
+                "provider_type": diag["provider_type"],
+            }
+            steps.append(step)
+        elif needs_fill:
             diag["planned_action"] = "acquire_and_ingest"
+            diag["status_classification"] = (
+                "configured_but_outside_coverage" if has_config else "not_configured"
+            )
+            if not has_config:
+                diag["source_config_stage_required"] = True
             steps.append(
                 {
                     "layer_key": layer_key,
@@ -556,12 +738,13 @@ def _plan_acquisition_steps(
                     "provider_type": diag["provider_type"],
                 }
             )
-            if layer_key in required_layers and not has_config:
+            if is_required and not has_config:
                 buildable_with_config = False
                 diag["blocking_reason"] = str(
                     validation.get("actionable_error")
                     or "Required layer is missing source configuration."
                 )
+                diag["source_config_stage_required"] = True
         else:
             steps.append(
                 {
@@ -571,6 +754,13 @@ def _plan_acquisition_steps(
                     "config_available": has_config,
                 }
             )
+        next_step, rerun_ok = _status_followup(
+            layer_key=layer_key,
+            status_classification=str(diag["status_classification"]),
+            source_config_meta=source_config_meta,
+        )
+        diag["operator_next_step"] = next_step
+        diag["rerun_prep_only_sufficient"] = rerun_ok
         diagnostics[layer_key] = diag
     return steps, buildable_with_config, diagnostics
 
@@ -604,6 +794,7 @@ def _build_compact_summary(
         "optional_omission_count": len(list(optional_omissions)),
         "validation_status": (validation_result or {}).get("validation_status"),
         "ready_for_runtime": (validation_result or {}).get("ready_for_runtime"),
+        "property_specific_readiness": (validation_result or {}).get("property_specific_readiness", {}).get("readiness"),
     }
 
 
@@ -758,6 +949,109 @@ def _extract_provider_error_context(error: str) -> dict[str, Any]:
     }
 
 
+def _layer_presence(
+    *,
+    layer_keys: Sequence[str],
+    coverage_after: dict[str, Any],
+) -> tuple[list[str], list[str]]:
+    present: list[str] = []
+    missing: list[str] = []
+    layers = coverage_after.get("layers", {}) if isinstance(coverage_after, dict) else {}
+    for layer_key in layer_keys:
+        status = str((layers.get(layer_key) or {}).get("coverage_status") or "none")
+        if status in {"full", "partial"}:
+            present.append(layer_key)
+        else:
+            missing.append(layer_key)
+    return sorted(set(present)), sorted(set(missing))
+
+
+def _property_specific_readiness(
+    *,
+    required_layers_present: Sequence[str],
+    optional_layers_present: Sequence[str],
+    enrichment_layers_present: Sequence[str],
+    layer_diagnostics: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    required_set = set(required_layers_present)
+    optional_set = set(optional_layers_present)
+    enrichment_set = set(enrichment_layers_present)
+
+    configured_anchor_layers = [
+        layer
+        for layer in ("parcel_polygons", "parcel_address_points", "building_footprints_overture")
+        if bool((layer_diagnostics.get(layer) or {}).get("config_valid"))
+    ]
+    configured_anchor_available = bool(set(configured_anchor_layers).intersection(enrichment_set))
+    anchor_signal = configured_anchor_available or not configured_anchor_layers
+    hazard_signal = bool({"whp", "gridmet_dryness", "mtbs_severity"}.intersection(optional_set))
+    roads_signal = "roads" in optional_set
+    building_signal = "building_footprints" in required_set
+    vegetation_signal = ("naip_imagery" in enrichment_set) or ("canopy" in required_set)
+
+    if building_signal and roads_signal and hazard_signal and vegetation_signal and anchor_signal:
+        readiness = "property_specific_ready"
+    elif building_signal and (roads_signal or anchor_signal):
+        readiness = "address_level_only"
+    else:
+        readiness = "limited_regional_ready"
+
+    missing_supporting_layers: list[str] = []
+    if not roads_signal:
+        missing_supporting_layers.append("roads")
+    if not hazard_signal:
+        missing_supporting_layers.append("whp|gridmet_dryness|mtbs_severity")
+    if not vegetation_signal:
+        missing_supporting_layers.append("naip_imagery|canopy")
+    if configured_anchor_layers and not configured_anchor_available:
+        missing_supporting_layers.extend(configured_anchor_layers)
+
+    return {
+        "readiness": readiness,
+        "signals": {
+            "building_footprints": building_signal,
+            "roads": roads_signal,
+            "hazard_context": hazard_signal,
+            "near_structure_vegetation": vegetation_signal,
+            "configured_anchor_context": anchor_signal,
+        },
+        "configured_anchor_layers": configured_anchor_layers,
+        "missing_supporting_layers": sorted(set(missing_supporting_layers)),
+    }
+
+
+def _source_used_by_layer(
+    *,
+    layer_diagnostics: dict[str, dict[str, Any]],
+    acquired_layers: Sequence[dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    acquired_map = {
+        str(item.get("layer_key")): item
+        for item in acquired_layers
+        if isinstance(item, dict) and item.get("layer_key")
+    }
+    summary: dict[str, dict[str, Any]] = {}
+    for layer_key, diag in layer_diagnostics.items():
+        acquired = acquired_map.get(layer_key, {})
+        resolved_entry = dict(diag.get("source_registry_entry_resolved") or {})
+        summary[layer_key] = {
+            "provider_type": diag.get("provider_type"),
+            "catalog_source_origin": (
+                "present_after_acquisition"
+                if layer_key in acquired_map
+                else "present_from_existing_catalog"
+            ),
+            "source_registry_entry": dict(diag.get("source_registry_entry_used") or {}),
+            "source_registry_entry_resolved": resolved_entry,
+            "source_endpoint": acquired.get("source_endpoint") or resolved_entry.get("source_endpoint"),
+            "source_url": acquired.get("source_url") or resolved_entry.get("source_url") or resolved_entry.get("full_download_url"),
+            "source_path": resolved_entry.get("source_path") or resolved_entry.get("local_path"),
+            "acquisition_method": acquired.get("acquisition_method"),
+            "status_classification": diag.get("status_classification"),
+        }
+    return summary
+
+
 def _annotate_manifest_with_orchestration(
     *,
     manifest: dict[str, Any],
@@ -768,8 +1062,11 @@ def _annotate_manifest_with_orchestration(
     failed_acquisitions: list[dict[str, Any]],
     optional_omissions: list[str],
     source_config_meta: dict[str, Any],
-    required_layer_diagnostics: dict[str, Any],
-    optional_layer_diagnostics: dict[str, Any],
+    required_layers: Sequence[str],
+    optional_layers: Sequence[str],
+    enrichment_layers: Sequence[str],
+    layer_diagnostics: dict[str, dict[str, Any]],
+    validation_result: dict[str, Any] | None,
 ) -> None:
     acquired_by_layer = {str(item["layer_key"]): item for item in acquired_layers if isinstance(item, dict)}
     manifest.setdefault("catalog", {})
@@ -786,8 +1083,65 @@ def _annotate_manifest_with_orchestration(
     manifest["catalog"]["failed_acquisitions"] = failed_acquisitions
     manifest["catalog"]["optional_omissions"] = optional_omissions
     manifest["catalog"]["source_registry"] = source_config_meta
-    manifest["catalog"]["required_layer_diagnostics"] = required_layer_diagnostics
-    manifest["catalog"]["optional_layer_diagnostics"] = optional_layer_diagnostics
+    manifest["catalog"]["layer_diagnostics"] = layer_diagnostics
+    manifest["catalog"]["required_layer_diagnostics"] = {
+        layer: layer_diagnostics.get(layer)
+        for layer in required_layers
+        if layer in layer_diagnostics
+    }
+    manifest["catalog"]["optional_layer_diagnostics"] = {
+        layer: layer_diagnostics.get(layer)
+        for layer in set(optional_layers).union(set(enrichment_layers))
+        if layer in layer_diagnostics
+    }
+
+    required_present, required_missing = _layer_presence(
+        layer_keys=required_layers,
+        coverage_after=coverage_after,
+    )
+    optional_present, optional_missing = _layer_presence(
+        layer_keys=optional_layers,
+        coverage_after=coverage_after,
+    )
+    enrichment_present, enrichment_missing = _layer_presence(
+        layer_keys=enrichment_layers,
+        coverage_after=coverage_after,
+    )
+    missing_reason_by_layer = {
+        layer: str((layer_diagnostics.get(layer) or {}).get("status_classification") or "missing")
+        for layer in sorted(set(required_missing + optional_missing + enrichment_missing))
+    }
+    source_used_by_layer = _source_used_by_layer(
+        layer_diagnostics=layer_diagnostics,
+        acquired_layers=acquired_layers,
+    )
+    readiness = _property_specific_readiness(
+        required_layers_present=required_present,
+        optional_layers_present=optional_present,
+        enrichment_layers_present=enrichment_present,
+        layer_diagnostics=layer_diagnostics,
+    )
+
+    manifest["catalog"]["required_layers_present"] = required_present
+    manifest["catalog"]["required_layers_missing"] = required_missing
+    manifest["catalog"]["optional_layers_present"] = optional_present
+    manifest["catalog"]["optional_layers_missing"] = optional_missing
+    manifest["catalog"]["enrichment_layers_present"] = enrichment_present
+    manifest["catalog"]["enrichment_layers_missing"] = enrichment_missing
+    manifest["catalog"]["missing_reason_by_layer"] = missing_reason_by_layer
+    manifest["catalog"]["source_used_by_layer"] = source_used_by_layer
+    manifest["catalog"]["property_specific_readiness"] = readiness
+    manifest["catalog"]["validation_summary"] = (
+        {
+            "ready_for_runtime": validation_result.get("ready_for_runtime"),
+            "validation_status": validation_result.get("validation_status"),
+            "runtime_compatibility_status": validation_result.get("runtime_compatibility_status"),
+            "scoring_readiness": validation_result.get("scoring_readiness"),
+            "property_specific_readiness": validation_result.get("property_specific_readiness"),
+        }
+        if isinstance(validation_result, dict)
+        else {"validation_status": "not_requested"}
+    )
 
     layer_states = coverage_after.get("layers", {})
     for layer_key, layer_meta in (manifest.get("layers") or {}).items():
@@ -853,7 +1207,13 @@ def prepare_region_from_catalog_or_sources(
     layer_policy = required_layer_policy()
     required = list(layer_policy.get("required_core_layers") or required_core_layers())
     derived_core = list(layer_policy.get("derived_core_layers") or ["slope"])
-    optional = [] if skip_optional_layers else list(layer_policy.get("optional_layers") or optional_layers())
+    optional = list(layer_policy.get("optional_layers") or optional_layers())
+    for enrichment_layer in ENRICHMENT_LAYER_KEYS:
+        if enrichment_layer not in optional:
+            optional.append(enrichment_layer)
+    optional = list(dict.fromkeys(optional))
+    standard_optional = [layer for layer in optional if layer in DEFAULT_OPTIONAL_LAYER_KEYS]
+    enrichment_optional = [layer for layer in optional if layer in ENRICHMENT_LAYER_KEYS]
     prepared_region_status = _inspect_existing_prepared_region(
         region_id=region_id,
         bounds=bounds,
@@ -881,7 +1241,9 @@ def prepare_region_from_catalog_or_sources(
         required_layers=required,
         optional_layer_keys=optional,
         source_config=cfg,
+        source_config_meta=cfg_meta,
         allow_partial_coverage_fill=allow_partial_coverage_fill,
+        skip_optional_layers=skip_optional_layers,
     )
     required_layer_diagnostics = {
         key: value for key, value in layer_plan_diagnostics.items() if key in required
@@ -926,6 +1288,10 @@ def prepare_region_from_catalog_or_sources(
             and diag.get("actionable_error")
         }
     )
+    layer_status_by_layer = {
+        layer: str(diag.get("status_classification") or "unknown")
+        for layer, diag in layer_plan_diagnostics.items()
+    }
 
     if plan_only:
         recommended_actions = list(coverage_before.get("summary", {}).get("recommended_actions", []))
@@ -940,6 +1306,13 @@ def prepare_region_from_catalog_or_sources(
             ]
         )
         recommended_actions.extend([f"Optional layer config: {msg}" for msg in optional_config_warnings])
+        recommended_actions.extend(
+            [
+                f"{layer}: {diag.get('operator_next_step')}"
+                for layer, diag in sorted(optional_layer_diagnostics.items())
+                if str(diag.get("status_classification")) in {"not_configured", "configured_but_outside_coverage", "optional_and_skipped"}
+            ]
+        )
         compact_summary = _build_compact_summary(
             mode="plan_only",
             region_id=region_id,
@@ -963,6 +1336,7 @@ def prepare_region_from_catalog_or_sources(
                 "derived_core_layers": derived_core,
                 "optional_layers": optional,
             },
+            "layer_status_by_layer": layer_status_by_layer,
             "prepared_region_status": prepared_region_status,
             "source_registry": cfg_meta,
             "coverage_plan": coverage_before,
@@ -975,6 +1349,11 @@ def prepare_region_from_catalog_or_sources(
                 "optional_layers_missing": optional_layers_missing,
                 "layers_using_existing_catalog": layer_use_existing_catalog,
                 "layers_requiring_acquisition": layer_remote_acquisition_planned,
+            },
+            "enrichment_summary": {
+                "optional_layers": standard_optional,
+                "enrichment_layers": enrichment_optional,
+                "skip_optional_layers": bool(skip_optional_layers),
             },
             "required_layer_diagnostics": required_layer_diagnostics,
             "optional_layer_diagnostics": optional_layer_diagnostics,
@@ -1030,6 +1409,7 @@ def prepare_region_from_catalog_or_sources(
                 "derived_core_layers": derived_core,
                 "optional_layers": optional,
             },
+            "layer_status_by_layer": layer_status_by_layer,
             "prepared_region_status": prepared_region_status,
             "source_registry": cfg_meta,
             "coverage_before": coverage_before,
@@ -1042,6 +1422,11 @@ def prepare_region_from_catalog_or_sources(
                 "optional_layers_missing": optional_layers_missing,
                 "layers_using_existing_catalog": layer_use_existing_catalog,
                 "layers_requiring_acquisition": [],
+            },
+            "enrichment_summary": {
+                "optional_layers": standard_optional,
+                "enrichment_layers": enrichment_optional,
+                "skip_optional_layers": bool(skip_optional_layers),
             },
             "required_layer_diagnostics": required_layer_diagnostics,
             "optional_layer_diagnostics": optional_layer_diagnostics,
@@ -1066,9 +1451,29 @@ def prepare_region_from_catalog_or_sources(
     stage_status["acquisition"] = {"status": "running", "details": "Evaluating missing catalog coverage and ingesting required layers."}
 
     for step in planned_steps:
-        if step.get("action") != "acquire_and_ingest":
-            continue
         layer_key = str(step["layer_key"])
+        layer_diag = layer_plan_diagnostics.get(layer_key, {})
+        if step.get("action") == "optional_and_skipped":
+            layer_diag["status_classification"] = "optional_and_skipped"
+            layer_diag["failure_reason"] = "optional_skipped_by_flag"
+            next_step, rerun_ok = _status_followup(
+                layer_key=layer_key,
+                status_classification="optional_and_skipped",
+                source_config_meta=cfg_meta,
+            )
+            layer_diag["operator_next_step"] = next_step
+            layer_diag["rerun_prep_only_sufficient"] = rerun_ok
+            continue
+        if step.get("action") != "acquire_and_ingest":
+            layer_diag["status_classification"] = "present_from_existing_catalog"
+            next_step, rerun_ok = _status_followup(
+                layer_key=layer_key,
+                status_classification="present_from_existing_catalog",
+                source_config_meta=cfg_meta,
+            )
+            layer_diag["operator_next_step"] = next_step
+            layer_diag["rerun_prep_only_sufficient"] = rerun_ok
+            continue
         layer_cfg = _layer_config(layer_key, cfg)
         provider_type = str(layer_cfg.get("provider_type") or _provider_default(LAYER_TYPES.get(layer_key, "vector")))
         source_endpoint = layer_cfg.get("source_endpoint")
@@ -1114,6 +1519,8 @@ def prepare_region_from_catalog_or_sources(
                 f"{validation.get('actionable_error') or 'missing source details'}"
             )
             reason_code, actionable = _classify_execution_failure(message)
+            layer_diag["failure_reason"] = reason_code
+            layer_diag["status_classification"] = "not_configured"
             layer_execution["failure_reason"] = reason_code
             layer_execution["actionable_error"] = actionable
             layer_execution["advisory_warning"] = endpoint_warning
@@ -1172,6 +1579,8 @@ def prepare_region_from_catalog_or_sources(
                     )
                 else:
                     layer_execution["diagnostic_summary"] = str(endpoint_warning)
+            layer_diag["failure_reason"] = None
+            layer_diag["status_classification"] = "present_after_acquisition"
             acquired_layers.append(
                 {
                     "layer_key": layer_key,
@@ -1188,6 +1597,12 @@ def prepare_region_from_catalog_or_sources(
             error_text = str(exc)
             reason_code, actionable = _classify_execution_failure(error_text)
             context = _extract_provider_error_context(error_text)
+            layer_diag["failure_reason"] = reason_code
+            layer_diag["status_classification"] = _classify_layer_state(
+                layer_diag={**layer_diag, "failure_reason": reason_code},
+                coverage_status_after="none",
+                acquired_layers=set(),
+            )
             layer_execution["failure_reason"] = reason_code
             layer_execution["actionable_error"] = actionable
             layer_execution["catalog_ingest_succeeded"] = False
@@ -1246,6 +1661,30 @@ def prepare_region_from_catalog_or_sources(
         optional_layer_keys=optional,
         catalog_root=cat_root,
     )
+    acquired_layer_keys = {str(item.get("layer_key")) for item in acquired_layers if isinstance(item, dict)}
+    for layer_key, layer_diag in layer_plan_diagnostics.items():
+        coverage_status_after = str(
+            coverage_after.get("layers", {}).get(layer_key, {}).get("coverage_status")
+            or layer_diag.get("coverage_status")
+            or "none"
+        )
+        optional_skipped = str(layer_diag.get("planned_action")) == "optional_and_skipped"
+        status_classification = _classify_layer_state(
+            layer_diag=layer_diag,
+            coverage_status_after=coverage_status_after,
+            acquired_layers=acquired_layer_keys,
+            optional_skipped=optional_skipped,
+        )
+        layer_diag["coverage_status_after_ingest"] = coverage_status_after
+        layer_diag["status_classification"] = status_classification
+        next_step, rerun_ok = _status_followup(
+            layer_key=layer_key,
+            status_classification=status_classification,
+            source_config_meta=cfg_meta,
+        )
+        layer_diag["operator_next_step"] = next_step
+        layer_diag["rerun_prep_only_sufficient"] = rerun_ok
+
     for layer_key, layer_diag in per_layer_execution_diagnostics.items():
         layer_diag["coverage_status_after_ingest"] = str(
             coverage_after.get("layers", {}).get(layer_key, {}).get("coverage_status") or "none"
@@ -1308,6 +1747,17 @@ def prepare_region_from_catalog_or_sources(
                     "Layer ingest completed but catalog coverage still reports missing/partial. "
                     "Check bounds metadata/index update for this layer."
                 )
+            layer_plan_diag = layer_plan_diagnostics.get(layer)
+            if isinstance(layer_plan_diag, dict) and not layer_plan_diag.get("failure_reason"):
+                layer_plan_diag["failure_reason"] = "coverage_recording_or_recheck_failure"
+                layer_plan_diag["status_classification"] = "configured_but_outside_coverage"
+                next_step, rerun_ok = _status_followup(
+                    layer_key=layer,
+                    status_classification="configured_but_outside_coverage",
+                    source_config_meta=cfg_meta,
+                )
+                layer_plan_diag["operator_next_step"] = next_step
+                layer_plan_diag["rerun_prep_only_sufficient"] = rerun_ok
         stage_failures = {
             "acquisition": sorted(
                 {
@@ -1393,15 +1843,11 @@ def prepare_region_from_catalog_or_sources(
         failed_acquisitions=failed_acquisitions,
         optional_omissions=sorted(set(optional_omissions)),
         source_config_meta=cfg_meta,
-        required_layer_diagnostics={
-            "required_layers": required,
-            "required_failures": required_failures,
-            "required_missing_after": required_missing_after,
-        },
-        optional_layer_diagnostics={
-            "optional_layers": optional,
-            "optional_omissions": sorted(set(optional_omissions)),
-        },
+        required_layers=required,
+        optional_layers=standard_optional,
+        enrichment_layers=enrichment_optional,
+        layer_diagnostics=layer_plan_diagnostics,
+        validation_result=None,
     )
 
     validation_result = None
@@ -1419,6 +1865,13 @@ def prepare_region_from_catalog_or_sources(
         manifest.setdefault("catalog", {})
         orchestration = manifest["catalog"].setdefault("orchestration_validation", {})
         orchestration["result"] = validation_result
+        manifest["catalog"]["validation_summary"] = {
+            "ready_for_runtime": validation_result.get("ready_for_runtime"),
+            "validation_status": validation_result.get("validation_status"),
+            "runtime_compatibility_status": validation_result.get("runtime_compatibility_status"),
+            "scoring_readiness": validation_result.get("scoring_readiness"),
+            "property_specific_readiness": validation_result.get("property_specific_readiness"),
+        }
 
     manifest_path = reg_root / region_id / "manifest.json"
     if manifest_path.exists():
@@ -1430,6 +1883,10 @@ def prepare_region_from_catalog_or_sources(
         final_status = "partial"
     if validation_result and validation_result.get("validation_status") == "failed":
         final_status = "partial"
+    layer_status_by_layer = {
+        layer: str(diag.get("status_classification") or "unknown")
+        for layer, diag in layer_plan_diagnostics.items()
+    }
 
     compact_summary = _build_compact_summary(
         mode="executed",
@@ -1456,6 +1913,7 @@ def prepare_region_from_catalog_or_sources(
             "derived_core_layers": derived_core,
             "optional_layers": optional,
         },
+        "layer_status_by_layer": layer_status_by_layer,
         "prepared_region_status": prepared_region_status,
         "coverage_before": coverage_before,
         "coverage_after": coverage_after,
@@ -1468,6 +1926,11 @@ def prepare_region_from_catalog_or_sources(
             "optional_layers_missing": optional_layers_missing,
             "layers_using_existing_catalog": layer_use_existing_catalog,
             "layers_requiring_acquisition": layer_remote_acquisition_planned,
+        },
+        "enrichment_summary": {
+            "optional_layers": standard_optional,
+            "enrichment_layers": enrichment_optional,
+            "skip_optional_layers": bool(skip_optional_layers),
         },
         "required_layer_diagnostics": required_layer_diagnostics,
         "optional_layer_diagnostics": optional_layer_diagnostics,

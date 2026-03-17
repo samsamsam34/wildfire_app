@@ -55,6 +55,7 @@ LAYER_TYPES: dict[str, str] = {
     "whp": "raster",
     "mtbs_severity": "raster",
     "gridmet_dryness": "raster",
+    "naip_imagery": "raster",
     "fire_perimeters": "vector",
     "building_footprints": "vector",
     "building_footprints_overture": "vector",

@@ -5,6 +5,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from backend.data_prep.layer_definitions import (
+    REQUIRED_CORE_RASTER_LAYERS,
+    REQUIRED_CORE_VECTOR_LAYERS,
+)
 from backend.region_registry import (
     REQUIRED_REGION_FILES,
     find_region_for_point,
@@ -55,7 +59,21 @@ OPTIONAL_REGION_LAYER_KEYS = {
     "building_footprints_overture",
     "parcel_polygons",
     "parcel_address_points",
+    "naip_imagery",
 }
+DEFAULT_OPTIONAL_LAYER_KEYS = (
+    "whp",
+    "mtbs_severity",
+    "gridmet_dryness",
+    "roads",
+)
+ENRICHMENT_LAYER_KEYS = (
+    "building_footprints_overture",
+    "parcel_polygons",
+    "parcel_address_points",
+    "naip_imagery",
+)
+REQUIRED_CORE_LAYER_KEYS = tuple(REQUIRED_CORE_RASTER_LAYERS) + tuple(REQUIRED_CORE_VECTOR_LAYERS)
 
 
 def _now() -> str:
@@ -246,12 +264,137 @@ def _runtime_layer_mapping_issues(manifest: dict[str, Any], base_dir: str | None
     return issues
 
 
+def _present_and_missing_layers(
+    *,
+    manifest: dict[str, Any],
+    layer_keys: tuple[str, ...] | list[str],
+    base_dir: str | None,
+) -> tuple[list[str], list[str]]:
+    present: list[str] = []
+    missing: list[str] = []
+    for layer_key in layer_keys:
+        resolved = resolve_region_file(manifest, layer_key, base_dir=base_dir)
+        if resolved and Path(resolved).exists():
+            present.append(layer_key)
+        else:
+            missing.append(layer_key)
+    return sorted(set(present)), sorted(set(missing))
+
+
+def summarize_property_specific_readiness(
+    *,
+    required_layers_present: list[str],
+    optional_layers_present: list[str],
+    enrichment_layers_present: list[str],
+    missing_reason_by_layer: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    missing_reason_by_layer = missing_reason_by_layer or {}
+    required_set = set(required_layers_present)
+    optional_set = set(optional_layers_present)
+    enrichment_set = set(enrichment_layers_present)
+
+    building_signal = "building_footprints" in required_set
+    roads_signal = "roads" in optional_set
+    hazard_signal = bool({"whp", "gridmet_dryness", "mtbs_severity"}.intersection(optional_set))
+    vegetation_signal = ("naip_imagery" in enrichment_set) or ("canopy" in required_set)
+    anchor_signal = bool(
+        {"parcel_polygons", "parcel_address_points", "building_footprints_overture"}.intersection(
+            enrichment_set
+        )
+    )
+
+    if building_signal and roads_signal and hazard_signal and vegetation_signal and anchor_signal:
+        readiness = "property_specific_ready"
+    elif building_signal and (roads_signal or anchor_signal):
+        readiness = "address_level_only"
+    else:
+        readiness = "limited_regional_ready"
+
+    missing_supporting_layers: list[str] = []
+    if not roads_signal:
+        missing_supporting_layers.append("roads")
+    if not hazard_signal:
+        missing_supporting_layers.append("whp|gridmet_dryness|mtbs_severity")
+    if not anchor_signal:
+        missing_supporting_layers.append("parcel_polygons|parcel_address_points|building_footprints_overture")
+    if not vegetation_signal:
+        missing_supporting_layers.append("naip_imagery|canopy")
+
+    return {
+        "readiness": readiness,
+        "signals": {
+            "building_footprints": building_signal,
+            "roads": roads_signal,
+            "hazard_context": hazard_signal,
+            "near_structure_vegetation": vegetation_signal,
+            "property_anchor_context": anchor_signal,
+        },
+        "missing_supporting_layers": sorted(set(missing_supporting_layers)),
+        "missing_reason_by_layer": dict(missing_reason_by_layer),
+    }
+
+
+def _validation_manifest_summary(
+    *,
+    manifest: dict[str, Any],
+    base_dir: str | None,
+) -> dict[str, Any]:
+    catalog = manifest.get("catalog") if isinstance(manifest.get("catalog"), dict) else {}
+    required_present, required_missing = _present_and_missing_layers(
+        manifest=manifest,
+        layer_keys=list(REQUIRED_CORE_LAYER_KEYS),
+        base_dir=base_dir,
+    )
+    optional_present, optional_missing = _present_and_missing_layers(
+        manifest=manifest,
+        layer_keys=list(DEFAULT_OPTIONAL_LAYER_KEYS),
+        base_dir=base_dir,
+    )
+    enrichment_present, enrichment_missing = _present_and_missing_layers(
+        manifest=manifest,
+        layer_keys=list(ENRICHMENT_LAYER_KEYS),
+        base_dir=base_dir,
+    )
+
+    catalog_reasons = catalog.get("missing_reason_by_layer")
+    missing_reason_by_layer: dict[str, str] = {}
+    for layer in sorted(set(required_missing + optional_missing + enrichment_missing)):
+        fallback_reason = "missing_from_manifest_or_files"
+        if isinstance(catalog_reasons, dict) and catalog_reasons.get(layer):
+            fallback_reason = str(catalog_reasons.get(layer))
+        missing_reason_by_layer[layer] = fallback_reason
+
+    source_used_by_layer = (
+        dict(catalog.get("source_used_by_layer"))
+        if isinstance(catalog.get("source_used_by_layer"), dict)
+        else {}
+    )
+    readiness = summarize_property_specific_readiness(
+        required_layers_present=required_present,
+        optional_layers_present=optional_present,
+        enrichment_layers_present=enrichment_present,
+        missing_reason_by_layer=missing_reason_by_layer,
+    )
+    return {
+        "required_layers_present": required_present,
+        "required_layers_missing": required_missing,
+        "optional_layers_present": optional_present,
+        "optional_layers_missing": optional_missing,
+        "enrichment_layers_present": enrichment_present,
+        "enrichment_layers_missing": enrichment_missing,
+        "missing_reason_by_layer": missing_reason_by_layer,
+        "source_used_by_layer": source_used_by_layer,
+        "property_specific_readiness": readiness,
+    }
+
+
 def _write_manifest_validation_status(
     manifest: dict[str, Any],
     *,
     validation_status: str,
     runtime_compatibility_status: str,
     notes: list[str],
+    validation_summary: dict[str, Any] | None = None,
 ) -> None:
     manifest_path = Path(str(manifest.get("_manifest_path") or ""))
     if not manifest_path:
@@ -264,6 +407,18 @@ def _write_manifest_validation_status(
     payload["validation_status"] = validation_status
     payload["runtime_compatibility_status"] = runtime_compatibility_status
     payload["validation_notes"] = notes[:20]
+    if isinstance(validation_summary, dict):
+        payload.setdefault("catalog", {})
+        payload["catalog"]["required_layers_present"] = validation_summary.get("required_layers_present", [])
+        payload["catalog"]["required_layers_missing"] = validation_summary.get("required_layers_missing", [])
+        payload["catalog"]["optional_layers_present"] = validation_summary.get("optional_layers_present", [])
+        payload["catalog"]["optional_layers_missing"] = validation_summary.get("optional_layers_missing", [])
+        payload["catalog"]["enrichment_layers_present"] = validation_summary.get("enrichment_layers_present", [])
+        payload["catalog"]["enrichment_layers_missing"] = validation_summary.get("enrichment_layers_missing", [])
+        payload["catalog"]["missing_reason_by_layer"] = validation_summary.get("missing_reason_by_layer", {})
+        payload["catalog"]["source_used_by_layer"] = validation_summary.get("source_used_by_layer", {})
+        payload["catalog"]["property_specific_readiness"] = validation_summary.get("property_specific_readiness", {})
+        payload["catalog"]["validation_summary"] = validation_summary.get("validation_summary", {})
     with open(manifest_path, "w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2, sort_keys=True)
 
@@ -281,6 +436,12 @@ def validate_prepared_region(
 
     manifest = load_region_manifest(region_id, base_dir=base_dir)
     if not manifest:
+        property_specific_readiness = {
+            "readiness": "limited_regional_ready",
+            "signals": {},
+            "missing_supporting_layers": [],
+            "missing_reason_by_layer": {},
+        }
         return {
             "region_id": region_id,
             "ready_for_runtime": False,
@@ -292,6 +453,24 @@ def validate_prepared_region(
             "footprint_ring_support": "unknown",
             "required_layers_checked": list(REQUIRED_REGION_FILES),
             "sample_test": None,
+            "required_layers_present": [],
+            "required_layers_missing": list(REQUIRED_CORE_LAYER_KEYS),
+            "optional_layers_present": [],
+            "optional_layers_missing": list(DEFAULT_OPTIONAL_LAYER_KEYS),
+            "enrichment_layers_present": [],
+            "enrichment_layers_missing": list(ENRICHMENT_LAYER_KEYS),
+            "missing_reason_by_layer": {},
+            "source_used_by_layer": {},
+            "property_specific_readiness": property_specific_readiness,
+            "validation_summary": {
+                "validation_status": "failed",
+                "runtime_compatibility_status": "failed",
+                "ready_for_runtime": False,
+                "scoring_readiness": "insufficient_data_behavior_only",
+                "blocker_count": 1,
+                "warning_count": 0,
+                "property_specific_readiness": property_specific_readiness,
+            },
         }
 
     bounds = _coerce_bounds(manifest.get("bounds"))
@@ -388,14 +567,28 @@ def validate_prepared_region(
         scoring_readiness = "insufficient_data_behavior_only"
         validation_status = "failed"
 
+    manifest_summary = _validation_manifest_summary(manifest=manifest, base_dir=base_dir)
+    property_specific_readiness = dict(manifest_summary.get("property_specific_readiness") or {})
+
     runtime_compatibility_status = "pass" if ready_for_runtime else "failed"
     all_notes = unique_errors + unique_warnings
+    validation_summary = {
+        "validation_status": validation_status,
+        "runtime_compatibility_status": runtime_compatibility_status,
+        "ready_for_runtime": ready_for_runtime,
+        "scoring_readiness": scoring_readiness,
+        "blocker_count": len(unique_errors),
+        "warning_count": len(unique_warnings),
+        "property_specific_readiness": property_specific_readiness,
+    }
+    manifest_summary["validation_summary"] = validation_summary
     if update_manifest:
         _write_manifest_validation_status(
             manifest,
             validation_status=validation_status,
             runtime_compatibility_status=runtime_compatibility_status,
             notes=all_notes,
+            validation_summary=manifest_summary,
         )
 
     return {
@@ -411,4 +604,14 @@ def validate_prepared_region(
         "required_layers_checked": checked_layers,
         "footprint_ring_support": ring_support,
         "sample_test": sample_summary,
+        "required_layers_present": manifest_summary.get("required_layers_present", []),
+        "required_layers_missing": manifest_summary.get("required_layers_missing", []),
+        "optional_layers_present": manifest_summary.get("optional_layers_present", []),
+        "optional_layers_missing": manifest_summary.get("optional_layers_missing", []),
+        "enrichment_layers_present": manifest_summary.get("enrichment_layers_present", []),
+        "enrichment_layers_missing": manifest_summary.get("enrichment_layers_missing", []),
+        "missing_reason_by_layer": manifest_summary.get("missing_reason_by_layer", {}),
+        "source_used_by_layer": manifest_summary.get("source_used_by_layer", {}),
+        "property_specific_readiness": property_specific_readiness,
+        "validation_summary": validation_summary,
     }

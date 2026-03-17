@@ -338,11 +338,13 @@ def test_default_source_registry_optional_layers_have_actionable_status(tmp_path
         assert diag["config_valid"] is True, f"{layer_key}: {diag}"
 
     gridmet_diag = result["optional_layer_diagnostics"]["gridmet_dryness"]
-    assert gridmet_diag["config_valid"] is False
-    assert gridmet_diag["config_status"] == "missing_source_details"
-    assert "WF_DEFAULT_GRIDMET_DRYNESS_ENDPOINT" in str(gridmet_diag["actionable_error"])
+    assert gridmet_diag["config_valid"] is True
+    naip_diag = result["optional_layer_diagnostics"]["naip_imagery"]
+    assert naip_diag["config_valid"] is False
+    assert naip_diag["config_status"] == "missing_source_details"
+    assert "WF_DEFAULT_NAIP_PATH" in str(naip_diag["actionable_error"])
     assert result["optional_config_warnings"]
-    assert any("gridmet_dryness" in str(msg) for msg in result["optional_config_warnings"])
+    assert any("naip_imagery" in str(msg) for msg in result["optional_config_warnings"])
 
 
 def test_prepare_any_region_full_catalog_coverage_no_acquisition(tmp_path):
@@ -585,6 +587,44 @@ def test_plan_only_optional_layer_missing_config_does_not_block_required_buildab
     assert result["buildable_estimate"]["buildable_with_current_config"] is True
     assert result["optional_layer_diagnostics"]["whp"]["config_status"] == "missing_layer_entry"
     assert result["optional_layer_diagnostics"]["roads"]["config_status"] == "missing_layer_entry"
+
+
+def test_plan_only_optional_classification_includes_status_and_next_step(tmp_path):
+    sources = _seed_sources(tmp_path)
+    result = prepare_region_from_catalog_or_sources(
+        region_id="plan_optional_status",
+        display_name="Plan Optional Status",
+        bounds={"min_lon": -0.6, "min_lat": 0.2, "max_lon": 0.6, "max_lat": 0.8},
+        catalog_root=tmp_path / "catalog",
+        regions_root=tmp_path / "regions",
+        source_config=_local_source_config(sources),
+        skip_optional_layers=False,
+        plan_only=True,
+    )
+    whp_diag = result["optional_layer_diagnostics"]["whp"]
+    assert whp_diag["status_classification"] == "not_configured"
+    assert whp_diag["source_config_stage_required"] is True
+    assert whp_diag["rerun_prep_only_sufficient"] is False
+    assert "configure source details" in str(whp_diag["operator_next_step"]).lower()
+    assert isinstance(whp_diag["source_registry_entry_used"], dict)
+
+
+def test_plan_only_skip_optional_marks_optional_and_skipped(tmp_path):
+    sources = _seed_sources(tmp_path)
+    result = prepare_region_from_catalog_or_sources(
+        region_id="plan_optional_skipped",
+        display_name="Plan Optional Skipped",
+        bounds={"min_lon": -0.6, "min_lat": 0.2, "max_lon": 0.6, "max_lat": 0.8},
+        catalog_root=tmp_path / "catalog",
+        regions_root=tmp_path / "regions",
+        source_config=_local_source_config(sources),
+        skip_optional_layers=True,
+        plan_only=True,
+    )
+    roads_diag = result["optional_layer_diagnostics"]["roads"]
+    assert roads_diag["planned_action"] == "optional_and_skipped"
+    assert roads_diag["status_classification"] == "optional_and_skipped"
+    assert roads_diag["rerun_prep_only_sufficient"] is True
 
 
 def test_prepare_any_region_uses_default_source_registry_and_runs_new_area_smoke(monkeypatch, tmp_path):
@@ -1097,6 +1137,17 @@ def test_successful_ingest_sets_non_none_coverage_status(monkeypatch, tmp_path):
     assert result["final_status"] == "success"
     for layer in required:
         assert result["per_layer_execution_diagnostics"][layer]["coverage_status_after_ingest"] == "full"
+    catalog_manifest = result["manifest"]["catalog"]
+    assert sorted(catalog_manifest["required_layers_present"]) == sorted(required)
+    assert "roads" in catalog_manifest["optional_layers_missing"]
+    assert "building_footprints_overture" in catalog_manifest["enrichment_layers_missing"]
+    assert catalog_manifest["missing_reason_by_layer"]["roads"] in {
+        "not_configured",
+        "configured_but_outside_coverage",
+        "optional_and_skipped",
+    }
+    assert "dem" in catalog_manifest["source_used_by_layer"]
+    assert "property_specific_readiness" in catalog_manifest
 
 
 def test_cli_error_payload_includes_layer_execution_diagnostics():

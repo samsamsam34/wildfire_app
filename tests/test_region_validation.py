@@ -63,6 +63,13 @@ def test_validate_prepared_region_success(monkeypatch, tmp_path):
     assert result["scoring_readiness"] == "full_scoring"
     assert result["footprint_ring_support"] == "available"
     assert result["required_layers_checked"] == list(REQUIRED_REGION_FILES)
+    assert result["property_specific_readiness"]["readiness"] in {
+        "address_level_only",
+        "limited_regional_ready",
+        "property_specific_ready",
+    }
+    assert "required_layers_present" in result
+    assert "optional_layers_missing" in result
 
 
 def test_validate_prepared_region_missing_file_fails(monkeypatch, tmp_path):
@@ -145,6 +152,50 @@ def test_validate_prepared_region_manifest_status_update(monkeypatch, tmp_path):
     assert payload["validation_status"] == "passed"
     assert payload["runtime_compatibility_status"] == "pass"
     assert payload["validation_run_at"]
+    assert "catalog" in payload
+    assert "validation_summary" in payload["catalog"]
+    assert "property_specific_readiness" in payload["catalog"]
+
+
+def test_validate_prepared_region_property_specific_readiness_improves_with_enrichment(monkeypatch, tmp_path):
+    region_dir, manifest_path = _write_region_fixture(tmp_path)
+    for layer, filename in {
+        "roads": "roads.geojson",
+        "parcel_polygons": "parcel_polygons.geojson",
+    }.items():
+        (region_dir / filename).write_text(
+            json.dumps(
+                {
+                    "type": "FeatureCollection",
+                    "features": [
+                        {
+                            "type": "Feature",
+                            "properties": {"id": 1},
+                            "geometry": {
+                                "type": "Polygon",
+                                "coordinates": [[[-0.1, 0.1], [0.9, 0.1], [0.9, 0.9], [-0.1, 0.9], [-0.1, 0.1]]],
+                            },
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest.setdefault("files", {})[layer] = filename
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    monkeypatch.setattr(
+        region_validator,
+        "_validate_layer_openable_and_intersects",
+        lambda layer_key, layer_path, bounds: ([], []),
+    )
+    result = validate_prepared_region(region_id="test_region", base_dir=str(tmp_path))
+    assert result["property_specific_readiness"]["readiness"] in {
+        "address_level_only",
+        "property_specific_ready",
+    }
+    assert "roads" in result["optional_layers_present"]
 
 
 def test_validate_prepared_region_includes_configured_optional_layers(monkeypatch, tmp_path):

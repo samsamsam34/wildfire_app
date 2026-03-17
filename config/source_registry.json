@@ -137,6 +137,17 @@
       "target_resolution": 4000.0,
       "expected_output_format": "tif",
       "notes": "Optional gridMET dryness proxy. Default is annual fm1000 NetCDF snapshot (override WF_DEFAULT_GRIDMET_DRYNESS_FULL_URL for a different year/source)."
+    },
+    "naip_imagery": {
+      "provider_type": "file_download",
+      "source_path": "${WF_DEFAULT_NAIP_PATH:-}",
+      "source_endpoint": "${WF_DEFAULT_NAIP_ENDPOINT:-}",
+      "source_url": "${WF_DEFAULT_NAIP_FULL_URL:-}",
+      "supports_bbox_export": false,
+      "allow_full_download_fallback": true,
+      "target_resolution": 1.0,
+      "expected_output_format": "tif",
+      "notes": "Optional NAIP imagery for near-structure vegetation enrichment. Configure with WF_DEFAULT_NAIP_PATH, WF_DEFAULT_NAIP_ENDPOINT, or WF_DEFAULT_NAIP_FULL_URL."
     }
   }
 }

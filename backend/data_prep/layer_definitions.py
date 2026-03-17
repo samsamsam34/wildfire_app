@@ -14,6 +14,7 @@ OPTIONAL_LAYERS = (
     "whp",
     "mtbs_severity",
     "gridmet_dryness",
+    "naip_imagery",
     "parcel_polygons",
     "parcel_address_points",
 )
