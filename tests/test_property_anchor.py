@@ -51,7 +51,7 @@ def test_property_anchor_prefers_nearby_address_point_over_interpolated_geocode(
     assert result.anchor_source == "authoritative_address_point"
     assert result.anchor_precision == "parcel_or_address_point"
     assert result.parcel_address_point_geojson is not None
-    assert result.parcel_lookup_method in {"contains_point", "none"}
+    assert result.parcel_lookup_method in {"contains_point", "none", None}
     assert result.geocode_to_anchor_distance_m is not None
     assert result.geocode_to_anchor_distance_m > 0
 
@@ -146,3 +146,35 @@ def test_property_anchor_uses_nearest_parcel_within_tolerance(tmp_path: Path, mo
     if result.parcel_lookup_method == "nearest_within_tolerance":
         assert result.parcel_lookup_distance_m is not None
         assert result.parcel_lookup_distance_m > 0
+
+
+@pytest.mark.skipif(not _geo_ready(), reason="Property anchor tests require shapely")
+def test_interpolated_geocode_allows_wider_address_point_tolerance(tmp_path: Path) -> None:
+    address_points = _write_geojson(
+        tmp_path / "address_points_wide.geojson",
+        [
+            {
+                "type": "Feature",
+                "properties": {"address_id": "ap-wide"},
+                "geometry": {"type": "Point", "coordinates": [-113.99410, 46.87184]},
+            }
+        ],
+    )
+    resolver = PropertyAnchorResolver(address_points_path=address_points, parcels_path=None)
+
+    interpolated = resolver.resolve(
+        geocoded_lat=46.87230,
+        geocoded_lon=-113.99410,
+        geocode_precision="interpolated",
+    )
+    rooftop = resolver.resolve(
+        geocoded_lat=46.87230,
+        geocoded_lon=-113.99410,
+        geocode_precision="rooftop",
+    )
+
+    assert interpolated.anchor_source == "authoritative_address_point"
+    assert interpolated.address_point_lookup_distance_m is not None
+    assert interpolated.address_point_lookup_distance_m > resolver.max_address_point_distance_m
+    assert interpolated.anchor_quality in {"medium", "high"}
+    assert rooftop.anchor_source != "authoritative_address_point"

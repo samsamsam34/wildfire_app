@@ -44,6 +44,10 @@ class PropertyAnchorResolution:
     address_point_source_name: str | None = None
     address_point_source_vintage: str | None = None
     geocode_to_anchor_distance_m: float | None = None
+    anchor_selection_method: str | None = None
+    anchor_quality: str = "low"
+    anchor_quality_score: float = 0.0
+    address_point_lookup_distance_m: float | None = None
     source_conflict_flag: bool = False
     diagnostics: list[str] = field(default_factory=list)
     alignment_notes: list[str] = field(default_factory=list)
@@ -73,6 +77,10 @@ class PropertyAnchorResolution:
             "address_point_source_name": self.address_point_source_name,
             "address_point_source_vintage": self.address_point_source_vintage,
             "geocode_to_anchor_distance_m": self.geocode_to_anchor_distance_m,
+            "property_anchor_selection_method": self.anchor_selection_method,
+            "property_anchor_quality": self.anchor_quality,
+            "property_anchor_quality_score": self.anchor_quality_score,
+            "address_point_lookup_distance_m": self.address_point_lookup_distance_m,
             "source_conflict_flag": bool(self.source_conflict_flag),
             "alignment_notes": list(self.alignment_notes),
         }
@@ -226,9 +234,11 @@ class PropertyAnchorResolver:
         self,
         *,
         geocode_point: Any,
+        max_distance_m: float | None = None,
     ) -> tuple[dict[str, Any] | None, float | None]:
         if not self._geo_ready() or not self._file_exists(self.address_points_path):
             return None, None
+        threshold = float(max_distance_m if max_distance_m is not None else self.max_address_point_distance_m)
         best_feature: dict[str, Any] | None = None
         best_distance: float | None = None
         for feature in self._load_geojson_features(self.address_points_path):
@@ -237,7 +247,7 @@ class PropertyAnchorResolver:
                 continue
             point = Point(coords[1], coords[0])
             distance_m = self._distance_m(geocode_point, point)
-            if distance_m > self.max_address_point_distance_m:
+            if distance_m > threshold:
                 continue
             if best_distance is None or distance_m < best_distance:
                 best_feature = feature
@@ -248,9 +258,11 @@ class PropertyAnchorResolver:
         self,
         *,
         anchor_point: Any,
+        max_lookup_distance_m: float | None = None,
     ) -> tuple[dict[str, Any] | None, Any | None, str | None, float | None]:
         if not self._geo_ready() or not self._file_exists(self.parcels_path):
             return None, None, None, None
+        threshold = float(max_lookup_distance_m if max_lookup_distance_m is not None else self.max_parcel_lookup_distance_m)
         containing: list[tuple[dict[str, Any], Any]] = []
         nearest_feature: dict[str, Any] | None = None
         nearest_geom: Any | None = None
@@ -281,7 +293,7 @@ class PropertyAnchorResolver:
                 nearest_feature is not None
                 and nearest_geom is not None
                 and nearest_distance_m is not None
-                and nearest_distance_m <= self.max_parcel_lookup_distance_m
+                and nearest_distance_m <= threshold
             ):
                 return nearest_feature, nearest_geom, "nearest_within_tolerance", round(float(nearest_distance_m), 2)
             return None, None, "none", None
@@ -301,6 +313,78 @@ class PropertyAnchorResolver:
         if p == "approximate":
             return "approximate_geocode"
         return "geocoded_address_point"
+
+    @staticmethod
+    def _distance_limits_for_precision(
+        *,
+        geocode_precision: str,
+        address_default_m: float,
+        parcel_default_m: float,
+        override_anchor: bool,
+    ) -> tuple[float, float]:
+        # Lower-precision geocodes are frequently offset from true parcels/addresses;
+        # widen lookup tolerances before falling back to weaker anchor modes.
+        precision = str(geocode_precision or "unknown").strip().lower()
+        address_limit = float(address_default_m)
+        parcel_limit = float(parcel_default_m)
+        if precision == "interpolated":
+            address_limit = max(address_limit + 18.0, address_limit * 1.8)
+            parcel_limit = max(parcel_limit + 22.0, parcel_limit * 2.0)
+        elif precision in {"approximate", "unknown"}:
+            address_limit = max(address_limit + 25.0, address_limit * 2.2)
+            parcel_limit = max(parcel_limit + 28.0, parcel_limit * 2.4)
+        if override_anchor:
+            parcel_limit = max(parcel_limit, parcel_default_m * 2.0)
+        return min(address_limit, 160.0), min(parcel_limit, 220.0)
+
+    @staticmethod
+    def _anchor_quality_summary(
+        *,
+        anchor_source: str,
+        geocode_precision: str,
+        geocode_to_anchor_distance_m: float,
+        parcel_present: bool,
+        address_point_present: bool,
+    ) -> tuple[str, float]:
+        source = str(anchor_source or "")
+        precision = str(geocode_precision or "unknown").strip().lower()
+        score = 0.48
+        if source == "authoritative_address_point":
+            score = 0.95
+        elif source == "parcel_polygon_centroid":
+            score = 0.83
+        elif source == "rooftop_geocode":
+            score = 0.80
+        elif source == "address_point_geocode":
+            score = 0.76
+        elif source == "interpolated_geocode":
+            score = 0.62
+        elif source == "approximate_geocode":
+            score = 0.48
+        elif source == "user_selected_point":
+            score = 0.84 if parcel_present else 0.74
+        if address_point_present and source != "authoritative_address_point":
+            score += 0.04
+        if parcel_present:
+            score += 0.03
+        if precision == "approximate":
+            score -= 0.08
+        elif precision == "unknown":
+            score -= 0.05
+        if geocode_to_anchor_distance_m > 90.0:
+            score -= 0.12
+        elif geocode_to_anchor_distance_m > 45.0:
+            score -= 0.07
+        elif geocode_to_anchor_distance_m > 20.0:
+            score -= 0.03
+        score = round(max(0.0, min(1.0, score)), 2)
+        if score >= 0.82:
+            tier = "high"
+        elif score >= 0.60:
+            tier = "medium"
+        else:
+            tier = "low"
+        return tier, score
 
     def resolve(
         self,
@@ -352,7 +436,16 @@ class PropertyAnchorResolver:
             if override_anchor is not None
             else geocode_point
         )
-        address_feature, address_distance_m = self._best_address_point(geocode_point=geocode_point)
+        address_limit_m, parcel_limit_m = self._distance_limits_for_precision(
+            geocode_precision=fallback_precision,
+            address_default_m=self.max_address_point_distance_m,
+            parcel_default_m=self.max_parcel_lookup_distance_m,
+            override_anchor=override_anchor is not None,
+        )
+        address_feature, address_distance_m = self._best_address_point(
+            geocode_point=geocode_point,
+            max_distance_m=address_limit_m,
+        )
         address_point = None
         if address_feature is not None:
             coords = self._coords_from_feature(address_feature)
@@ -369,26 +462,36 @@ class PropertyAnchorResolver:
                 parcel_geom,
                 parcel_lookup_method,
                 parcel_lookup_distance_m,
-            ) = self._best_parcel_for_point(anchor_point=requested_anchor_point)
+            ) = self._best_parcel_for_point(
+                anchor_point=requested_anchor_point,
+                max_lookup_distance_m=parcel_limit_m,
+            )
         elif address_point is not None:
             (
                 parcel_feature,
                 parcel_geom,
                 parcel_lookup_method,
                 parcel_lookup_distance_m,
-            ) = self._best_parcel_for_point(anchor_point=address_point)
+            ) = self._best_parcel_for_point(
+                anchor_point=address_point,
+                max_lookup_distance_m=parcel_limit_m,
+            )
         if parcel_feature is None or parcel_geom is None:
             (
                 parcel_feature,
                 parcel_geom,
                 parcel_lookup_method,
                 parcel_lookup_distance_m,
-            ) = self._best_parcel_for_point(anchor_point=geocode_point)
+            ) = self._best_parcel_for_point(
+                anchor_point=geocode_point,
+                max_lookup_distance_m=parcel_limit_m,
+            )
 
         anchor_lat = float(geocoded_lat)
         anchor_lon = float(geocoded_lon)
         anchor_source = self._anchor_source_from_geocode_precision(fallback_precision)
         anchor_precision = fallback_precision
+        anchor_selection_method = "geocode_fallback"
         diagnostics: list[str] = []
 
         if override_anchor is not None:
@@ -396,12 +499,14 @@ class PropertyAnchorResolver:
             anchor_lon = float(override_anchor[1])
             anchor_source = str(property_anchor_override_source or "user_selected_point")
             anchor_precision = str(property_anchor_override_precision or "user_selected_point")
+            anchor_selection_method = "user_selected_point"
             diagnostics.append("Property anchor uses the user-selected home point.")
         elif address_feature is not None and address_point is not None and "address_point" in self.source_priority:
             anchor_lat = float(address_point.y)
             anchor_lon = float(address_point.x)
             anchor_source = "authoritative_address_point"
             anchor_precision = "parcel_or_address_point"
+            anchor_selection_method = "address_point_nearest"
             diagnostics.append("Property anchor uses configured address-point source.")
         elif parcel_geom is not None and "parcel_centroid" in self.source_priority:
             centroid = parcel_geom.centroid
@@ -409,6 +514,7 @@ class PropertyAnchorResolver:
             anchor_lon = float(centroid.x)
             anchor_source = "parcel_polygon_centroid"
             anchor_precision = "parcel_or_address_point"
+            anchor_selection_method = "parcel_centroid"
             diagnostics.append("Property anchor uses parcel centroid because no address point was selected.")
         else:
             diagnostics.append("Property anchor uses geocode point fallback.")
@@ -426,6 +532,13 @@ class PropertyAnchorResolver:
         anchor_point = Point(anchor_lon, anchor_lat)
         geocode_to_anchor_distance_m = self._distance_m(geocode_point, anchor_point)
         source_conflict_flag = geocode_to_anchor_distance_m >= 25.0
+        anchor_quality, anchor_quality_score = self._anchor_quality_summary(
+            anchor_source=anchor_source,
+            geocode_precision=fallback_precision,
+            geocode_to_anchor_distance_m=geocode_to_anchor_distance_m,
+            parcel_present=parcel_geom is not None,
+            address_point_present=address_point is not None,
+        )
         alignment_notes: list[str] = []
         if geocode_to_anchor_distance_m >= 8.0:
             alignment_notes.append(
@@ -435,6 +548,12 @@ class PropertyAnchorResolver:
             alignment_notes.append(
                 "Location sources conflict materially; structure-specific overlays should be treated with caution."
             )
+        diagnostics.append(
+            f"Anchor lookup tolerances used: address_point<= {address_limit_m:.1f} m, parcel<= {parcel_limit_m:.1f} m."
+        )
+        diagnostics.append(
+            f"Anchor quality assessed as {anchor_quality} ({anchor_quality_score:.2f})."
+        )
 
         parcel_props = dict(parcel_feature.get("properties") or {}) if isinstance(parcel_feature, dict) else {}
         address_props = dict(address_feature.get("properties") or {}) if isinstance(address_feature, dict) else {}
@@ -496,6 +615,10 @@ class PropertyAnchorResolver:
             address_point_source_name=address_source_name,
             address_point_source_vintage=address_source_vintage,
             geocode_to_anchor_distance_m=round(geocode_to_anchor_distance_m, 2),
+            anchor_selection_method=anchor_selection_method,
+            anchor_quality=anchor_quality,
+            anchor_quality_score=anchor_quality_score,
+            address_point_lookup_distance_m=(round(float(address_distance_m), 2) if address_distance_m is not None else None),
             source_conflict_flag=source_conflict_flag,
             diagnostics=diagnostics,
             alignment_notes=alignment_notes,

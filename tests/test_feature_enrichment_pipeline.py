@@ -70,6 +70,13 @@ def test_build_feature_bundle_summary_returns_source_map():
             "canopy_adjacency_proxy_pct": 44.0,
             "vegetation_continuity_proxy_pct": 58.0,
             "nearest_high_fuel_patch_distance_ft": 28.0,
+            "feature_sampling": {
+                "burn_probability": {"index": 72.0, "scope": "region_level"},
+                "hazard_severity": {"index": 67.0, "scope": "region_level"},
+                "slope": {"index": 51.0, "scope": "property_specific"},
+                "fuel_model": {"index": 64.0, "scope": "neighborhood_level"},
+                "canopy_cover": {"index": 54.0, "scope": "neighborhood_level"},
+            },
         },
         source_status={
             "building_footprint": {"source": "microsoft_buildings", "status": "observed"},
@@ -92,6 +99,26 @@ def test_build_feature_bundle_summary_returns_source_map():
     assert summary["data_sources"]["parcel"] == "county_or_regrid_parcels"
     assert summary["coverage_flags"]["roads"] is True
     assert summary["feature_snapshot"]["near_structure_vegetation_0_5_pct"] == 61.0
+    metrics = summary["coverage_metrics"]
+    assert metrics["observed_feature_count"] >= 4
+    assert metrics["fallback_feature_count"] == 0
+    assert metrics["environmental_layer_coverage_score"] > 0
+    assert metrics["property_specificity_score"] > 0
+    geometry = summary["geometry_provenance"]
+    assert geometry["geometry_basis"] == "footprint"
+
+
+def test_apply_enrichment_source_fallbacks_normalizes_alias_runtime_keys(tmp_path):
+    roads_alias = _touch(tmp_path / "road_network.geojson")
+    runtime_paths = {
+        "road_network": roads_alias,
+        "roads": "",
+    }
+
+    updated, status, _notes = apply_enrichment_source_fallbacks(runtime_paths)
+
+    assert updated["roads"] == roads_alias
+    assert status["roads"]["status"] == "observed"
 
 
 def test_feature_bundle_cache_roundtrip(tmp_path):

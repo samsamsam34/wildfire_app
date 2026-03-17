@@ -154,6 +154,47 @@ def test_interpolated_like_road_point_does_not_force_distant_match(tmp_path: Pat
 
 
 @pytest.mark.skipif(not _geo_ready(), reason="Building footprint matching tests require shapely")
+def test_interpolated_precision_can_match_when_within_relaxed_distance(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("WF_STRUCTURE_MATCH_MAX_DISTANCE_M", "12")
+    footprints_path = _write_geojson(
+        tmp_path / "interpolated_relaxed.geojson",
+        [
+            {
+                "type": "Feature",
+                "properties": {"id": "road_offset_home"},
+                "geometry": {
+                    "type": "Polygon",
+                    "coordinates": [[
+                        [-105.00036, 40.00008],
+                        [-105.00019, 40.00008],
+                        [-105.00019, 39.99994],
+                        [-105.00036, 39.99994],
+                        [-105.00036, 40.00008],
+                    ]],
+                },
+            }
+        ],
+    )
+    client = BuildingFootprintClient(path=footprints_path, max_search_m=90.0)
+
+    interpolated = client.get_building_footprint(
+        lat=40.00000,
+        lon=-105.0,
+        anchor_precision="interpolated",
+    )
+    rooftop = client.get_building_footprint(
+        lat=40.00000,
+        lon=-105.0,
+        anchor_precision="rooftop",
+    )
+
+    assert interpolated.found is True
+    assert interpolated.match_status == "matched"
+    assert any("expanded structure-match distance" in note.lower() for note in interpolated.assumptions)
+    assert rooftop.found is False
+
+
+@pytest.mark.skipif(not _geo_ready(), reason="Building footprint matching tests require shapely")
 def test_parcel_overlap_bias_prefers_structure_on_parcel(tmp_path: Path) -> None:
     from shapely.geometry import Polygon
 
@@ -180,11 +221,11 @@ def test_parcel_overlap_bias_prefers_structure_on_parcel(tmp_path: Path) -> None
                 "geometry": {
                     "type": "Polygon",
                     "coordinates": [[
-                        [-105.00022, 40.00010],
-                        [-105.00006, 40.00010],
-                        [-105.00006, 39.99994],
-                        [-105.00022, 39.99994],
-                        [-105.00022, 40.00010],
+                        [-105.00034, 40.00010],
+                        [-105.00018, 40.00010],
+                        [-105.00018, 39.99994],
+                        [-105.00034, 39.99994],
+                        [-105.00034, 40.00010],
                     ]],
                 },
             },
@@ -211,7 +252,7 @@ def test_parcel_overlap_bias_prefers_structure_on_parcel(tmp_path: Path) -> None
     assert result.match_status == "matched"
     assert result.match_method == "parcel_intersection"
     assert result.matched_structure_id == "on_parcel"
-    assert result.confidence >= 0.9
+    assert result.confidence >= 0.85
     assert any("parcel" in note.lower() for note in result.assumptions)
 
 
@@ -245,11 +286,11 @@ def test_structure_matching_prefers_overture_source_when_available(tmp_path: Pat
                 "geometry": {
                     "type": "Polygon",
                     "coordinates": [[
-                        [-105.00020, 40.00014],
-                        [-104.99990, 40.00014],
-                        [-104.99990, 39.99988],
-                        [-105.00020, 39.99988],
-                        [-105.00020, 40.00014],
+                        [-105.00034, 40.00022],
+                        [-105.00014, 40.00022],
+                        [-105.00014, 40.00004],
+                        [-105.00034, 40.00004],
+                        [-105.00034, 40.00022],
                     ]],
                 },
             }

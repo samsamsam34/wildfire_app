@@ -17,7 +17,7 @@ This pipeline enriches property context before `RiskEngine.score(...)` runs and 
    - LANDFIRE fuel/canopy, MTBS/perimeters, OSM roads, gridMET dryness, NAIP artifacts.
 3. Build/refresh property anchor + structure rings (`backend/wildfire_data.py`).
 4. Sample raster/vector features and compute derived context fields.
-5. Build `feature_bundle_summary` (source map, coverage flags, geometry basis, feature snapshot).
+5. Build `feature_bundle_summary` (source map, coverage flags, geometry basis, feature snapshot, quality metrics).
 6. Cache the full `WildfireContext` artifact (`backend/feature_bundle_cache.py`) keyed by:
    - coordinates
    - active runtime paths + mtimes
@@ -30,9 +30,24 @@ This pipeline enriches property context before `RiskEngine.score(...)` runs and 
 - `property_level_context.feature_bundle_summary`
 - `property_level_context.feature_bundle_data_sources`
 - `property_level_context.feature_bundle_coverage_flags`
+- `property_level_context.feature_bundle_summary.coverage_metrics`
+- `property_level_context.feature_bundle_summary.geometry_provenance`
 - `property_level_context.feature_bundle_id`
 - `property_level_context.feature_bundle_cache_hit`
 - `/risk/layer-diagnostics` now includes a `feature_bundle` block.
+
+## Assumption-Reduction Mechanics
+
+- Anchor resolution is precision-aware (`rooftop` vs `interpolated`/`approximate`) and emits:
+  - `property_anchor_quality`
+  - `property_anchor_quality_score`
+  - `property_anchor_selection_method`
+- Structure matching keeps ambiguity protection, but allows slightly wider matching for low-precision anchors.
+- Raster sampling uses a staged lookup:
+  1. exact point sample
+  2. nearby valid sample (small-radius search)
+  3. source-adapter fallback (WHP/gridMET/MTBS/OSM)
+- Nearby raster fallback is marked in diagnostics as partial coverage rather than silently treated as exact.
 
 ## Key Modules
 

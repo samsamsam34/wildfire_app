@@ -1516,6 +1516,7 @@ def _normalize_property_level_context(raw_context: object) -> dict[str, Any]:
             "footprint_status": "not_found",
             "structure_match_status": "none",
             "structure_match_method": None,
+            "structure_selection_method": None,
             "structure_match_confidence": 0.0,
             "building_source": None,
             "building_source_version": None,
@@ -1536,6 +1537,10 @@ def _normalize_property_level_context(raw_context: object) -> dict[str, Any]:
             "display_point_source": "property_anchor_point",
             "property_anchor_source": "geocoded_address_point",
             "property_anchor_precision": "unknown",
+            "property_anchor_selection_method": "geocode_fallback",
+            "property_anchor_quality": "low",
+            "property_anchor_quality_score": 0.0,
+            "address_point_lookup_distance_m": None,
             "geocoded_address_point": None,
             "assessed_property_display_point": None,
             "matched_structure_centroid": None,
@@ -1567,6 +1572,7 @@ def _normalize_property_level_context(raw_context: object) -> dict[str, Any]:
             else ("nearest_building_fallback" if footprint_used else None)
         ),
     )
+    normalized.setdefault("structure_selection_method", normalized.get("structure_match_method"))
     normalized.setdefault("structure_match_confidence", float(normalized.get("footprint_confidence") or (0.9 if footprint_used else 0.0)))
     normalized.setdefault("building_source", str(normalized.get("footprint_source_name") or "") or None)
     normalized.setdefault("building_source_version", str(normalized.get("footprint_source_vintage") or "") or None)
@@ -1639,6 +1645,19 @@ def _normalize_property_level_context(raw_context: object) -> dict[str, Any]:
     )
     normalized.setdefault("property_anchor_source", "geocoded_address_point")
     normalized.setdefault("property_anchor_precision", "unknown")
+    normalized.setdefault("property_anchor_selection_method", "geocode_fallback")
+    normalized.setdefault("property_anchor_quality", "low")
+    try:
+        normalized["property_anchor_quality_score"] = float(normalized.get("property_anchor_quality_score") or 0.0)
+    except (TypeError, ValueError):
+        normalized["property_anchor_quality_score"] = 0.0
+    try:
+        lookup_distance = normalized.get("address_point_lookup_distance_m")
+        normalized["address_point_lookup_distance_m"] = (
+            float(lookup_distance) if lookup_distance is not None else None
+        )
+    except (TypeError, ValueError):
+        normalized["address_point_lookup_distance_m"] = None
     normalized.setdefault("geocoded_address_point", {"latitude": None, "longitude": None})
     normalized.setdefault("assessed_property_display_point", normalized.get("property_anchor_point"))
     matched_structure_centroid = normalized.get("matched_structure_centroid")
@@ -1826,6 +1845,9 @@ def _normalize_layer_coverage(
 
 def _coerce_region_readiness(value: object) -> str:
     candidate = str(value or "").strip()
+    if not candidate:
+        # Legacy contexts may not include explicit region readiness metadata.
+        return "property_specific_ready"
     if candidate in REGION_PROPERTY_SPECIFIC_READINESS_ORDER:
         return candidate
     return "limited_regional_ready"
@@ -1883,6 +1905,16 @@ def _build_feature_coverage_preflight(
     near_structure_available = near_structure_ring_available or near_structure_proxy_available
     region_readiness = _region_readiness_penalty_summary(property_level_context)
     region_readiness_state = str(region_readiness.get("region_property_specific_readiness") or "limited_regional_ready")
+    feature_bundle_summary = (
+        property_level_context.get("feature_bundle_summary")
+        if isinstance(property_level_context.get("feature_bundle_summary"), dict)
+        else {}
+    )
+    bundle_metrics = (
+        feature_bundle_summary.get("coverage_metrics")
+        if isinstance(feature_bundle_summary.get("coverage_metrics"), dict)
+        else {}
+    )
 
     feature_coverage_summary = {
         "parcel_polygon_available": parcel_polygon_available,
@@ -1897,6 +1929,16 @@ def _build_feature_coverage_preflight(
     total_count = max(1, len(feature_coverage_summary))
     feature_coverage_percent = round((observed_count / float(total_count)) * 100.0, 1)
     missing_core_layer_count = total_count - observed_count
+    observed_feature_count = int(bundle_metrics.get("observed_feature_count") or 0)
+    inferred_feature_count = int(bundle_metrics.get("inferred_feature_count") or 0)
+    fallback_feature_count = int(bundle_metrics.get("fallback_feature_count") or 0)
+    missing_feature_count = int(bundle_metrics.get("missing_feature_count") or 0)
+    bundle_metrics_present = bool(bundle_metrics)
+    observed_weight_fraction = float(bundle_metrics.get("observed_weight_fraction") or 0.0)
+    fallback_dominance_ratio = float(bundle_metrics.get("fallback_dominance_ratio") or 0.0)
+    geometry_quality_score = float(bundle_metrics.get("structure_geometry_quality_score") or 0.0)
+    environmental_layer_coverage_score = float(bundle_metrics.get("environmental_layer_coverage_score") or 0.0)
+    property_specificity_score = float(bundle_metrics.get("property_specificity_score") or 0.0)
     geometry_basis = (
         "footprint"
         if footprint_available
@@ -1919,6 +1961,7 @@ def _build_feature_coverage_preflight(
     elif (
         feature_coverage_percent >= 38.0
         and major_environmental_missing_count <= 1
+        and (not bundle_metrics_present or fallback_dominance_ratio < 0.72)
     ):
         assessment_specificity_tier = "address_level"
     else:
@@ -1932,12 +1975,18 @@ def _build_feature_coverage_preflight(
     # If both parcel and footprint are missing, never allow property-specific semantics.
     if not footprint_available and not parcel_polygon_available and assessment_specificity_tier == "property_specific":
         assessment_specificity_tier = "address_level"
+    if bundle_metrics_present and geometry_quality_score and geometry_quality_score < 0.62 and assessment_specificity_tier == "property_specific":
+        assessment_specificity_tier = "address_level"
+    if bundle_metrics_present and fallback_dominance_ratio >= 0.80:
+        assessment_specificity_tier = "regional_estimate"
 
     limited_assessment_flag = (
         assessment_specificity_tier != "property_specific"
         or missing_core_layer_count >= 3
         or bool(coverage_summary.critical_missing_layers)
         or major_environmental_missing_count >= 2
+        or (bundle_metrics_present and fallback_dominance_ratio >= 0.70)
+        or (bundle_metrics_present and observed_weight_fraction <= 0.35)
         or region_readiness_state != "property_specific_ready"
         or int(region_readiness.get("region_required_missing_count") or 0) > 0
     )
@@ -1961,6 +2010,15 @@ def _build_feature_coverage_preflight(
         "missing_core_layer_count": missing_core_layer_count,
         "geometry_basis": geometry_basis,
         "major_environmental_missing_count": major_environmental_missing_count,
+        "observed_feature_count": observed_feature_count,
+        "inferred_feature_count": inferred_feature_count,
+        "fallback_feature_count": fallback_feature_count,
+        "missing_feature_count": missing_feature_count,
+        "observed_weight_fraction": round(observed_weight_fraction, 3),
+        "fallback_dominance_ratio": round(fallback_dominance_ratio, 3),
+        "structure_geometry_quality_score": round(geometry_quality_score, 3),
+        "environmental_layer_coverage_score": round(environmental_layer_coverage_score, 1),
+        "property_specificity_score": round(property_specificity_score, 1),
         "score_specificity_warning": specificity_warning,
     }
     preflight.update(region_readiness)

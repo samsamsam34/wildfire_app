@@ -1003,6 +1003,7 @@ class WildfireDataClient:
                     "footprint_confidence": 0.0,
                     "structure_match_status": "error",
                     "structure_match_method": None,
+                    "structure_selection_method": None,
                     "matched_structure_id": None,
                     "structure_match_confidence": 0.0,
                     "structure_match_distance_m": None,
@@ -1143,6 +1144,7 @@ class WildfireDataClient:
                 "footprint_confidence": result.confidence,
                 "structure_match_status": match_status or "none",
                 "structure_match_method": match_method,
+                "structure_selection_method": match_method,
                 "matched_structure_id": getattr(result, "matched_structure_id", None),
                 "structure_match_confidence": match_confidence,
                 "structure_match_distance_m": match_distance,
@@ -1283,6 +1285,7 @@ class WildfireDataClient:
             "footprint_confidence": result.confidence,
             "structure_match_status": match_status or ("matched" if result.found else "none"),
             "structure_match_method": match_method,
+            "structure_selection_method": match_method,
             "matched_structure_id": getattr(result, "matched_structure_id", None),
             "structure_match_confidence": structure_match_confidence,
             "structure_match_distance_m": match_distance,
@@ -1339,6 +1342,30 @@ class WildfireDataClient:
         except Exception:
             return None
 
+    def _sample_raster_nearby(
+        self,
+        path: str,
+        lat: float,
+        lon: float,
+        *,
+        max_radius_m: float = 120.0,
+        step_m: float = 30.0,
+    ) -> tuple[float | None, float | None]:
+        if not (rasterio and self._file_exists(path)):
+            return None, None
+        radius_steps = max(1, int(max_radius_m / max(step_m, 1.0)))
+        for ring in range(1, radius_steps + 1):
+            radius_m = ring * step_m
+            points = max(8, int(round((2.0 * math.pi * radius_m) / max(step_m, 1.0))))
+            for idx in range(points):
+                theta = 2.0 * math.pi * idx / float(points)
+                d_lat = self._meters_to_lat_deg(radius_m * math.sin(theta))
+                d_lon = self._meters_to_lon_deg(radius_m * math.cos(theta), lat)
+                sample = self._sample_raster_point(path, lat + d_lat, lon + d_lon)
+                if sample is not None:
+                    return float(sample), float(radius_m)
+        return None, None
+
     def _sample_layer_value_detailed(self, path: str, lat: float, lon: float) -> tuple[float | None, str, str | None]:
         if not path:
             return None, "not_configured", "Layer path is not configured."
@@ -1351,27 +1378,45 @@ class WildfireDataClient:
             x, y = self._to_dataset_crs(ds, lon, lat)
             bounds = ds.bounds
             if x < bounds.left or x > bounds.right or y < bounds.bottom or y > bounds.top:
+                nearby_value, nearby_distance_m = self._sample_raster_nearby(path, lat, lon)
+                if nearby_value is not None:
+                    return (
+                        float(nearby_value),
+                        "ok_nearby",
+                        f"Property point was outside layer extent; nearest valid sample within {nearby_distance_m:.1f} m used.",
+                    )
                 return None, "outside_extent", "Property point is outside layer extent."
             sample = next(ds.sample([(x, y)]))[0]
             nodata = ds.nodata
             if nodata is not None and float(sample) == float(nodata):
+                nearby_value, nearby_distance_m = self._sample_raster_nearby(path, lat, lon)
+                if nearby_value is not None:
+                    return (
+                        float(nearby_value),
+                        "ok_nearby",
+                        f"Property point sampled nodata; nearest valid sample within {nearby_distance_m:.1f} m used.",
+                    )
                 return None, "outside_extent", "Layer sampled nodata at property location."
             if np is not None and hasattr(np, "isnan") and np.isnan(sample):
+                nearby_value, nearby_distance_m = self._sample_raster_nearby(path, lat, lon)
+                if nearby_value is not None:
+                    return (
+                        float(nearby_value),
+                        "ok_nearby",
+                        f"Property point sampled nodata; nearest valid sample within {nearby_distance_m:.1f} m used.",
+                    )
                 return None, "outside_extent", "Layer sampled nodata at property location."
             return float(sample), "ok", None
         except Exception as exc:
             return None, "sampling_failed", str(exc)
 
     def _sample_layer_value(self, path: str, lat: float, lon: float) -> Tuple[float | None, str]:
-        if not self._file_exists(path):
-            return None, "missing"
-        try:
-            value = self._sample_raster_point_raw(path, lat, lon)
-        except Exception:
+        value, status, _reason = self._sample_layer_value_detailed(path, lat, lon)
+        if status in {"ok", "ok_nearby"} and value is not None:
+            return float(value), "ok"
+        if status == "sampling_failed":
             return None, "error"
-        if value is None:
-            return None, "missing"
-        return value, "ok"
+        return None, "missing"
 
     def _sample_circle(self, path: str, lat: float, lon: float, radius_m: float, step_m: float = 30.0) -> List[float]:
         if not (rasterio and self._file_exists(path)):
@@ -1665,7 +1710,7 @@ class WildfireDataClient:
         structure_ring_metrics: dict[str, dict[str, float | None]] = {}
 
         def _status_for_env(sample_status: str) -> str:
-            if sample_status == "ok":
+            if sample_status in {"ok", "ok_nearby"}:
                 return "ok"
             if sample_status == "sampling_failed":
                 return "error"
@@ -2230,7 +2275,7 @@ class WildfireDataClient:
             else:
                 assumptions.append("Slope/aspect rasters missing and DEM not configured.")
 
-        if slope_status_detail != "ok":
+        if slope_status_detail not in {"ok", "ok_nearby"}:
             update_layer_audit(
                 layer_audit,
                 "slope",
@@ -2251,8 +2296,9 @@ class WildfireDataClient:
                 "slope",
                 sample_attempted=True,
                 sample_succeeded=True,
-                coverage_status="observed",
+                coverage_status=("partial" if slope_status_detail == "ok_nearby" else "observed"),
                 raw_value_preview=round(float(slope), 2) if slope is not None else None,
+                note=slope_reason if slope_status_detail == "ok_nearby" else None,
             )
         environmental_layer_status["slope"] = _status_for_env(slope_status_detail)
         slope_index = None if slope is None else self._to_index(slope, 0.0, 45.0)
@@ -2339,6 +2385,9 @@ class WildfireDataClient:
                 sample_attempted=True,
                 sample_succeeded=False,
                 coverage_status=(
+                    "partial"
+                    if fuel_status_detail == "ok_nearby"
+                    else
                     "outside_extent"
                     if fuel_status_detail == "outside_extent"
                     else ("missing_file" if fuel_status_detail == "missing_file" else "not_configured")
@@ -2409,6 +2458,9 @@ class WildfireDataClient:
                 sample_attempted=True,
                 sample_succeeded=False,
                 coverage_status=(
+                    "partial"
+                    if canopy_status_detail == "ok_nearby"
+                    else
                     "outside_extent"
                     if canopy_status_detail == "outside_extent"
                     else ("missing_file" if canopy_status_detail == "missing_file" else "not_configured")

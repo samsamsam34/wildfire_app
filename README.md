@@ -163,6 +163,11 @@ Key response blocks:
 - `limited_assessment_flag`: true when missing-core coverage forces a lower-specificity assessment path
 - `feature_bundle`: canonical enrichment snapshot with `bundle_id`, cache hit status, and source-by-feature diagnostics
 - `feature_bundle_data_sources`: simplified source map used by homeowner/debug surfaces (e.g., building footprint, parcel, vegetation, roads, climate)
+- `feature_bundle_summary.coverage_metrics`: observed/inferred/fallback/missing feature counts plus
+  `observed_weight_fraction`, `fallback_dominance_ratio`, `structure_geometry_quality_score`,
+  `environmental_layer_coverage_score`, and `property_specificity_score`
+- `feature_bundle_summary.geometry_provenance`: anchor quality (`property_anchor_quality`), anchor method,
+  structure selection method, and geometry basis provenance
 
 `coverage_status` interpretation:
 - `observed`: sampled successfully
@@ -172,6 +177,7 @@ Key response blocks:
 - `sampling_failed`: read/CRS/runtime sampling failure
 - `fallback_used`: scoring fallback path was used
 - `partial`: layer exists but only partial evidence is available
+  - This now includes nearby raster sample recovery when point samples hit nodata/edge cells.
 
 Region resolution fields:
 - Assessment responses include `region_resolution` with `coverage_available`, `resolved_region_id`, `reason`, and `recommended_action`.
@@ -196,6 +202,7 @@ Fallback policy (current):
 - Active factor weights are renormalized across observed evidence.
 - Omission-driven uncertainty is surfaced as an explicit confidence penalty (`missing_factor_uncertainty`), not hidden as conservative numeric defaults.
 - Developer note: see [docs/fallback_specificity_policy.md](docs/fallback_specificity_policy.md).
+- Assumption-reduction map: [docs/assumption_reduction_gap_map.md](docs/assumption_reduction_gap_map.md).
 - Batch variance check script:
 
 ```bash
@@ -208,6 +215,11 @@ python scripts/analyze_open_model_score_spread.py \
   --fixture tests/fixtures/score_variance_scenarios.json \
   --json-out /tmp/open_model_spread.json \
   --csv-out /tmp/open_model_spread.csv
+
+# Assumption/fallback reduction analysis on saved assessment payloads
+python scripts/analyze_assumption_reduction.py \
+  --input /tmp/assessment_batch.json \
+  --csv-out /tmp/assumption_reduction.csv
 ```
 
 ## Local Development / Setup

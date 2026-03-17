@@ -428,10 +428,27 @@ class BuildingFootprintClient:
         normalized_precision = str(anchor_precision or "unknown").strip().lower()
         if match_method == "parcel_intersection":
             effective_max_match_distance_m = max(self.max_match_distance_m * 2.5, 60.0)
-        elif normalized_precision in {"interpolated", "approximate", "unknown"}:
-            effective_max_match_distance_m = min(self.max_match_distance_m, 18.0)
+        elif normalized_precision == "interpolated":
+            effective_max_match_distance_m = min(
+                float(self.max_search_m),
+                max(self.max_match_distance_m + 8.0, 22.0),
+            )
+        elif normalized_precision == "approximate":
+            effective_max_match_distance_m = min(
+                float(self.max_search_m),
+                max(self.max_match_distance_m + 10.0, 24.0),
+            )
+        elif normalized_precision == "unknown":
+            effective_max_match_distance_m = min(
+                float(self.max_search_m),
+                max(self.max_match_distance_m + 6.0, 20.0),
+            )
         else:
             effective_max_match_distance_m = self.max_match_distance_m
+        if match_method != "parcel_intersection" and effective_max_match_distance_m > self.max_match_distance_m:
+            assumptions.append(
+                f"Expanded structure-match distance to {effective_max_match_distance_m:.1f} m for low-precision anchor handling."
+            )
         candidate_summaries = [
             self._candidate_summary(
                 row={

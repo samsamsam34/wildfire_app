@@ -139,11 +139,38 @@ SOURCE_GROUPS: tuple[SourceGroup, ...] = (
     ),
 )
 
+RUNTIME_PATH_ALIASES: dict[str, str] = {
+    "building_footprints_overture": "footprints_overture",
+    "building_footprints_microsoft": "footprints_microsoft",
+    "building_footprints": "footprints",
+    "parcel_polygons": "parcels",
+    "parcel": "parcels",
+    "parcel_address_points": "address_points",
+    "road_network": "roads",
+    "road_centerlines": "roads",
+    "osm_roads": "roads",
+    "burn_probability": "burn_prob",
+    "wildfire_hazard": "hazard",
+    "fire_history_perimeters": "perimeters",
+}
+
+
+def _normalize_runtime_aliases(runtime_paths: dict[str, str]) -> dict[str, str]:
+    normalized = dict(runtime_paths)
+    for alias_key, canonical_key in RUNTIME_PATH_ALIASES.items():
+        canonical_value = str(normalized.get(canonical_key) or "").strip()
+        if canonical_value:
+            continue
+        alias_value = str(normalized.get(alias_key) or "").strip()
+        if alias_value:
+            normalized[canonical_key] = alias_value
+    return normalized
+
 
 def apply_enrichment_source_fallbacks(
     runtime_paths: dict[str, str],
 ) -> tuple[dict[str, str], dict[str, dict[str, Any]], list[str]]:
-    updated = dict(runtime_paths)
+    updated = _normalize_runtime_aliases(runtime_paths)
     source_status: dict[str, dict[str, Any]] = {}
     notes: list[str] = []
 
@@ -223,6 +250,13 @@ def build_feature_bundle_summary(
         key: value != "missing"
         for key, value in data_sources.items()
     }
+    source_observed_count = sum(1 for item in source_status.values() if str(item.get("status") or "") == "observed")
+    source_missing_count = sum(1 for item in source_status.values() if str(item.get("status") or "") == "missing")
+    source_fallback_count = sum(
+        1
+        for item in source_status.values()
+        if bool(item.get("fallback_applied")) and str(item.get("status") or "") == "observed"
+    )
 
     feature_snapshot = {
         "ring_metric_keys": sorted([key for key in ring_metrics.keys() if key.startswith("ring_")]),
@@ -233,6 +267,69 @@ def build_feature_bundle_summary(
         "nearest_high_fuel_patch_distance_ft": property_level_context.get("nearest_high_fuel_patch_distance_ft"),
         "access_exposure_index": ((property_level_context.get("access_context") or {}).get("access_exposure_index")),
     }
+    feature_sampling = (
+        property_level_context.get("feature_sampling")
+        if isinstance(property_level_context.get("feature_sampling"), dict)
+        else {}
+    )
+    observed_feature_count = 0
+    inferred_feature_count = 0
+    fallback_feature_count = 0
+    missing_feature_count = 0
+    for feature in feature_sampling.values():
+        if not isinstance(feature, dict):
+            missing_feature_count += 1
+            continue
+        scope = str(feature.get("scope") or "unknown").strip().lower()
+        value = feature.get("index")
+        if scope in {"property_specific", "neighborhood_level", "region_level"} and value is not None:
+            observed_feature_count += 1
+        elif scope in {"inferred", "estimated"}:
+            inferred_feature_count += 1
+        elif scope == "fallback":
+            fallback_feature_count += 1
+        else:
+            missing_feature_count += 1
+    total_feature_count = max(
+        1,
+        observed_feature_count + inferred_feature_count + fallback_feature_count + missing_feature_count,
+    )
+    observed_weight_fraction = round(float(observed_feature_count) / float(total_feature_count), 3)
+    fallback_dominance_ratio = round(float(fallback_feature_count) / float(total_feature_count), 3)
+    geometry_quality_by_basis = {
+        "footprint": 0.92,
+        "parcel": 0.74,
+        "geocode_point": 0.46,
+    }
+    geometry_quality_score = float(geometry_quality_by_basis.get(geometry_basis, 0.46))
+    anchor_quality_score = None
+    try:
+        anchor_quality_score = float(property_level_context.get("property_anchor_quality_score"))
+    except (TypeError, ValueError):
+        anchor_quality_score = None
+    if anchor_quality_score is not None:
+        geometry_quality_score = (geometry_quality_score * 0.7) + (max(0.0, min(1.0, anchor_quality_score)) * 0.3)
+    environmental_keys = ("burn_probability", "historical_fire", "roads", "climate_dryness", "vegetation", "canopy")
+    environmental_layer_coverage_score = round(
+        (
+            sum(1 for key in environmental_keys if coverage_flags.get(key))
+            / float(len(environmental_keys))
+        )
+        * 100.0,
+        1,
+    )
+    property_specificity_score = round(
+        max(
+            0.0,
+            min(
+                100.0,
+                (geometry_quality_score * 45.0)
+                + (environmental_layer_coverage_score * 0.35)
+                + (observed_weight_fraction * 20.0),
+            ),
+        ),
+        1,
+    )
 
     return {
         "bundle_schema_version": "1.0.0",
@@ -243,6 +340,31 @@ def build_feature_bundle_summary(
         "geometry_basis": geometry_basis,
         "data_sources": data_sources,
         "coverage_flags": coverage_flags,
+        "coverage_metrics": {
+            "source_observed_count": source_observed_count,
+            "source_missing_count": source_missing_count,
+            "source_fallback_count": source_fallback_count,
+            "observed_feature_count": observed_feature_count,
+            "inferred_feature_count": inferred_feature_count,
+            "fallback_feature_count": fallback_feature_count,
+            "missing_feature_count": missing_feature_count,
+            "observed_weight_fraction": observed_weight_fraction,
+            "fallback_dominance_ratio": fallback_dominance_ratio,
+            "structure_geometry_quality_score": round(float(geometry_quality_score), 3),
+            "environmental_layer_coverage_score": environmental_layer_coverage_score,
+            "property_specificity_score": property_specificity_score,
+        },
+        "geometry_provenance": {
+            "geometry_basis": geometry_basis,
+            "property_anchor_source": property_level_context.get("property_anchor_source"),
+            "property_anchor_precision": property_level_context.get("property_anchor_precision"),
+            "property_anchor_quality": property_level_context.get("property_anchor_quality"),
+            "property_anchor_quality_score": property_level_context.get("property_anchor_quality_score"),
+            "property_anchor_selection_method": property_level_context.get("property_anchor_selection_method"),
+            "structure_selection_method": property_level_context.get("structure_match_method"),
+            "footprint_source": property_level_context.get("footprint_source"),
+            "parcel_lookup_method": property_level_context.get("parcel_lookup_method"),
+        },
         "feature_snapshot": feature_snapshot,
         "environmental_layer_status": dict(environmental_layer_status or {}),
         "runtime_layer_paths": {k: v for k, v in runtime_paths.items() if str(v or "").strip()},
