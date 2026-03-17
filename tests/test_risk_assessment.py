@@ -2893,6 +2893,73 @@ def test_optional_layer_not_configured_is_explicit_and_nonfatal(monkeypatch, tmp
     assert any("not configured" in n.lower() for n in assessed["scoring_notes"])
 
 
+def test_runtime_region_readiness_limited_forces_stricter_confidence_and_restriction(monkeypatch, tmp_path):
+    constrained = _ctx(
+        env=56.0,
+        wildland=52.0,
+        historic=44.0,
+        ring_metrics={
+            "ring_0_5_ft": {"vegetation_density": 35.0},
+            "ring_5_30_ft": {"vegetation_density": 40.0},
+            "ring_30_100_ft": {"vegetation_density": 46.0},
+        },
+    )
+    constrained.property_level_context.update(
+        {
+            "region_status": "prepared",
+            "region_id": "test_region",
+            "region_property_specific_readiness": "limited_regional_ready",
+            "region_required_layers_missing": ["dem"],
+            "region_optional_layers_missing": ["whp", "gridmet_dryness"],
+            "region_enrichment_layers_missing": ["parcel_polygons"],
+            "region_missing_reason_by_layer": {"dem": "configured_but_outside_coverage"},
+            "layer_coverage_audit": [
+                {
+                    "layer_key": "dem",
+                    "display_name": "Digital Elevation Model",
+                    "required_for": ["site_hazard"],
+                    "configured": True,
+                    "present_in_region": True,
+                    "sample_attempted": True,
+                    "sample_succeeded": True,
+                    "coverage_status": "observed",
+                    "source_type": "prepared_region",
+                    "notes": [],
+                }
+            ],
+            "coverage_summary": {
+                "total_layers_checked": 1,
+                "observed_count": 1,
+                "partial_count": 0,
+                "fallback_count": 0,
+                "failed_count": 0,
+                "not_configured_count": 0,
+                "critical_missing_layers": [],
+                "recommended_actions": [],
+            },
+        }
+    )
+    _setup(monkeypatch, tmp_path, constrained)
+
+    assessed = _run(
+        _payload(
+            "Limited Readiness Road",
+            {"roof_type": "class a", "vent_type": "ember-resistant", "defensible_space_ft": 25},
+            confirmed=["roof_type", "vent_type", "defensible_space_ft"],
+        )
+    )
+    assert assessed["use_restriction"] == "not_for_underwriting_or_binding"
+    assert assessed["confidence_tier"] == "preliminary"
+    assert assessed["assessment_output_state"] in {"limited_regional_estimate", "insufficient_data"}
+    assert any("prepared region still reports required-layer gaps" in note.lower() for note in assessed["scoring_notes"])
+    limitation_categories = {
+        row["category"]
+        for row in ((assessed.get("homeowner_summary") or {}).get("assessment_limitations") or [])
+        if isinstance(row, dict) and row.get("category")
+    }
+    assert "prepared_region_readiness" in limitation_categories
+
+
 def test_portfolio_batch_and_partial_failure(monkeypatch, tmp_path):
     _setup(monkeypatch, tmp_path, _ctx(env=50.0, wildland=55.0, historic=45.0))
 

@@ -627,6 +627,26 @@ def test_plan_only_skip_optional_marks_optional_and_skipped(tmp_path):
     assert roads_diag["rerun_prep_only_sufficient"] is True
 
 
+def test_plan_only_operator_next_steps_includes_commands_and_config_blockers(tmp_path):
+    sources = _seed_sources(tmp_path)
+    result = prepare_region_from_catalog_or_sources(
+        region_id="plan_operator_steps",
+        display_name="Plan Operator Steps",
+        bounds={"min_lon": -0.6, "min_lat": 0.2, "max_lon": 0.6, "max_lat": 0.8},
+        catalog_root=tmp_path / "catalog",
+        regions_root=tmp_path / "regions",
+        source_config=_local_source_config(sources),
+        skip_optional_layers=False,
+        plan_only=True,
+    )
+    steps = result["operator_next_steps"]
+    assert steps["mode"] == "plan_only"
+    assert "execute_and_validate" in steps["next_commands"]
+    assert "python3 scripts/prepare_region_from_catalog_or_sources.py" in steps["next_commands"]["execute_and_validate"]
+    assert "whp" in steps["all_config_blockers"]
+    assert isinstance(steps["required_source_env_overrides"], dict)
+
+
 def test_prepare_any_region_uses_default_source_registry_and_runs_new_area_smoke(monkeypatch, tmp_path):
     sources = _seed_sources(tmp_path)
     catalog_root = tmp_path / "catalog"

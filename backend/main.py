@@ -303,6 +303,12 @@ OUTPUT_STATE_LIMITATION_TEXT: dict[str, str] = {
     ),
 }
 
+REGION_PROPERTY_SPECIFIC_READINESS_ORDER: dict[str, int] = {
+    "limited_regional_ready": 0,
+    "address_level_only": 1,
+    "property_specific_ready": 2,
+}
+
 ALLOWED_ROLES: set[str] = {"admin", "underwriter", "broker", "inspector", "agent", "viewer"}
 WRITE_ROLES: set[str] = {"admin", "underwriter", "broker", "inspector", "agent"}
 REVIEW_EDIT_ROLES: set[str] = {"admin", "underwriter"}
@@ -762,6 +768,10 @@ def _build_confidence(
     missing_core_layer_count = int(preflight.get("missing_core_layer_count") or 0)
     major_env_missing_count = int(preflight.get("major_environmental_missing_count") or 0)
     geometry_basis = str(preflight.get("geometry_basis") or "geocode_point")
+    region_readiness = _coerce_region_readiness(preflight.get("region_property_specific_readiness"))
+    region_required_missing_count = int(preflight.get("region_required_missing_count") or 0)
+    region_optional_missing_count = int(preflight.get("region_optional_missing_count") or 0)
+    region_enrichment_missing_count = int(preflight.get("region_enrichment_missing_count") or 0)
     if coverage_percent <= 15.0:
         confidence = min(confidence, 35.0)
     if missing_core_layer_count >= 4:
@@ -774,6 +784,14 @@ def _build_confidence(
         confidence = min(confidence, 45.0)
     if float(observed_weight_fraction) < 0.45:
         confidence = min(confidence, 50.0)
+    if region_readiness == "address_level_only":
+        confidence = min(confidence, 60.0)
+    elif region_readiness == "limited_regional_ready":
+        confidence = min(confidence, 38.0)
+    if region_required_missing_count > 0:
+        confidence = min(confidence, 25.0)
+    if (region_optional_missing_count + region_enrichment_missing_count) >= 6:
+        confidence = min(confidence, 52.0)
     if output_state == "address_level_estimate":
         confidence = min(confidence, 68.0)
     elif output_state == "limited_regional_estimate":
@@ -851,6 +869,12 @@ def _build_confidence(
         low_confidence_flags.append("Assessment is limited to regional-estimate specificity due to low coverage.")
     elif output_state == "insufficient_data":
         low_confidence_flags.append("Data is insufficient for a credible automatic estimate.")
+    if region_readiness != "property_specific_ready":
+        low_confidence_flags.append(
+            f"Prepared region readiness is {region_readiness}; property-specific confidence is capped."
+        )
+    if region_required_missing_count > 0:
+        low_confidence_flags.append("Prepared region is missing required layers for this bbox.")
 
     severe_layer_failure = external_fail_count >= 2 or missing_layer_count >= 4 or provider_error_count >= 1
     major_layer_failure = external_fail_count >= 1 or missing_layer_count >= 1 or provider_error_count >= 1
@@ -898,6 +922,14 @@ def _build_confidence(
     elif output_state == "insufficient_data":
         confidence_tier = "preliminary"
 
+    if region_readiness == "address_level_only" and confidence_tier == "high":
+        confidence_tier = "moderate"
+    if region_readiness == "limited_regional_ready":
+        if confidence_tier in {"high", "moderate"}:
+            confidence_tier = "low"
+    if region_required_missing_count > 0:
+        confidence_tier = "preliminary"
+
     if confidence_tier == "high":
         use_restriction = "shareable"
     elif confidence_tier == "moderate":
@@ -908,6 +940,11 @@ def _build_confidence(
         use_restriction = "not_for_underwriting_or_binding"
 
     if severe_layer_failure or missing_layer_count >= 2 or stale_share >= 25.0 or critical_unknown_or_stale >= 3:
+        use_restriction = "not_for_underwriting_or_binding"
+
+    if region_readiness == "address_level_only" and use_restriction == "shareable":
+        use_restriction = "homeowner_review_recommended"
+    if region_readiness == "limited_regional_ready" or region_required_missing_count > 0:
         use_restriction = "not_for_underwriting_or_binding"
 
     if output_state in {"limited_regional_estimate", "insufficient_data"}:
@@ -1780,6 +1817,31 @@ def _normalize_layer_coverage(
     return rows, summary
 
 
+def _coerce_region_readiness(value: object) -> str:
+    candidate = str(value or "").strip()
+    if candidate in REGION_PROPERTY_SPECIFIC_READINESS_ORDER:
+        return candidate
+    return "limited_regional_ready"
+
+
+def _region_readiness_penalty_summary(property_level_context: dict[str, Any]) -> dict[str, Any]:
+    readiness = _coerce_region_readiness(property_level_context.get("region_property_specific_readiness"))
+    required_missing = list(property_level_context.get("region_required_layers_missing") or [])
+    optional_missing = list(property_level_context.get("region_optional_layers_missing") or [])
+    enrichment_missing = list(property_level_context.get("region_enrichment_layers_missing") or [])
+    missing_reason = property_level_context.get("region_missing_reason_by_layer")
+    return {
+        "region_property_specific_readiness": readiness,
+        "region_required_missing_count": len(required_missing),
+        "region_optional_missing_count": len(optional_missing),
+        "region_enrichment_missing_count": len(enrichment_missing),
+        "region_required_layers_missing": [str(v) for v in required_missing if str(v).strip()],
+        "region_optional_layers_missing": [str(v) for v in optional_missing if str(v).strip()],
+        "region_enrichment_layers_missing": [str(v) for v in enrichment_missing if str(v).strip()],
+        "region_missing_reason_by_layer": dict(missing_reason) if isinstance(missing_reason, dict) else {},
+    }
+
+
 def _build_feature_coverage_preflight(
     *,
     context: WildfireContext,
@@ -1812,6 +1874,8 @@ def _build_feature_coverage_preflight(
         or str(access_context.get("status") or "") in {"ok", "partial"}
     )
     near_structure_available = near_structure_ring_available or near_structure_proxy_available
+    region_readiness = _region_readiness_penalty_summary(property_level_context)
+    region_readiness_state = str(region_readiness.get("region_property_specific_readiness") or "limited_regional_ready")
 
     feature_coverage_summary = {
         "parcel_polygon_available": parcel_polygon_available,
@@ -1853,6 +1917,11 @@ def _build_feature_coverage_preflight(
     else:
         assessment_specificity_tier = "regional_estimate"
 
+    if region_readiness_state == "limited_regional_ready":
+        assessment_specificity_tier = "regional_estimate"
+    elif region_readiness_state == "address_level_only" and assessment_specificity_tier == "property_specific":
+        assessment_specificity_tier = "address_level"
+
     # If both parcel and footprint are missing, never allow property-specific semantics.
     if not footprint_available and not parcel_polygon_available and assessment_specificity_tier == "property_specific":
         assessment_specificity_tier = "address_level"
@@ -1862,6 +1931,8 @@ def _build_feature_coverage_preflight(
         or missing_core_layer_count >= 3
         or bool(coverage_summary.critical_missing_layers)
         or major_environmental_missing_count >= 2
+        or region_readiness_state != "property_specific_ready"
+        or int(region_readiness.get("region_required_missing_count") or 0) > 0
     )
     specificity_warning = None
     if limited_assessment_flag:
@@ -1869,8 +1940,13 @@ def _build_feature_coverage_preflight(
             "Assessment uses partial/fallback evidence. Missing data reduces specificity and confidence "
             "instead of being treated as a property-specific observation."
         )
+        if region_readiness_state != "property_specific_ready":
+            specificity_warning = (
+                "Prepared region data is not property-specific-ready for this location. "
+                "Assessment is intentionally downgraded to lower-specificity guidance."
+            )
 
-    return {
+    preflight = {
         "feature_coverage_summary": feature_coverage_summary,
         "feature_coverage_percent": feature_coverage_percent,
         "assessment_specificity_tier": assessment_specificity_tier,
@@ -1880,6 +1956,8 @@ def _build_feature_coverage_preflight(
         "major_environmental_missing_count": major_environmental_missing_count,
         "score_specificity_warning": specificity_warning,
     }
+    preflight.update(region_readiness)
+    return preflight
 
 
 def _build_data_provenance(
@@ -2532,6 +2610,7 @@ def _apply_preflight_specificity_gate(
     observed_weight_fraction: float,
 ) -> tuple[ScoreEligibility, ScoreEligibility, ScoreEligibility, AssessmentStatus, list[str], str]:
     tier = str(preflight.get("assessment_specificity_tier") or "regional_estimate")
+    region_readiness = _coerce_region_readiness(preflight.get("region_property_specific_readiness"))
     limited = bool(preflight.get("limited_assessment_flag"))
     output_state = _derive_assessment_output_state(
         preflight=preflight,
@@ -2562,6 +2641,14 @@ def _apply_preflight_specificity_gate(
         home_updated.caveats.append(warning)
     if warning not in readiness_updated.caveats:
         readiness_updated.caveats.append(warning)
+    if region_readiness != "property_specific_ready":
+        region_warning = (
+            "Prepared region data is not property-specific-ready; specificity and confidence are intentionally capped."
+        )
+        if region_warning not in home_updated.caveats:
+            home_updated.caveats.append(region_warning)
+        if region_warning not in readiness_updated.caveats:
+            readiness_updated.caveats.append(region_warning)
 
     if output_state == "insufficient_data":
         site_updated.eligible = False
@@ -2585,6 +2672,14 @@ def _apply_preflight_specificity_gate(
     elif tier == "address_level" and assessment_status == "fully_scored":
         assessment_status = "partially_scored"
         blockers.append("Assessment downgraded to address-level specificity due to partial feature coverage.")
+
+    if region_readiness == "limited_regional_ready":
+        if assessment_status == "fully_scored":
+            assessment_status = "partially_scored"
+        blockers.append("Prepared region is classified as limited regional readiness for property-specific scoring.")
+    elif region_readiness == "address_level_only" and assessment_status == "fully_scored":
+        assessment_status = "partially_scored"
+        blockers.append("Prepared region supports address-level specificity only.")
 
     return (
         site_updated,
@@ -2663,9 +2758,17 @@ def _apply_hard_trust_guardrails(
     if preflight and bool(preflight.get("limited_assessment_flag")):
         tier = str(preflight.get("assessment_specificity_tier") or "regional_estimate")
         pct = float(preflight.get("feature_coverage_percent") or 0.0)
+        region_readiness = _coerce_region_readiness(preflight.get("region_property_specific_readiness"))
+        region_required_missing_count = int(preflight.get("region_required_missing_count") or 0)
         reason = f"Coverage preflight indicates {tier} specificity ({pct:.1f}% feature coverage)."
         downgrade_reasons.append(reason)
         trust_tier_blockers.append(reason)
+        if region_readiness != "property_specific_ready":
+            readiness_reason = (
+                f"Prepared region readiness is {region_readiness}; property-level confidence is capped."
+            )
+            downgrade_reasons.append(readiness_reason)
+            trust_tier_blockers.append(readiness_reason)
         if tier == "regional_estimate":
             updated.confidence_tier = "low" if updated.confidence_tier != "preliminary" else "preliminary"
             updated.use_restriction = "not_for_underwriting_or_binding"
@@ -2673,6 +2776,14 @@ def _apply_hard_trust_guardrails(
             updated.confidence_tier = "moderate"
             if updated.use_restriction == "shareable":
                 updated.use_restriction = "homeowner_review_recommended"
+        if region_readiness == "limited_regional_ready":
+            if updated.confidence_tier in {"high", "moderate"}:
+                updated.confidence_tier = "low"
+            updated.use_restriction = "not_for_underwriting_or_binding"
+        if region_required_missing_count > 0:
+            updated.confidence_tier = "preliminary"
+            updated.use_restriction = "not_for_underwriting_or_binding"
+            trust_tier_blockers.append("Prepared region reports required-layer gaps for this bbox.")
 
     preflight_state = str((preflight or {}).get("assessment_output_state") or "").strip()
     output_state = str(assessment_output_state or preflight_state or "").strip()
@@ -2878,6 +2989,10 @@ def _derive_assessment_output_state(
     missing_core_layer_count = int(preflight.get("missing_core_layer_count") or 0)
     major_environmental_missing_count = int(preflight.get("major_environmental_missing_count") or 0)
     geometry_basis = str(preflight.get("geometry_basis") or "geocode_point")
+    region_readiness = _coerce_region_readiness(preflight.get("region_property_specific_readiness"))
+    region_required_missing_count = int(preflight.get("region_required_missing_count") or 0)
+    region_optional_missing_count = int(preflight.get("region_optional_missing_count") or 0)
+    region_enrichment_missing_count = int(preflight.get("region_enrichment_missing_count") or 0)
     no_property_geometry = geometry_basis == "geocode_point"
 
     extreme_low_coverage = feature_coverage_percent <= 15.0
@@ -2891,16 +3006,26 @@ def _derive_assessment_output_state(
         (extreme_low_coverage and no_property_geometry and major_environmental_missing_count >= 2)
         or (missing_core_layer_count >= 6 and major_environmental_missing_count >= 2)
         or (severe_fallback and severe_observed_weight_loss and major_environmental_missing_count >= 2)
+        or (region_required_missing_count > 0 and extreme_low_coverage)
     ):
         return "insufficient_data"
+
+    if region_readiness == "limited_regional_ready":
+        if severe_fallback and severe_observed_weight_loss:
+            return "insufficient_data"
+        return "limited_regional_estimate"
 
     if (
         tier == "regional_estimate"
         or low_coverage
         or high_fallback
         or major_environmental_missing_count >= 2
+        or (region_optional_missing_count + region_enrichment_missing_count) >= 7
     ):
         return "limited_regional_estimate"
+
+    if region_readiness == "address_level_only":
+        return "address_level_estimate"
 
     if tier == "address_level" or no_property_geometry:
         return "address_level_estimate"
@@ -2914,6 +3039,7 @@ def _build_data_quality_summary(
     property_level_context: dict[str, Any],
 ) -> dict[str, str]:
     coverage = dict(preflight.get("feature_coverage_summary") or {})
+    region_readiness = _coerce_region_readiness(preflight.get("region_property_specific_readiness"))
     geometry_basis = str(preflight.get("geometry_basis") or "geocode_point")
     parcel_available = bool(coverage.get("parcel_polygon_available"))
     footprint_available = bool(coverage.get("building_footprint_available"))
@@ -2943,6 +3069,7 @@ def _build_data_quality_summary(
         "regional_hazard_layers": regional_hazard_layers,
         "road_access_context": road_access_context,
         "climate_dryness_context": climate_dryness_context,
+        "prepared_region_readiness": region_readiness,
     }
 
 
@@ -2956,6 +3083,9 @@ def _build_homeowner_limitation_groups(
     assessment_output_state: str,
 ) -> tuple[list[dict[str, str]], list[str], list[str], list[str], str]:
     coverage = dict(preflight.get("feature_coverage_summary") or {})
+    region_readiness = _coerce_region_readiness(preflight.get("region_property_specific_readiness"))
+    region_optional_missing_count = int(preflight.get("region_optional_missing_count") or 0)
+    region_enrichment_missing_count = int(preflight.get("region_enrichment_missing_count") or 0)
     limitations: list[dict[str, str]] = []
 
     def _add(category: str, summary: str) -> None:
@@ -2996,6 +3126,24 @@ def _build_homeowner_limitation_groups(
         _add(
             "overall_coverage",
             OUTPUT_STATE_LIMITATION_TEXT.get(assessment_output_state, OUTPUT_STATE_LIMITATION_TEXT["limited_regional_estimate"]),
+        )
+    if region_readiness == "address_level_only":
+        _add(
+            "prepared_region_readiness",
+            "Prepared regional data supports address-level analysis, but not full property-specific structure context here.",
+        )
+    elif region_readiness == "limited_regional_ready":
+        _add(
+            "prepared_region_readiness",
+            "Prepared regional data for this location is limited; this run should be treated as regional guidance only.",
+        )
+    if (region_optional_missing_count + region_enrichment_missing_count) > 0:
+        _add(
+            "enrichment_coverage",
+            (
+                f"{region_optional_missing_count + region_enrichment_missing_count} optional/enrichment layer(s) "
+                "are still missing in the prepared region, which increases fallback usage."
+            ),
         )
 
     observed: list[str] = []
@@ -4126,6 +4274,33 @@ def _run_assessment(
         scoring_notes.append("Assessment used legacy direct layer paths because no prepared region matched this location.")
     elif region_status == "invalid_manifest":
         scoring_notes.append("Prepared region manifest is incomplete; assessment used partial regional coverage.")
+    region_readiness = _coerce_region_readiness(property_level_context.get("region_property_specific_readiness"))
+    region_required_missing_layers = list(property_level_context.get("region_required_layers_missing") or [])
+    region_optional_missing_layers = list(property_level_context.get("region_optional_layers_missing") or [])
+    region_enrichment_missing_layers = list(property_level_context.get("region_enrichment_layers_missing") or [])
+    if region_readiness != "property_specific_ready":
+        scoring_notes.append(
+            f"Prepared region readiness is {region_readiness}; output confidence/specificity is capped."
+        )
+    if region_required_missing_layers:
+        scoring_notes.append(
+            "Prepared region still reports required-layer gaps: "
+            + ", ".join(str(v) for v in region_required_missing_layers[:6])
+            + "."
+        )
+    if region_optional_missing_layers or region_enrichment_missing_layers:
+        scoring_notes.append(
+            "Prepared region optional/enrichment gaps: "
+            + ", ".join(
+                sorted(
+                    set(
+                        [str(v) for v in region_optional_missing_layers[:6]]
+                        + [str(v) for v in region_enrichment_missing_layers[:6]]
+                    )
+                )[:8]
+            )
+            + "."
+        )
     if data_provenance.heuristic_inputs_used:
         scoring_notes.append(
             "Heuristic inputs used: " + ", ".join(data_provenance.heuristic_inputs_used[:6]) + "."
@@ -9356,6 +9531,25 @@ def layer_diagnostics(payload: AddressRequest, ctx: ActorContext = Depends(get_a
             "region_id": (debug_payload.get("property_level_context") or {}).get("region_id"),
             "region_status": (debug_payload.get("property_level_context") or {}).get("region_status"),
             "manifest_path": (debug_payload.get("property_level_context") or {}).get("region_manifest_path"),
+            "property_specific_readiness": (debug_payload.get("property_level_context") or {}).get(
+                "region_property_specific_readiness"
+            ),
+            "required_layers_missing": (debug_payload.get("property_level_context") or {}).get(
+                "region_required_layers_missing",
+                [],
+            ),
+            "optional_layers_missing": (debug_payload.get("property_level_context") or {}).get(
+                "region_optional_layers_missing",
+                [],
+            ),
+            "enrichment_layers_missing": (debug_payload.get("property_level_context") or {}).get(
+                "region_enrichment_layers_missing",
+                [],
+            ),
+            "missing_reason_by_layer": (debug_payload.get("property_level_context") or {}).get(
+                "region_missing_reason_by_layer",
+                {},
+            ),
             "region_resolution": debug_payload.get("region_resolution", {}),
         },
         "structure_footprint": {

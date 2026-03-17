@@ -471,11 +471,13 @@ Preferred new-region workflow (canonical path):
   - Optional defaults are included for `whp`, `mtbs_severity`, `roads`, and `gridmet_dryness` (annual fm1000 NetCDF URL; override as needed).
   - Optional layers remain non-blocking; missing/invalid optional config is surfaced in `optional_layer_diagnostics` and `optional_config_warnings`.
 
-Required vs optional layers:
+Required vs optional vs enrichment layers:
 - Required core: `dem`, `fuel`, `canopy`, `fire_perimeters`, `building_footprints`
 - Derived core: `slope` (from `dem`)
-- Optional enrichment: `whp`, `mtbs_severity`, `gridmet_dryness`, `roads`
+- Optional context: `whp`, `mtbs_severity`, `gridmet_dryness`, `roads`
+- Enrichment hooks: `building_footprints_overture`, `parcel_polygons`, `parcel_address_points`, `naip_imagery`
 - Missing required layers fail the build; missing optional layers are reported as warnings/omissions.
+- A region can be valid for core scoring while still not `property_specific_ready`.
 
 Plan-only check:
 
@@ -527,9 +529,23 @@ Operator diagnostics in command output include:
 - prepared-region status (`covered`, `not_found`, `present_outside_bbox`, `invalid_manifest`)
 - catalog coverage sufficiency and acquisition plan
 - required blockers vs optional omissions
+- per-layer status classification:
+  - `not_configured`
+  - `configured_but_fetch_failed`
+  - `configured_but_outside_coverage`
+  - `configured_but_empty_result`
+  - `optional_and_skipped`
+  - `present_from_existing_catalog`
+  - `present_after_acquisition`
 - stage status (`prepared_region_check`, `coverage_plan`, `acquisition`, `region_build`, `validation`)
 - per-layer execution diagnostics during run (`provider_type`, request mode, fetch/ingest success, failure reason, actionable error)
-- compact summary (`final_status`, missing layers after run, validation status)
+- compact summary (`final_status`, missing layers after run, validation status, property-specific readiness)
+- `operator_next_steps` with:
+  - core build status
+  - optional/enrichment status
+  - source-config blockers
+  - exact rerun commands
+  - env override keys and registry keys to fill
 
 Manual uncovered-region workflow:
 - Set `WF_REQUIRE_PREPARED_REGION_COVERAGE=true` to require prepared coverage for assessment requests.
@@ -549,8 +565,17 @@ Developer checklist:
 1. Plan: run `prepare_region_from_catalog_or_sources.py --plan-only`.
 2. Verify required-layer blockers and source registry values.
 3. Execute with `--validate`.
-4. Inspect `data/regions/<region_id>/manifest.json` (`catalog`, acquisition method, omissions, validation status).
+4. Inspect `data/regions/<region_id>/manifest.json` (`catalog`, acquisition method, omissions, `property_specific_readiness`, validation summary).
 5. If runtime still reports `region_not_ready`, run `POST /regions/coverage-check` for point-level coverage diagnostics.
+
+Example source overrides (commonly needed before rerun):
+
+```bash
+export WF_DEFAULT_GRIDMET_DRYNESS_FULL_URL="https://www.northwestknowledge.net/metdata/data/fm1000_2026.nc"
+export WF_DEFAULT_OVERTURE_BUILDINGS_ENDPOINT="https://<org>/arcgis/rest/services/<overture_layer>/FeatureServer/0"
+export WF_DEFAULT_PARCEL_POLYGONS_ENDPOINT="https://<org>/arcgis/rest/services/<parcel_polygons>/FeatureServer/0"
+export WF_DEFAULT_PARCEL_ADDRESS_POINTS_ENDPOINT="https://<org>/arcgis/rest/services/<parcel_points>/FeatureServer/0"
+```
 
 Trust/transparency behavior:
 - score families may be unavailable (`null`) when evidence is insufficient

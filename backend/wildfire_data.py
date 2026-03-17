@@ -412,6 +412,47 @@ class WildfireDataClient:
         ]
         return any(self._file_exists(path or "") for path in configured)
 
+    @staticmethod
+    def _extract_region_catalog_runtime_summary(region_manifest: dict[str, Any] | None) -> dict[str, Any]:
+        catalog = (region_manifest or {}).get("catalog")
+        if not isinstance(catalog, dict):
+            return {
+                "property_specific_readiness": "limited_regional_ready",
+                "validation_summary": {},
+                "required_layers_missing": [],
+                "optional_layers_missing": [],
+                "enrichment_layers_missing": [],
+                "missing_reason_by_layer": {},
+            }
+        readiness = catalog.get("property_specific_readiness")
+        readiness_value = "limited_regional_ready"
+        if isinstance(readiness, dict):
+            candidate = str(readiness.get("readiness") or "").strip()
+            if candidate:
+                readiness_value = candidate
+        return {
+            "property_specific_readiness": readiness_value,
+            "validation_summary": (
+                dict(catalog.get("validation_summary"))
+                if isinstance(catalog.get("validation_summary"), dict)
+                else {}
+            ),
+            "required_layers_missing": [
+                str(v) for v in (catalog.get("required_layers_missing") or []) if str(v).strip()
+            ],
+            "optional_layers_missing": [
+                str(v) for v in (catalog.get("optional_layers_missing") or []) if str(v).strip()
+            ],
+            "enrichment_layers_missing": [
+                str(v) for v in (catalog.get("enrichment_layers_missing") or []) if str(v).strip()
+            ],
+            "missing_reason_by_layer": (
+                dict(catalog.get("missing_reason_by_layer"))
+                if isinstance(catalog.get("missing_reason_by_layer"), dict)
+                else {}
+            ),
+        }
+
     def _resolve_runtime_layer_paths(
         self, lat: float, lon: float
     ) -> tuple[dict[str, str], dict[str, Any], list[str], list[str]]:
@@ -427,6 +468,12 @@ class WildfireDataClient:
             "region_display_name": None,
             "manifest_path": None,
             "building_sources": [],
+            "property_specific_readiness": "limited_regional_ready",
+            "validation_summary": {},
+            "required_layers_missing": [],
+            "optional_layers_missing": [],
+            "enrichment_layers_missing": [],
+            "missing_reason_by_layer": {},
         }
 
         region_manifest: dict[str, Any] | None = None
@@ -443,12 +490,19 @@ class WildfireDataClient:
         if region_manifest:
             valid, missing = validate_region_files(region_manifest, base_dir=self.region_data_dir)
             if valid:
+                catalog_runtime_summary = self._extract_region_catalog_runtime_summary(region_manifest)
                 region_context = {
                     "region_status": "prepared",
                     "region_id": region_manifest.get("region_id"),
                     "region_display_name": region_manifest.get("display_name"),
                     "manifest_path": region_manifest.get("_manifest_path"),
                     "building_sources": [],
+                    "property_specific_readiness": catalog_runtime_summary["property_specific_readiness"],
+                    "validation_summary": catalog_runtime_summary["validation_summary"],
+                    "required_layers_missing": catalog_runtime_summary["required_layers_missing"],
+                    "optional_layers_missing": catalog_runtime_summary["optional_layers_missing"],
+                    "enrichment_layers_missing": catalog_runtime_summary["enrichment_layers_missing"],
+                    "missing_reason_by_layer": catalog_runtime_summary["missing_reason_by_layer"],
                 }
                 sources.append(f"Prepared region: {region_manifest.get('region_id')}")
                 layer_key_map = {
@@ -495,6 +549,12 @@ class WildfireDataClient:
                 "region_display_name": region_manifest.get("display_name"),
                 "manifest_path": region_manifest.get("_manifest_path"),
                 "building_sources": [],
+                "property_specific_readiness": "limited_regional_ready",
+                "validation_summary": {},
+                "required_layers_missing": [],
+                "optional_layers_missing": [],
+                "enrichment_layers_missing": [],
+                "missing_reason_by_layer": {},
             }
             assumptions.append("Prepared region manifest is missing required files for this area.")
             assumptions.extend([f"Region file validation: {reason}" for reason in missing[:5]])
@@ -508,6 +568,12 @@ class WildfireDataClient:
                     "region_display_name": None,
                     "manifest_path": None,
                     "building_sources": [],
+                    "property_specific_readiness": "limited_regional_ready",
+                    "validation_summary": {},
+                    "required_layers_missing": [],
+                    "optional_layers_missing": [],
+                    "enrichment_layers_missing": [],
+                    "missing_reason_by_layer": {},
                 }
             sources.append("Legacy direct layer paths")
             return runtime_paths, region_context, assumptions, sources
@@ -523,6 +589,12 @@ class WildfireDataClient:
                 "region_display_name": None,
                 "manifest_path": None,
                 "building_sources": [],
+                "property_specific_readiness": "limited_regional_ready",
+                "validation_summary": {},
+                "required_layers_missing": [],
+                "optional_layers_missing": [],
+                "enrichment_layers_missing": [],
+                "missing_reason_by_layer": {},
             },
             assumptions,
             sources,
@@ -1583,6 +1655,12 @@ class WildfireDataClient:
             "region_id": region_context.get("region_id"),
             "region_display_name": region_context.get("region_display_name"),
             "region_manifest_path": region_context.get("manifest_path"),
+            "region_property_specific_readiness": region_context.get("property_specific_readiness"),
+            "region_validation_summary": dict(region_context.get("validation_summary") or {}),
+            "region_required_layers_missing": list(region_context.get("required_layers_missing") or []),
+            "region_optional_layers_missing": list(region_context.get("optional_layers_missing") or []),
+            "region_enrichment_layers_missing": list(region_context.get("enrichment_layers_missing") or []),
+            "region_missing_reason_by_layer": dict(region_context.get("missing_reason_by_layer") or {}),
         }
         structure_ring_metrics: dict[str, dict[str, float | None]] = {}
 
@@ -1784,6 +1862,12 @@ class WildfireDataClient:
                 "region_id": region_context.get("region_id"),
                 "region_display_name": region_context.get("region_display_name"),
                 "region_manifest_path": region_context.get("manifest_path"),
+                "region_property_specific_readiness": region_context.get("property_specific_readiness"),
+                "region_validation_summary": dict(region_context.get("validation_summary") or {}),
+                "region_required_layers_missing": list(region_context.get("required_layers_missing") or []),
+                "region_optional_layers_missing": list(region_context.get("optional_layers_missing") or []),
+                "region_enrichment_layers_missing": list(region_context.get("enrichment_layers_missing") or []),
+                "region_missing_reason_by_layer": dict(region_context.get("missing_reason_by_layer") or {}),
                 "building_sources": list(region_context.get("building_sources") or []),
                 "structure_geometry_source": str(
                     ring_context.get("structure_geometry_source")

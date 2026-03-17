@@ -798,6 +798,100 @@ def _build_compact_summary(
     }
 
 
+def _format_bbox_for_cli(bounds: dict[str, float]) -> str:
+    return (
+        f"{float(bounds['min_lon']):.6f} "
+        f"{float(bounds['min_lat']):.6f} "
+        f"{float(bounds['max_lon']):.6f} "
+        f"{float(bounds['max_lat']):.6f}"
+    )
+
+
+def _build_operator_next_steps(
+    *,
+    region_id: str,
+    display_name: str,
+    bounds: dict[str, float],
+    source_config_meta: dict[str, Any],
+    required_layer_diagnostics: dict[str, dict[str, Any]],
+    optional_layer_diagnostics: dict[str, dict[str, Any]],
+    skip_optional_layers: bool,
+    mode: str,
+) -> dict[str, Any]:
+    all_diags = {**required_layer_diagnostics, **optional_layer_diagnostics}
+    not_configured_layers = sorted(
+        [layer for layer, diag in all_diags.items() if str(diag.get("status_classification")) == "not_configured"]
+    )
+    rerun_only_fixable_layers = sorted(
+        [
+            layer
+            for layer, diag in all_diags.items()
+            if str(diag.get("status_classification"))
+            in {"configured_but_fetch_failed", "configured_but_outside_coverage", "configured_but_empty_result", "optional_and_skipped"}
+            and bool(diag.get("rerun_prep_only_sufficient"))
+        ]
+    )
+    required_blocked_layers = sorted(
+        [
+            layer
+            for layer, diag in required_layer_diagnostics.items()
+            if str(diag.get("status_classification")) == "not_configured"
+        ]
+    )
+    env_overrides_needed: dict[str, list[str]] = {}
+    registry_keys_needed: dict[str, list[str]] = {}
+    for layer in not_configured_layers:
+        hint = LAYER_SOURCE_HINTS.get(layer, {})
+        env_vars = [str(v) for v in (hint.get("env_vars") or []) if str(v).strip()]
+        registry_keys = [str(v) for v in (hint.get("registry_keys") or []) if str(v).strip()]
+        if env_vars:
+            env_overrides_needed[layer] = env_vars
+        if registry_keys:
+            registry_keys_needed[layer] = registry_keys
+
+    source_path = str(source_config_meta.get("source_config_path") or "config/source_registry.json")
+    base_cmd = (
+        "python3 scripts/prepare_region_from_catalog_or_sources.py "
+        f"--region-id {region_id} "
+        f"--display-name \"{display_name}\" "
+        f"--bbox {_format_bbox_for_cli(bounds)} "
+        "--prefer-bbox-downloads "
+        "--allow-full-download-fallback "
+        "--allow-partial-coverage-fill"
+    )
+    if skip_optional_layers:
+        base_cmd = f"{base_cmd} --skip-optional-layers"
+    rerun_validate_cmd = f"{base_cmd} --validate"
+    rerun_plan_cmd = f"{base_cmd} --plan-only"
+
+    return {
+        "mode": mode,
+        "core_build_status": ("blocked_config" if required_blocked_layers else "ready_or_retriable"),
+        "optional_enrichment_status": (
+            "skipped_by_flag"
+            if skip_optional_layers
+            else ("config_blocked_or_partial" if not_configured_layers else "configured_or_present")
+        ),
+        "required_config_blockers": required_blocked_layers,
+        "all_config_blockers": not_configured_layers,
+        "rerun_only_fixable_layers": rerun_only_fixable_layers,
+        "source_config_path": source_path,
+        "required_source_env_overrides": env_overrides_needed,
+        "required_source_registry_keys": registry_keys_needed,
+        "next_commands": {
+            "plan": rerun_plan_cmd,
+            "execute_and_validate": rerun_validate_cmd,
+        },
+        "operator_checklist": [
+            f"Configure missing source details in {source_path} for: {', '.join(not_configured_layers)}."
+            if not_configured_layers
+            else "No source-config blockers detected.",
+            f"Rerun prep with validation: {rerun_validate_cmd}",
+            "Use plan-only first if you changed source configuration.",
+        ],
+    }
+
+
 def _build_cli_error_payload(
     *,
     exc: Exception,
@@ -1292,6 +1386,16 @@ def prepare_region_from_catalog_or_sources(
         layer: str(diag.get("status_classification") or "unknown")
         for layer, diag in layer_plan_diagnostics.items()
     }
+    operator_next_steps_plan = _build_operator_next_steps(
+        region_id=region_id,
+        display_name=display_name,
+        bounds=bounds,
+        source_config_meta=cfg_meta,
+        required_layer_diagnostics=required_layer_diagnostics,
+        optional_layer_diagnostics=optional_layer_diagnostics,
+        skip_optional_layers=bool(skip_optional_layers),
+        mode="plan_only",
+    )
 
     if plan_only:
         recommended_actions = list(coverage_before.get("summary", {}).get("recommended_actions", []))
@@ -1364,6 +1468,7 @@ def prepare_region_from_catalog_or_sources(
                 "region_already_prepared": prepared_region_status.get("status") == "covered",
             },
             "optional_config_warnings": optional_config_warnings,
+            "operator_next_steps": operator_next_steps_plan,
             "stage_status": stage_status,
             "recommended_actions": recommended_actions,
             "compact_summary": compact_summary,
@@ -1431,6 +1536,16 @@ def prepare_region_from_catalog_or_sources(
             "required_layer_diagnostics": required_layer_diagnostics,
             "optional_layer_diagnostics": optional_layer_diagnostics,
             "optional_config_warnings": optional_config_warnings,
+            "operator_next_steps": _build_operator_next_steps(
+                region_id=region_id,
+                display_name=display_name,
+                bounds=bounds,
+                source_config_meta=cfg_meta,
+                required_layer_diagnostics=required_layer_diagnostics,
+                optional_layer_diagnostics=optional_layer_diagnostics,
+                skip_optional_layers=bool(skip_optional_layers),
+                mode="executed",
+            ),
             "per_layer_execution_diagnostics": {},
             "acquired_layers": [],
             "failed_acquisitions": [],
@@ -1935,6 +2050,16 @@ def prepare_region_from_catalog_or_sources(
         "required_layer_diagnostics": required_layer_diagnostics,
         "optional_layer_diagnostics": optional_layer_diagnostics,
         "optional_config_warnings": optional_config_warnings,
+        "operator_next_steps": _build_operator_next_steps(
+            region_id=region_id,
+            display_name=display_name,
+            bounds=bounds,
+            source_config_meta=cfg_meta,
+            required_layer_diagnostics=required_layer_diagnostics,
+            optional_layer_diagnostics=optional_layer_diagnostics,
+            skip_optional_layers=bool(skip_optional_layers),
+            mode="executed",
+        ),
         "per_layer_execution_diagnostics": per_layer_execution_diagnostics,
         "acquired_layers": acquired_layers,
         "failed_acquisitions": failed_acquisitions,
