@@ -49,6 +49,50 @@ def test_ranked_risk_drivers_prefers_high_contribution_components() -> None:
     assert detailed[0].relative_contribution_pct is not None
 
 
+def test_ranked_risk_drivers_suppresses_low_evidence_factors_when_marked_suppressed() -> None:
+    submodels = {
+        "defensible_space_risk": SubmodelScore(
+            score=88.0,
+            weighted_contribution=0.0,
+            explanation="",
+            key_inputs={},
+        ),
+        "slope_topography_risk": SubmodelScore(
+            score=62.0,
+            weighted_contribution=7.2,
+            explanation="",
+            key_inputs={},
+        ),
+    }
+    contributions = {
+        "defensible_space_risk": WeightedContribution(
+            weight=0.0,
+            score=88.0,
+            contribution=0.0,
+            basis="missing",
+            factor_evidence_status="suppressed",
+            omitted_due_to_missing=True,
+        ),
+        "slope_topography_risk": WeightedContribution(
+            weight=0.12,
+            score=62.0,
+            contribution=7.2,
+            basis="observed",
+            factor_evidence_status="observed",
+        ),
+    }
+
+    titles, detailed = build_ranked_risk_drivers(
+        submodel_scores=submodels,
+        weighted_contributions=contributions,
+        limit=3,
+    )
+
+    assert "Defensible space is limited" not in titles
+    assert detailed
+    assert all(driver.factor != "defensible_space" for driver in detailed)
+
+
 def test_prioritized_mitigation_actions_sorts_by_impact_then_effort() -> None:
     actions = [
         MitigationAction(

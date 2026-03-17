@@ -836,6 +836,16 @@ def _build_confidence(
     region_required_missing_count = int(preflight.get("region_required_missing_count") or 0)
     region_optional_missing_count = int(preflight.get("region_optional_missing_count") or 0)
     region_enrichment_missing_count = int(preflight.get("region_enrichment_missing_count") or 0)
+    observed_feature_count = int(preflight.get("observed_feature_count") or 0)
+    inferred_feature_count = int(preflight.get("inferred_feature_count") or 0)
+    fallback_feature_count = int(preflight.get("fallback_feature_count") or 0)
+    geometry_quality_score = float(preflight.get("geometry_quality_score") or preflight.get("structure_geometry_quality_score") or 0.0)
+    regional_context_coverage_score = float(
+        preflight.get("regional_context_coverage_score")
+        or preflight.get("environmental_layer_coverage_score")
+        or 0.0
+    )
+    property_specificity_score = float(preflight.get("property_specificity_score") or 0.0)
     if has_preflight:
         if coverage_percent <= 15.0:
             confidence = min(confidence, 35.0)
@@ -845,6 +855,20 @@ def _build_confidence(
             confidence = min(confidence, 48.0)
         if geometry_basis == "geocode_point":
             confidence = min(confidence, 58.0)
+        if geometry_quality_score < 0.50:
+            confidence = min(confidence, 40.0)
+        elif geometry_quality_score < 0.62:
+            confidence = min(confidence, 48.0)
+        if regional_context_coverage_score < 50.0:
+            confidence = min(confidence, 44.0)
+        elif regional_context_coverage_score < 65.0:
+            confidence = min(confidence, 52.0)
+        if property_specificity_score < 45.0:
+            confidence = min(confidence, 42.0)
+        elif property_specificity_score < 60.0:
+            confidence = min(confidence, 52.0)
+        if fallback_feature_count > observed_feature_count:
+            confidence = min(confidence, 48.0)
         if float(fallback_dominance_ratio) >= 0.70:
             confidence = min(confidence, 45.0)
         if fallback_weight_fraction >= 0.72:
@@ -891,6 +915,12 @@ def _build_confidence(
             confidence_drivers.append("Building-footprint ring context is available.")
         else:
             confidence_drivers.append("Property context available via point-based fallback.")
+    if geometry_quality_score >= 0.80:
+        confidence_drivers.append("Structure geometry quality is high for this run.")
+    if regional_context_coverage_score >= 80.0:
+        confidence_drivers.append("Regional hazard/burn/dryness coverage is strong.")
+    if observed_feature_count > 0 and observed_feature_count >= fallback_feature_count:
+        confidence_drivers.append("Observed feature signals outweigh fallback feature signals.")
     if confirmed_core_count > 0:
         confidence_drivers.append(f"{confirmed_core_count} core home fact(s) were confirmed by the user.")
     elif observed_core_count > 0:
@@ -902,6 +932,12 @@ def _build_confidence(
         confidence_limiters.append(f"{inferred_count} core property input(s) are inferred.")
     if not has_ring_metrics:
         confidence_limiters.append("Building footprint rings unavailable; using point-based property context.")
+    if geometry_quality_score < 0.62:
+        confidence_limiters.append("Structure geometry quality is limited; property-specific factor weighting was reduced.")
+    if regional_context_coverage_score < 65.0:
+        confidence_limiters.append("Regional hazard/burn/dryness coverage is incomplete.")
+    if fallback_feature_count > observed_feature_count and has_preflight:
+        confidence_limiters.append("Fallback feature count exceeds observed feature count.")
     if critical_unknown_or_stale > 0:
         confidence_limiters.append("Critical inputs have stale or unknown freshness metadata.")
     if heuristic_count > 0:
@@ -930,6 +966,14 @@ def _build_confidence(
         low_confidence_flags.append("Critical near-structure evidence is missing; confidence is capped")
     if fallback_weight_fraction >= 0.60:
         low_confidence_flags.append("Fallback-weighted factors dominate active score composition")
+    if geometry_quality_score < 0.62:
+        low_confidence_flags.append("Structure geometry quality is limited; structure-specific factors are suppressed or downgraded")
+    if regional_context_coverage_score < 65.0:
+        low_confidence_flags.append("Regional hazard/burn/dryness coverage is limited; regional context confidence is capped")
+    if property_specificity_score < 60.0:
+        low_confidence_flags.append("Property-specific evidence strength is limited for this run")
+    if fallback_feature_count > observed_feature_count and has_preflight:
+        low_confidence_flags.append("Fallback feature count exceeds observed feature count")
     if any("provisional" in note.lower() for note in assumptions.assumptions_used):
         low_confidence_flags.append("Access scoring is provisional and not yet parcel/egress-based")
     if confidence < 70:
@@ -1293,6 +1337,14 @@ def _build_score_evidence_ledger(
             field for field in (_map_key_input_to_source_field(k) for k in score.key_inputs.keys()) if field
         ]
         evidence_status, resolved_source_fields = _status_from_source_fields(source_fields, input_source_metadata)
+        factor_evidence_status = str(weight.factor_evidence_status or "")
+        if factor_evidence_status == "suppressed":
+            evidence_status = "fallback"
+        elif factor_evidence_status in {"observed", "inferred", "fallback"}:
+            evidence_status = factor_evidence_status
+        factor_notes = [score.explanation] + score.assumptions[:2]
+        if factor_evidence_status == "suppressed":
+            factor_notes.append("Factor contribution was suppressed due to low evidence quality.")
         factor = ScoreEvidenceFactor(
             factor_key=submodel,
             display_name=display_map.get(submodel, submodel),
@@ -1305,7 +1357,7 @@ def _build_score_evidence_ledger(
             evidence_status=evidence_status,
             source_field=resolved_source_fields,
             source_layer=resolved_source_fields,
-            notes=[score.explanation] + score.assumptions[:2],
+            notes=factor_notes,
         )
         if submodel in ENVIRONMENTAL_SUBMODELS:
             site_entries.append(factor)
@@ -1578,6 +1630,7 @@ def _normalize_property_level_context(raw_context: object) -> dict[str, Any]:
         return {
             "footprint_used": False,
             "footprint_status": "not_found",
+            "geometry_basis": "point",
             "structure_match_status": "none",
             "structure_match_method": None,
             "structure_selection_method": None,
@@ -1604,6 +1657,8 @@ def _normalize_property_level_context(raw_context: object) -> dict[str, Any]:
             "property_anchor_selection_method": "geocode_fallback",
             "property_anchor_quality": "low",
             "property_anchor_quality_score": 0.0,
+            "anchor_quality": "low",
+            "anchor_quality_score": 0.0,
             "address_point_lookup_distance_m": None,
             "geocoded_address_point": None,
             "assessed_property_display_point": None,
@@ -1637,6 +1692,7 @@ def _normalize_property_level_context(raw_context: object) -> dict[str, Any]:
         ),
     )
     normalized.setdefault("structure_selection_method", normalized.get("structure_match_method"))
+    normalized.setdefault("geometry_basis", "footprint" if footprint_used else ("parcel" if normalized.get("parcel_id") else "point"))
     normalized.setdefault("structure_match_confidence", float(normalized.get("footprint_confidence") or (0.9 if footprint_used else 0.0)))
     normalized.setdefault("building_source", str(normalized.get("footprint_source_name") or "") or None)
     normalized.setdefault("building_source_version", str(normalized.get("footprint_source_vintage") or "") or None)
@@ -1715,6 +1771,16 @@ def _normalize_property_level_context(raw_context: object) -> dict[str, Any]:
         normalized["property_anchor_quality_score"] = float(normalized.get("property_anchor_quality_score") or 0.0)
     except (TypeError, ValueError):
         normalized["property_anchor_quality_score"] = 0.0
+    normalized.setdefault("anchor_quality", normalized.get("property_anchor_quality"))
+    try:
+        normalized["anchor_quality_score"] = float(
+            normalized.get("anchor_quality_score")
+            if normalized.get("anchor_quality_score") is not None
+            else normalized.get("property_anchor_quality_score")
+            or 0.0
+        )
+    except (TypeError, ValueError):
+        normalized["anchor_quality_score"] = 0.0
     try:
         lookup_distance = normalized.get("address_point_lookup_distance_m")
         normalized["address_point_lookup_distance_m"] = (
@@ -2081,7 +2147,9 @@ def _build_feature_coverage_preflight(
         "observed_weight_fraction": round(observed_weight_fraction, 3),
         "fallback_dominance_ratio": round(fallback_dominance_ratio, 3),
         "structure_geometry_quality_score": round(geometry_quality_score, 3),
+        "geometry_quality_score": round(geometry_quality_score, 3),
         "environmental_layer_coverage_score": round(environmental_layer_coverage_score, 1),
+        "regional_context_coverage_score": round(environmental_layer_coverage_score, 1),
         "property_specificity_score": round(property_specificity_score, 1),
         "score_specificity_warning": specificity_warning,
     }
@@ -2682,6 +2750,15 @@ def _build_score_eligibility(
         for field in ["roof_type", "vent_type", "defensible_space_ft"]
         if _structure_fact_known(payload, assumptions, field)
     )
+    geometry_basis = str(
+        property_level_context.get("geometry_basis")
+        or ("footprint" if footprint_used else ("parcel" if property_level_context.get("parcel_id") else "point"))
+    )
+    weak_structure_readiness_evidence = (
+        geometry_basis == "point"
+        and not footprint_used
+        and not ring_signal
+    )
     readiness_blockers: list[str] = []
     readiness_caveats: list[str] = []
     if site_status == "insufficient":
@@ -2694,11 +2771,25 @@ def _build_score_eligibility(
         readiness_blockers.append("Too many unknown structure facts for readiness rules")
     elif known_structure_count < 3:
         readiness_caveats.append("Insurance Readiness is limited by unknown roof/vent/defensible-space attributes.")
+    if weak_structure_readiness_evidence:
+        readiness_caveats.append("Structure geometry evidence is weak; readiness is downgraded to avoid false precision.")
+        if known_structure_count < 2:
+            readiness_blockers.append("Weak structure geometry evidence with limited confirmed structure facts")
 
     readiness_status: EligibilityStatus
-    if site_status == "full" and home_status == "full" and known_structure_count >= 2:
+    if (
+        site_status == "full"
+        and home_status == "full"
+        and known_structure_count >= 2
+        and not weak_structure_readiness_evidence
+    ):
         readiness_status = "full"
-    elif site_status != "insufficient" and home_status != "insufficient" and known_structure_count >= 1:
+    elif (
+        site_status != "insufficient"
+        and home_status != "insufficient"
+        and known_structure_count >= 1
+        and not (weak_structure_readiness_evidence and known_structure_count < 2)
+    ):
         readiness_status = "partial"
     else:
         readiness_status = "insufficient"
@@ -3956,6 +4047,7 @@ def _build_score_variance_diagnostics(
             "score": wc.score,
             "contribution": wc.contribution,
             "basis": wc.basis,
+            "factor_evidence_status": wc.factor_evidence_status or ("suppressed" if wc.omitted_due_to_missing else wc.basis),
             "support_level": wc.support_level,
             "component": wc.component,
             "raw_submodel_score_before_clamp": getattr(result_meta, "raw_score", None),
@@ -4349,6 +4441,7 @@ def _run_assessment(
             observed_fraction=risk.weighted_contributions[name].get("observed_fraction"),
             availability_multiplier=risk.weighted_contributions[name].get("availability_multiplier"),
             basis=risk.weighted_contributions[name].get("basis"),
+            factor_evidence_status=risk.weighted_contributions[name].get("factor_evidence_status"),
             support_level=risk.weighted_contributions[name].get("support_level"),
             component=risk.weighted_contributions[name].get("component"),
             omitted_due_to_missing=bool(risk.weighted_contributions[name].get("omitted_due_to_missing", False)),
@@ -4575,8 +4668,14 @@ def _run_assessment(
         limit=5,
     )
     property_findings = _build_property_findings(property_level_context)
+    if ranked_driver_titles:
+        driver_seed = ranked_driver_titles
+    elif float(risk.observed_weight_fraction) >= 0.50 and float(risk.fallback_weight_fraction) < 0.55:
+        driver_seed = _build_top_risk_drivers(submodel_scores)
+    else:
+        driver_seed = ["Limited direct evidence for a stable factor-level ranking in this run."]
     top_risk_drivers = _merge_property_drivers(
-        ranked_driver_titles or _build_top_risk_drivers(submodel_scores),
+        driver_seed,
         property_findings,
     )
     for driver in top_near_structure_risk_drivers:
@@ -4747,6 +4846,13 @@ def _run_assessment(
         },
         "adaptive_component_weights": dict(risk.component_weight_fractions or {}),
         "geometry_basis_used_for_weighting": str(risk.geometry_basis),
+        "geometry_quality_score": float(risk.geometry_quality_score),
+        "regional_context_coverage_score": float(risk.regional_context_coverage_score),
+        "property_specificity_score": float(risk.property_specificity_score),
+        "observed_feature_count": int(coverage_preflight.get("observed_feature_count") or risk.observed_feature_count),
+        "inferred_feature_count": int(coverage_preflight.get("inferred_feature_count") or risk.inferred_feature_count),
+        "fallback_feature_count": int(coverage_preflight.get("fallback_feature_count") or risk.fallback_feature_count),
+        "missing_feature_count": int(coverage_preflight.get("missing_feature_count") or 0),
         "fallback_weight_fraction": float(risk.fallback_weight_fraction),
         "scoring_status": scoring_status,
         "computed_components": computed_components,
@@ -5183,9 +5289,18 @@ def _run_assessment(
         observed_factor_count=int(risk.observed_factor_count),
         missing_factor_count=int(risk.missing_factor_count),
         fallback_factor_count=int(risk.fallback_factor_count),
+        observed_feature_count=int(coverage_preflight.get("observed_feature_count") or risk.observed_feature_count),
+        inferred_feature_count=int(coverage_preflight.get("inferred_feature_count") or risk.inferred_feature_count),
+        fallback_feature_count=int(coverage_preflight.get("fallback_feature_count") or risk.fallback_feature_count),
+        missing_feature_count=int(coverage_preflight.get("missing_feature_count") or 0),
         observed_weight_fraction=float(risk.observed_weight_fraction),
         fallback_dominance_ratio=float(risk.fallback_dominance_ratio),
         fallback_weight_fraction=float(risk.fallback_weight_fraction),
+        geometry_quality_score=float(coverage_preflight.get("geometry_quality_score") or risk.geometry_quality_score),
+        regional_context_coverage_score=float(
+            coverage_preflight.get("regional_context_coverage_score") or risk.regional_context_coverage_score
+        ),
+        property_specificity_score=float(coverage_preflight.get("property_specificity_score") or risk.property_specificity_score),
         score_specificity_warning=(
             str(coverage_preflight.get("score_specificity_warning"))
             if coverage_preflight.get("score_specificity_warning")
@@ -5406,6 +5521,7 @@ def _run_assessment(
                 "effective_weight": wc.effective_weight,
                 "observed_fraction": wc.observed_fraction,
                 "omitted_due_to_missing": wc.omitted_due_to_missing,
+                "factor_evidence_status": wc.factor_evidence_status,
                 "score": wc.score,
                 "contribution": wc.contribution,
             }
@@ -5478,6 +5594,13 @@ def _run_assessment(
             "score_specificity_warning": result.score_specificity_warning,
             "confidence_not_meaningful": result.confidence_not_meaningful,
             "data_quality_summary": result.data_quality_summary,
+            "observed_feature_count": result.observed_feature_count,
+            "inferred_feature_count": result.inferred_feature_count,
+            "fallback_feature_count": result.fallback_feature_count,
+            "missing_feature_count": result.missing_feature_count,
+            "geometry_quality_score": result.geometry_quality_score,
+            "regional_context_coverage_score": result.regional_context_coverage_score,
+            "property_specificity_score": result.property_specificity_score,
         },
         "feature_bundle_data_sources": (
             (property_level_context.get("feature_bundle_data_sources") or {})
@@ -5512,7 +5635,15 @@ def _run_assessment(
         "minimum_missing_requirements": list(result.minimum_missing_requirements),
         "recommended_data_improvements": list(result.recommended_data_improvements),
         "missing_core_layer_count": int(coverage_preflight.get("missing_core_layer_count") or 0),
+        "observed_feature_count": result.observed_feature_count,
+        "inferred_feature_count": result.inferred_feature_count,
+        "fallback_feature_count": result.fallback_feature_count,
+        "missing_feature_count": result.missing_feature_count,
         "observed_weight_fraction": result.observed_weight_fraction,
+        "fallback_weight_fraction": result.fallback_weight_fraction,
+        "geometry_quality_score": result.geometry_quality_score,
+        "regional_context_coverage_score": result.regional_context_coverage_score,
+        "property_specificity_score": result.property_specificity_score,
         "score_specificity_warning": result.score_specificity_warning,
         "defensible_space_analysis": result.defensible_space_analysis,
         "top_risk_drivers": result.top_risk_drivers,
@@ -10158,6 +10289,9 @@ def layer_diagnostics(payload: AddressRequest, ctx: ActorContext = Depends(get_a
             "footprint_source": (debug_payload.get("property_level_context") or {}).get("footprint_source"),
             "footprint_source_name": (debug_payload.get("property_level_context") or {}).get("footprint_source_name"),
             "footprint_source_vintage": (debug_payload.get("property_level_context") or {}).get("footprint_source_vintage"),
+            "geometry_basis": (debug_payload.get("property_level_context") or {}).get("geometry_basis"),
+            "anchor_quality": (debug_payload.get("property_level_context") or {}).get("anchor_quality"),
+            "anchor_quality_score": (debug_payload.get("property_level_context") or {}).get("anchor_quality_score"),
             "property_anchor_point": (debug_payload.get("property_level_context") or {}).get("property_anchor_point"),
             "property_anchor_source": (debug_payload.get("property_level_context") or {}).get("property_anchor_source"),
             "property_anchor_precision": (debug_payload.get("property_level_context") or {}).get("property_anchor_precision"),
@@ -10168,6 +10302,7 @@ def layer_diagnostics(payload: AddressRequest, ctx: ActorContext = Depends(get_a
             "parcel_source_vintage": (debug_payload.get("property_level_context") or {}).get("parcel_source_vintage"),
             "structure_match_status": (debug_payload.get("property_level_context") or {}).get("structure_match_status"),
             "structure_match_method": (debug_payload.get("property_level_context") or {}).get("structure_match_method"),
+            "structure_selection_method": (debug_payload.get("property_level_context") or {}).get("structure_selection_method"),
             "matched_structure_id": (debug_payload.get("property_level_context") or {}).get("matched_structure_id"),
             "structure_match_confidence": (debug_payload.get("property_level_context") or {}).get("structure_match_confidence"),
             "building_source": (debug_payload.get("property_level_context") or {}).get("building_source"),

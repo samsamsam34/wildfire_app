@@ -222,6 +222,7 @@ class BuildingFootprintClient:
             "centroid_distance_m": round(centroid_distance_m, 2),
             "area_m2": round(area_m2, 2),
             "area_score": round(area_score, 3),
+            "candidate_score": round(float(row.get("score") or 0.0), 4),
             "contains_point": contains_point,
             "centroid_latitude": round(float(centroid.y), 7),
             "centroid_longitude": round(float(centroid.x), 7),
@@ -290,16 +291,26 @@ class BuildingFootprintClient:
             top_row = ranked[0]
             geom = top_row["geometry"]
             source = str(top_row.get("source") or self.path)
-            match_method = "parcel_intersection" if parcel_overlap_available else "nearest_building_fallback"
-            base_confidence = 0.97 if match_method == "parcel_intersection" else 0.86
+            match_method = "parcel_intersection" if parcel_overlap_available else "point_in_footprint"
+            base_confidence = 0.97 if match_method == "parcel_intersection" else 0.92
             candidate_summaries = [
-                self._candidate_summary(row=row, point_wgs84=point_wgs84, to_3857=to_3857)
+                self._candidate_summary(
+                    row={
+                        **row,
+                        "score": _contain_score(row),
+                    },
+                    point_wgs84=point_wgs84,
+                    to_3857=to_3857,
+                )
                 for row in ranked[: self.max_candidate_summaries]
             ]
             if len(ranked) > 1:
                 top_score = _contain_score(ranked[0])
                 second_score = _contain_score(ranked[1])
-                if (top_score - second_score) < 0.03:
+                top_geom_m = shapely_transform(to_3857, ranked[0]["geometry"])
+                second_geom_m = shapely_transform(to_3857, ranked[1]["geometry"])
+                centroid_gap_m = float(max(0.0, top_geom_m.centroid.distance(second_geom_m.centroid)))
+                if (top_score - second_score) < 0.02 and centroid_gap_m <= 2.0:
                     assumptions.append("Multiple overlapping structure footprints were equally plausible; using geocoded point fallback.")
                     return BuildingFootprintResult(
                         found=False,
@@ -505,7 +516,9 @@ class BuildingFootprintClient:
                     )
             else:
                 second_distance = float(candidates[1]["distance_m"])
-                if (second_distance - top_distance) <= float(self.ambiguity_gap_m):
+                score_gap = float(top.get("score") or 0.0) - float(candidates[1].get("score") or 0.0)
+                area_gap = abs(float(top.get("area_score") or 0.0) - float(candidates[1].get("area_score") or 0.0))
+                if (second_distance - top_distance) <= float(self.ambiguity_gap_m) and score_gap < 0.08 and area_gap < 0.18:
                     assumptions.append(
                         "Multiple nearby structures were similarly plausible; using geocoded point fallback."
                     )

@@ -42,6 +42,14 @@ STRUCTURE_SPECIFIC_SUBMODELS = {
     "defensible_space_risk",
 }
 
+GEOMETRY_SENSITIVE_SUBMODELS = {
+    "vegetation_intensity_risk",
+    "fuel_proximity_risk",
+    "flame_contact_risk",
+    "ember_exposure_risk",
+    "defensible_space_risk",
+}
+
 
 @dataclass
 class SubmodelResult:
@@ -81,6 +89,12 @@ class RiskComputation:
     structure_specific_score: float = 0.0
     component_weight_fractions: Dict[str, float] = field(default_factory=dict)
     geometry_basis: str = "point"
+    observed_feature_count: int = 0
+    inferred_feature_count: int = 0
+    fallback_feature_count: int = 0
+    geometry_quality_score: float = 0.0
+    regional_context_coverage_score: float = 0.0
+    property_specificity_score: float = 0.0
     access_provisional: bool = True
     access_note: str = (
         "Access exposure is derived separately from wildfire total scoring and may be limited by available road-network data."
@@ -600,6 +614,50 @@ class RiskEngine:
             or property_level_context.get("parcel_geometry")
         )
         geometry_basis = "footprint" if footprint_used else ("parcel" if parcel_available else "point")
+        feature_bundle_summary = (
+            property_level_context.get("feature_bundle_summary")
+            if isinstance(property_level_context.get("feature_bundle_summary"), dict)
+            else {}
+        )
+        bundle_metrics = (
+            feature_bundle_summary.get("coverage_metrics")
+            if isinstance(feature_bundle_summary.get("coverage_metrics"), dict)
+            else {}
+        )
+        observed_feature_count = int(bundle_metrics.get("observed_feature_count") or 0)
+        inferred_feature_count = int(bundle_metrics.get("inferred_feature_count") or 0)
+        fallback_feature_count = int(bundle_metrics.get("fallback_feature_count") or 0)
+        geometry_quality_score = float(
+            bundle_metrics.get("structure_geometry_quality_score")
+            if bundle_metrics.get("structure_geometry_quality_score") is not None
+            else (0.92 if geometry_basis == "footprint" else (0.74 if geometry_basis == "parcel" else 0.46))
+        )
+        regional_context_coverage_score = float(
+            bundle_metrics.get("environmental_layer_coverage_score")
+            if bundle_metrics.get("environmental_layer_coverage_score") is not None
+            else 50.0
+        )
+        property_specificity_score = float(
+            bundle_metrics.get("property_specificity_score")
+            if bundle_metrics.get("property_specificity_score") is not None
+            else (85.0 if geometry_basis == "footprint" else (62.0 if geometry_basis == "parcel" else 42.0))
+        )
+        feature_fallback_ratio = float(bundle_metrics.get("fallback_dominance_ratio") or 0.0)
+        ring_metrics = (
+            property_level_context.get("ring_metrics")
+            if isinstance(property_level_context.get("ring_metrics"), dict)
+            else {}
+        )
+        ring_has_direct_geometry = bool(footprint_used and ring_metrics)
+        near_structure_observed = any(
+            property_level_context.get(key) is not None
+            for key in (
+                "near_structure_vegetation_0_5_pct",
+                "canopy_adjacency_proxy_pct",
+                "vegetation_continuity_proxy_pct",
+                "nearest_high_fuel_patch_distance_ft",
+            )
+        )
         burn_missing = context.burn_probability_index is None
         hazard_missing = context.hazard_severity_index is None
         dryness_missing = context.moisture_index is None
@@ -614,7 +672,13 @@ class RiskEngine:
                 return "structure_specific"
             return "unknown"
 
-        def _availability_multiplier(submodel: str, observed_fraction: float, assumptions_text: str) -> float:
+        def _availability_multiplier(
+            submodel: str,
+            observed_fraction: float,
+            assumptions_text: str,
+            *,
+            has_fallback_tokens: bool,
+        ) -> float:
             multiplier = 1.0
             assumption_hits = sum(
                 assumptions_text.count(token)
@@ -624,37 +688,55 @@ class RiskEngine:
                 multiplier *= max(0.40, 1.0 - (0.11 * float(assumption_hits)))
             if geometry_basis == "point":
                 if submodel == "defensible_space_risk":
-                    multiplier *= 0.16
+                    multiplier *= 0.08
                 elif submodel == "ember_exposure_risk":
-                    multiplier *= 0.40
+                    multiplier *= 0.28
                 elif submodel == "flame_contact_risk":
-                    multiplier *= 0.42
+                    multiplier *= 0.22
+                elif submodel == "fuel_proximity_risk":
+                    multiplier *= 0.62
+                elif submodel == "vegetation_intensity_risk":
+                    multiplier *= 0.55
             elif geometry_basis == "parcel":
                 if submodel == "defensible_space_risk":
-                    multiplier *= 0.58
+                    multiplier *= 0.45
                 elif submodel == "ember_exposure_risk":
-                    multiplier *= 0.82
+                    multiplier *= 0.72
             if not footprint_used and submodel in {
                 "vegetation_intensity_risk",
                 "fuel_proximity_risk",
                 "flame_contact_risk",
                 "defensible_space_risk",
             }:
-                multiplier *= 0.72
+                multiplier *= 0.58
             if not parcel_available and submodel == "defensible_space_risk":
-                multiplier *= 0.82
+                multiplier *= 0.70
+            if not ring_has_direct_geometry and submodel in {"defensible_space_risk", "flame_contact_risk"}:
+                multiplier *= 0.58
+            if not near_structure_observed and submodel in {"vegetation_intensity_risk", "fuel_proximity_risk", "flame_contact_risk"}:
+                multiplier *= 0.65
             if dryness_missing and submodel in {"vegetation_intensity_risk", "flame_contact_risk"}:
-                multiplier *= 0.78
+                multiplier *= 0.62
             if burn_missing and submodel == "ember_exposure_risk":
-                multiplier *= 0.78
+                multiplier *= 0.60
             if hazard_missing and submodel == "ember_exposure_risk":
+                multiplier *= 0.64
+            if major_env_missing_count >= 2 and submodel in PROPERTY_SURROUNDINGS_SUBMODELS:
                 multiplier *= 0.82
-            if major_env_missing_count >= 3 and submodel in PROPERTY_SURROUNDINGS_SUBMODELS:
-                multiplier *= 0.90
-            if major_env_missing_count >= 3 and submodel in REGIONAL_CONTEXT_SUBMODELS:
+            if major_env_missing_count >= 2 and submodel in REGIONAL_CONTEXT_SUBMODELS:
+                multiplier *= 0.72
+            if regional_context_coverage_score < 60.0 and submodel in REGIONAL_CONTEXT_SUBMODELS:
+                multiplier *= 0.76
+            if geometry_quality_score < 0.62 and submodel in STRUCTURE_SPECIFIC_SUBMODELS:
+                multiplier *= 0.62
+            if property_specificity_score < 55.0 and submodel in GEOMETRY_SENSITIVE_SUBMODELS:
+                multiplier *= 0.70
+            if feature_fallback_ratio >= 0.50:
                 multiplier *= 0.86
             if observed_fraction < 0.45:
-                multiplier *= 0.84
+                multiplier *= 0.75
+            if has_fallback_tokens:
+                multiplier *= 0.82
             return max(0.0, min(1.0, multiplier))
 
         for name, result in submodels.items():
@@ -668,9 +750,28 @@ class RiskEngine:
                 min(1.0, float(observed_input_count) / float(expected_input_count)),
             )
             assumptions_text = " ".join(result.assumptions).lower()
-            availability_multiplier = _availability_multiplier(name, observed_fraction, assumptions_text)
+            has_fallback_tokens = any(
+                tok in assumptions_text for tok in ("fallback", "proxy", "missing", "unavailable", "point-based")
+            )
+            availability_multiplier = _availability_multiplier(
+                name,
+                observed_fraction,
+                assumptions_text,
+                has_fallback_tokens=has_fallback_tokens,
+            )
             omitted_due_to_missing = observed_input_count <= 0
             effective_weight = 0.0 if omitted_due_to_missing else (weight * observed_fraction * availability_multiplier)
+            suppressed_by_evidence = False
+            if not omitted_due_to_missing and name in GEOMETRY_SENSITIVE_SUBMODELS:
+                weak_geometry_context = (
+                    geometry_basis == "point"
+                    and (not ring_has_direct_geometry or geometry_quality_score < 0.55)
+                    and (has_fallback_tokens or observed_fraction < 0.80)
+                )
+                if weak_geometry_context and name in {"defensible_space_risk", "flame_contact_risk"}:
+                    suppressed_by_evidence = True
+                elif weak_geometry_context and name in {"vegetation_intensity_risk", "fuel_proximity_risk"}:
+                    effective_weight *= 0.55
             if (
                 not omitted_due_to_missing
                 and observed_fraction < 0.25
@@ -678,18 +779,22 @@ class RiskEngine:
             ):
                 omitted_due_to_missing = True
                 effective_weight = 0.0
+            if suppressed_by_evidence:
+                omitted_due_to_missing = True
+                effective_weight = 0.0
             if omitted_due_to_missing:
                 missing_factor_count += 1
                 assumptions.append(
                     f"{name.replace('_', ' ')} omitted from numeric weighting because required evidence was missing."
                 )
+                if suppressed_by_evidence:
+                    assumptions.append(
+                        f"{name.replace('_', ' ')} was suppressed because structure geometry evidence was too weak for reliable property-level weighting."
+                    )
                 basis = "missing"
                 support_level = "low"
             else:
                 observed_factor_count += 1
-                has_fallback_tokens = any(
-                    tok in assumptions_text for tok in ("fallback", "proxy", "missing", "unavailable", "point-based")
-                )
                 if observed_fraction < 0.60 or has_fallback_tokens or availability_multiplier < 0.65:
                     fallback_factor_count += 1
                 if observed_fraction >= 0.80 and availability_multiplier >= 0.85 and not has_fallback_tokens:
@@ -714,6 +819,11 @@ class RiskEngine:
                 "availability_multiplier": round(availability_multiplier, 4),
                 "omitted_due_to_missing": omitted_due_to_missing,
                 "basis": basis,
+                "factor_evidence_status": (
+                    "suppressed"
+                    if omitted_due_to_missing
+                    else ("fallback" if basis == "fallback" else ("inferred" if basis == "inferred" else "observed"))
+                ),
                 "support_level": support_level,
                 "component": _component_name(name),
             }
@@ -833,6 +943,12 @@ class RiskEngine:
             structure_specific_score=structure_specific_score,
             component_weight_fractions=component_weight_fractions,
             geometry_basis=geometry_basis,
+            observed_feature_count=observed_feature_count,
+            inferred_feature_count=inferred_feature_count,
+            fallback_feature_count=fallback_feature_count,
+            geometry_quality_score=round(max(0.0, min(1.0, geometry_quality_score)), 3),
+            regional_context_coverage_score=round(max(0.0, min(100.0, regional_context_coverage_score)), 1),
+            property_specificity_score=round(max(0.0, min(100.0, property_specificity_score)), 1),
             access_provisional=access_provisional,
             access_note=access_note,
         )
@@ -985,6 +1101,16 @@ class RiskEngine:
                 struct_multiplier *= 0.80
             env_weight *= env_multiplier
             struct_weight *= struct_multiplier
+            if risk.geometry_basis == "point":
+                readiness_weight *= 0.45
+            elif risk.geometry_basis == "parcel":
+                readiness_weight *= 0.75
+            if risk.fallback_weight_fraction >= 0.55 or risk.observed_weight_fraction < 0.45:
+                readiness_weight *= 0.35
+            if risk.property_specificity_score < 55.0:
+                readiness_weight *= 0.60
+            if risk.geometry_basis == "point" and risk.fallback_factor_count > max(1, risk.observed_factor_count):
+                readiness_weight *= 0.55
         if insurance_readiness_score is None:
             readiness_weight = 0.0
         return env_weight, struct_weight, max(0.0, readiness_weight)
@@ -1011,6 +1137,23 @@ class RiskEngine:
             nonlocal penalty
             penalty += value
             penalties_applied[name] = round(penalties_applied.get(name, 0.0) + value, 1)
+
+        structure_evidence_weight = sum(
+            float((risk.weighted_contributions.get(name) or {}).get("weight", 0.0))
+            for name in STRUCTURE_SPECIFIC_SUBMODELS
+        )
+        if risk.geometry_basis == "point" and structure_evidence_weight < 0.22:
+            evidence_penalty = max(4.0, float(p.get("defensible_watch", 8.0)) * 0.45)
+            factors.append(
+                {
+                    "name": "structure_evidence_quality",
+                    "status": "watch",
+                    "score_impact": -round(evidence_penalty, 1),
+                    "detail": "Structure geometry evidence is weak; readiness is provisional and should not be treated as parcel-precise.",
+                }
+            )
+            add_penalty("structure_evidence_quality", evidence_penalty)
+            blockers.append("Structure geometry evidence is weak")
 
         roof = (attrs.roof_type or "unknown").lower()
         if roof in {"wood", "untreated wood shake"}:

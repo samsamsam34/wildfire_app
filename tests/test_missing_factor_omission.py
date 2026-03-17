@@ -102,6 +102,8 @@ def test_point_geometry_downweights_structure_specific_components():
         point_risk.weighted_contributions["defensible_space_risk"]["effective_weight"]
         < footprint_risk.weighted_contributions["defensible_space_risk"]["effective_weight"]
     )
+    assert bool(point_risk.weighted_contributions["defensible_space_risk"]["omitted_due_to_missing"]) is True
+    assert str(point_risk.weighted_contributions["defensible_space_risk"].get("factor_evidence_status")) == "suppressed"
     point_structure_effective = sum(
         float(point_risk.weighted_contributions[name]["effective_weight"])
         for name in ["ember_exposure_risk", "structure_vulnerability_risk", "defensible_space_risk"]
@@ -125,9 +127,11 @@ def test_weighted_contributions_include_basis_component_and_support_metadata():
     rows = list(risk.weighted_contributions.values())
     assert rows
     assert all("basis" in row for row in rows)
+    assert all("factor_evidence_status" in row for row in rows)
     assert all("component" in row for row in rows)
     assert all("support_level" in row for row in rows)
     assert any(str(row.get("basis")) in {"fallback", "missing"} for row in rows)
+    assert any(str(row.get("factor_evidence_status")) in {"fallback", "suppressed"} for row in rows)
 
 
 def test_blended_score_supports_adaptive_weighting_with_risk_context():

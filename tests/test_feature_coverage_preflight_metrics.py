@@ -48,3 +48,5 @@ def test_preflight_uses_feature_bundle_metrics_for_specificity_caps():
     assert preflight["limited_assessment_flag"] is True
     assert preflight["fallback_dominance_ratio"] >= 0.7
     assert preflight["structure_geometry_quality_score"] <= 0.6
+    assert preflight["geometry_quality_score"] == preflight["structure_geometry_quality_score"]
+    assert "regional_context_coverage_score" in preflight

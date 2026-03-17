@@ -63,9 +63,9 @@ def test_building_match_prefers_point_in_polygon(tmp_path: Path) -> None:
 
     assert result.found is True
     assert result.match_status == "matched"
-    assert result.match_method == "nearest_building_fallback"
+    assert result.match_method == "point_in_footprint"
     assert result.matched_structure_id == "subject"
-    assert result.confidence < 0.9
+    assert result.confidence >= 0.85
     assert result.match_distance_m == 0.0
     assert result.candidate_count >= 1
     assert result.centroid is not None
@@ -115,9 +115,55 @@ def test_building_match_rejects_ambiguous_cross_street_candidates(tmp_path: Path
 
     assert result.found is False
     assert result.match_status == "ambiguous"
-    assert result.match_method in {"nearest_building_fallback", "parcel_intersection"}
+    assert result.match_method in {"point_in_footprint", "nearest_building_fallback", "parcel_intersection"}
     assert result.candidate_count >= 2
     assert any("similarly plausible" in note.lower() for note in result.assumptions)
+
+
+@pytest.mark.skipif(not _geo_ready(), reason="Building footprint matching tests require shapely")
+def test_building_match_uses_composite_score_to_break_small_distance_ties(tmp_path: Path) -> None:
+    footprints_path = _write_geojson(
+        tmp_path / "close_candidates.geojson",
+        [
+            {
+                "type": "Feature",
+                "properties": {"id": "residential_target"},
+                "geometry": {
+                    "type": "Polygon",
+                    "coordinates": [[
+                        [-105.00018, 40.00010],
+                        [-104.99998, 40.00010],
+                        [-104.99998, 39.99994],
+                        [-105.00018, 39.99994],
+                        [-105.00018, 40.00010],
+                    ]],
+                },
+            },
+            {
+                "type": "Feature",
+                "properties": {"id": "tiny_outbuilding"},
+                "geometry": {
+                    "type": "Polygon",
+                    "coordinates": [[
+                        [-105.00002, 40.00006],
+                        [-104.99996, 40.00006],
+                        [-104.99996, 40.00000],
+                        [-105.00002, 40.00000],
+                        [-105.00002, 40.00006],
+                    ]],
+                },
+            },
+        ],
+    )
+    client = BuildingFootprintClient(path=footprints_path, max_search_m=70.0)
+    result = client.get_building_footprint(lat=40.00002, lon=-105.00008)
+
+    assert result.found is True
+    assert result.match_status == "matched"
+    assert result.match_method in {"point_in_footprint", "nearest_building_fallback", "parcel_intersection"}
+    assert result.matched_structure_id == "residential_target"
+    assert result.candidate_count >= 1
+    assert not any("similarly plausible" in note.lower() for note in result.assumptions)
 
 
 @pytest.mark.skipif(not _geo_ready(), reason="Building footprint matching tests require shapely")

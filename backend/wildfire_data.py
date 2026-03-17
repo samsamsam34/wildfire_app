@@ -1000,10 +1000,11 @@ class WildfireDataClient:
                     "footprint_found": False,
                     "footprint_status": "error",
                     "footprint_source": None,
+                    "geometry_basis": "point",
                     "footprint_confidence": 0.0,
                     "structure_match_status": "error",
                     "structure_match_method": None,
-                    "structure_selection_method": None,
+                    "structure_selection_method": "footprint_lookup_error",
                     "matched_structure_id": None,
                     "structure_match_confidence": 0.0,
                     "structure_match_distance_m": None,
@@ -1136,15 +1137,27 @@ class WildfireDataClient:
                 assumptions.append(
                     "Exact building outline unavailable near the selected point; using the selected location as the property anchor."
                 )
+            structure_selection_method = "no_footprint_found"
+            if status == "provider_unavailable":
+                structure_selection_method = "footprint_provider_unavailable"
+            elif match_status == "ambiguous":
+                structure_selection_method = "ambiguous_candidates_fallback"
+            if normalized_selection_mode == "point":
+                if force_unsnapped_point:
+                    structure_selection_method = "point_unsnapped_low_confidence_or_distance"
+                else:
+                    structure_selection_method = "point_unsnapped_no_match"
+            geometry_basis = "parcel" if (parcel_polygon is not None and normalized_selection_mode != "point") else "point"
             return {
                 "footprint_used": False,
                 "footprint_found": False,
                 "footprint_status": status,
                 "footprint_source": result.source,
+                "geometry_basis": geometry_basis,
                 "footprint_confidence": result.confidence,
                 "structure_match_status": match_status or "none",
                 "structure_match_method": match_method,
-                "structure_selection_method": match_method,
+                "structure_selection_method": structure_selection_method,
                 "matched_structure_id": getattr(result, "matched_structure_id", None),
                 "structure_match_confidence": match_confidence,
                 "structure_match_distance_m": match_distance,
@@ -1254,16 +1267,27 @@ class WildfireDataClient:
             final_structure_geometry_source = "user_selected_polygon"
             structure_geometry_confidence = 1.0
             snapped_structure_distance_m = 0.0
+            structure_selection_method = "user_selected_polygon"
         elif normalized_selection_mode == "point":
             final_structure_geometry_source = "user_selected_point_snapped"
             structure_geometry_confidence = max(0.5, structure_match_confidence)
             snapped_structure_distance_m = (
                 float(match_distance) if match_distance is not None else 0.0
             )
+            structure_selection_method = (
+                "point_inside_footprint_snap"
+                if (match_distance is not None and float(match_distance) <= 0.5)
+                else "point_nearest_footprint_snap"
+            )
         else:
             final_structure_geometry_source = "auto_detected"
             structure_geometry_confidence = structure_match_confidence
             snapped_structure_distance_m = None
+            structure_selection_method = (
+                "parcel_intersection"
+                if str(match_method or "") == "parcel_intersection"
+                else ("point_in_footprint" if str(match_method or "") == "point_in_footprint" else "nearest_building_fallback")
+            )
         display_point_source = (
             "matched_structure_centroid"
             if (
@@ -1282,10 +1306,11 @@ class WildfireDataClient:
             "footprint_found": result.found,
             "footprint_status": "used" if ring_metrics else "error",
             "footprint_source": result.source,
+            "geometry_basis": "footprint",
             "footprint_confidence": result.confidence,
             "structure_match_status": match_status or ("matched" if result.found else "none"),
             "structure_match_method": match_method,
-            "structure_selection_method": match_method,
+            "structure_selection_method": structure_selection_method,
             "matched_structure_id": getattr(result, "matched_structure_id", None),
             "structure_match_confidence": structure_match_confidence,
             "structure_match_distance_m": match_distance,
@@ -1663,12 +1688,15 @@ class WildfireDataClient:
             "footprint_used": False,
             "footprint_found": False,
             "footprint_status": "not_found",
+            "geometry_basis": "point",
             "structure_match_status": "none",
             "structure_match_method": None,
+            "structure_selection_method": "no_footprint_found",
             "structure_match_confidence": 0.0,
             "structure_match_distance_m": None,
             "candidate_structure_count": 0,
             "structure_match_candidates": [],
+            "footprint_source": None,
             "display_point_source": "property_anchor_point",
             "fallback_mode": "point_based",
             "ring_metrics": None,
@@ -1706,6 +1734,8 @@ class WildfireDataClient:
             "region_optional_layers_missing": list(region_context.get("optional_layers_missing") or []),
             "region_enrichment_layers_missing": list(region_context.get("enrichment_layers_missing") or []),
             "region_missing_reason_by_layer": dict(region_context.get("missing_reason_by_layer") or {}),
+            "anchor_quality": "low",
+            "anchor_quality_score": 0.0,
         }
         structure_ring_metrics: dict[str, dict[str, float | None]] = {}
 
@@ -1948,6 +1978,11 @@ class WildfireDataClient:
                     if ring_context.get("snapped_structure_distance_m") is not None
                     else None
                 ),
+                "geometry_basis": str(ring_context.get("geometry_basis") or ("footprint" if ring_context.get("footprint_used") else "point")),
+                "footprint_source": ring_context.get("footprint_source"),
+                "structure_selection_method": (
+                    str(ring_context.get("structure_selection_method") or ring_context.get("structure_match_method") or "no_footprint_found")
+                ),
             }
         )
         if normalized_selection_mode == "point" and user_selected_point_coords is not None:
@@ -2005,6 +2040,12 @@ class WildfireDataClient:
         property_level_context["geocode_to_anchor_distance_m"] = geocode_to_anchor_distance_m
         property_level_context["source_conflict_flag"] = bool(anchor.source_conflict_flag)
         property_level_context["alignment_notes"] = list(anchor.alignment_notes)
+        property_level_context["anchor_quality"] = str(property_level_context.get("property_anchor_quality") or "low")
+        property_level_context["anchor_quality_score"] = (
+            float(property_level_context.get("property_anchor_quality_score"))
+            if property_level_context.get("property_anchor_quality_score") is not None
+            else 0.0
+        )
         property_level_context["footprint_source_name"] = str(
             os.getenv("WF_FOOTPRINT_SOURCE_NAME", "") or Path(str(ring_context.get("footprint_source") or "")).stem
         ) or None

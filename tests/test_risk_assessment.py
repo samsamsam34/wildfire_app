@@ -232,8 +232,16 @@ def _assert_core_contract(body: dict) -> None:
         "observed_factor_count",
         "missing_factor_count",
         "fallback_factor_count",
+        "observed_feature_count",
+        "inferred_feature_count",
+        "fallback_feature_count",
+        "missing_feature_count",
         "observed_weight_fraction",
         "fallback_dominance_ratio",
+        "fallback_weight_fraction",
+        "geometry_quality_score",
+        "regional_context_coverage_score",
+        "property_specificity_score",
         "layer_coverage_audit",
         "coverage_summary",
         "site_hazard_eligibility",
@@ -429,8 +437,16 @@ def _assert_core_contract(body: dict) -> None:
     assert int(body["observed_factor_count"]) >= 0
     assert int(body["missing_factor_count"]) >= 0
     assert int(body["fallback_factor_count"]) >= 0
+    assert int(body["observed_feature_count"]) >= 0
+    assert int(body["inferred_feature_count"]) >= 0
+    assert int(body["fallback_feature_count"]) >= 0
+    assert int(body["missing_feature_count"]) >= 0
     assert 0.0 <= float(body["observed_weight_fraction"]) <= 1.0
     assert float(body["fallback_dominance_ratio"]) >= 0.0
+    assert 0.0 <= float(body["fallback_weight_fraction"]) <= 1.0
+    assert 0.0 <= float(body["geometry_quality_score"]) <= 1.0
+    assert 0.0 <= float(body["regional_context_coverage_score"]) <= 100.0
+    assert 0.0 <= float(body["property_specificity_score"]) <= 100.0
     coverage_rows = body["layer_coverage_audit"]
     assert isinstance(coverage_rows, list)
     for row in coverage_rows:
@@ -592,6 +608,10 @@ def test_assessment_passes_user_selected_point_override_to_context(monkeypatch, 
     plc = body.get("property_level_context") or {}
     assert plc.get("selection_mode") == "point"
     assert plc.get("user_selected_point") == {"latitude": 39.7394, "longitude": -104.9901}
+    assert plc.get("geometry_basis") in {"point", "footprint", "parcel"}
+    assert plc.get("structure_selection_method")
+    assert plc.get("anchor_quality") in {"low", "medium", "high"}
+    assert isinstance(plc.get("anchor_quality_score"), (int, float))
     assert body.get("final_structure_geometry_source") == "user_selected_point_unsnapped"
 
 
@@ -807,12 +827,14 @@ def test_wildfire_data_point_selection_snaps_to_nearby_footprint(monkeypatch):
     assert context_blob["footprint_used"] is True
     assert context_blob["selection_mode"] == "point"
     assert context_blob["final_structure_geometry_source"] == "user_selected_point_snapped"
+    assert context_blob["structure_selection_method"] == "point_nearest_footprint_snap"
+    assert context_blob["geometry_basis"] == "footprint"
     assert context_blob["structure_geometry_confidence"] >= 0.5
     assert context_blob["snapped_structure_distance_m"] == pytest.approx(4.2)
     assert context_blob["user_selected_point_in_footprint"] is False
     assert context_blob["matched_structure_id"] == "snap-home"
-    # Even when snapped, display marker should remain the selected anchor unless confidence is high.
-    assert context_blob["display_point_source"] == "property_anchor_point"
+    # High-confidence snapped geometry should drive the display point.
+    assert context_blob["display_point_source"] == "matched_structure_centroid"
     assert any("user-selected map point" in note.lower() for note in assumptions)
 
 
@@ -867,6 +889,7 @@ def test_wildfire_data_point_selection_detects_point_inside_footprint(monkeypatc
         user_selected_point={"latitude": 40.0, "longitude": -105.0},
     )
     assert context_blob["final_structure_geometry_source"] == "user_selected_point_snapped"
+    assert context_blob["structure_selection_method"] == "point_inside_footprint_snap"
     assert context_blob["user_selected_point_in_footprint"] is True
     assert context_blob["snapped_structure_distance_m"] == pytest.approx(0.0)
     assert context_blob["display_point_source"] == "matched_structure_centroid"
@@ -923,6 +946,8 @@ def test_wildfire_data_point_selection_weak_match_remains_unsnapped(monkeypatch)
     )
     assert context_blob["footprint_used"] is False
     assert context_blob["final_structure_geometry_source"] == "user_selected_point_unsnapped"
+    assert context_blob["structure_selection_method"] == "point_unsnapped_low_confidence_or_distance"
+    assert context_blob["geometry_basis"] == "point"
     assert context_blob["display_point_source"] == "property_anchor_point"
     assert context_blob["snapped_structure_distance_m"] is None
     assert any("low confidence" in note.lower() for note in assumptions)
@@ -970,6 +995,8 @@ def test_wildfire_data_point_selection_unsnapped_falls_back_to_selected_anchor(m
     assert context_blob["footprint_used"] is False
     assert context_blob["selection_mode"] == "point"
     assert context_blob["final_structure_geometry_source"] == "user_selected_point_unsnapped"
+    assert context_blob["structure_selection_method"] == "point_unsnapped_no_match"
+    assert context_blob["geometry_basis"] == "point"
     assert context_blob["structure_geometry_confidence"] == pytest.approx(0.42)
     assert context_blob["snapped_structure_distance_m"] is None
     assert context_blob["user_selected_point"] == {"latitude": 46.8702, "longitude": -113.9898}

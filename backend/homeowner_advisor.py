@@ -105,26 +105,46 @@ def build_ranked_risk_drivers(
     for submodel_key, presentation in _FACTOR_PRESENTATION.items():
         score_obj = submodel_scores.get(submodel_key)
         contribution_obj = weighted_contributions.get(submodel_key)
+        evidence_status = str(
+            getattr(contribution_obj, "factor_evidence_status", None)
+            or getattr(contribution_obj, "basis", "")
+            or ""
+        ).strip().lower()
+        omitted_due_to_missing = bool(getattr(contribution_obj, "omitted_due_to_missing", False))
+        support_level = str(getattr(contribution_obj, "support_level", "") or "").strip().lower()
+        if evidence_status == "suppressed" or omitted_due_to_missing:
+            continue
         contribution = abs(_to_float(getattr(contribution_obj, "contribution", None)) or 0.0)
         if contribution <= 0.0 and score_obj is not None:
             contribution = max(0.0, float(score_obj.score) / 100.0)
         if score_obj is None and contribution <= 0.0:
             continue
+        low_evidence = evidence_status in {"fallback", "missing"} or support_level == "low"
+        explanation = str(presentation["explanation"])
+        if low_evidence:
+            explanation = f"{explanation} (Lower-evidence factor; treated as directional guidance.)"
         rows.append(
             {
                 "submodel_key": submodel_key,
                 "factor": presentation["factor"],
                 "title": presentation["title"],
-                "explanation": presentation["explanation"],
+                "explanation": explanation,
                 "score": float(score_obj.score) if score_obj is not None else 0.0,
                 "contribution": contribution,
+                "low_evidence": low_evidence,
             }
         )
 
     if not rows:
         return [], []
 
-    rows.sort(key=lambda row: (row["contribution"], row["score"]), reverse=True)
+    rows.sort(
+        key=lambda row: (
+            bool(row["low_evidence"]),
+            -float(row["contribution"]),
+            -float(row["score"]),
+        )
+    )
     total_contribution = sum(float(row["contribution"]) for row in rows)
     if total_contribution <= 0.0:
         total_contribution = float(len(rows))
