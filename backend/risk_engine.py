@@ -25,6 +25,23 @@ STRUCTURE_SUBMODELS = {
     "defensible_space_risk",
 }
 
+REGIONAL_CONTEXT_SUBMODELS = {
+    "slope_topography_risk",
+    "historic_fire_risk",
+}
+
+PROPERTY_SURROUNDINGS_SUBMODELS = {
+    "vegetation_intensity_risk",
+    "fuel_proximity_risk",
+    "flame_contact_risk",
+}
+
+STRUCTURE_SPECIFIC_SUBMODELS = {
+    "ember_exposure_risk",
+    "structure_vulnerability_risk",
+    "defensible_space_risk",
+}
+
 
 @dataclass
 class SubmodelResult:
@@ -57,7 +74,13 @@ class RiskComputation:
     fallback_factor_count: int = 0
     observed_weight_fraction: float = 0.0
     fallback_dominance_ratio: float = 0.0
+    fallback_weight_fraction: float = 0.0
     uncertainty_penalty: float = 0.0
+    regional_context_score: float = 0.0
+    property_surroundings_score: float = 0.0
+    structure_specific_score: float = 0.0
+    component_weight_fractions: Dict[str, float] = field(default_factory=dict)
+    geometry_basis: str = "point"
     access_provisional: bool = True
     access_note: str = (
         "Access exposure is derived separately from wildfire total scoring and may be limited by available road-network data."
@@ -562,8 +585,77 @@ class RiskEngine:
         observed_factor_count = 0
         missing_factor_count = 0
         fallback_factor_count = 0
+        fallback_effective_weight = 0.0
         total_base_weight = 0.0
         total_effective_weight = 0.0
+        property_level_context = (
+            context.property_level_context
+            if isinstance(context.property_level_context, dict)
+            else {}
+        )
+        footprint_used = bool(property_level_context.get("footprint_used"))
+        parcel_available = bool(
+            property_level_context.get("parcel_id")
+            or property_level_context.get("parcel_polygon")
+            or property_level_context.get("parcel_geometry")
+        )
+        geometry_basis = "footprint" if footprint_used else ("parcel" if parcel_available else "point")
+        burn_missing = context.burn_probability_index is None
+        hazard_missing = context.hazard_severity_index is None
+        dryness_missing = context.moisture_index is None
+        major_env_missing_count = sum(1 for flag in (burn_missing, hazard_missing, dryness_missing) if flag)
+
+        def _component_name(submodel: str) -> str:
+            if submodel in REGIONAL_CONTEXT_SUBMODELS:
+                return "regional_context"
+            if submodel in PROPERTY_SURROUNDINGS_SUBMODELS:
+                return "property_surroundings"
+            if submodel in STRUCTURE_SPECIFIC_SUBMODELS:
+                return "structure_specific"
+            return "unknown"
+
+        def _availability_multiplier(submodel: str, observed_fraction: float, assumptions_text: str) -> float:
+            multiplier = 1.0
+            assumption_hits = sum(
+                assumptions_text.count(token)
+                for token in ("fallback", "proxy", "missing", "unavailable", "point-based")
+            )
+            if assumption_hits > 0:
+                multiplier *= max(0.40, 1.0 - (0.11 * float(assumption_hits)))
+            if geometry_basis == "point":
+                if submodel == "defensible_space_risk":
+                    multiplier *= 0.16
+                elif submodel == "ember_exposure_risk":
+                    multiplier *= 0.40
+                elif submodel == "flame_contact_risk":
+                    multiplier *= 0.42
+            elif geometry_basis == "parcel":
+                if submodel == "defensible_space_risk":
+                    multiplier *= 0.58
+                elif submodel == "ember_exposure_risk":
+                    multiplier *= 0.82
+            if not footprint_used and submodel in {
+                "vegetation_intensity_risk",
+                "fuel_proximity_risk",
+                "flame_contact_risk",
+                "defensible_space_risk",
+            }:
+                multiplier *= 0.72
+            if not parcel_available and submodel == "defensible_space_risk":
+                multiplier *= 0.82
+            if dryness_missing and submodel in {"vegetation_intensity_risk", "flame_contact_risk"}:
+                multiplier *= 0.78
+            if burn_missing and submodel == "ember_exposure_risk":
+                multiplier *= 0.78
+            if hazard_missing and submodel == "ember_exposure_risk":
+                multiplier *= 0.82
+            if major_env_missing_count >= 3 and submodel in PROPERTY_SURROUNDINGS_SUBMODELS:
+                multiplier *= 0.90
+            if major_env_missing_count >= 3 and submodel in REGIONAL_CONTEXT_SUBMODELS:
+                multiplier *= 0.86
+            if observed_fraction < 0.45:
+                multiplier *= 0.84
+            return max(0.0, min(1.0, multiplier))
 
         for name, result in submodels.items():
             weight = self.config.submodel_weights[name]
@@ -575,21 +667,43 @@ class RiskEngine:
                 0.0,
                 min(1.0, float(observed_input_count) / float(expected_input_count)),
             )
+            assumptions_text = " ".join(result.assumptions).lower()
+            availability_multiplier = _availability_multiplier(name, observed_fraction, assumptions_text)
             omitted_due_to_missing = observed_input_count <= 0
-            effective_weight = 0.0 if omitted_due_to_missing else (weight * observed_fraction)
+            effective_weight = 0.0 if omitted_due_to_missing else (weight * observed_fraction * availability_multiplier)
+            if (
+                not omitted_due_to_missing
+                and observed_fraction < 0.25
+                and availability_multiplier < 0.35
+            ):
+                omitted_due_to_missing = True
+                effective_weight = 0.0
             if omitted_due_to_missing:
                 missing_factor_count += 1
                 assumptions.append(
                     f"{name.replace('_', ' ')} omitted from numeric weighting because required evidence was missing."
                 )
+                basis = "missing"
+                support_level = "low"
             else:
                 observed_factor_count += 1
-                if observed_fraction < 0.60 or any(
-                    tok in " ".join(result.assumptions).lower()
-                    for tok in ("fallback", "proxy", "missing", "unavailable", "point-based")
-                ):
+                has_fallback_tokens = any(
+                    tok in assumptions_text for tok in ("fallback", "proxy", "missing", "unavailable", "point-based")
+                )
+                if observed_fraction < 0.60 or has_fallback_tokens or availability_multiplier < 0.65:
                     fallback_factor_count += 1
+                if observed_fraction >= 0.80 and availability_multiplier >= 0.85 and not has_fallback_tokens:
+                    basis = "observed"
+                    support_level = "high"
+                elif observed_fraction >= 0.45 and availability_multiplier >= 0.55:
+                    basis = "inferred"
+                    support_level = "medium"
+                else:
+                    basis = "fallback"
+                    support_level = "low"
             total_effective_weight += effective_weight
+            if basis == "fallback":
+                fallback_effective_weight += effective_weight
             weighted_contributions[name] = {
                 "weight": 0.0,
                 "score": round(result.score, 2),
@@ -597,7 +711,11 @@ class RiskEngine:
                 "base_weight": round(weight, 6),
                 "effective_weight": round(effective_weight, 6),
                 "observed_fraction": round(observed_fraction, 4),
+                "availability_multiplier": round(availability_multiplier, 4),
                 "omitted_due_to_missing": omitted_due_to_missing,
+                "basis": basis,
+                "support_level": support_level,
+                "component": _component_name(name),
             }
             assumptions.extend(result.assumptions)
 
@@ -621,8 +739,20 @@ class RiskEngine:
             group_contribution = sum(float(weighted_contributions.get(n, {}).get("contribution", 0.0)) for n in group)
             return round(max(0.0, min(100.0, group_contribution / group_weight)), 1)
 
-        environmental_driver = _group_driver(ENVIRONMENT_SUBMODELS)
-        structural_driver = _group_driver(STRUCTURE_SUBMODELS)
+        regional_context_score = _group_driver(REGIONAL_CONTEXT_SUBMODELS)
+        property_surroundings_score = _group_driver(PROPERTY_SURROUNDINGS_SUBMODELS)
+        structure_specific_score = _group_driver(STRUCTURE_SPECIFIC_SUBMODELS)
+        environmental_driver = round(
+            max(0.0, min(100.0, (regional_context_score * 0.72) + (property_surroundings_score * 0.28))),
+            1,
+        )
+        if sum(float(weighted_contributions.get(n, {}).get("weight", 0.0)) for n in STRUCTURE_SPECIFIC_SUBMODELS) <= 0.05:
+            structural_driver = round(max(0.0, min(100.0, property_surroundings_score)), 1)
+        else:
+            structural_driver = round(
+                max(0.0, min(100.0, (structure_specific_score * 0.64) + (property_surroundings_score * 0.36))),
+                1,
+            )
 
         observed_weight_fraction = (
             (total_effective_weight / total_base_weight)
@@ -634,12 +764,41 @@ class RiskEngine:
             if observed_factor_count > 0
             else (1.0 if missing_factor_count > 0 else 0.0)
         )
+        fallback_weight_fraction = (
+            (fallback_effective_weight / total_effective_weight)
+            if total_effective_weight > 0.0
+            else (1.0 if fallback_factor_count > 0 else 0.0)
+        )
         uncertainty_penalty = min(
             25.0,
             max(0.0, (1.0 - observed_weight_fraction) * 20.0)
             + (missing_factor_count * 1.5)
-            + (fallback_factor_count * 0.5),
+            + (fallback_factor_count * 0.5)
+            + (fallback_weight_fraction * 4.0),
         )
+        component_weight_fractions = {
+            "regional_context": round(
+                sum(
+                    float(weighted_contributions.get(n, {}).get("weight", 0.0))
+                    for n in REGIONAL_CONTEXT_SUBMODELS
+                ),
+                4,
+            ),
+            "property_surroundings": round(
+                sum(
+                    float(weighted_contributions.get(n, {}).get("weight", 0.0))
+                    for n in PROPERTY_SURROUNDINGS_SUBMODELS
+                ),
+                4,
+            ),
+            "structure_specific": round(
+                sum(
+                    float(weighted_contributions.get(n, {}).get("weight", 0.0))
+                    for n in STRUCTURE_SPECIFIC_SUBMODELS
+                ),
+                4,
+            ),
+        }
 
         access_exposure = context.access_exposure_index
         access_provisional = True
@@ -667,7 +826,13 @@ class RiskEngine:
             fallback_factor_count=fallback_factor_count,
             observed_weight_fraction=round(observed_weight_fraction, 4),
             fallback_dominance_ratio=round(fallback_dominance_ratio, 4),
+            fallback_weight_fraction=round(fallback_weight_fraction, 4),
             uncertainty_penalty=round(uncertainty_penalty, 2),
+            regional_context_score=regional_context_score,
+            property_surroundings_score=property_surroundings_score,
+            structure_specific_score=structure_specific_score,
+            component_weight_fractions=component_weight_fractions,
+            geometry_basis=geometry_basis,
             access_provisional=access_provisional,
             access_note=access_note,
         )
@@ -767,21 +932,12 @@ class RiskEngine:
         site_hazard_score: float,
         home_ignition_vulnerability_score: float,
         insurance_readiness_score: float | None = None,
+        risk: RiskComputation | None = None,
     ) -> float:
-        blend_weights = self.config.risk_blending_weights or {}
-        try:
-            env_weight = float(blend_weights.get("environmental", 0.0))
-            struct_weight = float(blend_weights.get("structural", 0.0))
-            readiness_weight = float(blend_weights.get("readiness", 0.0))
-        except (TypeError, ValueError):
-            env_weight = 0.0
-            struct_weight = 0.0
-            readiness_weight = 0.0
-        if env_weight <= 0 or struct_weight <= 0:
-            env_weight = self._group_weight(ENVIRONMENT_SUBMODELS)
-            struct_weight = self._group_weight(STRUCTURE_SUBMODELS)
-        if insurance_readiness_score is None:
-            readiness_weight = 0.0
+        env_weight, struct_weight, readiness_weight = self.resolve_blend_weights(
+            insurance_readiness_score=insurance_readiness_score,
+            risk=risk,
+        )
         denom = env_weight + struct_weight + max(0.0, readiness_weight)
         if denom <= 0:
             return 0.0
@@ -797,6 +953,41 @@ class RiskEngine:
             + readiness_risk_equivalent * max(0.0, readiness_weight)
         ) / denom
         return round(max(0.0, min(100.0, blended)), 1)
+
+    def resolve_blend_weights(
+        self,
+        *,
+        insurance_readiness_score: float | None = None,
+        risk: RiskComputation | None = None,
+    ) -> tuple[float, float, float]:
+        blend_weights = self.config.risk_blending_weights or {}
+        try:
+            env_weight = float(blend_weights.get("environmental", 0.0))
+            struct_weight = float(blend_weights.get("structural", 0.0))
+            readiness_weight = float(blend_weights.get("readiness", 0.0))
+        except (TypeError, ValueError):
+            env_weight = 0.0
+            struct_weight = 0.0
+            readiness_weight = 0.0
+        if env_weight <= 0 or struct_weight <= 0:
+            env_weight = self._group_weight(ENVIRONMENT_SUBMODELS)
+            struct_weight = self._group_weight(STRUCTURE_SUBMODELS)
+        if risk is not None:
+            component_weights = risk.component_weight_fractions or {}
+            regional_share = float(component_weights.get("regional_context", 0.0))
+            surroundings_share = float(component_weights.get("property_surroundings", 0.0))
+            structure_share = float(component_weights.get("structure_specific", 0.0))
+            env_multiplier = 0.6 + min(0.7, (regional_share * 0.9) + (surroundings_share * 0.25))
+            struct_multiplier = 0.35 + min(0.8, (structure_share * 0.9) + (surroundings_share * 0.35))
+            if risk.geometry_basis == "point":
+                struct_multiplier *= 0.55
+            elif risk.geometry_basis == "parcel":
+                struct_multiplier *= 0.80
+            env_weight *= env_multiplier
+            struct_weight *= struct_multiplier
+        if insurance_readiness_score is None:
+            readiness_weight = 0.0
+        return env_weight, struct_weight, max(0.0, readiness_weight)
 
     def compute_insurance_readiness(self, attrs: PropertyAttributes, context: WildfireContext, risk: RiskComputation) -> ReadinessRuleResult:
         attrs = normalize_property_attributes(attrs)

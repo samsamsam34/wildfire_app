@@ -403,6 +403,8 @@ class FactorBreakdown(BaseModel):
     submodels: Dict[str, float] = Field(default_factory=dict)
     environmental: Dict[str, float] = Field(default_factory=dict)
     structural: Dict[str, float] = Field(default_factory=dict)
+    component_scores: Dict[str, float] = Field(default_factory=dict)
+    component_weight_fractions: Dict[str, float] = Field(default_factory=dict)
 
     # Legacy compatibility fields (deprecated): retained for older clients.
     environmental_risk: float = 0.0
@@ -638,6 +640,10 @@ class WeightedContribution(BaseModel):
     base_weight: Optional[float] = None
     effective_weight: Optional[float] = None
     observed_fraction: Optional[float] = None
+    availability_multiplier: Optional[float] = None
+    basis: Optional[Literal["observed", "inferred", "fallback", "missing"]] = None
+    support_level: Optional[Literal["high", "medium", "low"]] = None
+    component: Optional[Literal["regional_context", "property_surroundings", "structure_specific", "unknown"]] = None
     omitted_due_to_missing: bool = False
 
 
@@ -802,6 +808,7 @@ class AssessmentResult(BaseModel):
     fallback_factor_count: int = 0
     observed_weight_fraction: float = 0.0
     fallback_dominance_ratio: float = 0.0
+    fallback_weight_fraction: float = 0.0
     score_specificity_warning: Optional[str] = None
     data_quality_summary: Dict[str, str] = Field(default_factory=dict)
     assessment_limitations: List[Dict[str, str]] = Field(default_factory=list)

@@ -769,42 +769,67 @@ def _build_confidence(
     if not geocode_verified or (not has_meaningful_environment and not has_meaningful_property):
         confidence = 0.0
 
+    critical_missing_pair = {
+        "burn_probability_layer",
+        "defensible_space_ft",
+    }
+    if critical_missing_pair.issubset(missing_inputs_set):
+        confidence -= 6.0
+        confidence = min(confidence, 35.0)
+    elif "burn_probability_layer" in missing_inputs_set or "defensible_space_ft" in missing_inputs_set:
+        confidence -= 3.0
+
     preflight = dict(preflight or {})
-    output_state = str(assessment_output_state or preflight.get("assessment_output_state") or "insufficient_data")
+    has_preflight = bool(preflight)
+    output_state = str(
+        assessment_output_state
+        or preflight.get("assessment_output_state")
+        or "property_specific_assessment"
+    )
     coverage_percent = float(preflight.get("feature_coverage_percent") or 0.0)
     missing_core_layer_count = int(preflight.get("missing_core_layer_count") or 0)
     major_env_missing_count = int(preflight.get("major_environmental_missing_count") or 0)
     geometry_basis = str(preflight.get("geometry_basis") or "geocode_point")
+    fallback_weight_fraction = float(
+        preflight.get("fallback_weight_fraction")
+        if preflight.get("fallback_weight_fraction") is not None
+        else fallback_dominance_ratio
+    )
     region_readiness = _coerce_region_readiness(preflight.get("region_property_specific_readiness"))
     region_required_missing_count = int(preflight.get("region_required_missing_count") or 0)
     region_optional_missing_count = int(preflight.get("region_optional_missing_count") or 0)
     region_enrichment_missing_count = int(preflight.get("region_enrichment_missing_count") or 0)
-    if coverage_percent <= 15.0:
-        confidence = min(confidence, 35.0)
-    if missing_core_layer_count >= 4:
-        confidence = min(confidence, 42.0)
-    if major_env_missing_count >= 2:
-        confidence = min(confidence, 48.0)
-    if geometry_basis == "geocode_point":
-        confidence = min(confidence, 58.0)
-    if float(fallback_dominance_ratio) >= 0.70:
-        confidence = min(confidence, 45.0)
-    if float(observed_weight_fraction) < 0.45:
-        confidence = min(confidence, 50.0)
-    if region_readiness == "address_level_only":
-        confidence = min(confidence, 60.0)
-    elif region_readiness == "limited_regional_ready":
-        confidence = min(confidence, 38.0)
-    if region_required_missing_count > 0:
-        confidence = min(confidence, 25.0)
-    if (region_optional_missing_count + region_enrichment_missing_count) >= 6:
-        confidence = min(confidence, 52.0)
-    if output_state == "address_level_estimate":
-        confidence = min(confidence, 68.0)
-    elif output_state == "limited_regional_estimate":
-        confidence = min(confidence, 45.0)
-    elif output_state == "insufficient_data":
-        confidence = 0.0
+    if has_preflight:
+        if coverage_percent <= 15.0:
+            confidence = min(confidence, 35.0)
+        if missing_core_layer_count >= 4:
+            confidence = min(confidence, 42.0)
+        if major_env_missing_count >= 2:
+            confidence = min(confidence, 48.0)
+        if geometry_basis == "geocode_point":
+            confidence = min(confidence, 58.0)
+        if float(fallback_dominance_ratio) >= 0.70:
+            confidence = min(confidence, 45.0)
+        if fallback_weight_fraction >= 0.72:
+            confidence = min(confidence, 42.0)
+        elif fallback_weight_fraction >= 0.60:
+            confidence = min(confidence, 50.0)
+        if float(observed_weight_fraction) < 0.45:
+            confidence = min(confidence, 50.0)
+        if region_readiness == "address_level_only":
+            confidence = min(confidence, 60.0)
+        elif region_readiness == "limited_regional_ready":
+            confidence = min(confidence, 38.0)
+        if region_required_missing_count > 0:
+            confidence = min(confidence, 25.0)
+        if (region_optional_missing_count + region_enrichment_missing_count) >= 6:
+            confidence = min(confidence, 52.0)
+        if output_state == "address_level_estimate":
+            confidence = min(confidence, 68.0)
+        elif output_state == "limited_regional_estimate":
+            confidence = min(confidence, 45.0)
+        elif output_state == "insufficient_data":
+            confidence = 0.0
 
     confidence = max(0.0, min(100.0, round(confidence, 1)))
 
@@ -866,6 +891,8 @@ def _build_confidence(
         low_confidence_flags.append("Heuristic inputs are present in the scoring context")
     if critical_near_structure_missing:
         low_confidence_flags.append("Critical near-structure evidence is missing; confidence is capped")
+    if fallback_weight_fraction >= 0.60:
+        low_confidence_flags.append("Fallback-weighted factors dominate active score composition")
     if any("provisional" in note.lower() for note in assumptions.assumptions_used):
         low_confidence_flags.append("Access scoring is provisional and not yet parcel/egress-based")
     if confidence < 70:
@@ -1186,6 +1213,7 @@ def _status_from_source_fields(
 
 def _build_score_evidence_ledger(
     *,
+    risk: RiskComputation | None,
     submodel_scores: dict[str, SubmodelScore],
     weighted_contributions: dict[str, WeightedContribution],
     readiness_factors: list[ReadinessFactor],
@@ -1313,22 +1341,21 @@ def _build_score_evidence_ledger(
             )
         )
 
-    blend_cfg = scoring_config.risk_blending_weights or {}
-    try:
-        env_weight = float(blend_cfg.get("environmental", 0.0))
-        struct_weight_total = float(blend_cfg.get("structural", 0.0))
-        readiness_weight = float(blend_cfg.get("readiness", 0.0))
-    except (TypeError, ValueError):
-        env_weight = 0.0
-        struct_weight_total = 0.0
-        readiness_weight = 0.0
+    env_weight, struct_weight_total, readiness_weight = risk_engine.resolve_blend_weights(
+        insurance_readiness_score=readiness_score,
+        risk=risk,
+    )
     if env_weight <= 0 or struct_weight_total <= 0:
-        env_weight = sum(weighted_contributions[key].weight for key in weighted_contributions if key in ENVIRONMENTAL_SUBMODELS)
-        struct_weight_total = sum(
-            weighted_contributions[key].weight for key in weighted_contributions if key in STRUCTURAL_SUBMODELS
+        env_weight = sum(
+            weighted_contributions[key].weight
+            for key in weighted_contributions
+            if key in ENVIRONMENTAL_SUBMODELS
         )
-    if readiness_score is None:
-        readiness_weight = 0.0
+        struct_weight_total = sum(
+            weighted_contributions[key].weight
+            for key in weighted_contributions
+            if key in STRUCTURAL_SUBMODELS
+        )
 
     denom = env_weight + struct_weight_total + max(0.0, readiness_weight)
     wildfire_entries: list[ScoreEvidenceFactor] = []
@@ -3545,6 +3572,15 @@ def _build_factor_breakdown(submodels: dict[str, SubmodelScore], risk: RiskCompu
         submodels=canonical,
         environmental=environmental,
         structural=structural,
+        component_scores={
+            "regional_context_score": round(float(risk.regional_context_score), 1),
+            "property_surroundings_score": round(float(risk.property_surroundings_score), 1),
+            "structure_specific_score": round(float(risk.structure_specific_score), 1),
+        },
+        component_weight_fractions={
+            key: round(float(value), 4)
+            for key, value in (risk.component_weight_fractions or {}).items()
+        },
         environmental_risk=risk.drivers.environmental,
         structural_risk=risk.drivers.structural,
         access_risk=risk.drivers.access_exposure,
@@ -3670,9 +3706,13 @@ def _build_score_variance_diagnostics(
             "base_weight": wc.base_weight,
             "effective_weight": wc.effective_weight,
             "observed_fraction": wc.observed_fraction,
+            "availability_multiplier": wc.availability_multiplier,
             "omitted_due_to_missing": wc.omitted_due_to_missing,
             "score": wc.score,
             "contribution": wc.contribution,
+            "basis": wc.basis,
+            "support_level": wc.support_level,
+            "component": wc.component,
             "raw_submodel_score_before_clamp": getattr(result_meta, "raw_score", None),
             "clamped_submodel_score": getattr(result_meta, "clamped_score", wc.score),
             "scope": scope,
@@ -3755,7 +3795,15 @@ def _build_score_variance_diagnostics(
         "fallback_factor_count": risk.fallback_factor_count,
         "observed_weight_fraction": risk.observed_weight_fraction,
         "fallback_dominance_ratio": risk.fallback_dominance_ratio,
+        "fallback_weight_fraction": risk.fallback_weight_fraction,
         "uncertainty_penalty": risk.uncertainty_penalty,
+        "component_scores": {
+            "regional_context_score": risk.regional_context_score,
+            "property_surroundings_score": risk.property_surroundings_score,
+            "structure_specific_score": risk.structure_specific_score,
+        },
+        "component_weight_fractions": risk.component_weight_fractions,
+        "geometry_basis": risk.geometry_basis,
         "missing_core_layer_count": int((coverage_preflight or {}).get("missing_core_layer_count") or 0),
         "observed_weight_fraction_from_weights": round(
             sum(float(v.get("effective_weight") or 0.0) for v in factor_contribution_breakdown.values()),
@@ -3862,6 +3910,7 @@ def _apply_ruleset_to_result(result: AssessmentResult, ruleset: UnderwritingRule
     if result.confidence:
         carried_penalties = list(result.evidence_quality_summary.confidence_penalties or [])
         result.score_evidence_ledger = _build_score_evidence_ledger(
+            risk=None,
             submodel_scores=result.submodel_scores,
             weighted_contributions=result.weighted_contributions,
             readiness_factors=result.readiness_factors,
@@ -4053,6 +4102,10 @@ def _run_assessment(
             base_weight=risk.weighted_contributions[name].get("base_weight"),
             effective_weight=risk.weighted_contributions[name].get("effective_weight"),
             observed_fraction=risk.weighted_contributions[name].get("observed_fraction"),
+            availability_multiplier=risk.weighted_contributions[name].get("availability_multiplier"),
+            basis=risk.weighted_contributions[name].get("basis"),
+            support_level=risk.weighted_contributions[name].get("support_level"),
+            component=risk.weighted_contributions[name].get("component"),
             omitted_due_to_missing=bool(risk.weighted_contributions[name].get("omitted_due_to_missing", False)),
         )
 
@@ -4199,6 +4252,13 @@ def _run_assessment(
         observed_weight_fraction=float(risk.observed_weight_fraction),
     )
     coverage_preflight["assessment_output_state"] = assessment_output_state
+    coverage_preflight["fallback_weight_fraction"] = float(risk.fallback_weight_fraction)
+    coverage_preflight["adaptive_component_weights"] = dict(risk.component_weight_fractions or {})
+    coverage_preflight["adaptive_component_scores"] = {
+        "regional_context_score": float(risk.regional_context_score),
+        "property_surroundings_score": float(risk.property_surroundings_score),
+        "structure_specific_score": float(risk.structure_specific_score),
+    }
     (
         site_hazard_input_quality,
         home_vulnerability_input_quality,
@@ -4295,6 +4355,7 @@ def _run_assessment(
         site_hazard_score=raw_site_hazard_score,
         home_ignition_vulnerability_score=raw_home_ignition_vulnerability_score,
         insurance_readiness_score=readiness.insurance_readiness_score,
+        risk=risk,
     )
     score_outputs, score_availability_notes = _apply_score_availability(
         site_hazard_score=raw_site_hazard_score,
@@ -4365,6 +4426,14 @@ def _run_assessment(
         "layer_coverage_audit": [row.model_dump() for row in layer_coverage_audit],
         "assessment_diagnostics": assessment_diagnostics.model_dump(),
         "preflight": dict(coverage_preflight),
+        "adaptive_component_scores": {
+            "regional_context_score": float(risk.regional_context_score),
+            "property_surroundings_score": float(risk.property_surroundings_score),
+            "structure_specific_score": float(risk.structure_specific_score),
+        },
+        "adaptive_component_weights": dict(risk.component_weight_fractions or {}),
+        "geometry_basis_used_for_weighting": str(risk.geometry_basis),
+        "fallback_weight_fraction": float(risk.fallback_weight_fraction),
     }
     homeowner_summary = {
         "assessment_mode": homeowner_assessment_mode,
@@ -4388,6 +4457,7 @@ def _run_assessment(
     ]
 
     score_evidence_ledger = _build_score_evidence_ledger(
+        risk=risk,
         submodel_scores=submodel_scores,
         weighted_contributions=weighted_contributions,
         readiness_factors=readiness_factors,
@@ -4770,6 +4840,7 @@ def _run_assessment(
         fallback_factor_count=int(risk.fallback_factor_count),
         observed_weight_fraction=float(risk.observed_weight_fraction),
         fallback_dominance_ratio=float(risk.fallback_dominance_ratio),
+        fallback_weight_fraction=float(risk.fallback_weight_fraction),
         score_specificity_warning=(
             str(coverage_preflight.get("score_specificity_warning"))
             if coverage_preflight.get("score_specificity_warning")

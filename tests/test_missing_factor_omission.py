@@ -74,3 +74,72 @@ def test_missing_factor_omission_reduces_observed_weight_fraction():
     assert sparse.missing_factor_count >= 1
     assert sparse.uncertainty_penalty > 0.0
     assert any(bool(row.get("omitted_due_to_missing")) for row in sparse.weighted_contributions.values())
+
+
+def test_point_geometry_downweights_structure_specific_components():
+    engine = RiskEngine(load_scoring_config())
+    attrs = PropertyAttributes(
+        roof_type="class a",
+        vent_type="ember-resistant",
+        defensible_space_ft=25.0,
+        construction_year=2012,
+    )
+    footprint_context = _context(
+        ring_metrics={
+            "ring_0_5_ft": {"vegetation_density": 32.0},
+            "ring_5_30_ft": {"vegetation_density": 44.0},
+            "ring_30_100_ft": {"vegetation_density": 51.0},
+        }
+    )
+    point_context = _context(ring_metrics={})
+
+    footprint_risk = engine.score(attrs, lat=0.0, lon=0.0, context=footprint_context)
+    point_risk = engine.score(attrs, lat=0.0, lon=0.0, context=point_context)
+
+    assert footprint_risk.geometry_basis == "footprint"
+    assert point_risk.geometry_basis == "point"
+    assert (
+        point_risk.weighted_contributions["defensible_space_risk"]["effective_weight"]
+        < footprint_risk.weighted_contributions["defensible_space_risk"]["effective_weight"]
+    )
+    point_structure_effective = sum(
+        float(point_risk.weighted_contributions[name]["effective_weight"])
+        for name in ["ember_exposure_risk", "structure_vulnerability_risk", "defensible_space_risk"]
+    )
+    footprint_structure_effective = sum(
+        float(footprint_risk.weighted_contributions[name]["effective_weight"])
+        for name in ["ember_exposure_risk", "structure_vulnerability_risk", "defensible_space_risk"]
+    )
+    assert point_structure_effective < footprint_structure_effective
+
+
+def test_weighted_contributions_include_basis_component_and_support_metadata():
+    engine = RiskEngine(load_scoring_config())
+    attrs = PropertyAttributes()
+    context = _context(ring_metrics={})
+    context.moisture_index = None
+    context.burn_probability_index = None
+    context.hazard_severity_index = None
+
+    risk = engine.score(attrs, lat=0.0, lon=0.0, context=context)
+    rows = list(risk.weighted_contributions.values())
+    assert rows
+    assert all("basis" in row for row in rows)
+    assert all("component" in row for row in rows)
+    assert all("support_level" in row for row in rows)
+    assert any(str(row.get("basis")) in {"fallback", "missing"} for row in rows)
+
+
+def test_blended_score_supports_adaptive_weighting_with_risk_context():
+    engine = RiskEngine(load_scoring_config())
+    attrs = PropertyAttributes(roof_type="class a", vent_type="ember-resistant", defensible_space_ft=20.0)
+    point_context = _context(ring_metrics={})
+    risk = engine.score(attrs, lat=0.0, lon=0.0, context=point_context)
+    site = engine.compute_site_hazard_score(risk)
+    home = engine.compute_home_ignition_vulnerability_score(risk)
+    readiness = 60.0
+
+    baseline = engine.compute_blended_wildfire_score(site, home, readiness)
+    adaptive = engine.compute_blended_wildfire_score(site, home, readiness, risk=risk)
+
+    assert adaptive != baseline

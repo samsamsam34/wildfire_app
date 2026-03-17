@@ -243,12 +243,13 @@ class BuildingFootprintClient:
         anchor_precision: str | None = None,
     ) -> BuildingFootprintResult:
         assumptions: list[str] = []
-        if not self._geo_ready():
-            assumptions.append("Building footprint analysis unavailable; geospatial dependencies missing.")
+        configured_paths = [p for p in self.paths if p]
+        if not configured_paths or not any(self._file_exists(p) for p in configured_paths):
+            assumptions.append("Building footprint source is not configured or missing.")
             return BuildingFootprintResult(found=False, match_status="provider_unavailable", assumptions=assumptions)
 
-        if not self.paths:
-            assumptions.append("Building footprint source is not configured or missing.")
+        if not self._geo_ready():
+            assumptions.append("Building footprint analysis unavailable; geospatial dependencies missing.")
             return BuildingFootprintResult(found=False, match_status="provider_unavailable", assumptions=assumptions)
 
         features = self._all_source_features()

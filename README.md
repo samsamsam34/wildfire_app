@@ -798,6 +798,22 @@ Response transparency is preserved in existing structures:
 
 When one component is unavailable, `wildfire_risk_score` can still be computed from available component evidence, with explicit scoring notes and confidence penalties.
 
+Adaptive scoring now separates three evidence families before blending:
+- `regional_context_score` (hazard/burn/dryness/terrain context)
+- `property_surroundings_score` (near-home vegetation/fuel pressure)
+- `structure_specific_score` (defensible space + structure hardening)
+
+Weighting is evidence-aware:
+- missing-factor submodels are omitted or downweighted instead of filled with broad numeric defaults
+- footprint/parcel gaps downweight structure-specific factors more aggressively
+- fallback-heavy runs surface both `fallback_dominance_ratio` and `fallback_weight_fraction`
+
+For diagnostics and QA, inspect:
+- `factor_breakdown.component_scores`
+- `factor_breakdown.component_weight_fractions`
+- `weighted_contributions[*].basis` / `support_level` / `component`
+- `developer_diagnostics.adaptive_component_scores`
+
 ## Homeowner Reports
 
 Completed assessments can be transformed into a homeowner-facing report and downloaded as PDF.
