@@ -4713,6 +4713,21 @@ def test_low_coverage_homeowner_summary_uses_limited_mode_and_grouped_limitation
     assert isinstance(why_limited, list)
     assert len(why_limited) <= 4
     assert all("underwriting threshold" not in str(reason).lower() for reason in why_limited)
+    how_to_improve = confidence_summary.get("how_to_improve_confidence") or []
+    assert isinstance(how_to_improve, list)
+    assert len(how_to_improve) >= 1
+
+    confidence_actions = homeowner_summary.get("confidence_improvement_actions") or []
+    assert isinstance(confidence_actions, list)
+    assert len(confidence_actions) >= 1
+    joined_actions = " ".join(str(item).lower() for item in confidence_actions)
+    assert "gridmet" in joined_actions or "wf_default_gridmet_dryness" in joined_actions
+    assert any(
+        "map point" in str(item).lower()
+        or "map modal" in str(item).lower()
+        or "place the pin" in str(item).lower()
+        for item in confidence_actions
+    )
 
     diagnostics = assessed.get("developer_diagnostics") or {}
     assert isinstance((diagnostics.get("fallback_decisions") or []), list)

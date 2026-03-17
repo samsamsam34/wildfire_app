@@ -572,6 +572,8 @@
               <ul id="assumptions"><li class="muted">No estimates shown yet.</li></ul>
             </div>
           </div>
+          <h3 style="margin-top:0.9rem;">How to Improve Confidence</h3>
+          <ul id="confidenceActions"><li class="muted">No confidence guidance yet.</li></ul>
 
           <h3 style="margin-top:0.9rem;">Technical Factor Breakdown</h3>
           <table>
@@ -1352,6 +1354,29 @@
         return map[text] || text;
       }
 
+      function humanizeToken(text) {
+        const value = String(text || "").trim();
+        if (!value) return "";
+        return value
+          .replace(/[_-]+/g, " ")
+          .replace(/\s+/g, " ")
+          .trim()
+          .replace(/\b\w/g, (m) => m.toUpperCase());
+      }
+
+      function normalizeLimitationChip(item) {
+        if (item && typeof item === "object") {
+          const category = humanizeToken(item.category || "");
+          const summary = String(item.summary || "").trim();
+          if (category) return { label: category, detail: summary || category };
+          if (summary) return { label: summary, detail: summary };
+          return null;
+        }
+        const label = humanizeToken(item || "");
+        if (!label) return null;
+        return { label, detail: label };
+      }
+
       function buildPropertyContextSummary(data, findings) {
         const ctx = data?.property_level_context || {};
         const fallbackMode = ctx?.fallback_mode || "point_based";
@@ -1537,15 +1562,33 @@
           .slice(0, 5)
           .map(v => `<li>${v}</li>`)
           .join("") || "<li class='muted'>No estimate notes available.</li>";
+        const confidenceActionRows = (Array.isArray(homeownerSummary?.confidence_improvement_actions) && homeownerSummary.confidence_improvement_actions.length > 0
+          ? homeownerSummary.confidence_improvement_actions
+          : (Array.isArray(homeownerConfidence?.how_to_improve_confidence) && homeownerConfidence.how_to_improve_confidence.length > 0
+            ? homeownerConfidence.how_to_improve_confidence
+            : (Array.isArray(homeownerSummary?.recommended_data_improvements) && homeownerSummary.recommended_data_improvements.length > 0
+              ? homeownerSummary.recommended_data_improvements
+              : (Array.isArray(data?.recommended_data_improvements) ? data.recommended_data_improvements : []))));
+        document.getElementById("confidenceActions").innerHTML = confidenceActionRows
+          .slice(0, 6)
+          .map(v => `<li>${v}</li>`)
+          .join("") || "<li class='muted'>No additional confidence actions are currently suggested.</li>";
+
         const limitationPills = (Array.isArray(homeownerSummary?.assessment_limitations)
-          ? homeownerSummary.assessment_limitations
-              .map(v => (v && typeof v === "object") ? String(v.category || v.summary || "") : String(v || ""))
+          ? homeownerSummary.assessment_limitations.map(v => normalizeLimitationChip(v)).filter(Boolean)
           : [])
-          .filter(Boolean)
           .slice(0, 5);
         const fallbackFlags = Array.isArray(data?.low_confidence_flags) ? data.low_confidence_flags.slice(0, 2) : [];
-        const pills = (limitationPills.length > 0 ? limitationPills : fallbackFlags);
-        document.getElementById("flags").innerHTML = pills.map(v => `<span class='pill'>${v}</span>`).join("");
+        const fallbackChips = fallbackFlags
+          .map(v => normalizeLimitationChip(v))
+          .filter(Boolean);
+        const chips = (limitationPills.length > 0 ? limitationPills : fallbackChips);
+        document.getElementById("flags").innerHTML = chips
+          .map((chip) => {
+            const detail = String(chip?.detail || chip?.label || "").replace(/"/g, "&quot;");
+            return `<span class='pill' title="${detail}">${chip?.label || ""}</span>`;
+          })
+          .join("");
 
         const rows = Object.entries(data.submodel_scores || {})
           .filter(([k]) => k.endsWith("_risk"))
@@ -1646,6 +1689,7 @@
         document.getElementById("mitigations").innerHTML = `<li>${recommendation}</li>`;
         document.getElementById("confidenceText").textContent = "Confidence score: not available for uncovered locations.";
         document.getElementById("assumptions").innerHTML = `<li>Resolution reason: ${reasonText}</li>`;
+        document.getElementById("confidenceActions").innerHTML = `<li>${recommendation}</li>`;
         document.getElementById("flags").innerHTML = diagnostics
           .slice(0, 3)
           .map(v => `<span class='pill'>${v}</span>`)
@@ -1712,6 +1756,8 @@
         document.getElementById("mitigations").innerHTML = `<li>${rejection}</li>`;
         document.getElementById("confidenceText").textContent = "Confidence score: not available until geocoding succeeds.";
         document.getElementById("assumptions").innerHTML = `<li>Geocode status: ${geocodeStatus}</li>`;
+        document.getElementById("confidenceActions").innerHTML =
+          "<li>Confirm the address details or click the map to set the home location, then retry.</li>";
         document.getElementById("flags").innerHTML = `<span class='pill'>${geocodeStatus}</span>`;
         document.getElementById("submodels").innerHTML = "<tr><td colspan='3' class='muted'>No factor data until geocoding succeeds.</td></tr>";
         document.getElementById("readinessText").textContent = "Insurance readiness score: not computed";

@@ -288,6 +288,43 @@ FEATURE_FLAG_LABELS: dict[str, str] = {
     "near_structure_vegetation_available": "Near-structure vegetation context",
 }
 
+LAYER_FRIENDLY_NAMES: dict[str, str] = {
+    "dem": "Terrain elevation (DEM)",
+    "fuel": "LANDFIRE fuel",
+    "canopy": "LANDFIRE canopy",
+    "fire_perimeters": "Fire perimeter history",
+    "building_footprints": "Building footprints",
+    "building_footprints_overture": "Overture building footprints",
+    "roads": "Road/access network",
+    "whp": "Wildfire Hazard Potential (WHP)",
+    "mtbs_severity": "MTBS burn severity",
+    "gridmet_dryness": "GRIDMET dryness",
+    "parcel_polygons": "Parcel polygons",
+    "parcel_address_points": "Parcel address points",
+    "naip_imagery": "NAIP imagery",
+}
+
+LAYER_CONFIG_ACTIONS: dict[str, str] = {
+    "gridmet_dryness": (
+        "Configure GRIDMET dryness source overrides (WF_DEFAULT_GRIDMET_DRYNESS_ENDPOINT "
+        "or WF_DEFAULT_GRIDMET_DRYNESS_FULL_URL), then rerun prep."
+    ),
+    "building_footprints_overture": (
+        "Configure Overture buildings source (WF_DEFAULT_OVERTURE_BUILDINGS_ENDPOINT, "
+        "WF_DEFAULT_OVERTURE_BUILDINGS_URL, or WF_DEFAULT_OVERTURE_BUILDINGS_PATH), then rerun prep."
+    ),
+    "parcel_polygons": (
+        "Configure parcel polygon source (WF_DEFAULT_PARCEL_POLYGONS_ENDPOINT "
+        "or WF_DEFAULT_PARCEL_POLYGONS_PATH), then rerun prep."
+    ),
+    "parcel_address_points": (
+        "Configure parcel address points source (WF_DEFAULT_PARCEL_ADDRESS_POINTS_ENDPOINT "
+        "or WF_DEFAULT_PARCEL_ADDRESS_POINTS_PATH), then rerun prep."
+    ),
+    "whp": "Validate WHP service access/credentials (403s are common) and rerun prep.",
+    "mtbs_severity": "Validate MTBS service access/credentials (403s are common) and rerun prep.",
+}
+
 OUTPUT_STATE_LIMITATION_TEXT: dict[str, str] = {
     "property_specific_assessment": "Property-specific geometry and environmental coverage were sufficient for detailed scoring.",
     "address_level_estimate": (
@@ -3160,6 +3197,124 @@ def _confidence_label_for_score(score: float | None) -> str:
     return "Confidence unavailable"
 
 
+def _friendly_layer_name(layer_key: str) -> str:
+    token = str(layer_key or "").strip()
+    if not token:
+        return "Unknown layer"
+    if token in LAYER_FRIENDLY_NAMES:
+        return LAYER_FRIENDLY_NAMES[token]
+    return token.replace("_", " ")
+
+
+def _build_confidence_improvement_actions(
+    *,
+    preflight: dict[str, Any],
+    property_level_context: dict[str, Any],
+    geocode_meta: dict[str, Any],
+    missing_inputs: list[str],
+    recommended_data_improvements: list[str],
+) -> list[str]:
+    coverage = dict(preflight.get("feature_coverage_summary") or {})
+    region_readiness = _coerce_region_readiness(preflight.get("region_property_specific_readiness"))
+    geometry_basis = str(preflight.get("geometry_basis") or "geocode_point")
+    geocode_tier = str(
+        geocode_meta.get("final_location_confidence")
+        or geocode_meta.get("confidence_tier")
+        or geocode_meta.get("match_confidence")
+        or ""
+    ).strip().lower()
+    geocode_status = str(geocode_meta.get("geocode_status") or "").strip().lower()
+    region_id = str(property_level_context.get("region_id") or "").strip()
+    required_missing = [str(v).strip() for v in (preflight.get("region_required_layers_missing") or []) if str(v).strip()]
+    optional_missing = [str(v).strip() for v in (preflight.get("region_optional_layers_missing") or []) if str(v).strip()]
+    enrichment_missing = [str(v).strip() for v in (preflight.get("region_enrichment_layers_missing") or []) if str(v).strip()]
+
+    actions: list[str] = []
+    seen: set[str] = set()
+
+    def _add(action: str) -> None:
+        text = str(action or "").strip()
+        token = text.lower()
+        if not text or token in seen:
+            return
+        seen.add(token)
+        actions.append(text)
+
+    if geocode_status in {"low_confidence", "ambiguous_match"} or geocode_tier in {"low", "unknown"}:
+        _add("Verify the address match in the map modal and place the pin on the home before running another assessment.")
+
+    if geometry_basis == "geocode_point":
+        _add("Use map point selection to anchor the property directly on the home when building polygons are missing or misaligned.")
+
+    if not bool(coverage.get("building_footprint_available")):
+        _add("Ingest building footprints for this region to unlock structure-level ring metrics and defensible-space scoring.")
+    if not bool(coverage.get("near_structure_vegetation_available")):
+        _add("Improve near-structure vegetation inputs (building footprint or parcel geometry) so near-home risk can be measured directly.")
+    if not bool(coverage.get("hazard_severity_available")) or not bool(coverage.get("burn_probability_available")):
+        _add("Prepare both hazard and burn-probability layers for this region so regional fire context is observed instead of proxied.")
+    if not bool(coverage.get("dryness_available")):
+        _add("Add a configured dryness source (GRIDMET or equivalent) so climate stress is sampled directly.")
+    if not bool(coverage.get("road_network_available")):
+        _add("Add roads/access network coverage to improve evacuation and responder access context.")
+
+    if required_missing:
+        required_names = ", ".join(_friendly_layer_name(layer) for layer in required_missing[:4])
+        suffix = ", ..." if len(required_missing) > 4 else ""
+        if region_id:
+            _add(
+                f"Prepared region '{region_id}' is missing required layers ({required_names}{suffix}); "
+                "rerun region prep after sources are available."
+            )
+        else:
+            _add(f"Required regional layers are missing ({required_names}{suffix}); rerun region prep after sources are available.")
+
+    remaining = optional_missing + enrichment_missing
+    if remaining:
+        readable = ", ".join(_friendly_layer_name(layer) for layer in remaining[:4])
+        suffix = ", ..." if len(remaining) > 4 else ""
+        _add(
+            f"Add optional/enrichment coverage for this region ({readable}{suffix}) to reduce fallback-heavy scoring."
+        )
+
+    for layer in remaining:
+        hint = LAYER_CONFIG_ACTIONS.get(layer)
+        if hint:
+            _add(hint)
+        if len(actions) >= 8:
+            break
+
+    missing_fact_hints = {
+        "roof_type": "Provide roof material (for example, Class A vs combustible) to improve structure vulnerability accuracy.",
+        "vent_type": "Provide vent protection details to improve ember intrusion scoring.",
+        "defensible_space_ft": "Provide defensible-space distance to strengthen near-home ignition scoring.",
+        "construction_year": "Provide construction year to improve home hardening readiness calibration.",
+        "siding_type": "Provide siding material to improve flame-contact susceptibility scoring.",
+        "window_type": "Provide window type to improve ember/glass vulnerability scoring.",
+    }
+    for field in missing_inputs:
+        hint = missing_fact_hints.get(str(field))
+        if hint:
+            _add(hint)
+
+    for raw in recommended_data_improvements:
+        text = str(raw or "").strip()
+        if not text:
+            continue
+        _add(f"Improve data coverage for: {text}.")
+        if len(actions) >= 10:
+            break
+
+    if region_readiness == "limited_regional_ready":
+        _add("Current prepared data supports only regional guidance; add optional/enrichment layers to enable stronger property-specific confidence.")
+    elif region_readiness == "address_level_only":
+        _add("Prepared data currently supports address-level estimates; add structure and parcel coverage for full property-specific analysis.")
+
+    if not actions:
+        _add("Data coverage is already strong; confidence gains are most likely from confirming roof, vents, and defensible-space details.")
+
+    return actions[:10]
+
+
 def _build_homeowner_confidence_summary(
     *,
     confidence_score: float,
@@ -3169,6 +3324,7 @@ def _build_homeowner_confidence_summary(
     feature_coverage_percent: float,
     missing_core_layer_count: int,
     geometry_basis: str,
+    improvement_actions: list[str] | None = None,
 ) -> dict[str, Any]:
     mode = _to_homeowner_assessment_mode(assessment_output_state)
     score_value: float | None = round(float(confidence_score), 1) if confidence_score > 0.0 else None
@@ -3213,6 +3369,7 @@ def _build_homeowner_confidence_summary(
         "assessment_type": mode.replace("_", " "),
         "headline": headline,
         "why_confidence_is_limited": deduped,
+        "how_to_improve_confidence": [str(item).strip() for item in (improvement_actions or []) if str(item).strip()][:6],
     }
 
 
@@ -4558,6 +4715,13 @@ def _run_assessment(
             fallback_dominance_ratio=float(risk.fallback_dominance_ratio),
         )
     )
+    confidence_improvement_actions = _build_confidence_improvement_actions(
+        preflight=coverage_preflight,
+        property_level_context=property_level_context,
+        geocode_meta=(geocode_meta if isinstance(geocode_meta, dict) else {}),
+        missing_inputs=list(assumptions_block.missing_inputs or []),
+        recommended_data_improvements=list(recommended_data_improvements or []),
+    )
     homeowner_confidence_summary = _build_homeowner_confidence_summary(
         confidence_score=float(confidence_block.confidence_score),
         assessment_output_state=assessment_output_state,
@@ -4566,6 +4730,7 @@ def _run_assessment(
         feature_coverage_percent=float(coverage_preflight.get("feature_coverage_percent") or 0.0),
         missing_core_layer_count=int(coverage_preflight.get("missing_core_layer_count") or 0),
         geometry_basis=str(coverage_preflight.get("geometry_basis") or "geocode_point"),
+        improvement_actions=confidence_improvement_actions,
     )
     homeowner_assessment_mode = _to_homeowner_assessment_mode(assessment_output_state)
     developer_diagnostics = {
@@ -4588,6 +4753,7 @@ def _run_assessment(
         "blocked_components": blocked_components,
         "minimum_missing_requirements": minimum_missing_requirements,
         "recommended_data_improvements": recommended_data_improvements,
+        "confidence_improvement_actions": confidence_improvement_actions,
     }
     homeowner_summary = {
         "assessment_mode": homeowner_assessment_mode,
@@ -4597,6 +4763,7 @@ def _run_assessment(
         "blocked_components": blocked_components,
         "minimum_missing_requirements": minimum_missing_requirements,
         "recommended_data_improvements": recommended_data_improvements,
+        "confidence_improvement_actions": confidence_improvement_actions,
         "risk_label": (
             "Wildfire Risk Estimate"
             if assessment_output_state in {"address_level_estimate", "limited_regional_estimate", "insufficient_data"}
@@ -10047,6 +10214,16 @@ def layer_diagnostics(payload: AddressRequest, ctx: ActorContext = Depends(get_a
             "what_was_missing": debug_payload.get("what_was_missing", []),
             "why_this_result_is_limited": debug_payload.get("why_this_result_is_limited"),
             "data_quality_summary": ((debug_payload.get("coverage") or {}).get("data_quality_summary") or {}),
+            "confidence_improvement_actions": (
+                ((debug_payload.get("homeowner_summary") or {}).get("confidence_improvement_actions"))
+                if isinstance(debug_payload.get("homeowner_summary"), dict)
+                else []
+            ),
+            "confidence_how_to_improve": (
+                (((debug_payload.get("homeowner_summary") or {}).get("confidence_summary") or {}).get("how_to_improve_confidence"))
+                if isinstance(((debug_payload.get("homeowner_summary") or {}).get("confidence_summary") or {}), dict)
+                else []
+            ),
         },
         "warnings": debug_payload.get("coverage_summary", {}).get("recommended_actions", []),
     }
