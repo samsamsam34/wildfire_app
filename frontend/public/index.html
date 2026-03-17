@@ -1410,6 +1410,14 @@
         const homeownerConfidence = (homeownerSummary && typeof homeownerSummary.confidence_summary === "object" && homeownerSummary.confidence_summary)
           ? homeownerSummary.confidence_summary
           : {};
+        const scoringStatus = String(
+          homeownerSummary?.scoring_status
+            || data?.scoring_status
+            || ""
+        ).trim();
+        const computedComponents = Array.isArray(homeownerSummary?.computed_components)
+          ? homeownerSummary.computed_components
+          : (Array.isArray(data?.computed_components) ? data.computed_components : []);
 
         const scoreEl = document.getElementById("riskScore");
         const riskAvailable = data.wildfire_risk_score_available !== false && data.wildfire_risk_score !== null && data.wildfire_risk_score !== undefined;
@@ -1446,14 +1454,22 @@
           .concat(nearStructureDrivers)
           .filter((v, i, arr) => arr.indexOf(v) === i)
           .slice(0, 4);
-        document.getElementById("propertyFindings").innerHTML = combinedFindings
-          .map(v => `<li>${v}</li>`)
-          .join("") || "<li class='muted'>No structure-specific findings available for this assessment.</li>";
+        if (scoringStatus === "insufficient_data_to_score") {
+          document.getElementById("propertyFindings").innerHTML = "<li class='muted'>We found some relevant signals, but not enough verified inputs to produce structure-level findings.</li>";
+        } else if (!computedComponents.includes("home_ignition_vulnerability")) {
+          document.getElementById("propertyFindings").innerHTML = "<li class='muted'>Near-structure findings are preliminary because Home Ignition Vulnerability could not be computed.</li>";
+        } else {
+          document.getElementById("propertyFindings").innerHTML = combinedFindings
+            .map(v => `<li>${v}</li>`)
+            .join("") || "<li class='muted'>No structure-specific findings available for this assessment.</li>";
+        }
 
         const rankedDrivers = Array.isArray(data?.top_risk_drivers_detailed)
           ? data.top_risk_drivers_detailed
           : [];
-        if (rankedDrivers.length > 0) {
+        if (scoringStatus === "insufficient_data_to_score") {
+          document.getElementById("drivers").innerHTML = "<li class='muted'>We found some relevant signals, but not enough verified inputs to compute a reliable score.</li>";
+        } else if (rankedDrivers.length > 0) {
           document.getElementById("drivers").innerHTML = rankedDrivers
             .slice(0, 3)
             .map((driver) => {

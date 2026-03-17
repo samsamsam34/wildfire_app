@@ -4349,6 +4349,13 @@ def test_score_family_eligibility_insufficient_path_and_hard_blocker(monkeypatch
     assert "insurance readiness score not computed" in notes
     assert assessed["confidence_tier"] == "preliminary"
     assert assessed["confidence_score"] == 0.0
+    assert assessed["scoring_status"] == "insufficient_data_to_score"
+    assert assessed["top_risk_drivers"]
+    assert "not enough verified inputs" in assessed["top_risk_drivers"][0].lower()
+    assert assessed["top_risk_drivers_detailed"] == []
+    assert "preliminary near-structure observation" in str(
+        (assessed.get("defensible_space_analysis") or {}).get("summary") or ""
+    ).lower()
 
 
 def test_assessment_diagnostics_and_report_persistence(monkeypatch, tmp_path):
@@ -4421,6 +4428,50 @@ def test_missing_burn_probability_and_defensible_space_use_fallback_with_confide
     assert any(str(d.get("missing_input")) == "defensible_space_ft" for d in fallback_decisions)
     assert any(str(d.get("missing_input")) == "burn_probability_layer" for d in fallback_decisions)
     assert assessed["assessment_limitations_summary"]
+
+
+def test_low_coverage_site_evidence_returns_limited_homeowner_estimate(monkeypatch, tmp_path):
+    ctx = _ctx(
+        env=51.0,
+        wildland=57.0,
+        historic=40.0,
+        environmental_layer_status={
+            "burn_probability": "missing",
+            "hazard": "missing",
+            "slope": "ok",
+            "fuel": "ok",
+            "canopy": "ok",
+            "fire_history": "missing",
+        },
+        ring_metrics={},
+    )
+    ctx.burn_probability_index = None
+    ctx.hazard_severity_index = None
+    ctx.moisture_index = None
+    ctx.burn_probability = None
+    ctx.wildfire_hazard = None
+    ctx.property_level_context = {
+        "footprint_used": False,
+        "footprint_status": "not_found",
+        "fallback_mode": "point_based",
+        "ring_metrics": {},
+        "region_property_specific_readiness": "limited_regional_ready",
+        "region_required_layers_missing": [],
+        "region_optional_layers_missing": ["roads", "gridmet_dryness", "whp"],
+        "region_enrichment_layers_missing": ["parcel_polygons", "address_points", "naip_features"],
+    }
+    _setup(monkeypatch, tmp_path, ctx)
+
+    assessed = _run(_payload("Limited Site Component Way", {}, confirmed=[]))
+    assert assessed["assessment_output_state"] == "limited_regional_estimate"
+    assert assessed["assessment_mode"] == "limited_regional_estimate"
+    assert assessed["scoring_status"] == "limited_homeowner_estimate"
+    assert "site_hazard" in (assessed.get("computed_components") or [])
+    assert assessed["site_hazard_score_available"] is True
+    assert assessed["wildfire_risk_score_available"] is True
+    assert assessed["home_ignition_vulnerability_score_available"] is False
+    homeowner_summary = assessed.get("homeowner_summary") or {}
+    assert homeowner_summary.get("scoring_status") == "limited_homeowner_estimate"
 
 
 def test_missing_structure_specific_fields_still_scores_home_with_fallbacks(monkeypatch, tmp_path):

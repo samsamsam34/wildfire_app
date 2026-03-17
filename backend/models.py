@@ -801,6 +801,11 @@ class AssessmentResult(BaseModel):
     assessment_specificity_tier: AssessmentSpecificityTier = "regional_estimate"
     assessment_output_state: AssessmentOutputState = "insufficient_data"
     assessment_mode: AssessmentMode = "insufficient_data"
+    scoring_status: str = "insufficient_data_to_score"
+    computed_components: List[str] = Field(default_factory=list)
+    blocked_components: List[str] = Field(default_factory=list)
+    minimum_missing_requirements: List[str] = Field(default_factory=list)
+    recommended_data_improvements: List[str] = Field(default_factory=list)
     limited_assessment_flag: bool = False
     confidence_not_meaningful: bool = False
     observed_factor_count: int = 0

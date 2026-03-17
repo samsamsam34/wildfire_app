@@ -798,6 +798,16 @@ Response transparency is preserved in existing structures:
 
 When one component is unavailable, `wildfire_risk_score` can still be computed from available component evidence, with explicit scoring notes and confidence penalties.
 
+Component scoring status is now explicit:
+- `scoring_status`:
+  - `full_property_assessment`
+  - `limited_homeowner_estimate`
+  - `insufficient_data_to_score`
+- `computed_components` and `blocked_components` list which score families were actually computed.
+- `minimum_missing_requirements` and `recommended_data_improvements` explain exactly what blocked higher-specificity scoring.
+
+`assessment_mode` / `assessment_output_state` remain backward-compatible and continue to represent specificity tiering.
+
 Adaptive scoring now separates three evidence families before blending:
 - `regional_context_score` (hazard/burn/dryness/terrain context)
 - `property_surroundings_score` (near-home vegetation/fuel pressure)

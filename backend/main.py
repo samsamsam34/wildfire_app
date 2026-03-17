@@ -2743,14 +2743,28 @@ def _apply_preflight_specificity_gate(
             readiness_updated.caveats.append(region_warning)
 
     if output_state == "insufficient_data":
-        site_updated.eligible = False
-        site_updated.eligibility_status = "insufficient"
-        home_updated.eligible = False
-        home_updated.eligibility_status = "insufficient"
-        readiness_updated.eligible = False
-        readiness_updated.eligibility_status = "insufficient"
-        assessment_status = "insufficient_data"
-        blockers.append("Insufficient data for a credible property or regional estimate.")
+        any_component_still_usable = bool(
+            site_updated.eligible
+            or home_updated.eligible
+            or readiness_updated.eligible
+        )
+        if any_component_still_usable:
+            # Preserve trustworthy partial scoring when at least one component still has defensible evidence.
+            output_state = "limited_regional_estimate"
+            if assessment_status == "insufficient_data":
+                assessment_status = "partially_scored"
+            blockers.append(
+                "Coverage is too limited for full scoring; returning a constrained homeowner estimate from available components."
+            )
+        else:
+            site_updated.eligible = False
+            site_updated.eligibility_status = "insufficient"
+            home_updated.eligible = False
+            home_updated.eligibility_status = "insufficient"
+            readiness_updated.eligible = False
+            readiness_updated.eligibility_status = "insufficient"
+            assessment_status = "insufficient_data"
+            blockers.append("Insufficient data for a credible property or regional estimate.")
     elif tier == "regional_estimate":
         if home_updated.eligibility_status == "full":
             home_updated.eligibility_status = "partial"
@@ -3449,6 +3463,80 @@ def _apply_score_availability(
         },
         notes,
     )
+
+
+def _build_scoring_component_status(
+    *,
+    score_outputs: dict[str, float | None | bool],
+    site_hazard_eligibility: ScoreEligibility,
+    home_vulnerability_eligibility: ScoreEligibility,
+    insurance_readiness_eligibility: ScoreEligibility,
+    assessment_output_state: str,
+    preflight: dict[str, Any],
+) -> dict[str, Any]:
+    site_available = bool(score_outputs.get("site_hazard_score_available"))
+    home_available = bool(score_outputs.get("home_ignition_vulnerability_score_available"))
+    readiness_available = bool(score_outputs.get("insurance_readiness_score_available"))
+
+    computed_components: list[str] = []
+    blocked_components: list[str] = []
+    minimum_missing_requirements: list[str] = []
+    if site_available:
+        computed_components.append("site_hazard")
+    else:
+        blocked_components.append("site_hazard")
+        minimum_missing_requirements.extend(site_hazard_eligibility.blocking_reasons or [])
+    if home_available:
+        computed_components.append("home_ignition_vulnerability")
+    else:
+        blocked_components.append("home_ignition_vulnerability")
+        minimum_missing_requirements.extend(home_vulnerability_eligibility.blocking_reasons or [])
+    if readiness_available:
+        computed_components.append("home_hardening_readiness")
+    else:
+        blocked_components.append("home_hardening_readiness")
+        minimum_missing_requirements.extend(insurance_readiness_eligibility.blocking_reasons or [])
+
+    if site_available and home_available and readiness_available and assessment_output_state == "property_specific_assessment":
+        scoring_status = "full_property_assessment"
+    elif computed_components:
+        scoring_status = "limited_homeowner_estimate"
+    else:
+        scoring_status = "insufficient_data_to_score"
+
+    coverage = dict(preflight.get("feature_coverage_summary") or {})
+    recommended_data_improvements: list[str] = []
+    for key, label in FEATURE_FLAG_LABELS.items():
+        if not bool(coverage.get(key)):
+            recommended_data_improvements.append(label)
+    if str(preflight.get("geometry_basis") or "geocode_point") == "geocode_point":
+        recommended_data_improvements.append("Building footprint or parcel geometry for structure-level analysis")
+    if str(preflight.get("assessment_specificity_tier") or "regional_estimate") != "property_specific":
+        recommended_data_improvements.append("Prepared region data with stronger property-specific coverage")
+
+    def _dedupe(values: list[str], limit: int = 6) -> list[str]:
+        out: list[str] = []
+        seen: set[str] = set()
+        for raw in values:
+            value = str(raw).strip()
+            if not value:
+                continue
+            token = value.lower()
+            if token in seen:
+                continue
+            seen.add(token)
+            out.append(value)
+            if len(out) >= limit:
+                break
+        return out
+
+    return {
+        "scoring_status": scoring_status,
+        "computed_components": computed_components,
+        "blocked_components": blocked_components,
+        "minimum_missing_requirements": _dedupe(minimum_missing_requirements, limit=8),
+        "recommended_data_improvements": _dedupe(recommended_data_improvements, limit=8),
+    }
 
 
 def _merge_property_drivers(base_drivers: list[str], property_findings: list[str]) -> list[str]:
@@ -4372,6 +4460,67 @@ def _run_assessment(
     insurance_readiness_score = score_outputs["insurance_readiness_score"]
     blended_wildfire_risk_score = score_outputs["wildfire_risk_score"]
     legacy_weighted_wildfire_risk_score = score_outputs["legacy_weighted_wildfire_risk_score"]
+    component_status = _build_scoring_component_status(
+        score_outputs=score_outputs,
+        site_hazard_eligibility=site_hazard_eligibility,
+        home_vulnerability_eligibility=home_vulnerability_eligibility,
+        insurance_readiness_eligibility=insurance_readiness_eligibility,
+        assessment_output_state=assessment_output_state,
+        preflight=coverage_preflight,
+    )
+    scoring_status = str(component_status.get("scoring_status") or "insufficient_data_to_score")
+    computed_components = list(component_status.get("computed_components") or [])
+    blocked_components = list(component_status.get("blocked_components") or [])
+    minimum_missing_requirements = list(component_status.get("minimum_missing_requirements") or [])
+    recommended_data_improvements = list(component_status.get("recommended_data_improvements") or [])
+
+    if "home_ignition_vulnerability" not in computed_components:
+        top_near_structure_risk_drivers = []
+        prioritized_vegetation_actions = []
+        if defensible_space_limitations_summary:
+            defensible_space_limitations_summary = list(
+                dict.fromkeys(
+                    [
+                        "Near-structure observations are preliminary and were not used for a computed Home Ignition Vulnerability score."
+                    ]
+                    + defensible_space_limitations_summary
+                )
+            )[:4]
+        defensible_space_analysis = dict(defensible_space_analysis or {})
+        existing_summary = str(defensible_space_analysis.get("summary") or "").strip()
+        defensible_space_analysis["summary"] = (
+            "Preliminary near-structure observation only; not enough verified structure evidence to compute Home Ignition Vulnerability."
+            + (f" {existing_summary}" if existing_summary else "")
+        ).strip()
+
+    if scoring_status == "insufficient_data_to_score":
+        ranked_driver_details = []
+        top_risk_drivers = [
+            "We found some relevant signals, but not enough verified inputs to compute a reliable score."
+        ]
+        prioritized_mitigation_actions = []
+        top_recommended_actions = []
+    else:
+        if "site_hazard" not in computed_components:
+            ranked_driver_details = [
+                row
+                for row in ranked_driver_details
+                if str(row.factor) not in {
+                    "vegetation_proximity",
+                    "nearby_fuel_load",
+                    "slope_and_terrain",
+                    "ember_exposure",
+                    "flame_contact_potential",
+                    "historical_fire_exposure",
+                }
+            ]
+            top_risk_drivers = top_risk_drivers[:3]
+        if "home_ignition_vulnerability" not in computed_components:
+            ranked_driver_details = [
+                row
+                for row in ranked_driver_details
+                if str(row.factor) not in {"home_hardening_gaps", "defensible_space"}
+            ]
     calibration_payload = resolve_public_calibration(
         raw_wildfire_score=blended_wildfire_risk_score,
         resolved_region_id=region_resolution.resolved_region_id,
@@ -4434,10 +4583,20 @@ def _run_assessment(
         "adaptive_component_weights": dict(risk.component_weight_fractions or {}),
         "geometry_basis_used_for_weighting": str(risk.geometry_basis),
         "fallback_weight_fraction": float(risk.fallback_weight_fraction),
+        "scoring_status": scoring_status,
+        "computed_components": computed_components,
+        "blocked_components": blocked_components,
+        "minimum_missing_requirements": minimum_missing_requirements,
+        "recommended_data_improvements": recommended_data_improvements,
     }
     homeowner_summary = {
         "assessment_mode": homeowner_assessment_mode,
         "assessment_output_state": assessment_output_state,
+        "scoring_status": scoring_status,
+        "computed_components": computed_components,
+        "blocked_components": blocked_components,
+        "minimum_missing_requirements": minimum_missing_requirements,
+        "recommended_data_improvements": recommended_data_improvements,
         "risk_label": (
             "Wildfire Risk Estimate"
             if assessment_output_state in {"address_level_estimate", "limited_regional_estimate", "insufficient_data"}
@@ -4669,13 +4828,27 @@ def _run_assessment(
         )
     )[:12]
 
-    explanation_summary = (
-        f"{_score_phrase('Site Hazard', site_hazard_score)}. "
-        f"{_score_phrase('Home Ignition Vulnerability', home_ignition_vulnerability_score)}. "
-        f"{_score_phrase('Home Hardening Readiness', insurance_readiness_score)}. "
-        f"Primary drivers: {', '.join(top_risk_drivers[:2])}. "
-        f"Near-structure summary: {str(defensible_space_analysis.get('summary') or 'Not available')}."
-    )
+    if scoring_status == "insufficient_data_to_score":
+        explanation_summary = (
+            f"{_score_phrase('Site Hazard', site_hazard_score)}. "
+            f"{_score_phrase('Home Ignition Vulnerability', home_ignition_vulnerability_score)}. "
+            f"{_score_phrase('Home Hardening Readiness', insurance_readiness_score)}. "
+            "We found some relevant signals, but not enough verified inputs to compute a reliable score."
+        )
+    else:
+        drivers_phrase = ", ".join(top_risk_drivers[:2]) if top_risk_drivers else "Limited signal set"
+        near_structure_phrase = str(defensible_space_analysis.get("summary") or "Not available")
+        if "home_ignition_vulnerability" not in computed_components:
+            near_structure_phrase = (
+                "Preliminary near-structure observation only; this component was not used in a computed vulnerability score."
+            )
+        explanation_summary = (
+            f"{_score_phrase('Site Hazard', site_hazard_score)}. "
+            f"{_score_phrase('Home Ignition Vulnerability', home_ignition_vulnerability_score)}. "
+            f"{_score_phrase('Home Hardening Readiness', insurance_readiness_score)}. "
+            f"Primary drivers: {drivers_phrase}. "
+            f"Near-structure summary: {near_structure_phrase}."
+        )
 
     risk_scores = RiskScores(
         site_hazard_score=site_hazard_score,
@@ -4833,6 +5006,11 @@ def _run_assessment(
         assessment_specificity_tier=str(coverage_preflight.get("assessment_specificity_tier") or "regional_estimate"),
         assessment_output_state=str(assessment_output_state or "insufficient_data"),
         assessment_mode=homeowner_assessment_mode,
+        scoring_status=scoring_status,
+        computed_components=computed_components,
+        blocked_components=blocked_components,
+        minimum_missing_requirements=minimum_missing_requirements,
+        recommended_data_improvements=recommended_data_improvements,
         limited_assessment_flag=bool(coverage_preflight.get("limited_assessment_flag")),
         confidence_not_meaningful=bool(assessment_output_state == "insufficient_data"),
         observed_factor_count=int(risk.observed_factor_count),
@@ -5161,6 +5339,11 @@ def _run_assessment(
         "compression_flags": score_variance_diagnostics.get("compression_flags", []),
         "score_variance_diagnostics": score_variance_diagnostics,
         "fallback_dominance_ratio": result.fallback_dominance_ratio,
+        "scoring_status": result.scoring_status,
+        "computed_components": list(result.computed_components),
+        "blocked_components": list(result.blocked_components),
+        "minimum_missing_requirements": list(result.minimum_missing_requirements),
+        "recommended_data_improvements": list(result.recommended_data_improvements),
         "missing_core_layer_count": int(coverage_preflight.get("missing_core_layer_count") or 0),
         "observed_weight_fraction": result.observed_weight_fraction,
         "score_specificity_warning": result.score_specificity_warning,
