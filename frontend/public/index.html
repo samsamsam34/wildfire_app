@@ -1404,6 +1404,12 @@
         }
 
         latestAssessment = data;
+        const homeownerSummary = (data && typeof data.homeowner_summary === "object" && data.homeowner_summary)
+          ? data.homeowner_summary
+          : {};
+        const homeownerConfidence = (homeownerSummary && typeof homeownerSummary.confidence_summary === "object" && homeownerSummary.confidence_summary)
+          ? homeownerSummary.confidence_summary
+          : {};
 
         const scoreEl = document.getElementById("riskScore");
         const riskAvailable = data.wildfire_risk_score_available !== false && data.wildfire_risk_score !== null && data.wildfire_risk_score !== undefined;
@@ -1487,25 +1493,43 @@
         document.getElementById("mitigations").innerHTML = mitigationRows
           .join("") || "<li class='muted'>No recommendations yet.</li>";
 
-        const confidenceRaw = Number(data?.confidence_score);
-        const confidenceObj = data?.confidence || {};
+        const confidenceRaw = Number(homeownerConfidence?.score);
+        const confidenceLabel = String(homeownerConfidence?.label || "").trim();
+        const confidenceType = String(homeownerConfidence?.assessment_type || "").trim();
+        const confidenceHeadline = String(homeownerConfidence?.headline || "").trim();
         if (Number.isFinite(confidenceRaw)) {
-          const hasGeoContext = confidenceObj.environmental_data_present === true;
-          const confirmedCount = Number(confidenceObj.confirmed_fields_count || 0);
-          let confidenceNote = "";
-          if (hasGeoContext && confirmedCount <= 0) {
-            confidenceNote = " Moderate confidence can still come from location and surrounding conditions.";
-          } else if (confirmedCount > 0) {
-            confidenceNote = " Confirming home details can improve this further.";
-          }
+          const labelPrefix = confidenceLabel ? `${confidenceLabel}: ` : "";
+          const typeSuffix = confidenceType ? ` (${confidenceType.replace(/_/g, " ")})` : "";
+          const headlineSuffix = confidenceHeadline ? ` ${confidenceHeadline}` : "";
           document.getElementById("confidenceText").textContent =
-            `Confidence score: ${confidenceRaw.toFixed(1)} / 100.${confidenceNote}`.trim();
+            `${labelPrefix}${confidenceRaw.toFixed(1)} / 100${typeSuffix}.${headlineSuffix}`.trim();
+        } else if (confidenceHeadline) {
+          document.getElementById("confidenceText").textContent = confidenceHeadline;
         } else {
-          document.getElementById("confidenceText").textContent = "Confidence score: not available.";
+          const fallbackScore = Number(data?.confidence_score);
+          document.getElementById("confidenceText").textContent = Number.isFinite(fallbackScore)
+            ? `Confidence score: ${fallbackScore.toFixed(1)} / 100.`
+            : "Confidence score: not available.";
         }
 
-        document.getElementById("assumptions").innerHTML = (data.assumptions_used || []).map(v => `<li>${v}</li>`).join("") || "<li class='muted'>No assumptions listed.</li>";
-        document.getElementById("flags").innerHTML = (data.low_confidence_flags || []).map(v => `<span class='pill'>${v}</span>`).join("");
+        const estimatedRows = Array.isArray(homeownerSummary?.what_was_estimated) && homeownerSummary.what_was_estimated.length > 0
+          ? homeownerSummary.what_was_estimated
+          : (Array.isArray(data?.what_was_estimated) && data.what_was_estimated.length > 0
+            ? data.what_was_estimated
+            : (Array.isArray(data?.assumptions_used) ? data.assumptions_used : []));
+        document.getElementById("assumptions").innerHTML = estimatedRows
+          .slice(0, 5)
+          .map(v => `<li>${v}</li>`)
+          .join("") || "<li class='muted'>No estimate notes available.</li>";
+        const limitationPills = (Array.isArray(homeownerSummary?.assessment_limitations)
+          ? homeownerSummary.assessment_limitations
+              .map(v => (v && typeof v === "object") ? String(v.category || v.summary || "") : String(v || ""))
+          : [])
+          .filter(Boolean)
+          .slice(0, 5);
+        const fallbackFlags = Array.isArray(data?.low_confidence_flags) ? data.low_confidence_flags.slice(0, 2) : [];
+        const pills = (limitationPills.length > 0 ? limitationPills : fallbackFlags);
+        document.getElementById("flags").innerHTML = pills.map(v => `<span class='pill'>${v}</span>`).join("");
 
         const rows = Object.entries(data.submodel_scores || {})
           .filter(([k]) => k.endsWith("_risk"))

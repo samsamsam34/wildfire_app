@@ -780,6 +780,9 @@ Response transparency is preserved in existing structures:
 - `score_evidence_ledger` / `evidence_quality_summary`
 - `assessment_diagnostics.fallback_decisions`
 - `assessment_limitations_summary`
+- `assessment_mode` (`property_specific` | `address_level` | `limited_regional_estimate` | `insufficient_data`)
+- `homeowner_summary` (grouped limitations, observed/estimated/missing rollups, concise confidence headline)
+- `developer_diagnostics` (full technical fallback/source diagnostics without homeowner-facing noise)
 
 When one component is unavailable, `wildfire_risk_score` can still be computed from available component evidence, with explicit scoring notes and confidence penalties.
 

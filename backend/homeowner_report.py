@@ -212,13 +212,34 @@ def build_homeowner_report(
 
     assessment_limitations = list(result.assessment_limitations_summary or [])
     low_confidence_flags = list(result.low_confidence_flags or [])
-    combined_limitations = list(dict.fromkeys(assessment_limitations + ds_limitations + low_confidence_flags))[:8]
+    grouped_limitations = [
+        str(row.get("summary") or "").strip()
+        for row in list(result.assessment_limitations or [])
+        if isinstance(row, dict) and str(row.get("summary") or "").strip()
+    ]
+    combined_limitations = list(
+        dict.fromkeys(grouped_limitations + assessment_limitations + ds_limitations + low_confidence_flags)
+    )[:6]
+    homeowner_confidence = (
+        (result.homeowner_summary or {}).get("confidence_summary")
+        if isinstance(result.homeowner_summary, dict)
+        else {}
+    )
+    homeowner_confidence = homeowner_confidence if isinstance(homeowner_confidence, dict) else {}
+    confidence_headline = str(homeowner_confidence.get("headline") or "").strip() or _confidence_summary(result)
+    confidence_limitations = [
+        str(item).strip()
+        for item in list(homeowner_confidence.get("why_confidence_is_limited") or [])
+        if str(item).strip()
+    ]
+    if confidence_limitations:
+        combined_limitations = list(dict.fromkeys(confidence_limitations + combined_limitations))[:6]
 
     confidence_and_limitations = {
         "confidence_score": result.confidence_score,
         "confidence_tier": result.confidence_tier,
         "use_restriction": result.use_restriction,
-        "confidence_statement": _confidence_summary(result),
+        "confidence_statement": confidence_headline,
         "observed_data": list(result.confidence_summary.observed_data or []),
         "estimated_data": list(result.confidence_summary.estimated_data or []),
         "missing_data": list(result.confidence_summary.missing_data or []),

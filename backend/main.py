@@ -303,6 +303,13 @@ OUTPUT_STATE_LIMITATION_TEXT: dict[str, str] = {
     ),
 }
 
+OUTPUT_STATE_TO_HOMEOWNER_MODE: dict[str, str] = {
+    "property_specific_assessment": "property_specific",
+    "address_level_estimate": "address_level",
+    "limited_regional_estimate": "limited_regional_estimate",
+    "insufficient_data": "insufficient_data",
+}
+
 REGION_PROPERTY_SPECIFIC_READINESS_ORDER: dict[str, int] = {
     "limited_regional_ready": 0,
     "address_level_only": 1,
@@ -3020,6 +3027,7 @@ def _derive_assessment_output_state(
         or low_coverage
         or high_fallback
         or major_environmental_missing_count >= 2
+        or (no_property_geometry and high_fallback and major_environmental_missing_count >= 1)
         or (region_optional_missing_count + region_enrichment_missing_count) >= 7
     ):
         return "limited_regional_estimate"
@@ -3031,6 +3039,82 @@ def _derive_assessment_output_state(
         return "address_level_estimate"
 
     return "property_specific_assessment"
+
+
+def _to_homeowner_assessment_mode(output_state: str) -> str:
+    return OUTPUT_STATE_TO_HOMEOWNER_MODE.get(
+        str(output_state or "").strip(),
+        "limited_regional_estimate",
+    )
+
+
+def _confidence_label_for_score(score: float | None) -> str:
+    if score is None:
+        return "Confidence unavailable"
+    value = float(score)
+    if value >= 75.0:
+        return "High confidence"
+    if value >= 50.0:
+        return "Medium confidence"
+    if value > 0.0:
+        return "Low confidence"
+    return "Confidence unavailable"
+
+
+def _build_homeowner_confidence_summary(
+    *,
+    confidence_score: float,
+    assessment_output_state: str,
+    grouped_limitations: list[dict[str, str]],
+    why_limited: str,
+    feature_coverage_percent: float,
+    missing_core_layer_count: int,
+    geometry_basis: str,
+) -> dict[str, Any]:
+    mode = _to_homeowner_assessment_mode(assessment_output_state)
+    score_value: float | None = round(float(confidence_score), 1) if confidence_score > 0.0 else None
+    label = _confidence_label_for_score(score_value)
+    if mode in {"limited_regional_estimate", "insufficient_data"}:
+        label = "Low confidence" if mode == "limited_regional_estimate" else "Confidence unavailable"
+
+    headline = OUTPUT_STATE_LIMITATION_TEXT.get(
+        assessment_output_state,
+        OUTPUT_STATE_LIMITATION_TEXT["limited_regional_estimate"],
+    )
+    reasons: list[str] = []
+    for row in grouped_limitations:
+        summary = str((row or {}).get("summary") or "").strip()
+        if summary:
+            reasons.append(summary)
+    if not reasons and why_limited:
+        reasons.append(str(why_limited))
+    if feature_coverage_percent <= 35.0:
+        reasons.append(
+            f"Only {feature_coverage_percent:.1f}% of core assessment signals were observed directly for this run."
+        )
+    if missing_core_layer_count >= 4:
+        reasons.append("Several core data layers were unavailable and had to be treated as missing.")
+    if geometry_basis == "geocode_point":
+        reasons.append("The analysis used a point anchor instead of full property geometry.")
+
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for reason in reasons:
+        token = reason.strip().lower()
+        if not token or token in seen:
+            continue
+        seen.add(token)
+        deduped.append(reason.strip())
+        if len(deduped) >= 4:
+            break
+
+    return {
+        "score": score_value,
+        "label": label,
+        "assessment_type": mode.replace("_", " "),
+        "headline": headline,
+        "why_confidence_is_limited": deduped,
+    }
 
 
 def _build_data_quality_summary(
@@ -3081,6 +3165,7 @@ def _build_homeowner_limitation_groups(
     score_availability_notes: list[str],
     assumptions: list[str],
     assessment_output_state: str,
+    fallback_dominance_ratio: float,
 ) -> tuple[list[dict[str, str]], list[str], list[str], list[str], str]:
     coverage = dict(preflight.get("feature_coverage_summary") or {})
     region_readiness = _coerce_region_readiness(preflight.get("region_property_specific_readiness"))
@@ -3145,6 +3230,11 @@ def _build_homeowner_limitation_groups(
                 "are still missing in the prepared region, which increases fallback usage."
             ),
         )
+    if float(fallback_dominance_ratio) >= 0.70:
+        _add(
+            "fallback_dominance",
+            "Most model factors used fallback or proxy behavior for this run, so treat this output as planning guidance.",
+        )
 
     observed: list[str] = []
     missing: list[str] = []
@@ -3155,19 +3245,35 @@ def _build_homeowner_limitation_groups(
             missing.append(label)
 
     estimated: list[str] = []
-    for row in fallback_decisions:
-        substitute = str(row.get("substitute_input") or "").strip()
-        note = str(row.get("note") or "").strip()
-        if substitute:
-            estimated.append(substitute.replace("_", " "))
-        elif note:
-            estimated.append(note)
-    for note in score_availability_notes:
-        estimated.append(str(note))
-    for note in assumptions:
-        lowered = str(note).lower()
-        if any(token in lowered for token in ["fallback", "proxy", "approxim", "inferred"]):
-            estimated.append(str(note))
+    fallback_types = {
+        str(row.get("fallback_type") or "").strip().lower()
+        for row in fallback_decisions
+        if isinstance(row, dict)
+    }
+    has_point_proxy = bool(
+        "point_based_context" in fallback_types
+        or "point" in str(preflight.get("geometry_basis") or "").lower()
+    )
+    if has_point_proxy:
+        estimated.append("Near-home vegetation context was approximated from a map point because structure geometry was unavailable.")
+    if not bool(coverage.get("hazard_severity_available")) or not bool(coverage.get("burn_probability_available")):
+        estimated.append("Regional wildfire hazard context used partial proxy coverage due to missing hazard/burn layers.")
+    if not bool(coverage.get("dryness_available")):
+        estimated.append("Dryness context was estimated from available regional signals.")
+    if not bool(coverage.get("road_network_available")):
+        estimated.append("Road and access context was estimated conservatively because direct network data was unavailable.")
+    if (region_optional_missing_count + region_enrichment_missing_count) > 0:
+        estimated.append("Optional enrichment layers were missing, so this run relied more on core regional context.")
+    if len(estimated) < 3:
+        for note in score_availability_notes:
+            lowered_note = str(note).lower()
+            if any(token in lowered_note for token in {"component only", "proxy", "fallback", "insufficient"}):
+                estimated.append(str(note))
+    if len(estimated) < 3:
+        for note in assumptions:
+            lowered = str(note).lower()
+            if any(token in lowered for token in ["fallback", "proxy", "approxim", "inferred", "estimated"]):
+                estimated.append(str(note))
 
     def _dedupe(items: list[str], limit: int) -> list[str]:
         out: list[str] = []
@@ -3187,12 +3293,12 @@ def _build_homeowner_limitation_groups(
 
     observed = _dedupe(observed, 8)
     missing = _dedupe(missing, 8)
-    estimated = _dedupe(estimated, 8)
+    estimated = _dedupe(estimated, 5)
     why_limited = OUTPUT_STATE_LIMITATION_TEXT.get(
         assessment_output_state,
         OUTPUT_STATE_LIMITATION_TEXT["limited_regional_estimate"],
     )
-    return limitations[:6], observed, estimated, missing, why_limited
+    return limitations[:5], observed, estimated, missing, why_limited
 
 
 def _apply_score_availability(
@@ -4181,8 +4287,19 @@ def _run_assessment(
             score_availability_notes=score_availability_notes,
             assumptions=all_assumptions,
             assessment_output_state=assessment_output_state,
+            fallback_dominance_ratio=float(risk.fallback_dominance_ratio),
         )
     )
+    homeowner_confidence_summary = _build_homeowner_confidence_summary(
+        confidence_score=float(confidence_block.confidence_score),
+        assessment_output_state=assessment_output_state,
+        grouped_limitations=grouped_limitations,
+        why_limited=why_limited,
+        feature_coverage_percent=float(coverage_preflight.get("feature_coverage_percent") or 0.0),
+        missing_core_layer_count=int(coverage_preflight.get("missing_core_layer_count") or 0),
+        geometry_basis=str(coverage_preflight.get("geometry_basis") or "geocode_point"),
+    )
+    homeowner_assessment_mode = _to_homeowner_assessment_mode(assessment_output_state)
     developer_diagnostics = {
         "fallback_decisions": fallback_decisions,
         "score_availability_notes": score_availability_notes,
@@ -4192,12 +4309,14 @@ def _run_assessment(
         "preflight": dict(coverage_preflight),
     }
     homeowner_summary = {
+        "assessment_mode": homeowner_assessment_mode,
         "assessment_output_state": assessment_output_state,
         "risk_label": (
             "Wildfire Risk Estimate"
             if assessment_output_state in {"address_level_estimate", "limited_regional_estimate", "insufficient_data"}
             else "Wildfire Risk Score"
         ),
+        "confidence_summary": homeowner_confidence_summary,
         "assessment_limitations": grouped_limitations,
         "what_was_observed": what_was_observed,
         "what_was_estimated": what_was_estimated,
@@ -4585,6 +4704,7 @@ def _run_assessment(
         feature_coverage_percent=float(coverage_preflight.get("feature_coverage_percent") or 0.0),
         assessment_specificity_tier=str(coverage_preflight.get("assessment_specificity_tier") or "regional_estimate"),
         assessment_output_state=str(assessment_output_state or "insufficient_data"),
+        assessment_mode=homeowner_assessment_mode,
         limited_assessment_flag=bool(coverage_preflight.get("limited_assessment_flag")),
         confidence_not_meaningful=bool(assessment_output_state == "insufficient_data"),
         observed_factor_count=int(risk.observed_factor_count),
@@ -4865,6 +4985,7 @@ def _run_assessment(
         },
         "assessment_limitations_summary": list(result.assessment_limitations_summary),
         "assessment_limitations": list(result.assessment_limitations),
+        "assessment_mode": result.assessment_mode,
         "what_was_observed": list(result.what_was_observed),
         "what_was_estimated": list(result.what_was_estimated),
         "what_was_missing": list(result.what_was_missing),

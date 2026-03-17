@@ -32,6 +32,12 @@ AssessmentOutputState = Literal[
     "limited_regional_estimate",
     "insufficient_data",
 ]
+AssessmentMode = Literal[
+    "property_specific",
+    "address_level",
+    "limited_regional_estimate",
+    "insufficient_data",
+]
 UseRestriction = Literal[
     "shareable",
     "homeowner_review_recommended",
@@ -788,6 +794,7 @@ class AssessmentResult(BaseModel):
     feature_coverage_percent: float = 0.0
     assessment_specificity_tier: AssessmentSpecificityTier = "regional_estimate"
     assessment_output_state: AssessmentOutputState = "insufficient_data"
+    assessment_mode: AssessmentMode = "insufficient_data"
     limited_assessment_flag: bool = False
     confidence_not_meaningful: bool = False
     observed_factor_count: int = 0

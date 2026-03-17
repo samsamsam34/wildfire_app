@@ -28,6 +28,15 @@ Policy statement:
 - `observed_weight_fraction`
 - `fallback_dominance_ratio`
 - `score_specificity_warning`
+- `assessment_mode` (`property_specific` | `address_level` | `limited_regional_estimate` | `insufficient_data`)
+- `homeowner_summary.confidence_summary`
+  - `score`
+  - `label`
+  - `assessment_type`
+  - `headline`
+  - `why_confidence_is_limited`
+- `homeowner_summary.assessment_limitations` (grouped, deduplicated homeowner categories)
+- `developer_diagnostics` (full technical fallback/source details for debugging)
 - `property_level_context.region_property_specific_readiness`
 - `property_level_context.region_required_layers_missing`
 - `property_level_context.region_optional_layers_missing`
@@ -40,6 +49,11 @@ Policy statement:
 - `regional_estimate`: substantial data gaps; treat as broad context guidance.
 
 If `limited_assessment_flag=true`, the assessment should be treated as lower-specificity guidance and confidence/restriction tiers will be downgraded accordingly.
+
+Homeowner output policy:
+- Low-coverage runs now prioritize concise grouped limitation summaries instead of per-model repetitive technical messages.
+- Detailed source/provider/fallback diagnostics remain available under `developer_diagnostics`.
+- `limited_regional_estimate` and `insufficient_data` modes are presented as estimates, not full property-specific score claims.
 
 Prepared-region readiness tiers:
 - `property_specific_ready`: enough prepared evidence for property-level behavior (still subject to per-property coverage checks).

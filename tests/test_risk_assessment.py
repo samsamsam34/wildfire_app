@@ -4613,6 +4613,61 @@ def test_preflight_coverage_tier_marks_high_vs_limited_specificity(monkeypatch, 
     assert low["confidence_tier"] in {"moderate", "low", "preliminary"}
 
 
+def test_low_coverage_homeowner_summary_uses_limited_mode_and_grouped_limitations(monkeypatch, tmp_path):
+    low_ctx = _ctx(env=56.0, wildland=52.0, historic=45.0, ring_metrics={})
+    low_ctx.burn_probability_index = None
+    low_ctx.hazard_severity_index = None
+    low_ctx.moisture_index = None
+    low_ctx.access_exposure_index = None
+    low_ctx.access_context = {"status": "missing"}
+    low_ctx.environmental_layer_status = {
+        "burn_probability": "missing",
+        "hazard": "missing",
+        "slope": "ok",
+        "fuel": "ok",
+        "canopy": "missing",
+        "fire_history": "missing",
+    }
+    low_ctx.property_level_context = {
+        "footprint_used": False,
+        "footprint_status": "not_found",
+        "fallback_mode": "point_based",
+        "ring_metrics": {},
+        "region_property_specific_readiness": "limited_regional_ready",
+        "region_required_layers_missing": [],
+        "region_optional_layers_missing": ["whp", "roads", "gridmet_dryness"],
+        "region_enrichment_layers_missing": ["parcel_polygons"],
+    }
+    _setup(monkeypatch, tmp_path, low_ctx)
+    assessed = _run(_payload("Limited Output Lane", {}, confirmed=[]))
+
+    assert assessed["assessment_output_state"] in {"limited_regional_estimate", "insufficient_data"}
+    assert assessed["assessment_mode"] in {"limited_regional_estimate", "insufficient_data"}
+
+    homeowner_summary = assessed.get("homeowner_summary") or {}
+    assert homeowner_summary.get("assessment_mode") == assessed["assessment_mode"]
+    limitations = homeowner_summary.get("assessment_limitations") or []
+    assert isinstance(limitations, list)
+    assert len(limitations) <= 5
+    categories = [row.get("category") for row in limitations if isinstance(row, dict)]
+    assert len(categories) == len(set(categories))
+
+    confidence_summary = homeowner_summary.get("confidence_summary") or {}
+    assert isinstance(confidence_summary, dict)
+    assert confidence_summary.get("assessment_type") in {
+        "limited regional estimate",
+        "insufficient data",
+    }
+    why_limited = confidence_summary.get("why_confidence_is_limited") or []
+    assert isinstance(why_limited, list)
+    assert len(why_limited) <= 4
+    assert all("underwriting threshold" not in str(reason).lower() for reason in why_limited)
+
+    diagnostics = assessed.get("developer_diagnostics") or {}
+    assert isinstance((diagnostics.get("fallback_decisions") or []), list)
+    assert "preflight" in diagnostics
+
+
 def test_missing_factor_omission_reports_weight_and_counts(monkeypatch, tmp_path):
     ctx = _ctx(
         env=54.0,
