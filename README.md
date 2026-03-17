@@ -468,7 +468,7 @@ Preferred new-region workflow (canonical path):
   - Override with `--source-config <path>` or `WF_SOURCE_CONFIG_PATH`.
   - Registry values support env references, including defaults, for example `${WF_DEFAULT_DEM_ENDPOINT:-https://...}`.
   - Required core layers (`dem`, `fuel`, `canopy`, `fire_perimeters`, `building_footprints`) ship with non-empty starter source details so `--plan-only` can evaluate buildability without custom config.
-  - Optional defaults are included for `whp`, `mtbs_severity`, and `roads`; `gridmet_dryness` usually requires an explicit endpoint/URL override.
+  - Optional defaults are included for `whp`, `mtbs_severity`, `roads`, and `gridmet_dryness` (annual fm1000 NetCDF URL; override as needed).
   - Optional layers remain non-blocking; missing/invalid optional config is surfaced in `optional_layer_diagnostics` and `optional_config_warnings`.
 
 Required vs optional layers:
@@ -499,6 +499,29 @@ python scripts/prepare_region_from_catalog_or_sources.py \
   --allow-partial-coverage-fill \
   --validate
 ```
+
+Missoula helper wrapper (larger default bbox, overwrite enabled):
+
+```bash
+bash scripts/download_landfire_missoula.sh
+```
+
+Optional environment overrides for the helper:
+- `WF_BBOX_MIN_LON`, `WF_BBOX_MIN_LAT`, `WF_BBOX_MAX_LON`, `WF_BBOX_MAX_LAT`
+- `WF_VALIDATE_AFTER_PREP=1` (runs post-prep validation)
+- `WF_DOWNLOAD_TIMEOUT`, `WF_DOWNLOAD_RETRIES`
+
+Winthrop/WA optional-layer bootstrap (WHP/MTBS/geoplatform endpoints + gridMET + WA parcels + Overture fallback):
+
+```bash
+bash scripts/download_optional_winthrop_wa.sh
+```
+
+Optional overrides for the Winthrop helper:
+- `WF_ALLOW_PARTIAL_COVERAGE_FILL=1` to force re-acquisition of partially covered layers
+- `WF_DEFAULT_PARCEL_POLYGONS_ENDPOINT`, `WF_DEFAULT_PARCEL_ADDRESS_POINTS_ENDPOINT`
+- `WF_DEFAULT_OVERTURE_BUILDINGS_ENDPOINT`, `WF_DEFAULT_OVERTURE_BUILDINGS_PATH`
+- `WF_DEFAULT_GRIDMET_DRYNESS_FULL_URL`
 
 Operator diagnostics in command output include:
 - prepared-region status (`covered`, `not_found`, `present_outside_bbox`, `invalid_manifest`)

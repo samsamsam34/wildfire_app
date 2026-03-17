@@ -58,7 +58,7 @@
       "notes": "Public USA structures feature-service default (fallback for building-footprint context)."
     },
     "building_footprints_overture": {
-      "provider_type": "local_file",
+      "provider_type": "arcgis_feature_service",
       "source_path": "${WF_DEFAULT_OVERTURE_BUILDINGS_PATH:-}",
       "source_endpoint": "${WF_DEFAULT_OVERTURE_BUILDINGS_ENDPOINT:-}",
       "source_url": "${WF_DEFAULT_OVERTURE_BUILDINGS_URL:-}",
@@ -68,10 +68,10 @@
       "supports_geojson_direct": false,
       "require_return_geometry": true,
       "expected_output_format": "geojson",
-      "notes": "Preferred Overture Maps building source. Use regional subsets (GeoJSON/FlatGeobuf converted to GeoJSON) or a bbox-capable service endpoint."
+      "notes": "Preferred Overture Maps building source. Supports local GeoJSON path or a bbox-capable feature service endpoint."
     },
     "parcel_polygons": {
-      "provider_type": "local_file",
+      "provider_type": "arcgis_feature_service",
       "source_path": "${WF_DEFAULT_PARCEL_POLYGONS_PATH:-}",
       "source_endpoint": "${WF_DEFAULT_PARCEL_POLYGONS_ENDPOINT:-}",
       "source_url": "${WF_DEFAULT_PARCEL_POLYGONS_URL:-}",
@@ -81,10 +81,10 @@
       "supports_geojson_direct": false,
       "require_return_geometry": true,
       "expected_output_format": "geojson",
-      "notes": "Optional parcel boundaries. Prefer local county/assessor parcel GeoJSON per region."
+      "notes": "Optional parcel boundaries. Supports local GeoJSON path or a bbox-capable feature service endpoint."
     },
     "parcel_address_points": {
-      "provider_type": "local_file",
+      "provider_type": "arcgis_feature_service",
       "source_path": "${WF_DEFAULT_PARCEL_ADDRESS_POINTS_PATH:-}",
       "source_endpoint": "${WF_DEFAULT_PARCEL_ADDRESS_POINTS_ENDPOINT:-}",
       "source_url": "${WF_DEFAULT_PARCEL_ADDRESS_POINTS_URL:-}",
@@ -94,7 +94,7 @@
       "supports_geojson_direct": false,
       "require_return_geometry": true,
       "expected_output_format": "geojson",
-      "notes": "Optional authoritative address/parcel points used to improve property anchors."
+      "notes": "Optional authoritative address/parcel points used to improve property anchors. Supports local points GeoJSON or a feature service endpoint."
     },
     "roads": {
       "provider_type": "arcgis_feature_service",
@@ -110,33 +110,33 @@
     },
     "whp": {
       "provider_type": "arcgis_image_service",
-      "source_endpoint": "${WF_DEFAULT_WHP_ENDPOINT:-https://apps.fs.usda.gov/fsgisx01/rest/services/RDW_Wildfire/RMRS_WildfireHazardPotential_Classified_2023/ImageServer}",
+      "source_endpoint": "${WF_DEFAULT_WHP_ENDPOINT:-https://imagery.geoplatform.gov/iipp/rest/services/Fire_Aviation/USFS_EDW_RMRS_WildfireHazardPotentialClassified/ImageServer}",
       "full_download_url": "${WF_DEFAULT_WHP_FULL_URL:-}",
       "supports_bbox_export": true,
       "allow_full_download_fallback": true,
       "target_resolution": 30.0,
       "expected_output_format": "tif",
-      "notes": "Optional USFS WHP 2023 classified image service."
+      "notes": "Optional USFS WHP classified image service (geoplatform replacement endpoint)."
     },
     "mtbs_severity": {
       "provider_type": "arcgis_image_service",
-      "source_endpoint": "${WF_DEFAULT_MTBS_SEVERITY_ENDPOINT:-https://apps.fs.usda.gov/fsgisx01/rest/services/RDW_Wildfire/MTBS_CONUS/ImageServer}",
+      "source_endpoint": "${WF_DEFAULT_MTBS_SEVERITY_ENDPOINT:-https://imagery.geoplatform.gov/iipp/rest/services/Fire_Aviation/USFS_EDW_MTBS_CONUS/ImageServer}",
       "full_download_url": "${WF_DEFAULT_MTBS_SEVERITY_FULL_URL:-}",
       "supports_bbox_export": true,
       "allow_full_download_fallback": true,
       "target_resolution": 30.0,
       "expected_output_format": "tif",
-      "notes": "Optional MTBS CONUS burn-severity image service."
+      "notes": "Optional MTBS CONUS burn-severity image service (geoplatform replacement endpoint)."
     },
     "gridmet_dryness": {
-      "provider_type": "arcgis_image_service",
+      "provider_type": "file_download",
       "source_endpoint": "${WF_DEFAULT_GRIDMET_DRYNESS_ENDPOINT:-}",
-      "full_download_url": "${WF_DEFAULT_GRIDMET_DRYNESS_FULL_URL:-}",
-      "supports_bbox_export": true,
+      "full_download_url": "${WF_DEFAULT_GRIDMET_DRYNESS_FULL_URL:-https://www.northwestknowledge.net/metdata/data/fm1000_2026.nc}",
+      "supports_bbox_export": false,
       "allow_full_download_fallback": true,
       "target_resolution": 4000.0,
       "expected_output_format": "tif",
-      "notes": "Optional gridMET dryness proxy. No default public endpoint is bundled; set WF_DEFAULT_GRIDMET_DRYNESS_ENDPOINT or WF_DEFAULT_GRIDMET_DRYNESS_FULL_URL."
+      "notes": "Optional gridMET dryness proxy. Default is annual fm1000 NetCDF snapshot (override WF_DEFAULT_GRIDMET_DRYNESS_FULL_URL for a different year/source)."
     }
   }
 }

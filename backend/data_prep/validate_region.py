@@ -37,7 +37,15 @@ RUNTIME_LAYER_MAP = {
     "building_footprints": "building_footprints",
 }
 
-VECTOR_KEYS = {"fire_perimeters", "building_footprints"}
+VECTOR_KEYS = {
+    "fire_perimeters",
+    "building_footprints",
+    "roads",
+    "fema_structures",
+    "building_footprints_overture",
+    "parcel_polygons",
+    "parcel_address_points",
+}
 OPTIONAL_REGION_LAYER_KEYS = {
     "whp",
     "mtbs_severity",

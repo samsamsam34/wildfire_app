@@ -203,6 +203,9 @@ def _clip_raster_if_requested(src: Path, dst: Path, bounds: dict[str, float] | N
     assert rasterio is not None and from_bounds is not None and transform_bounds is not None
     with rasterio.open(src) as ds:
         profile = ds.profile.copy()
+        # Normalize output profile for GeoTIFF writes even when source is NetCDF/other drivers.
+        for key in ("tiled", "blockxsize", "blockysize", "interleave"):
+            profile.pop(key, None)
         if bounds:
             if ds.crs is None:
                 raise ValueError(f"Raster has no CRS: {src}")
@@ -228,6 +231,7 @@ def _clip_raster_if_requested(src: Path, dst: Path, bounds: dict[str, float] | N
             width = ds.width
             height = ds.height
         profile.update(
+            driver="GTiff",
             width=width,
             height=height,
             transform=transform,
@@ -236,7 +240,8 @@ def _clip_raster_if_requested(src: Path, dst: Path, bounds: dict[str, float] | N
         if width >= 16 and height >= 16:
             block = max(16, min(512, width, height))
             block = max(16, (block // 16) * 16)
-            profile.update(tiled=True, blockxsize=block, blockysize=block)
+            if block <= width and block <= height:
+                profile.update(tiled=True, blockxsize=block, blockysize=block)
         with rasterio.open(dst, "w", **profile) as out:
             out.write(arr)
     with rasterio.open(dst) as out_ds:
