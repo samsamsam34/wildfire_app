@@ -26,6 +26,12 @@ WorkflowState = Literal[
 ]
 ConfidenceTier = Literal["high", "moderate", "low", "preliminary"]
 AssessmentSpecificityTier = Literal["property_specific", "address_level", "regional_estimate"]
+AssessmentOutputState = Literal[
+    "property_specific_assessment",
+    "address_level_estimate",
+    "limited_regional_estimate",
+    "insufficient_data",
+]
 UseRestriction = Literal[
     "shareable",
     "homeowner_review_recommended",
@@ -781,13 +787,23 @@ class AssessmentResult(BaseModel):
     feature_coverage_summary: Dict[str, bool] = Field(default_factory=dict)
     feature_coverage_percent: float = 0.0
     assessment_specificity_tier: AssessmentSpecificityTier = "regional_estimate"
+    assessment_output_state: AssessmentOutputState = "insufficient_data"
     limited_assessment_flag: bool = False
+    confidence_not_meaningful: bool = False
     observed_factor_count: int = 0
     missing_factor_count: int = 0
     fallback_factor_count: int = 0
     observed_weight_fraction: float = 0.0
     fallback_dominance_ratio: float = 0.0
     score_specificity_warning: Optional[str] = None
+    data_quality_summary: Dict[str, str] = Field(default_factory=dict)
+    assessment_limitations: List[Dict[str, str]] = Field(default_factory=list)
+    what_was_observed: List[str] = Field(default_factory=list)
+    what_was_estimated: List[str] = Field(default_factory=list)
+    what_was_missing: List[str] = Field(default_factory=list)
+    why_this_result_is_limited: Optional[str] = None
+    developer_diagnostics: Dict[str, Any] = Field(default_factory=dict)
+    homeowner_summary: Dict[str, Any] = Field(default_factory=dict)
     layer_coverage_audit: List[LayerCoverageAuditItem] = Field(default_factory=list)
     coverage_summary: LayerCoverageSummary = Field(default_factory=LayerCoverageSummary)
     region_resolution: RegionResolution = Field(default_factory=RegionResolution)

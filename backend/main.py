@@ -278,6 +278,31 @@ SCORE_FAMILY_FIELDS = {
     ],
 }
 
+FEATURE_FLAG_LABELS: dict[str, str] = {
+    "parcel_polygon_available": "Parcel boundary geometry",
+    "building_footprint_available": "Building footprint geometry",
+    "hazard_severity_available": "Wildfire hazard severity layer",
+    "burn_probability_available": "Burn probability layer",
+    "dryness_available": "Climate dryness context",
+    "road_network_available": "Road/access network context",
+    "near_structure_vegetation_available": "Near-structure vegetation context",
+}
+
+OUTPUT_STATE_LIMITATION_TEXT: dict[str, str] = {
+    "property_specific_assessment": "Property-specific geometry and environmental coverage were sufficient for detailed scoring.",
+    "address_level_estimate": (
+        "This result is an address-level estimate. Some property-specific geometry was unavailable, "
+        "so parts of the analysis rely on nearby proxy context."
+    ),
+    "limited_regional_estimate": (
+        "This result is based mostly on regional conditions because property-specific data coverage was limited."
+    ),
+    "insufficient_data": (
+        "Available data was too limited for a credible property-level estimate. "
+        "Select your home on the map and/or prepare additional regional layers."
+    ),
+}
+
 ALLOWED_ROLES: set[str] = {"admin", "underwriter", "broker", "inspector", "agent", "viewer"}
 WRITE_ROLES: set[str] = {"admin", "underwriter", "broker", "inspector", "agent"}
 REVIEW_EDIT_ROLES: set[str] = {"admin", "underwriter"}
@@ -612,6 +637,10 @@ def _build_confidence(
     property_level_context: dict[str, Any],
     environmental_layer_status: dict[str, str],
     data_provenance: DataProvenanceBlock | None = None,
+    preflight: dict[str, Any] | None = None,
+    assessment_output_state: str | None = None,
+    observed_weight_fraction: float = 0.0,
+    fallback_dominance_ratio: float = 0.0,
 ) -> ConfidenceBlock:
     missing_inputs_set = set(assumptions.missing_inputs)
     important_missing = len([m for m in assumptions.missing_inputs if m in CORE_FACT_FIELDS or m.endswith("_layer")])
@@ -727,6 +756,31 @@ def _build_confidence(
     if not geocode_verified or (not has_meaningful_environment and not has_meaningful_property):
         confidence = 0.0
 
+    preflight = dict(preflight or {})
+    output_state = str(assessment_output_state or preflight.get("assessment_output_state") or "insufficient_data")
+    coverage_percent = float(preflight.get("feature_coverage_percent") or 0.0)
+    missing_core_layer_count = int(preflight.get("missing_core_layer_count") or 0)
+    major_env_missing_count = int(preflight.get("major_environmental_missing_count") or 0)
+    geometry_basis = str(preflight.get("geometry_basis") or "geocode_point")
+    if coverage_percent <= 15.0:
+        confidence = min(confidence, 35.0)
+    if missing_core_layer_count >= 4:
+        confidence = min(confidence, 42.0)
+    if major_env_missing_count >= 2:
+        confidence = min(confidence, 48.0)
+    if geometry_basis == "geocode_point":
+        confidence = min(confidence, 58.0)
+    if float(fallback_dominance_ratio) >= 0.70:
+        confidence = min(confidence, 45.0)
+    if float(observed_weight_fraction) < 0.45:
+        confidence = min(confidence, 50.0)
+    if output_state == "address_level_estimate":
+        confidence = min(confidence, 68.0)
+    elif output_state == "limited_regional_estimate":
+        confidence = min(confidence, 45.0)
+    elif output_state == "insufficient_data":
+        confidence = 0.0
+
     confidence = max(0.0, min(100.0, round(confidence, 1)))
 
     missing_critical_fields = sorted(
@@ -791,6 +845,12 @@ def _build_confidence(
         low_confidence_flags.append("Access scoring is provisional and not yet parcel/egress-based")
     if confidence < 70:
         low_confidence_flags.append("Overall confidence below recommended underwriting threshold")
+    if output_state == "address_level_estimate":
+        low_confidence_flags.append("Assessment is capped at address-level specificity.")
+    elif output_state == "limited_regional_estimate":
+        low_confidence_flags.append("Assessment is limited to regional-estimate specificity due to low coverage.")
+    elif output_state == "insufficient_data":
+        low_confidence_flags.append("Data is insufficient for a credible automatic estimate.")
 
     severe_layer_failure = external_fail_count >= 2 or missing_layer_count >= 4 or provider_error_count >= 1
     major_layer_failure = external_fail_count >= 1 or missing_layer_count >= 1 or provider_error_count >= 1
@@ -829,6 +889,15 @@ def _build_confidence(
     ):
         confidence_tier = "moderate"
 
+    # Output-state caps prevent low-coverage runs from appearing overconfident.
+    if output_state == "address_level_estimate" and confidence_tier == "high":
+        confidence_tier = "moderate"
+    elif output_state == "limited_regional_estimate":
+        if confidence_tier in {"high", "moderate"}:
+            confidence_tier = "low"
+    elif output_state == "insufficient_data":
+        confidence_tier = "preliminary"
+
     if confidence_tier == "high":
         use_restriction = "shareable"
     elif confidence_tier == "moderate":
@@ -839,6 +908,9 @@ def _build_confidence(
         use_restriction = "not_for_underwriting_or_binding"
 
     if severe_layer_failure or missing_layer_count >= 2 or stale_share >= 25.0 or critical_unknown_or_stale >= 3:
+        use_restriction = "not_for_underwriting_or_binding"
+
+    if output_state in {"limited_regional_estimate", "insufficient_data"}:
         use_restriction = "not_for_underwriting_or_binding"
 
     return ConfidenceBlock(
@@ -1754,29 +1826,48 @@ def _build_feature_coverage_preflight(
     total_count = max(1, len(feature_coverage_summary))
     feature_coverage_percent = round((observed_count / float(total_count)) * 100.0, 1)
     missing_core_layer_count = total_count - observed_count
+    geometry_basis = (
+        "footprint"
+        if footprint_available
+        else ("parcel" if parcel_polygon_available else "geocode_point")
+    )
+    major_environmental_missing_count = sum(
+        1
+        for available in [hazard_available, burn_prob_available, dryness_available]
+        if not available
+    )
 
     if (
-        feature_coverage_percent >= 70.0
+        feature_coverage_percent >= 72.0
         and footprint_available
         and near_structure_available
+        and major_environmental_missing_count == 0
         and coverage_summary.failed_count <= 1
     ):
         assessment_specificity_tier = "property_specific"
-    elif feature_coverage_percent >= 45.0:
+    elif (
+        feature_coverage_percent >= 38.0
+        and major_environmental_missing_count <= 1
+    ):
         assessment_specificity_tier = "address_level"
     else:
         assessment_specificity_tier = "regional_estimate"
+
+    # If both parcel and footprint are missing, never allow property-specific semantics.
+    if not footprint_available and not parcel_polygon_available and assessment_specificity_tier == "property_specific":
+        assessment_specificity_tier = "address_level"
 
     limited_assessment_flag = (
         assessment_specificity_tier != "property_specific"
         or missing_core_layer_count >= 3
         or bool(coverage_summary.critical_missing_layers)
+        or major_environmental_missing_count >= 2
     )
     specificity_warning = None
     if limited_assessment_flag:
         specificity_warning = (
-            "Assessment uses partial/fallback evidence. Missing data now reduces specificity and confidence "
-            "instead of injecting conservative numeric defaults."
+            "Assessment uses partial/fallback evidence. Missing data reduces specificity and confidence "
+            "instead of being treated as a property-specific observation."
         )
 
     return {
@@ -1785,6 +1876,8 @@ def _build_feature_coverage_preflight(
         "assessment_specificity_tier": assessment_specificity_tier,
         "limited_assessment_flag": limited_assessment_flag,
         "missing_core_layer_count": missing_core_layer_count,
+        "geometry_basis": geometry_basis,
+        "major_environmental_missing_count": major_environmental_missing_count,
         "score_specificity_warning": specificity_warning,
     }
 
@@ -2435,9 +2528,16 @@ def _apply_preflight_specificity_gate(
     assessment_status: AssessmentStatus,
     assessment_blockers: list[str],
     preflight: dict[str, Any],
-) -> tuple[ScoreEligibility, ScoreEligibility, ScoreEligibility, AssessmentStatus, list[str]]:
+    fallback_dominance_ratio: float,
+    observed_weight_fraction: float,
+) -> tuple[ScoreEligibility, ScoreEligibility, ScoreEligibility, AssessmentStatus, list[str], str]:
     tier = str(preflight.get("assessment_specificity_tier") or "regional_estimate")
     limited = bool(preflight.get("limited_assessment_flag"))
+    output_state = _derive_assessment_output_state(
+        preflight=preflight,
+        fallback_dominance_ratio=fallback_dominance_ratio,
+        observed_weight_fraction=observed_weight_fraction,
+    )
     if not limited:
         return (
             site_eligibility,
@@ -2445,6 +2545,7 @@ def _apply_preflight_specificity_gate(
             readiness_eligibility,
             assessment_status,
             assessment_blockers,
+            output_state,
         )
 
     site_updated = site_eligibility.model_copy(deep=True)
@@ -2462,7 +2563,16 @@ def _apply_preflight_specificity_gate(
     if warning not in readiness_updated.caveats:
         readiness_updated.caveats.append(warning)
 
-    if tier == "regional_estimate":
+    if output_state == "insufficient_data":
+        site_updated.eligible = False
+        site_updated.eligibility_status = "insufficient"
+        home_updated.eligible = False
+        home_updated.eligibility_status = "insufficient"
+        readiness_updated.eligible = False
+        readiness_updated.eligibility_status = "insufficient"
+        assessment_status = "insufficient_data"
+        blockers.append("Insufficient data for a credible property or regional estimate.")
+    elif tier == "regional_estimate":
         if home_updated.eligibility_status == "full":
             home_updated.eligibility_status = "partial"
             home_updated.eligible = True
@@ -2482,6 +2592,7 @@ def _apply_preflight_specificity_gate(
         readiness_updated,
         assessment_status,
         sorted(set(blockers)),
+        output_state,
     )
 
 
@@ -2494,6 +2605,7 @@ def _apply_hard_trust_guardrails(
     assessment_status: AssessmentStatus,
     coverage_summary: LayerCoverageSummary | None = None,
     preflight: dict[str, Any] | None = None,
+    assessment_output_state: str | None = None,
 ) -> tuple[ConfidenceBlock, list[str], list[str]]:
     updated = confidence.model_copy(deep=True)
     downgrade_reasons: list[str] = []
@@ -2561,6 +2673,31 @@ def _apply_hard_trust_guardrails(
             updated.confidence_tier = "moderate"
             if updated.use_restriction == "shareable":
                 updated.use_restriction = "homeowner_review_recommended"
+
+    preflight_state = str((preflight or {}).get("assessment_output_state") or "").strip()
+    output_state = str(assessment_output_state or preflight_state or "").strip()
+    if output_state == "address_level_estimate":
+        if updated.confidence_tier == "high":
+            updated.confidence_tier = "moderate"
+        updated.confidence_score = min(float(updated.confidence_score), 68.0)
+        updated.use_restriction = (
+            "homeowner_review_recommended"
+            if updated.use_restriction == "shareable"
+            else updated.use_restriction
+        )
+    elif output_state == "limited_regional_estimate":
+        if updated.confidence_tier in {"high", "moderate"}:
+            updated.confidence_tier = "low"
+        updated.confidence_score = min(float(updated.confidence_score), 45.0)
+        updated.use_restriction = "not_for_underwriting_or_binding"
+        downgrade_reasons.append("Limited regional estimate state caps confidence and sharing.")
+        trust_tier_blockers.append("Limited regional estimate state.")
+    elif output_state == "insufficient_data":
+        updated.confidence_tier = "preliminary"
+        updated.confidence_score = 0.0
+        updated.use_restriction = "not_for_underwriting_or_binding"
+        downgrade_reasons.append("Insufficient-data state suppresses confidence for homeowner-facing use.")
+        trust_tier_blockers.append("Insufficient-data state.")
 
     if readiness_eligibility.eligibility_status == "insufficient":
         updated.use_restriction = "not_for_underwriting_or_binding"
@@ -2728,6 +2865,186 @@ def _build_assessment_limitations_summary(
         seen.add(trimmed)
         deduped.append(trimmed)
     return deduped[:6]
+
+
+def _derive_assessment_output_state(
+    *,
+    preflight: dict[str, Any],
+    fallback_dominance_ratio: float,
+    observed_weight_fraction: float,
+) -> str:
+    tier = str(preflight.get("assessment_specificity_tier") or "regional_estimate")
+    feature_coverage_percent = float(preflight.get("feature_coverage_percent") or 0.0)
+    missing_core_layer_count = int(preflight.get("missing_core_layer_count") or 0)
+    major_environmental_missing_count = int(preflight.get("major_environmental_missing_count") or 0)
+    geometry_basis = str(preflight.get("geometry_basis") or "geocode_point")
+    no_property_geometry = geometry_basis == "geocode_point"
+
+    extreme_low_coverage = feature_coverage_percent <= 15.0
+    low_coverage = feature_coverage_percent <= 30.0
+    high_fallback = float(fallback_dominance_ratio) >= 0.70
+    severe_fallback = float(fallback_dominance_ratio) >= 0.85
+    low_observed_weight = float(observed_weight_fraction) < 0.45
+    severe_observed_weight_loss = float(observed_weight_fraction) < 0.30
+
+    if (
+        (extreme_low_coverage and no_property_geometry and major_environmental_missing_count >= 2)
+        or (missing_core_layer_count >= 6 and major_environmental_missing_count >= 2)
+        or (severe_fallback and severe_observed_weight_loss and major_environmental_missing_count >= 2)
+    ):
+        return "insufficient_data"
+
+    if (
+        tier == "regional_estimate"
+        or low_coverage
+        or high_fallback
+        or major_environmental_missing_count >= 2
+    ):
+        return "limited_regional_estimate"
+
+    if tier == "address_level" or no_property_geometry:
+        return "address_level_estimate"
+
+    return "property_specific_assessment"
+
+
+def _build_data_quality_summary(
+    *,
+    preflight: dict[str, Any],
+    property_level_context: dict[str, Any],
+) -> dict[str, str]:
+    coverage = dict(preflight.get("feature_coverage_summary") or {})
+    geometry_basis = str(preflight.get("geometry_basis") or "geocode_point")
+    parcel_available = bool(coverage.get("parcel_polygon_available"))
+    footprint_available = bool(coverage.get("building_footprint_available"))
+    near_structure_available = bool(coverage.get("near_structure_vegetation_available"))
+    hazard_available = bool(coverage.get("hazard_severity_available"))
+    burn_available = bool(coverage.get("burn_probability_available"))
+    dryness_available = bool(coverage.get("dryness_available"))
+    roads_available = bool(coverage.get("road_network_available"))
+
+    property_geometry = "observed" if footprint_available else ("partial" if parcel_available else "missing")
+    structure_features = "observed" if (footprint_available and near_structure_available) else (
+        "partial" if near_structure_available else "missing"
+    )
+    vegetation_context = "observed" if near_structure_available else "partial"
+    if not near_structure_available and geometry_basis == "geocode_point":
+        vegetation_context = "missing"
+    regional_hazard_layers = "observed" if (hazard_available and burn_available) else (
+        "partial" if (hazard_available or burn_available) else "missing"
+    )
+    road_access_context = "observed" if roads_available else "missing"
+    climate_dryness_context = "observed" if dryness_available else "missing"
+
+    return {
+        "property_geometry": property_geometry,
+        "structure_features": structure_features,
+        "vegetation_context": vegetation_context,
+        "regional_hazard_layers": regional_hazard_layers,
+        "road_access_context": road_access_context,
+        "climate_dryness_context": climate_dryness_context,
+    }
+
+
+def _build_homeowner_limitation_groups(
+    *,
+    preflight: dict[str, Any],
+    data_quality_summary: dict[str, str],
+    fallback_decisions: list[dict[str, object]],
+    score_availability_notes: list[str],
+    assumptions: list[str],
+    assessment_output_state: str,
+) -> tuple[list[dict[str, str]], list[str], list[str], list[str], str]:
+    coverage = dict(preflight.get("feature_coverage_summary") or {})
+    limitations: list[dict[str, str]] = []
+
+    def _add(category: str, summary: str) -> None:
+        item = {"category": category, "summary": summary}
+        if item not in limitations:
+            limitations.append(item)
+
+    if data_quality_summary.get("property_geometry") == "missing":
+        _add(
+            "property_shape_and_structure",
+            "We could not identify the building outline or parcel boundary for this property, so near-home vegetation and defensible-space analysis was limited.",
+        )
+    elif data_quality_summary.get("property_geometry") == "partial":
+        _add(
+            "property_shape_and_structure",
+            "Only partial property geometry was available, so some near-structure findings rely on approximations.",
+        )
+
+    if not bool(coverage.get("hazard_severity_available")) or not bool(coverage.get("burn_probability_available")):
+        _add(
+            "regional_fire_context",
+            "Key wildfire hazard and burn-probability layers were unavailable for this location, so the result relies more on general regional context than property-specific fire history.",
+        )
+
+    if not bool(coverage.get("road_network_available")):
+        _add(
+            "access_and_response_context",
+            "Road and access-network context was unavailable, so emergency access and suppression-related exposure could not be evaluated.",
+        )
+
+    if (not bool(coverage.get("near_structure_vegetation_available"))) or (not bool(coverage.get("dryness_available"))):
+        _add(
+            "vegetation_and_dryness",
+            "Detailed vegetation continuity and dryness inputs were unavailable, reducing confidence in vegetation-related risk estimates.",
+        )
+
+    if assessment_output_state in {"limited_regional_estimate", "insufficient_data"}:
+        _add(
+            "overall_coverage",
+            OUTPUT_STATE_LIMITATION_TEXT.get(assessment_output_state, OUTPUT_STATE_LIMITATION_TEXT["limited_regional_estimate"]),
+        )
+
+    observed: list[str] = []
+    missing: list[str] = []
+    for key, label in FEATURE_FLAG_LABELS.items():
+        if bool(coverage.get(key)):
+            observed.append(label)
+        else:
+            missing.append(label)
+
+    estimated: list[str] = []
+    for row in fallback_decisions:
+        substitute = str(row.get("substitute_input") or "").strip()
+        note = str(row.get("note") or "").strip()
+        if substitute:
+            estimated.append(substitute.replace("_", " "))
+        elif note:
+            estimated.append(note)
+    for note in score_availability_notes:
+        estimated.append(str(note))
+    for note in assumptions:
+        lowered = str(note).lower()
+        if any(token in lowered for token in ["fallback", "proxy", "approxim", "inferred"]):
+            estimated.append(str(note))
+
+    def _dedupe(items: list[str], limit: int) -> list[str]:
+        out: list[str] = []
+        seen: set[str] = set()
+        for raw in items:
+            item = str(raw).strip()
+            if not item:
+                continue
+            token = item.lower()
+            if token in seen:
+                continue
+            seen.add(token)
+            out.append(item)
+            if len(out) >= limit:
+                break
+        return out
+
+    observed = _dedupe(observed, 8)
+    missing = _dedupe(missing, 8)
+    estimated = _dedupe(estimated, 8)
+    why_limited = OUTPUT_STATE_LIMITATION_TEXT.get(
+        assessment_output_state,
+        OUTPUT_STATE_LIMITATION_TEXT["limited_regional_estimate"],
+    )
+    return limitations[:6], observed, estimated, missing, why_limited
 
 
 def _apply_score_availability(
@@ -3558,6 +3875,7 @@ def _run_assessment(
         insurance_readiness_eligibility,
         assessment_status,
         assessment_blockers,
+        assessment_output_state,
     ) = _apply_preflight_specificity_gate(
         site_eligibility=site_hazard_eligibility,
         home_eligibility=home_vulnerability_eligibility,
@@ -3565,7 +3883,10 @@ def _run_assessment(
         assessment_status=assessment_status,
         assessment_blockers=assessment_blockers,
         preflight=coverage_preflight,
+        fallback_dominance_ratio=float(risk.fallback_dominance_ratio),
+        observed_weight_fraction=float(risk.observed_weight_fraction),
     )
+    coverage_preflight["assessment_output_state"] = assessment_output_state
     (
         site_hazard_input_quality,
         home_vulnerability_input_quality,
@@ -3578,6 +3899,10 @@ def _run_assessment(
         property_level_context=property_level_context,
         environmental_layer_status=context.environmental_layer_status,
         data_provenance=data_provenance,
+        preflight=coverage_preflight,
+        assessment_output_state=assessment_output_state,
+        observed_weight_fraction=float(risk.observed_weight_fraction),
+        fallback_dominance_ratio=float(risk.fallback_dominance_ratio),
     )
     if risk.uncertainty_penalty > 0:
         confidence_adjustment = round(min(8.0, float(risk.uncertainty_penalty) * 0.35), 1)
@@ -3605,6 +3930,7 @@ def _run_assessment(
         assessment_status=assessment_status,
         coverage_summary=coverage_summary,
         preflight=coverage_preflight,
+        assessment_output_state=assessment_output_state,
     )
     confidence_penalties = _derive_confidence_penalties(
         assumptions_block,
@@ -3695,6 +4021,42 @@ def _run_assessment(
         score_availability_notes=score_availability_notes,
         coverage_summary=coverage_summary,
     )
+    data_quality_summary = _build_data_quality_summary(
+        preflight=coverage_preflight,
+        property_level_context=property_level_context,
+    )
+    grouped_limitations, what_was_observed, what_was_estimated, what_was_missing, why_limited = (
+        _build_homeowner_limitation_groups(
+            preflight=coverage_preflight,
+            data_quality_summary=data_quality_summary,
+            fallback_decisions=fallback_decisions,
+            score_availability_notes=score_availability_notes,
+            assumptions=all_assumptions,
+            assessment_output_state=assessment_output_state,
+        )
+    )
+    developer_diagnostics = {
+        "fallback_decisions": fallback_decisions,
+        "score_availability_notes": score_availability_notes,
+        "coverage_summary": coverage_summary.model_dump(),
+        "layer_coverage_audit": [row.model_dump() for row in layer_coverage_audit],
+        "assessment_diagnostics": assessment_diagnostics.model_dump(),
+        "preflight": dict(coverage_preflight),
+    }
+    homeowner_summary = {
+        "assessment_output_state": assessment_output_state,
+        "risk_label": (
+            "Wildfire Risk Estimate"
+            if assessment_output_state in {"address_level_estimate", "limited_regional_estimate", "insufficient_data"}
+            else "Wildfire Risk Score"
+        ),
+        "assessment_limitations": grouped_limitations,
+        "what_was_observed": what_was_observed,
+        "what_was_estimated": what_was_estimated,
+        "what_was_missing": what_was_missing,
+        "why_this_result_is_limited": why_limited,
+        "data_quality_summary": data_quality_summary,
+    }
     readiness_factors = [
         ReadinessFactor(name=f["name"], status=f["status"], score_impact=f["score_impact"], detail=f["detail"])
         for f in readiness.readiness_factors
@@ -4047,7 +4409,9 @@ def _run_assessment(
         feature_coverage_summary=dict(coverage_preflight.get("feature_coverage_summary") or {}),
         feature_coverage_percent=float(coverage_preflight.get("feature_coverage_percent") or 0.0),
         assessment_specificity_tier=str(coverage_preflight.get("assessment_specificity_tier") or "regional_estimate"),
+        assessment_output_state=str(assessment_output_state or "insufficient_data"),
         limited_assessment_flag=bool(coverage_preflight.get("limited_assessment_flag")),
+        confidence_not_meaningful=bool(assessment_output_state == "insufficient_data"),
         observed_factor_count=int(risk.observed_factor_count),
         missing_factor_count=int(risk.missing_factor_count),
         fallback_factor_count=int(risk.fallback_factor_count),
@@ -4058,6 +4422,14 @@ def _run_assessment(
             if coverage_preflight.get("score_specificity_warning")
             else None
         ),
+        data_quality_summary=data_quality_summary,
+        assessment_limitations=grouped_limitations,
+        what_was_observed=what_was_observed,
+        what_was_estimated=what_was_estimated,
+        what_was_missing=what_was_missing,
+        why_this_result_is_limited=why_limited,
+        developer_diagnostics=developer_diagnostics,
+        homeowner_summary=homeowner_summary,
         layer_coverage_audit=layer_coverage_audit,
         coverage_summary=coverage_summary,
         region_resolution=region_resolution,
@@ -4314,8 +4686,14 @@ def _run_assessment(
             "assessment_status": result.assessment_status,
             "assessment_blockers": result.assessment_blockers,
             "assessment_limitations_summary": result.assessment_limitations_summary,
+            "assessment_output_state": result.assessment_output_state,
         },
         "assessment_limitations_summary": list(result.assessment_limitations_summary),
+        "assessment_limitations": list(result.assessment_limitations),
+        "what_was_observed": list(result.what_was_observed),
+        "what_was_estimated": list(result.what_was_estimated),
+        "what_was_missing": list(result.what_was_missing),
+        "why_this_result_is_limited": result.why_this_result_is_limited,
         "coverage": {
             "direct_data_coverage_score": result.direct_data_coverage_score,
             "inferred_data_coverage_score": result.inferred_data_coverage_score,
@@ -4325,8 +4703,11 @@ def _run_assessment(
             "feature_coverage_summary": result.feature_coverage_summary,
             "feature_coverage_percent": result.feature_coverage_percent,
             "assessment_specificity_tier": result.assessment_specificity_tier,
+            "assessment_output_state": result.assessment_output_state,
             "limited_assessment_flag": result.limited_assessment_flag,
             "score_specificity_warning": result.score_specificity_warning,
+            "confidence_not_meaningful": result.confidence_not_meaningful,
+            "data_quality_summary": result.data_quality_summary,
         },
         "feature_bundle_data_sources": (
             (property_level_context.get("feature_bundle_data_sources") or {})
@@ -4367,6 +4748,8 @@ def _run_assessment(
         "defensible_space_limitations_summary": result.defensible_space_limitations_summary,
         "top_recommended_actions": result.top_recommended_actions,
         "confidence_summary": result.confidence_summary.model_dump(),
+        "homeowner_summary": result.homeowner_summary,
+        "developer_diagnostics": result.developer_diagnostics,
         "assumptions_and_unknowns": result.assumptions_and_unknowns,
         "region_resolution": result.region_resolution.model_dump(),
         "score_evidence_ledger": result.score_evidence_ledger.model_dump(),
@@ -4580,13 +4963,21 @@ def _build_report_export(
         "feature_coverage_summary": result.feature_coverage_summary,
         "feature_coverage_percent": result.feature_coverage_percent,
         "assessment_specificity_tier": result.assessment_specificity_tier,
+        "assessment_output_state": result.assessment_output_state,
         "limited_assessment_flag": result.limited_assessment_flag,
+        "confidence_not_meaningful": result.confidence_not_meaningful,
         "observed_factor_count": result.observed_factor_count,
         "missing_factor_count": result.missing_factor_count,
         "fallback_factor_count": result.fallback_factor_count,
         "observed_weight_fraction": result.observed_weight_fraction,
         "fallback_dominance_ratio": result.fallback_dominance_ratio,
         "score_specificity_warning": result.score_specificity_warning,
+        "data_quality_summary": result.data_quality_summary,
+        "assessment_limitations": result.assessment_limitations,
+        "what_was_observed": result.what_was_observed,
+        "what_was_estimated": result.what_was_estimated,
+        "what_was_missing": result.what_was_missing,
+        "why_this_result_is_limited": result.why_this_result_is_limited,
     }
     if benchmark_hints is not None:
         assumptions_confidence["benchmark_hints"] = benchmark_hints
@@ -9020,6 +9411,15 @@ def layer_diagnostics(payload: AddressRequest, ctx: ActorContext = Depends(get_a
             "assumptions_used": debug_payload.get("assumptions_used", []),
             "assessment_blockers": ((debug_payload.get("eligibility") or {}).get("assessment_blockers") or []),
             "confidence_use_restriction": ((debug_payload.get("confidence_gating") or {}).get("use_restriction")),
+        },
+        "homeowner_summary": {
+            "assessment_output_state": ((debug_payload.get("coverage") or {}).get("assessment_output_state")),
+            "assessment_limitations": debug_payload.get("assessment_limitations", []),
+            "what_was_observed": debug_payload.get("what_was_observed", []),
+            "what_was_estimated": debug_payload.get("what_was_estimated", []),
+            "what_was_missing": debug_payload.get("what_was_missing", []),
+            "why_this_result_is_limited": debug_payload.get("why_this_result_is_limited"),
+            "data_quality_summary": ((debug_payload.get("coverage") or {}).get("data_quality_summary") or {}),
         },
         "warnings": debug_payload.get("coverage_summary", {}).get("recommended_actions", []),
     }
