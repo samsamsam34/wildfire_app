@@ -61,6 +61,8 @@ curl -sS -X POST "http://127.0.0.1:8000/risk/assess" \
 ## Field Intent
 
 - `confidence`: evidence completeness and fallback pressure for this specific run.
+- `confidence` is not wildfire-loss accuracy; it is evidence quality for this run.
+  It is reduced when fallback weight, inferred/proxy dependence, or missing critical fields increase.
 - `stability`: bounded local perturbation sensitivity (small geocode jitter + fallback-assumption perturbation).
 - `mitigation_sensitivity`: lightweight counterfactuals using existing mitigation-relevant inputs.
 - `monotonicity`: directional checks over the mitigation counterfactual set.
@@ -90,3 +92,5 @@ If artifacts are missing or invalid, diagnostics degrade gracefully:
 - These diagnostics are trust metadata, not claims-performance metrics.
 - External alignment is directional sanity checking only.
 - Do not interpret this payload as underwriting equivalence or model approval.
+- Confidence reflects observed-vs-inferred evidence quality and data completeness,
+  not guaranteed real-world predictive performance.

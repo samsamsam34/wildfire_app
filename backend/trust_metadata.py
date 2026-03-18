@@ -156,6 +156,12 @@ def build_trust_diagnostics(
         float(result.fallback_weight_fraction or 0.0) >= 0.45
         or int(result.fallback_feature_count or 0) > int(result.observed_feature_count or 0)
     )
+    inferred_fields = sorted(
+        set(
+            list(result.assessment_diagnostics.inferred_inputs or [])
+            + list(result.assessment_diagnostics.heuristic_inputs or [])
+        )
+    )
     confidence_notes: list[str] = []
     if fallback_heavy:
         confidence_notes.append("Fallback assumptions influence a large share of the score.")
@@ -163,6 +169,8 @@ def build_trust_diagnostics(
         confidence_notes.append("Trust-tier blockers are present in this assessment.")
     if result.assessment_diagnostics.critical_inputs_missing:
         confidence_notes.append("Critical property inputs are missing or inferred.")
+    if inferred_fields:
+        confidence_notes.append("Some property inputs were inferred or proxy-derived instead of directly observed.")
 
     confidence = TrustDiagnosticsConfidence(
         tier=result.confidence_tier,
@@ -170,6 +178,7 @@ def build_trust_diagnostics(
         evidence_completeness=float(evidence_completeness or 0.0),
         fallback_heavy=fallback_heavy,
         missing_critical_fields=list(result.assessment_diagnostics.critical_inputs_missing or []),
+        inferred_fields=inferred_fields,
         notes=confidence_notes,
     )
 
@@ -348,4 +357,3 @@ def build_trust_diagnostics(
         distribution_context=distribution_context,
         explanations=explanations,
     )
-

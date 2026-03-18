@@ -688,6 +688,8 @@ This writes reproducible artifacts under `benchmark/no_ground_truth_evaluation/<
 - `summary.md`
 
 Use this as a directional model-quality check only. It does not claim predictive accuracy.
+Confidence diagnostics are evidence-quality signals: confidence should decrease as fallback, inferred/proxy,
+or missing critical evidence increases.
 
 See `docs/no_ground_truth_evaluation.md` for commands, caveats, and interpretation guidance.
 See `docs/api_diagnostics.md` for API opt-in diagnostics fields and caveats.

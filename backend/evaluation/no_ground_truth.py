@@ -823,6 +823,9 @@ def evaluate_confidence_diagnostics(
     confidence_scores: list[float] = []
     fallback_weights: list[float] = []
     observed_counts: list[float] = []
+    missing_critical_counts: list[float] = []
+    inferred_counts: list[float] = []
+    confidence_by_evidence_tier: dict[str, list[float]] = {}
     for scenario_id, snap in sorted(snapshots_by_id.items()):
         tier = str(_path_get(snap, "confidence.confidence_tier") or "unknown")
         tier_counts[tier] = tier_counts.get(tier, 0) + 1
@@ -831,11 +834,16 @@ def evaluate_confidence_diagnostics(
         metrics = snap.get("evidence_metrics") if isinstance(snap.get("evidence_metrics"), dict) else {}
         fallback_weight = _safe_float(metrics.get("fallback_weight_fraction")) or 0.0
         observed_features = _safe_float(metrics.get("observed_feature_count")) or 0.0
+        missing_critical = _safe_float(_path_get(snap, "confidence.missing_critical_fields_count")) or 0.0
+        inferred_fields = _safe_float(_path_get(snap, "confidence.inferred_fields_count")) or 0.0
         conf = _safe_float(_path_get(snap, "confidence.confidence_score"))
         if conf is not None:
             confidence_scores.append(conf)
             fallback_weights.append(fallback_weight)
             observed_counts.append(observed_features)
+            missing_critical_counts.append(missing_critical)
+            inferred_counts.append(inferred_fields)
+            confidence_by_evidence_tier.setdefault(group, []).append(conf)
         if tier in {"high", "moderate"} and (fallback_weight >= 0.5 or observed_features <= 2.0):
             overconfidence_flags.append(
                 {
@@ -844,6 +852,8 @@ def evaluate_confidence_diagnostics(
                     "confidence_score": conf,
                     "fallback_weight_fraction": fallback_weight,
                     "observed_feature_count": observed_features,
+                    "missing_critical_fields_count": missing_critical,
+                    "inferred_fields_count": inferred_fields,
                     "reason": "confidence_tier_high_relative_to_evidence",
                 }
             )
@@ -852,17 +862,41 @@ def evaluate_confidence_diagnostics(
         warnings.append("Potential overconfidence detected in fallback-heavy or sparse-evidence scenarios.")
     corr_fallback = _spearman(confidence_scores, fallback_weights)
     corr_observed = _spearman(confidence_scores, observed_counts)
+    corr_missing_critical = _spearman(confidence_scores, missing_critical_counts)
+    corr_inferred = _spearman(confidence_scores, inferred_counts)
     if isinstance(corr_fallback, (int, float)) and corr_fallback > 0.0:
         warnings.append("Confidence score increases with fallback weight in this sample; review gating.")
     if isinstance(corr_observed, (int, float)) and corr_observed < 0.0:
         warnings.append("Confidence score decreases with observed feature count in this sample; review gating.")
+    if isinstance(corr_missing_critical, (int, float)) and corr_missing_critical > 0.0:
+        warnings.append("Confidence score increases with missing critical field count; review confidence penalties.")
+    if isinstance(corr_inferred, (int, float)) and corr_inferred > 0.0:
+        warnings.append("Confidence score increases with inferred-field count; review confidence penalties.")
+    confidence_by_tier_summary = {
+        key: {
+            "count": len(values),
+            "mean_confidence_score": _mean(values),
+            "median_confidence_score": _median(values),
+        }
+        for key, values in confidence_by_evidence_tier.items()
+    }
+    missing_count_distribution: dict[str, int] = {}
+    for count in missing_critical_counts:
+        key = str(int(count))
+        missing_count_distribution[key] = missing_count_distribution.get(key, 0) + 1
     return {
         "record_count": len(snapshots_by_id),
         "confidence_tier_distribution": tier_counts,
         "fallback_group_distribution": fallback_group_counts,
+        "confidence_by_evidence_tier": confidence_by_tier_summary,
+        "missing_critical_field_count_distribution": missing_count_distribution,
+        "average_missing_critical_fields": _mean(missing_critical_counts),
+        "average_inferred_fields": _mean(inferred_counts),
         "overconfidence_flags": overconfidence_flags,
         "confidence_vs_fallback_weight_spearman": corr_fallback,
         "confidence_vs_observed_feature_count_spearman": corr_observed,
+        "confidence_vs_missing_critical_count_spearman": corr_missing_critical,
+        "confidence_vs_inferred_field_count_spearman": corr_inferred,
         "warnings": warnings,
         "status": "ok" if not warnings else "warn",
     }

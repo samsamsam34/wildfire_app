@@ -106,6 +106,7 @@ def test_diagnostics_included_when_flag_enabled(monkeypatch, tmp_path: Path) -> 
     assert "monotonicity" in diagnostics
     assert "benchmark_alignment" in diagnostics
     assert "distribution_context" in diagnostics
+    assert "inferred_fields" in diagnostics["confidence"]
 
 
 def test_missing_reference_artifacts_degrade_gracefully(monkeypatch, tmp_path: Path) -> None:

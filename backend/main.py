@@ -215,8 +215,8 @@ STRUCTURAL_SUBMODELS = [
 ]
 
 CORE_FACT_FIELDS = {"roof_type", "vent_type", "defensible_space_ft", "construction_year"}
-DIRECT_SOURCE_TYPES = {"observed", "footprint_derived"}
-INFERRED_SOURCE_TYPES = {"user_provided", "public_record_inferred"}
+DIRECT_SOURCE_TYPES = {"observed", "footprint_derived", "user_provided"}
+INFERRED_SOURCE_TYPES = {"public_record_inferred"}
 LOW_QUALITY_SOURCE_TYPES = {"missing", "heuristic"}
 
 FRESHNESS_POLICY_DEFAULTS_DAYS: dict[str, tuple[int, int]] = {
@@ -704,7 +704,10 @@ def _build_confidence(
     missing_inputs_set = set(assumptions.missing_inputs)
     important_missing = len([m for m in assumptions.missing_inputs if m in CORE_FACT_FIELDS or m.endswith("_layer")])
     missing_layer_count = len([m for m in assumptions.missing_inputs if m.endswith("_layer")])
-    inferred_count = len(assumptions.inferred_inputs)
+    inferred_count = max(
+        len(assumptions.inferred_inputs),
+        len((data_provenance.inferred_inputs_used if data_provenance else []) or []),
+    )
     observed_core_count = len(
         [k for k in CORE_FACT_FIELDS if assumptions.observed_inputs.get(k) is not None and k not in missing_inputs_set]
     )
@@ -755,76 +758,6 @@ def _build_confidence(
         or str(property_level_context.get("fallback_mode") or "") == "point_based"
     )
 
-    # Confidence intentionally weights multiple evidence classes so baseline runs with real
-    # geospatial context can be non-zero even before optional homeowner facts are confirmed.
-    core_quality_by_field: list[float] = []
-    for field in sorted(CORE_FACT_FIELDS):
-        if field in assumptions.confirmed_inputs and field not in missing_inputs_set:
-            core_quality_by_field.append(100.0)
-        elif assumptions.observed_inputs.get(field) is not None and field not in missing_inputs_set:
-            core_quality_by_field.append(78.0)
-        elif field in assumptions.inferred_inputs:
-            core_quality_by_field.append(52.0)
-        else:
-            core_quality_by_field.append(18.0)
-    structural_signal_score = (
-        round(sum(core_quality_by_field) / len(core_quality_by_field), 1)
-        if core_quality_by_field
-        else 0.0
-    )
-    property_context_score = 90.0 if has_ring_metrics else (68.0 if property_context_present else 35.0)
-
-    confidence = (
-        0.35 * environmental_data_completeness
-        + 0.20 * property_context_score
-        + 0.20 * structural_signal_score
-        + 0.15 * provider_health_score
-        + 0.10 * data_completeness_score
-    )
-
-    confidence -= max(0.0, (missing_layer_count - 1) * 3.5)
-    confidence -= max(0.0, (inferred_count - observed_core_count) * 1.8)
-    confidence -= min(12.0, stale_share * 0.2)
-    confidence -= critical_unknown_or_stale * 2.5
-    confidence -= min(6.0, heuristic_count * 1.2)
-    confidence += min(8.0, confirmed_core_count * 1.4)
-
-    has_meaningful_environment = environmental_data_completeness >= 25.0 or missing_layer_count <= 2
-    has_meaningful_property = has_ring_metrics or observed_core_count > 0 or confirmed_core_count > 0
-    if geocode_verified and has_meaningful_environment:
-        contextual_floor = min(
-            45.0,
-            6.0
-            + (0.22 * environmental_data_completeness)
-            + (6.0 if property_context_present else 0.0)
-            + (4.0 if has_ring_metrics else 0.0),
-        )
-        confidence = max(confidence, contextual_floor)
-
-    critical_near_structure_missing = (
-        not has_ring_metrics
-        and all(field in missing_inputs_set for field in {"roof_type", "vent_type", "defensible_space_ft"})
-    )
-    if critical_near_structure_missing:
-        confidence = min(confidence, 62.0)
-    if inferred_count >= 3:
-        confidence = min(confidence, 74.0)
-    if missing_layer_count >= 3:
-        confidence = min(confidence, 58.0)
-
-    if not geocode_verified or (not has_meaningful_environment and not has_meaningful_property):
-        confidence = 0.0
-
-    critical_missing_pair = {
-        "burn_probability_layer",
-        "defensible_space_ft",
-    }
-    if critical_missing_pair.issubset(missing_inputs_set):
-        confidence -= 6.0
-        confidence = min(confidence, 35.0)
-    elif "burn_probability_layer" in missing_inputs_set or "defensible_space_ft" in missing_inputs_set:
-        confidence -= 3.0
-
     preflight = dict(preflight or {})
     has_preflight = bool(preflight)
     output_state = str(
@@ -860,67 +793,185 @@ def _build_confidence(
         else regional_context_coverage_score
     )
     property_specificity_score = float(preflight.get("property_specificity_score") or 0.0)
+    missing_critical_fields_set: set[str] = {
+        missing
+        for missing in assumptions.missing_inputs
+        if missing in CORE_FACT_FIELDS
+        or missing.endswith("_layer")
+        or missing in {"geocode_verification", "building_footprint"}
+    }
+    inferred_critical_fields_set: set[str] = set()
+    if data_provenance:
+        for meta in data_provenance.inputs:
+            if meta.field_name not in CRITICAL_PROVENANCE_FIELDS:
+                continue
+            if meta.source_type in LOW_QUALITY_SOURCE_TYPES:
+                missing_critical_fields_set.add(meta.field_name)
+            elif meta.source_type in INFERRED_SOURCE_TYPES:
+                inferred_critical_fields_set.add(meta.field_name)
+    missing_critical_fields = sorted(missing_critical_fields_set)
+    inferred_critical_fields = sorted(inferred_critical_fields_set)
+
+    # Confidence is an evidence-quality score. It should rise with observed evidence
+    # and drop as fallback/inferred/missing signals become dominant.
+    core_quality_by_field: list[float] = []
+    for field in sorted(CORE_FACT_FIELDS):
+        if field in assumptions.confirmed_inputs and field not in missing_inputs_set:
+            core_quality_by_field.append(100.0)
+        elif assumptions.observed_inputs.get(field) is not None and field not in missing_inputs_set:
+            core_quality_by_field.append(82.0)
+        elif field in assumptions.inferred_inputs:
+            core_quality_by_field.append(52.0)
+        else:
+            core_quality_by_field.append(12.0)
+    structural_signal_score = (
+        round(sum(core_quality_by_field) / len(core_quality_by_field), 1)
+        if core_quality_by_field
+        else 0.0
+    )
+    geometry_signal_score = max(
+        0.0,
+        min(
+            100.0,
+            (geometry_quality_score * 100.0)
+            if geometry_quality_score > 0.0
+            else (88.0 if has_ring_metrics else (60.0 if property_context_present else 28.0)),
+        ),
+    )
+    regional_signal_score = max(
+        0.0,
+        min(
+            100.0,
+            max(
+                regional_context_coverage_score,
+                regional_enrichment_consumption_score,
+                environmental_data_completeness,
+            ),
+        ),
+    )
+    property_context_score = 92.0 if has_ring_metrics else (64.0 if property_context_present else 24.0)
+    observed_weight_pct = max(0.0, min(100.0, float(observed_weight_fraction) * 100.0))
+    confidence = (
+        0.32 * observed_weight_pct
+        + 0.20 * max(0.0, min(100.0, environmental_data_completeness))
+        + 0.18 * structural_signal_score
+        + 0.12 * geometry_signal_score
+        + 0.10 * regional_signal_score
+        + 0.08 * property_context_score
+    )
+
+    inferred_feature_count_effective = max(inferred_count, inferred_feature_count)
+    confidence -= min(36.0, len(missing_critical_fields) * 5.5)
+    confidence -= min(
+        45.0,
+        (fallback_weight_fraction * 42.0)
+        + (max(0, fallback_feature_count - observed_feature_count) * 0.8),
+    )
+    confidence -= min(
+        16.0,
+        (float(inferred_feature_count_effective) * 1.0)
+        + (float(len(inferred_critical_fields)) * 1.5),
+    )
+    confidence -= max(0.0, (missing_layer_count - 1) * 3.5)
+    confidence -= min(14.0, stale_share * 0.16)
+    confidence -= critical_unknown_or_stale * 2.5
+    confidence -= min(8.0, heuristic_count * 1.2)
+    confidence -= provider_error_count * 12.0
+    confidence -= provider_missing_count * 4.0
+    confidence += min(8.0, confirmed_core_count * 1.8)
+    if has_ring_metrics:
+        confidence += 4.0
+    if geocode_verified:
+        confidence += 2.0
+
+    has_meaningful_environment = environmental_data_completeness >= 25.0 or missing_layer_count <= 2
+    has_meaningful_property = has_ring_metrics or observed_core_count > 0 or confirmed_core_count > 0
+    if not geocode_verified or (not has_meaningful_environment and not has_meaningful_property):
+        confidence = 0.0
+
+    critical_near_structure_missing = (
+        not has_ring_metrics
+        and all(field in missing_inputs_set for field in {"roof_type", "vent_type", "defensible_space_ft"})
+    )
+    if critical_near_structure_missing:
+        confidence = min(confidence, 50.0)
+
+    # Fallback confidence cap is strictly decreasing with fallback share.
+    fallback_confidence_cap = max(18.0, 96.0 - (72.0 * fallback_weight_fraction))
+    confidence = min(confidence, fallback_confidence_cap)
+    if fallback_feature_count > observed_feature_count:
+        confidence = min(confidence, 45.0)
+
     if has_preflight:
         if coverage_percent <= 15.0:
-            confidence = min(confidence, 35.0)
+            confidence = min(confidence, 30.0)
         if missing_core_layer_count >= 4:
-            confidence = min(confidence, 42.0)
-        if major_env_missing_count >= 2:
-            confidence = min(confidence, 48.0)
-        if geometry_basis == "geocode_point":
-            confidence = min(confidence, 58.0)
-        if geometry_quality_score < 0.50:
-            confidence = min(confidence, 40.0)
-        elif geometry_quality_score < 0.62:
-            confidence = min(confidence, 48.0)
-        if regional_context_coverage_score < 50.0:
-            confidence = min(confidence, 44.0)
-        elif regional_context_coverage_score < 65.0:
-            confidence = min(confidence, 52.0)
-        if regional_enrichment_consumption_score < 50.0:
-            confidence = min(confidence, 44.0)
-        elif regional_enrichment_consumption_score < 65.0:
-            confidence = min(confidence, 54.0)
-        if property_specificity_score < 45.0:
-            confidence = min(confidence, 42.0)
-        elif property_specificity_score < 60.0:
-            confidence = min(confidence, 52.0)
-        if fallback_feature_count > observed_feature_count:
-            confidence = min(confidence, 48.0)
-        if float(fallback_dominance_ratio) >= 0.70:
-            confidence = min(confidence, 45.0)
-        if fallback_weight_fraction >= 0.72:
-            confidence = min(confidence, 42.0)
-        elif fallback_weight_fraction >= 0.60:
-            confidence = min(confidence, 50.0)
-        if float(observed_weight_fraction) < 0.45:
-            confidence = min(confidence, 50.0)
-        if region_readiness == "address_level_only":
-            confidence = min(confidence, 60.0)
-        elif region_readiness == "limited_regional_ready":
             confidence = min(confidence, 38.0)
-        if region_required_missing_count > 0:
-            confidence = min(confidence, 25.0)
-        if (region_optional_missing_count + region_enrichment_missing_count) >= 6:
+        if major_env_missing_count >= 2:
+            confidence = min(confidence, 44.0)
+        if geometry_basis == "geocode_point":
+            confidence = min(confidence, 54.0)
+        if geometry_quality_score < 0.50:
+            confidence = min(confidence, 38.0)
+        elif geometry_quality_score < 0.62:
+            confidence = min(confidence, 46.0)
+        if regional_context_coverage_score < 50.0:
+            confidence = min(confidence, 42.0)
+        elif regional_context_coverage_score < 65.0:
+            confidence = min(confidence, 50.0)
+        if regional_enrichment_consumption_score < 50.0:
+            confidence = min(confidence, 42.0)
+        elif regional_enrichment_consumption_score < 65.0:
             confidence = min(confidence, 52.0)
+        if property_specificity_score < 45.0:
+            confidence = min(confidence, 40.0)
+        elif property_specificity_score < 60.0:
+            confidence = min(confidence, 50.0)
+        if float(fallback_dominance_ratio) >= 0.70:
+            confidence = min(confidence, 40.0)
+        if fallback_weight_fraction >= 0.72:
+            confidence = min(confidence, 35.0)
+        elif fallback_weight_fraction >= 0.60:
+            confidence = min(confidence, 42.0)
+        elif fallback_weight_fraction >= 0.45:
+            confidence = min(confidence, 56.0)
+        if float(observed_weight_fraction) < 0.45:
+            confidence = min(confidence, 48.0)
+        if region_readiness == "address_level_only":
+            confidence = min(confidence, 56.0)
+        elif region_readiness == "limited_regional_ready":
+            confidence = min(confidence, 34.0)
+        if region_required_missing_count > 0:
+            confidence = min(confidence, 20.0)
+        if (region_optional_missing_count + region_enrichment_missing_count) >= 6:
+            confidence = min(confidence, 48.0)
         if output_state == "address_level_estimate":
-            confidence = min(confidence, 68.0)
+            confidence = min(confidence, 66.0)
         elif output_state == "limited_regional_estimate":
-            confidence = min(confidence, 45.0)
+            confidence = min(confidence, 42.0)
         elif output_state == "insufficient_data":
             confidence = 0.0
 
-    confidence = max(0.0, min(100.0, round(confidence, 1)))
+    if len(missing_critical_fields) >= 5:
+        confidence = min(confidence, 30.0)
+    elif len(missing_critical_fields) >= 3:
+        confidence = min(confidence, 44.0)
+    elif len(missing_critical_fields) >= 1:
+        confidence = min(confidence, 62.0)
 
-    missing_critical_fields = sorted(
-        {
-            missing
-            for missing in assumptions.missing_inputs
-            if missing in CORE_FACT_FIELDS
-            or missing.endswith("_layer")
-            or missing in {"geocode_verification", "building_footprint"}
-        }
-    )
+    critical_missing_pair = {
+        "burn_probability_layer",
+        "defensible_space_ft",
+    }
+    if critical_missing_pair.issubset(missing_inputs_set):
+        confidence = min(confidence - 6.0, 32.0)
+    elif "burn_probability_layer" in missing_inputs_set or "defensible_space_ft" in missing_inputs_set:
+        confidence -= 3.0
+
+    # Final directional guardrail: higher fallback share always reduces confidence.
+    confidence -= float(fallback_weight_fraction) * 6.0
+
+    confidence = max(0.0, min(100.0, round(confidence, 1)))
 
     confidence_drivers: list[str] = []
     confidence_limiters: list[str] = []
@@ -948,8 +999,14 @@ def _build_confidence(
 
     if missing_layer_count > 0:
         confidence_limiters.append(f"{missing_layer_count} environmental layer(s) missing or unavailable.")
-    if inferred_count > 0:
-        confidence_limiters.append(f"{inferred_count} core property input(s) are inferred.")
+    if inferred_feature_count_effective > 0:
+        confidence_limiters.append(
+            f"{inferred_feature_count_effective} property/scoring input(s) are inferred or proxy-derived."
+        )
+    if inferred_critical_fields:
+        confidence_limiters.append(
+            f"{len(inferred_critical_fields)} critical input(s) are inferred/proxy-derived."
+        )
     if not has_ring_metrics:
         confidence_limiters.append("Building footprint rings unavailable; using point-based property context.")
     if geometry_quality_score < 0.62:
@@ -972,8 +1029,10 @@ def _build_confidence(
         low_confidence_flags.append("At least one external provider or layer fetch failed")
     if environmental_data_completeness < 80:
         low_confidence_flags.append("Environmental layer coverage is incomplete")
-    if inferred_count >= 3:
-        low_confidence_flags.append("Several core property attributes were inferred")
+    if inferred_feature_count_effective >= 3:
+        low_confidence_flags.append("Several property/scoring inputs were inferred or proxy-derived")
+    if len(inferred_critical_fields) >= 2:
+        low_confidence_flags.append("Critical inputs include inferred/proxy evidence")
     if not geocode_verified:
         low_confidence_flags.append("Address geocoding was not provider-verified")
     if not property_level_context.get("footprint_used"):
@@ -1049,7 +1108,20 @@ def _build_confidence(
         or stale_share > 5.0
         or critical_unknown_or_stale > 0
         or heuristic_count > 1
+        or fallback_weight_fraction >= 0.45
+        or len(missing_critical_fields) > 0
+        or len(inferred_critical_fields) > 0
     ):
+        confidence_tier = "moderate"
+
+    if fallback_weight_fraction >= 0.60:
+        if confidence_tier in {"high", "moderate"}:
+            confidence_tier = "low"
+    elif fallback_weight_fraction >= 0.45 and confidence_tier == "high":
+        confidence_tier = "moderate"
+    if len(missing_critical_fields) >= 3:
+        confidence_tier = "preliminary"
+    elif len(missing_critical_fields) >= 1 and confidence_tier == "high":
         confidence_tier = "moderate"
 
     # Output-state caps prevent low-coverage runs from appearing overconfident.
@@ -1101,7 +1173,7 @@ def _build_confidence(
         environmental_data_present=environmental_data_present,
         property_context_present=property_context_present,
         confirmed_fields_count=len(assumptions.confirmed_inputs),
-        inferred_fields_count=inferred_count,
+        inferred_fields_count=inferred_feature_count_effective,
         missing_critical_fields=missing_critical_fields,
         confidence_drivers=sorted(set(confidence_drivers)),
         confidence_limiters=sorted(set(confidence_limiters)),

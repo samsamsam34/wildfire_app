@@ -57,4 +57,5 @@ Files:
 - Treat external-signal agreement as directional sanity checking only.
 - Use violations/warnings to prioritize data-quality and model-governance improvements.
 - Follow with labeled public-outcome validation and calibration when enough outcome data is available.
-
+- Confidence diagnostics are evidence-quality checks: confidence should increase with observed evidence
+  and decrease with fallback, inferred/proxy inputs, and missing critical fields.

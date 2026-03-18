@@ -715,6 +715,7 @@ class TrustDiagnosticsConfidence(BaseModel):
     evidence_completeness: float = 0.0
     fallback_heavy: bool = False
     missing_critical_fields: List[str] = Field(default_factory=list)
+    inferred_fields: List[str] = Field(default_factory=list)
     notes: List[str] = Field(default_factory=list)
 
 

@@ -5,6 +5,7 @@ from pathlib import Path
 from backend.evaluation.no_ground_truth import (
     build_no_ground_truth_summary_markdown,
     evaluate_counterfactual_groups,
+    evaluate_confidence_diagnostics,
     evaluate_monotonicity_rules,
     evaluate_stability,
 )
@@ -125,3 +126,47 @@ def test_orchestration_is_deterministic_with_fixed_run_id(tmp_path: Path) -> Non
     mono_2 = (output_root / "fixed_no_gt_run" / "monotonicity_results.json").read_text(encoding="utf-8")
     assert mono_1 == mono_2
     assert Path(first["summary_path"]).exists()
+
+
+def test_confidence_diagnostics_warn_on_backwards_fallback_relationship() -> None:
+    snapshots = {
+        "a": {
+            "confidence": {"confidence_score": 20.0, "confidence_tier": "low", "missing_critical_fields_count": 1, "inferred_fields_count": 1},
+            "evidence_metrics": {"fallback_weight_fraction": 0.2, "observed_feature_count": 8},
+        },
+        "b": {
+            "confidence": {"confidence_score": 50.0, "confidence_tier": "moderate", "missing_critical_fields_count": 2, "inferred_fields_count": 2},
+            "evidence_metrics": {"fallback_weight_fraction": 0.5, "observed_feature_count": 5},
+        },
+        "c": {
+            "confidence": {"confidence_score": 70.0, "confidence_tier": "high", "missing_critical_fields_count": 3, "inferred_fields_count": 3},
+            "evidence_metrics": {"fallback_weight_fraction": 0.8, "observed_feature_count": 2},
+        },
+    }
+    diag = evaluate_confidence_diagnostics(snapshots_by_id=snapshots)
+    assert diag["status"] == "warn"
+    assert any("increases with fallback weight" in row for row in diag["warnings"])
+    assert "confidence_by_evidence_tier" in diag
+    assert "missing_critical_field_count_distribution" in diag
+
+
+def test_confidence_diagnostics_pass_when_confidence_tracks_evidence_quality() -> None:
+    snapshots = {
+        "a": {
+            "confidence": {"confidence_score": 80.0, "confidence_tier": "high", "missing_critical_fields_count": 0, "inferred_fields_count": 0},
+            "evidence_metrics": {"fallback_weight_fraction": 0.1, "observed_feature_count": 10},
+        },
+        "b": {
+            "confidence": {"confidence_score": 58.0, "confidence_tier": "moderate", "missing_critical_fields_count": 1, "inferred_fields_count": 1},
+            "evidence_metrics": {"fallback_weight_fraction": 0.4, "observed_feature_count": 6},
+        },
+        "c": {
+            "confidence": {"confidence_score": 34.0, "confidence_tier": "low", "missing_critical_fields_count": 2, "inferred_fields_count": 2},
+            "evidence_metrics": {"fallback_weight_fraction": 0.7, "observed_feature_count": 2},
+        },
+    }
+    diag = evaluate_confidence_diagnostics(snapshots_by_id=snapshots)
+    assert diag["status"] == "ok"
+    assert not any("increases with fallback weight" in row for row in diag["warnings"])
+    assert not any("increases with missing critical field count" in row for row in diag["warnings"])
+    assert not any("increases with inferred-field count" in row for row in diag["warnings"])
