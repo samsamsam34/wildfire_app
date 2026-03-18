@@ -139,6 +139,9 @@ def test_artifact_loader_handles_missing_root(monkeypatch, tmp_path: Path) -> No
     monkeypatch.setenv("WF_NO_GROUND_TRUTH_EVAL_DIR", str(empty_root))
     listing = list_no_ground_truth_runs()
     assert listing["available"] is False
+    assert listing["artifact_root_exists"] is False
+    assert listing["run_directory_count"] == 0
+    assert "Checked artifact root" in str(listing.get("message") or "")
     bundle = load_no_ground_truth_run_bundle()
     assert bundle["available"] is False
     summary = build_no_ground_truth_health_summary(bundle)

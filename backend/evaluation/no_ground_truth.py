@@ -17,6 +17,10 @@ from backend.benchmarking import (
     patched_runtime_inputs,
 )
 from backend.models import AddressRequest
+from backend.no_ground_truth_paths import (
+    DEFAULT_NO_GROUND_TRUTH_ARTIFACT_ROOT,
+    DEFAULT_NO_GROUND_TRUTH_FIXTURE_PATH,
+)
 from backend.version import (
     API_VERSION,
     FACTOR_SCHEMA_VERSION,
@@ -27,8 +31,8 @@ from backend.version import (
 
 LOGGER = logging.getLogger(__name__)
 
-DEFAULT_FIXTURE_PATH = Path("benchmark") / "fixtures" / "no_ground_truth" / "scenario_pack_v1.json"
-DEFAULT_OUTPUT_ROOT = Path("benchmark") / "no_ground_truth_evaluation"
+DEFAULT_FIXTURE_PATH = DEFAULT_NO_GROUND_TRUTH_FIXTURE_PATH
+DEFAULT_OUTPUT_ROOT = DEFAULT_NO_GROUND_TRUTH_ARTIFACT_ROOT
 DEFAULT_EVAL_VERSION = "1.0.0"
 
 
@@ -1044,4 +1048,3 @@ def run_no_ground_truth_evaluation(
         "manifest_path": str(manifest_path),
         "summary_path": str(summary_path),
     }
-

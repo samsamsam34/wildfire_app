@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import json
-import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-DEFAULT_ARTIFACT_ROOT = Path("benchmark") / "no_ground_truth_evaluation"
+from backend.no_ground_truth_paths import resolve_no_ground_truth_artifact_root
+
+DEFAULT_ARTIFACT_ROOT = resolve_no_ground_truth_artifact_root()
 SECTION_FILES = {
     "monotonicity": "monotonicity_results.json",
     "counterfactual": "counterfactual_results.json",
@@ -61,10 +62,7 @@ def _extract_recommendations_from_markdown(text: str | None) -> list[str]:
 
 
 def resolve_artifact_root(path_hint: str | Path | None = None) -> Path:
-    hint = str(path_hint or os.getenv("WF_NO_GROUND_TRUTH_EVAL_DIR") or "").strip()
-    if hint:
-        return Path(hint).expanduser()
-    return DEFAULT_ARTIFACT_ROOT
+    return resolve_no_ground_truth_artifact_root(path_hint)
 
 
 def list_no_ground_truth_runs(
@@ -72,13 +70,19 @@ def list_no_ground_truth_runs(
     artifact_root: str | Path | None = None,
 ) -> dict[str, Any]:
     root = resolve_artifact_root(artifact_root)
-    if not root.exists() or not root.is_dir():
+    root_exists = root.exists()
+    is_dir = root.is_dir()
+    if not root_exists or not is_dir:
         return {
             "available": False,
             "artifact_root": str(root),
+            "artifact_root_exists": bool(root_exists),
+            "artifact_root_is_dir": bool(is_dir),
+            "run_directory_count": 0,
             "runs": [],
             "message": (
                 "No offline evaluation artifacts found yet. "
+                f"Checked artifact root: {root} (exists={root_exists}, is_dir={is_dir}). "
                 "Run `python scripts/run_no_ground_truth_evaluation.py` first."
             ),
         }
@@ -107,12 +111,24 @@ def list_no_ground_truth_runs(
         )
 
     runs.sort(key=lambda row: str(row.get("generated_at") or ""), reverse=True)
+    run_count = len(runs)
     return {
-        "available": bool(runs),
+        "available": bool(run_count),
         "artifact_root": str(root),
+        "artifact_root_exists": True,
+        "artifact_root_is_dir": True,
+        "run_directory_count": run_count,
         "runs": runs,
-        "latest_run_id": (runs[0]["run_id"] if runs else None),
-        "message": None if runs else "No run directories found in artifact root.",
+        "latest_run_id": (runs[0]["run_id"] if run_count else None),
+        "message": (
+            None
+            if run_count
+            else (
+                f"No run directories found in artifact root: {root}. "
+                f"Directory exists={root_exists}, run_directories_found={run_count}. "
+                "Run `python scripts/run_no_ground_truth_evaluation.py` to generate diagnostics artifacts."
+            )
+        ),
     }
 
 
