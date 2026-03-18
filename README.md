@@ -698,6 +698,14 @@ Interpretation guardrails:
 
 The model supports an optional, additive empirical calibration workflow using public structure-damage outcomes (for example CAL FIRE DINS-style datasets). The deterministic scoring engine remains the primary scorer.
 
+For the reproducible trust-validation bundle, use the single orchestrator:
+
+```bash
+python scripts/run_public_outcome_validation.py
+```
+
+This writes a full artifact bundle under `benchmark/public_outcome_validation/<timestamp>/`, including normalized outcomes, joined dataset, evaluation report, markdown summary, manifest, and optional calibration artifact.
+
 End-to-end workflow:
 
 ```bash
@@ -737,6 +745,7 @@ export WF_PUBLIC_CALIBRATION_ARTIFACT=config/public_outcome_calibration.json
 When enabled, `/risk/assess` and `/risk/debug` include calibration metadata (`calibration_status`, method/artifact metadata, and calibrated likelihood proxies) while preserving deterministic raw scores and evidence outputs.
 
 See `docs/public_outcome_calibration.md` for details and caveats.
+See `docs/public_outcome_validation.md` for the v1 reproducible validation workflow and guardrails.
 See `docs/calibration_gap_analysis.md` for the empirical-gap rationale behind this calibration step.
 
 ## Model Tuning

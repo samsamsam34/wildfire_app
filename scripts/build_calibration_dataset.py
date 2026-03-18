@@ -173,6 +173,10 @@ def build_calibration_dataset(
             evidence = evidence if isinstance(evidence, dict) else {}
             coverage = feature_row.get("coverage_summary")
             coverage = coverage if isinstance(coverage, dict) else {}
+            confidence = feature_row.get("confidence")
+            confidence = confidence if isinstance(confidence, dict) else {}
+            property_level_context = feature_row.get("property_level_context")
+            property_level_context = property_level_context if isinstance(property_level_context, dict) else {}
 
             row = {
                 "event_id": feature_row.get("event_id") or (matched or {}).get("event_id"),
@@ -189,6 +193,23 @@ def build_calibration_dataset(
                 "label_confidence": (matched or {}).get("label_confidence") or feature_row.get("label_confidence"),
                 "source_quality_flags": (matched or {}).get("source_quality_flags") or [],
                 "scores": _extract_scores(feature_row),
+                "confidence_tier": confidence.get("confidence_tier") or feature_row.get("confidence_tier"),
+                "confidence_score": _to_float(confidence.get("confidence_score")),
+                "use_restriction": confidence.get("use_restriction"),
+                "assessment_status": feature_row.get("assessment_status"),
+                "evidence_quality_tier": evidence.get("evidence_tier"),
+                "region_id": (
+                    property_level_context.get("resolved_region_id")
+                    or property_level_context.get("region_id")
+                ),
+                "property_level_context": {
+                    "region_id": property_level_context.get("region_id"),
+                    "resolved_region_id": property_level_context.get("resolved_region_id"),
+                    "geometry_basis": property_level_context.get("geometry_basis"),
+                    "final_structure_geometry_source": property_level_context.get("final_structure_geometry_source"),
+                },
+                "evidence_quality_summary": evidence,
+                "coverage_summary": coverage,
                 "raw_feature_vector": (
                     feature_row.get("raw_feature_vector")
                     if isinstance(feature_row.get("raw_feature_vector"), dict)
@@ -213,6 +234,7 @@ def build_calibration_dataset(
                     "inferred_factor_count": int(evidence.get("inferred_factor_count") or 0),
                     "coverage_failed_count": int(coverage.get("failed_count") or 0),
                     "coverage_fallback_count": int(coverage.get("fallback_count") or 0),
+                    "fallback_weight_fraction": _to_float(feature_row.get("fallback_weight_fraction")),
                 },
                 "feature_artifact_path": str(artifact_path),
                 "model_governance": feature_row.get("model_governance")

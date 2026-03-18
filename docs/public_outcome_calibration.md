@@ -33,6 +33,14 @@ Unknown/unusable labels are retained in normalized artifacts but excluded from c
 
 ## Workflow
 
+For a single reproducible run bundle, use:
+
+```bash
+python scripts/run_public_outcome_validation.py
+```
+
+This produces normalized outcomes, joined dataset, evaluation outputs, markdown summary, and manifest under `benchmark/public_outcome_validation/<timestamp>/`.
+
 ### 1) Normalize public outcome records
 
 ```bash
