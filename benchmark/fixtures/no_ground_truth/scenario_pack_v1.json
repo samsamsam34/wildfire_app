@@ -1,0 +1,616 @@
+{
+  "no_ground_truth_eval_version": "1.0.0",
+  "description": "Curated no-ground-truth trustworthiness fixture pack.",
+  "seed": 23,
+  "scenarios": [
+    {
+      "scenario_id": "mono_veg_low",
+      "description": "Lower near-structure vegetation baseline.",
+      "region": "synthetic_missoula",
+      "segments": ["wui", "forest_edge"],
+      "external_signals": {"fire_regime_index": 2.0, "hazard_zone_class": "moderate"},
+      "input_payload": {
+        "address": "101 Veg Low Ln, Synthetic, MT",
+        "attributes": {
+          "roof_type": "class a",
+          "vent_type": "ember-resistant",
+          "defensible_space_ft": 28,
+          "construction_year": 2016
+        },
+        "confirmed_fields": ["roof_type", "vent_type", "defensible_space_ft", "construction_year"],
+        "audience": "homeowner",
+        "tags": ["no-gt", "monotonicity"]
+      },
+      "location": {"lat": 46.88, "lon": -114.0, "geocode_source": "no-gt-fixture"},
+      "context": {
+        "burn_probability_index": 54.0,
+        "hazard_severity_index": 52.0,
+        "slope_index": 46.0,
+        "fuel_index": 48.0,
+        "moisture_index": 44.0,
+        "canopy_index": 49.0,
+        "historic_fire_index": 42.0,
+        "property_level_context": {
+          "footprint_used": true,
+          "fallback_mode": "footprint",
+          "geometry_basis": "footprint",
+          "structure_geometry_confidence": 0.9,
+          "ring_metrics": {
+            "ring_0_5_ft": {"vegetation_density": 18.0},
+            "ring_5_30_ft": {"vegetation_density": 24.0},
+            "ring_30_100_ft": {"vegetation_density": 33.0}
+          }
+        }
+      }
+    },
+    {
+      "scenario_id": "mono_veg_high",
+      "description": "Higher near-structure vegetation variant.",
+      "region": "synthetic_missoula",
+      "segments": ["wui", "forest_edge"],
+      "external_signals": {"fire_regime_index": 3.0, "hazard_zone_class": "high"},
+      "input_payload": {
+        "address": "102 Veg High Ln, Synthetic, MT",
+        "attributes": {
+          "roof_type": "class a",
+          "vent_type": "ember-resistant",
+          "defensible_space_ft": 28,
+          "construction_year": 2016
+        },
+        "confirmed_fields": ["roof_type", "vent_type", "defensible_space_ft", "construction_year"],
+        "audience": "homeowner",
+        "tags": ["no-gt", "monotonicity"]
+      },
+      "location": {"lat": 46.8808, "lon": -114.0012, "geocode_source": "no-gt-fixture"},
+      "context": {
+        "burn_probability_index": 54.0,
+        "hazard_severity_index": 52.0,
+        "slope_index": 46.0,
+        "fuel_index": 60.0,
+        "moisture_index": 44.0,
+        "canopy_index": 63.0,
+        "historic_fire_index": 42.0,
+        "property_level_context": {
+          "footprint_used": true,
+          "fallback_mode": "footprint",
+          "geometry_basis": "footprint",
+          "structure_geometry_confidence": 0.9,
+          "ring_metrics": {
+            "ring_0_5_ft": {"vegetation_density": 58.0},
+            "ring_5_30_ft": {"vegetation_density": 67.0},
+            "ring_30_100_ft": {"vegetation_density": 74.0}
+          }
+        }
+      }
+    },
+    {
+      "scenario_id": "mono_slope_low",
+      "description": "Lower slope baseline.",
+      "region": "synthetic_washington",
+      "segments": ["suburban", "interface"],
+      "external_signals": {"fire_regime_index": 1.5, "hazard_zone_class": "moderate"},
+      "input_payload": {
+        "address": "201 Slope Low Rd, Synthetic, WA",
+        "attributes": {
+          "roof_type": "composite",
+          "vent_type": "standard",
+          "defensible_space_ft": 20,
+          "construction_year": 2008
+        },
+        "confirmed_fields": ["roof_type", "vent_type", "defensible_space_ft"],
+        "audience": "homeowner",
+        "tags": ["no-gt", "monotonicity"]
+      },
+      "location": {"lat": 48.47, "lon": -120.2, "geocode_source": "no-gt-fixture"},
+      "context": {
+        "burn_probability_index": 36.0,
+        "hazard_severity_index": 39.0,
+        "slope_index": 22.0,
+        "fuel_index": 40.0,
+        "moisture_index": 46.0,
+        "canopy_index": 32.0,
+        "historic_fire_index": 28.0
+      }
+    },
+    {
+      "scenario_id": "mono_slope_high",
+      "description": "Higher slope variant.",
+      "region": "synthetic_washington",
+      "segments": ["suburban", "interface"],
+      "external_signals": {"fire_regime_index": 2.4, "hazard_zone_class": "high"},
+      "input_payload": {
+        "address": "202 Slope High Rd, Synthetic, WA",
+        "attributes": {
+          "roof_type": "composite",
+          "vent_type": "standard",
+          "defensible_space_ft": 20,
+          "construction_year": 2008
+        },
+        "confirmed_fields": ["roof_type", "vent_type", "defensible_space_ft"],
+        "audience": "homeowner",
+        "tags": ["no-gt", "monotonicity"]
+      },
+      "location": {"lat": 48.4709, "lon": -120.2011, "geocode_source": "no-gt-fixture"},
+      "context": {
+        "burn_probability_index": 36.0,
+        "hazard_severity_index": 39.0,
+        "slope_index": 74.0,
+        "fuel_index": 40.0,
+        "moisture_index": 46.0,
+        "canopy_index": 32.0,
+        "historic_fire_index": 28.0
+      }
+    },
+    {
+      "scenario_id": "mono_hardening_poor",
+      "description": "Combustible home with weak hardening.",
+      "region": "synthetic_nevada",
+      "segments": ["wui", "grassland"],
+      "external_signals": {"fire_regime_index": 3.2, "hazard_zone_class": "high"},
+      "input_payload": {
+        "address": "301 Hardening Poor Ave, Synthetic, NV",
+        "attributes": {
+          "roof_type": "wood",
+          "vent_type": "standard",
+          "defensible_space_ft": 6,
+          "construction_year": 1989
+        },
+        "confirmed_fields": ["roof_type", "vent_type", "defensible_space_ft"],
+        "audience": "homeowner",
+        "tags": ["no-gt", "monotonicity", "hardening"]
+      },
+      "location": {"lat": 36.22, "lon": -115.12, "geocode_source": "no-gt-fixture"},
+      "context": {
+        "burn_probability_index": 58.0,
+        "hazard_severity_index": 61.0,
+        "slope_index": 42.0,
+        "fuel_index": 65.0,
+        "moisture_index": 70.0,
+        "canopy_index": 44.0,
+        "historic_fire_index": 52.0
+      }
+    },
+    {
+      "scenario_id": "mono_hardening_improved",
+      "description": "Same setting with stronger hardening profile.",
+      "region": "synthetic_nevada",
+      "segments": ["wui", "grassland"],
+      "external_signals": {"fire_regime_index": 2.7, "hazard_zone_class": "moderate"},
+      "input_payload": {
+        "address": "302 Hardening Better Ave, Synthetic, NV",
+        "attributes": {
+          "roof_type": "class a",
+          "vent_type": "ember-resistant",
+          "defensible_space_ft": 35,
+          "construction_year": 2018
+        },
+        "confirmed_fields": ["roof_type", "vent_type", "defensible_space_ft", "construction_year"],
+        "audience": "homeowner",
+        "tags": ["no-gt", "monotonicity", "hardening"]
+      },
+      "location": {"lat": 36.2209, "lon": -115.1208, "geocode_source": "no-gt-fixture"},
+      "context": {
+        "burn_probability_index": 58.0,
+        "hazard_severity_index": 61.0,
+        "slope_index": 42.0,
+        "fuel_index": 65.0,
+        "moisture_index": 70.0,
+        "canopy_index": 44.0,
+        "historic_fire_index": 52.0
+      }
+    },
+    {
+      "scenario_id": "mono_conf_low_evidence",
+      "description": "Low evidence/fallback-heavy case.",
+      "region": "synthetic_missoula",
+      "segments": ["wui", "fallback_heavy"],
+      "external_signals": {"fire_regime_index": 2.8, "hazard_zone_class": "high"},
+      "input_payload": {
+        "address": "401 Sparse Evidence Way, Synthetic, MT",
+        "attributes": {
+          "roof_type": null,
+          "vent_type": null,
+          "defensible_space_ft": null,
+          "construction_year": null
+        },
+        "confirmed_fields": [],
+        "audience": "homeowner",
+        "selection_mode": "point",
+        "tags": ["no-gt", "confidence"]
+      },
+      "location": {"lat": 46.871, "lon": -113.998, "geocode_source": "no-gt-fixture"},
+      "context": {
+        "burn_probability_index": null,
+        "hazard_severity_index": null,
+        "slope_index": 52.0,
+        "fuel_index": 57.0,
+        "moisture_index": null,
+        "canopy_index": 59.0,
+        "historic_fire_index": null,
+        "environmental_layer_status": {
+          "burn_probability": "missing",
+          "hazard": "missing",
+          "slope": "ok",
+          "fuel": "ok",
+          "canopy": "ok",
+          "fire_history": "missing"
+        },
+        "property_level_context": {
+          "footprint_used": false,
+          "fallback_mode": "point_based",
+          "geometry_basis": "point",
+          "structure_geometry_confidence": 0.32
+        }
+      }
+    },
+    {
+      "scenario_id": "mono_conf_high_evidence",
+      "description": "Higher evidence profile with footprint geometry and enrichment.",
+      "region": "synthetic_missoula",
+      "segments": ["wui", "high_evidence"],
+      "external_signals": {"fire_regime_index": 2.8, "hazard_zone_class": "high"},
+      "input_payload": {
+        "address": "402 Strong Evidence Way, Synthetic, MT",
+        "attributes": {
+          "roof_type": "class a",
+          "vent_type": "ember-resistant",
+          "defensible_space_ft": 24,
+          "construction_year": 2014
+        },
+        "confirmed_fields": ["roof_type", "vent_type", "defensible_space_ft", "construction_year"],
+        "audience": "homeowner",
+        "selection_mode": "polygon",
+        "tags": ["no-gt", "confidence"]
+      },
+      "location": {"lat": 46.8724, "lon": -114.004, "geocode_source": "no-gt-fixture"},
+      "context": {
+        "burn_probability_index": 63.0,
+        "hazard_severity_index": 66.0,
+        "slope_index": 54.0,
+        "fuel_index": 60.0,
+        "moisture_index": 48.0,
+        "canopy_index": 57.0,
+        "historic_fire_index": 55.0,
+        "environmental_layer_status": {
+          "burn_probability": "ok",
+          "hazard": "ok",
+          "slope": "ok",
+          "fuel": "ok",
+          "canopy": "ok",
+          "fire_history": "ok"
+        },
+        "property_level_context": {
+          "footprint_used": true,
+          "fallback_mode": "footprint",
+          "geometry_basis": "footprint",
+          "structure_geometry_confidence": 0.91,
+          "ring_metrics": {
+            "ring_0_5_ft": {"vegetation_density": 36.0},
+            "ring_5_30_ft": {"vegetation_density": 43.0},
+            "ring_30_100_ft": {"vegetation_density": 49.0}
+          }
+        }
+      }
+    },
+    {
+      "scenario_id": "cf_wui_baseline",
+      "description": "Counterfactual baseline for mitigation sensitivity.",
+      "region": "synthetic_winthrop",
+      "segments": ["wui", "counterfactual"],
+      "external_signals": {"fire_regime_index": 3.4, "hazard_zone_class": "high"},
+      "input_payload": {
+        "address": "501 Counterfactual Base Rd, Synthetic, WA",
+        "attributes": {
+          "roof_type": "composite",
+          "vent_type": "standard",
+          "defensible_space_ft": 12,
+          "construction_year": 2002
+        },
+        "confirmed_fields": ["roof_type", "vent_type", "defensible_space_ft"],
+        "audience": "insurer",
+        "tags": ["no-gt", "counterfactual"]
+      },
+      "location": {"lat": 48.481, "lon": -120.182, "geocode_source": "no-gt-fixture"},
+      "context": {
+        "burn_probability_index": 71.0,
+        "hazard_severity_index": 75.0,
+        "slope_index": 61.0,
+        "fuel_index": 72.0,
+        "moisture_index": 57.0,
+        "canopy_index": 68.0,
+        "historic_fire_index": 66.0,
+        "property_level_context": {
+          "footprint_used": true,
+          "fallback_mode": "footprint",
+          "geometry_basis": "footprint",
+          "structure_geometry_confidence": 0.89,
+          "ring_metrics": {
+            "ring_0_5_ft": {"vegetation_density": 62.0},
+            "ring_5_30_ft": {"vegetation_density": 74.0},
+            "ring_30_100_ft": {"vegetation_density": 78.0}
+          }
+        }
+      }
+    },
+    {
+      "scenario_id": "cf_wui_remove_0_5_veg",
+      "description": "Mitigation variant removing immediate-zone vegetation.",
+      "region": "synthetic_winthrop",
+      "segments": ["wui", "counterfactual"],
+      "external_signals": {"fire_regime_index": 3.0, "hazard_zone_class": "high"},
+      "input_payload": {
+        "address": "502 Counterfactual 0-5 Rd, Synthetic, WA",
+        "attributes": {
+          "roof_type": "composite",
+          "vent_type": "standard",
+          "defensible_space_ft": 20,
+          "construction_year": 2002
+        },
+        "confirmed_fields": ["roof_type", "vent_type", "defensible_space_ft"],
+        "audience": "insurer",
+        "tags": ["no-gt", "counterfactual"]
+      },
+      "location": {"lat": 48.4813, "lon": -120.1824, "geocode_source": "no-gt-fixture"},
+      "context": {
+        "burn_probability_index": 71.0,
+        "hazard_severity_index": 75.0,
+        "slope_index": 61.0,
+        "fuel_index": 69.0,
+        "moisture_index": 57.0,
+        "canopy_index": 66.0,
+        "historic_fire_index": 66.0,
+        "property_level_context": {
+          "footprint_used": true,
+          "fallback_mode": "footprint",
+          "geometry_basis": "footprint",
+          "structure_geometry_confidence": 0.89,
+          "ring_metrics": {
+            "ring_0_5_ft": {"vegetation_density": 20.0},
+            "ring_5_30_ft": {"vegetation_density": 70.0},
+            "ring_30_100_ft": {"vegetation_density": 76.0}
+          }
+        }
+      }
+    },
+    {
+      "scenario_id": "cf_wui_reduce_5_30_veg",
+      "description": "Mitigation variant reducing 5-30ft vegetation.",
+      "region": "synthetic_winthrop",
+      "segments": ["wui", "counterfactual"],
+      "external_signals": {"fire_regime_index": 3.1, "hazard_zone_class": "high"},
+      "input_payload": {
+        "address": "503 Counterfactual 5-30 Rd, Synthetic, WA",
+        "attributes": {
+          "roof_type": "composite",
+          "vent_type": "standard",
+          "defensible_space_ft": 28,
+          "construction_year": 2002
+        },
+        "confirmed_fields": ["roof_type", "vent_type", "defensible_space_ft"],
+        "audience": "insurer",
+        "tags": ["no-gt", "counterfactual"]
+      },
+      "location": {"lat": 48.4817, "lon": -120.1831, "geocode_source": "no-gt-fixture"},
+      "context": {
+        "burn_probability_index": 71.0,
+        "hazard_severity_index": 75.0,
+        "slope_index": 61.0,
+        "fuel_index": 67.0,
+        "moisture_index": 57.0,
+        "canopy_index": 64.0,
+        "historic_fire_index": 66.0,
+        "property_level_context": {
+          "footprint_used": true,
+          "fallback_mode": "footprint",
+          "geometry_basis": "footprint",
+          "structure_geometry_confidence": 0.89,
+          "ring_metrics": {
+            "ring_0_5_ft": {"vegetation_density": 58.0},
+            "ring_5_30_ft": {"vegetation_density": 42.0},
+            "ring_30_100_ft": {"vegetation_density": 72.0}
+          }
+        }
+      }
+    },
+    {
+      "scenario_id": "cf_wui_upgrade_roof_and_vents",
+      "description": "Mitigation variant improving roof/vents.",
+      "region": "synthetic_winthrop",
+      "segments": ["wui", "counterfactual"],
+      "external_signals": {"fire_regime_index": 3.0, "hazard_zone_class": "high"},
+      "input_payload": {
+        "address": "504 Counterfactual Roof Vent Rd, Synthetic, WA",
+        "attributes": {
+          "roof_type": "class a",
+          "vent_type": "ember-resistant",
+          "defensible_space_ft": 12,
+          "construction_year": 2002
+        },
+        "confirmed_fields": ["roof_type", "vent_type", "defensible_space_ft"],
+        "audience": "insurer",
+        "tags": ["no-gt", "counterfactual"]
+      },
+      "location": {"lat": 48.4819, "lon": -120.1835, "geocode_source": "no-gt-fixture"},
+      "context": {
+        "burn_probability_index": 71.0,
+        "hazard_severity_index": 75.0,
+        "slope_index": 61.0,
+        "fuel_index": 72.0,
+        "moisture_index": 57.0,
+        "canopy_index": 68.0,
+        "historic_fire_index": 66.0,
+        "property_level_context": {
+          "footprint_used": true,
+          "fallback_mode": "footprint",
+          "geometry_basis": "footprint",
+          "structure_geometry_confidence": 0.89,
+          "ring_metrics": {
+            "ring_0_5_ft": {"vegetation_density": 62.0},
+            "ring_5_30_ft": {"vegetation_density": 74.0},
+            "ring_30_100_ft": {"vegetation_density": 78.0}
+          }
+        }
+      }
+    },
+    {
+      "scenario_id": "cf_wui_degrade_controls",
+      "description": "Negative-control variant with degraded hardening and defensible space.",
+      "region": "synthetic_winthrop",
+      "segments": ["wui", "counterfactual"],
+      "external_signals": {"fire_regime_index": 3.7, "hazard_zone_class": "very_high"},
+      "input_payload": {
+        "address": "505 Counterfactual Degrade Rd, Synthetic, WA",
+        "attributes": {
+          "roof_type": "wood",
+          "vent_type": "standard",
+          "defensible_space_ft": 4,
+          "construction_year": 1978
+        },
+        "confirmed_fields": ["roof_type", "vent_type", "defensible_space_ft"],
+        "audience": "insurer",
+        "tags": ["no-gt", "counterfactual"]
+      },
+      "location": {"lat": 48.4822, "lon": -120.1842, "geocode_source": "no-gt-fixture"},
+      "context": {
+        "burn_probability_index": 76.0,
+        "hazard_severity_index": 79.0,
+        "slope_index": 63.0,
+        "fuel_index": 74.0,
+        "moisture_index": 55.0,
+        "canopy_index": 71.0,
+        "historic_fire_index": 69.0,
+        "property_level_context": {
+          "footprint_used": true,
+          "fallback_mode": "footprint",
+          "geometry_basis": "footprint",
+          "structure_geometry_confidence": 0.89,
+          "ring_metrics": {
+            "ring_0_5_ft": {"vegetation_density": 66.0},
+            "ring_5_30_ft": {"vegetation_density": 78.0},
+            "ring_30_100_ft": {"vegetation_density": 82.0}
+          }
+        }
+      }
+    }
+  ],
+  "monotonicity_rules": [
+    {
+      "rule_id": "near_structure_vegetation_increase_non_decrease_risk",
+      "description": "Increasing near-structure vegetation should not reduce overall risk.",
+      "baseline": "mono_veg_low",
+      "variant": "mono_veg_high",
+      "metric": "scores.wildfire_risk_score",
+      "expected": "non_decrease",
+      "min_magnitude": 1.0
+    },
+    {
+      "rule_id": "slope_increase_non_decrease_site_hazard",
+      "description": "Higher slope should not reduce site hazard.",
+      "baseline": "mono_slope_low",
+      "variant": "mono_slope_high",
+      "metric": "scores.site_hazard_score",
+      "expected": "non_decrease",
+      "min_magnitude": 1.0
+    },
+    {
+      "rule_id": "hardening_improvement_non_increase_risk",
+      "description": "Improved hardening should not increase wildfire risk.",
+      "baseline": "mono_hardening_poor",
+      "variant": "mono_hardening_improved",
+      "metric": "scores.wildfire_risk_score",
+      "expected": "non_increase",
+      "min_magnitude": 0.5
+    },
+    {
+      "rule_id": "higher_evidence_non_decrease_confidence",
+      "description": "Higher evidence quality should not reduce confidence score.",
+      "baseline": "mono_conf_low_evidence",
+      "variant": "mono_conf_high_evidence",
+      "metric": "confidence.confidence_score",
+      "expected": "non_decrease",
+      "min_magnitude": 1.0
+    }
+  ],
+  "counterfactual_groups": [
+    {
+      "group_id": "wui_mitigation_group",
+      "description": "One-at-a-time mitigation changes around a high-risk WUI baseline.",
+      "baseline": "cf_wui_baseline",
+      "variants": [
+        {
+          "scenario_id": "cf_wui_remove_0_5_veg",
+          "intervention": "remove_vegetation_0_5_ft",
+          "expected": "risk_down"
+        },
+        {
+          "scenario_id": "cf_wui_reduce_5_30_veg",
+          "intervention": "reduce_vegetation_5_30_ft",
+          "expected": "risk_down"
+        },
+        {
+          "scenario_id": "cf_wui_upgrade_roof_and_vents",
+          "intervention": "upgrade_roof_and_vents",
+          "expected": "risk_down"
+        },
+        {
+          "scenario_id": "cf_wui_degrade_controls",
+          "intervention": "degrade_hardening_control",
+          "expected": "risk_up"
+        }
+      ]
+    }
+  ],
+  "stability_tests": [
+    {
+      "test_id": "stability_cf_wui_baseline",
+      "scenario_id": "cf_wui_baseline",
+      "jitter_meters": [8, 20],
+      "jitter_samples_per_radius": 2,
+      "continuous_perturbations": [
+        {"field": "slope_index", "delta": 2.0},
+        {"field": "fuel_index", "delta": 2.0},
+        {"field": "canopy_index", "delta": 2.0}
+      ],
+      "toggle_optional_attributes": ["driveway_access_notes", "inspection_notes"],
+      "fallback_variants": [
+        {
+          "name": "missing_hazard_and_burn",
+          "null_context_fields": ["burn_probability_index", "hazard_severity_index", "historic_fire_index"],
+          "environmental_layer_status": {
+            "burn_probability": "missing",
+            "hazard": "missing",
+            "fire_history": "missing"
+          }
+        }
+      ]
+    },
+    {
+      "test_id": "stability_high_evidence_profile",
+      "scenario_id": "mono_conf_high_evidence",
+      "jitter_meters": [8],
+      "jitter_samples_per_radius": 2,
+      "continuous_perturbations": [
+        {"field": "moisture_index", "delta": 2.0},
+        {"field": "burn_probability_index", "delta": 1.5}
+      ],
+      "toggle_optional_attributes": ["driveway_access_notes"]
+    }
+  ],
+  "benchmark_alignment_rules": [
+    {
+      "signal_key": "fire_regime_index",
+      "metric_path": "scores.wildfire_risk_score"
+    },
+    {
+      "signal_key": "hazard_zone_class",
+      "metric_path": "scores.site_hazard_score",
+      "signal_mapping": {
+        "low": 1,
+        "moderate": 2,
+        "high": 3,
+        "very_high": 4
+      }
+    }
+  ]
+}
+

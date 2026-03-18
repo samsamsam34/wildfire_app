@@ -657,6 +657,29 @@ Benchmark artifacts include aggregated governance metadata plus a `model_governa
 
 Use `POST /risk/debug?include_benchmark_hints=true` or `GET /report/{assessment_id}/export?include_benchmark_hints=true` to include lightweight benchmark resemblance and sanity-check hints in diagnostics/export output.
 
+## No-Ground-Truth Evaluation
+
+When outcome labels are sparse or unavailable, run the trustworthiness/coherence evaluation workflow:
+
+```bash
+python scripts/run_no_ground_truth_evaluation.py
+```
+
+This writes reproducible artifacts under `benchmark/no_ground_truth_evaluation/<run_id>/`:
+
+- `evaluation_manifest.json`
+- `monotonicity_results.json`
+- `counterfactual_results.json`
+- `stability_results.json`
+- `distribution_results.json`
+- `benchmark_alignment_results.json`
+- `confidence_diagnostics.json`
+- `summary.md`
+
+Use this as a directional model-quality check only. It does not claim predictive accuracy.
+
+See `docs/no_ground_truth_evaluation.md` for commands, caveats, and interpretation guidance.
+
 ## Event Backtesting
 
 For empirical validation against labeled wildfire outcomes, run the event backtest harness:
