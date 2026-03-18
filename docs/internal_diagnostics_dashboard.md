@@ -13,6 +13,14 @@ The internal dashboard helps teams:
 - compare risk/readiness outputs with trust metadata
 - identify unstable assumptions and strongest mitigation levers
 
+Model Health view highlights:
+
+- monotonicity checks with violation table
+- mitigation impact ranking and backwards/zero-impact flags
+- stability swing summaries (average/median/max) and unstable factors/tests
+- distribution spread and evidence-tier context
+- benchmark alignment summaries (signals, correlation/agreement, disagreement counts) with explicit caveats
+
 ## Route
 
 - `GET /internal/diagnostics`
@@ -91,4 +99,3 @@ python scripts/run_no_ground_truth_evaluation.py
 - Use Model Health to spot systematic issues (monotonicity violations, unstable tests, clustering).
 - Use Property Diagnostics for per-address confidence, sensitivity, and mitigation diagnostics.
 - Treat all outputs as internal decision-support diagnostics, not external performance claims.
-

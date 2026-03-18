@@ -37,7 +37,10 @@ def _write_run(root: Path, run_id: str, *, include_alignment: bool = True) -> Pa
         ),
         encoding="utf-8",
     )
-    (run_dir / "summary.md").write_text("# Sample Summary\n", encoding="utf-8")
+    (run_dir / "summary.md").write_text(
+        "# Sample Summary\n\n## Recommendation\n- prioritize larger fixture coverage\n- review instability outliers\n",
+        encoding="utf-8",
+    )
     (run_dir / "monotonicity_results.json").write_text(
         json.dumps(
             {
@@ -68,7 +71,16 @@ def _write_run(root: Path, run_id: str, *, include_alignment: bool = True) -> Pa
                 "status": "warn",
                 "test_count": 2,
                 "tests": [
-                    {"test_id": "s1", "max_abs_score_swing": 14.0, "confidence_tier_change_rate": 0.4}
+                    {
+                        "test_id": "s1",
+                        "max_abs_score_swing": 14.0,
+                        "mean_abs_score_swing": 8.0,
+                        "confidence_tier_change_rate": 0.4,
+                        "rows": [
+                            {"variant_type": "geocode_jitter", "wildfire_risk_score_delta": 4.0},
+                            {"variant_type": "fallback_assumption", "wildfire_risk_score_delta": 9.0},
+                        ],
+                    }
                 ],
                 "warnings": ["large swing"],
             }
@@ -110,6 +122,7 @@ def _write_run(root: Path, run_id: str, *, include_alignment: bool = True) -> Pa
                         {
                             "signal_key": "fire_regime_index",
                             "spearman_rank_correlation": 0.52,
+                            "bucket_agreement_ratio": 0.62,
                             "disagreement_cases": [{"scenario_id": "x"}],
                         }
                     ],
@@ -145,6 +158,11 @@ def test_artifact_loader_and_summary_with_fixture(monkeypatch, tmp_path: Path) -
     assert summary["available"] is True
     assert summary["monotonicity"]["failed_count"] == 1
     assert summary["stability"]["unstable_scenario_count"] == 1
+    assert summary["stability"]["average_score_swing"] is not None
+    assert summary["stability"]["top_unstable_factors"]
+    assert summary["benchmark_alignment"]["average_spearman_rank_correlation"] is not None
+    assert summary["benchmark_alignment"]["average_bucket_agreement_ratio"] is not None
+    assert summary["recommended_next_actions"]
 
 
 def test_internal_dashboard_endpoints_with_and_without_artifacts(monkeypatch, tmp_path: Path) -> None:
@@ -170,6 +188,8 @@ def test_internal_dashboard_endpoints_with_and_without_artifacts(monkeypatch, tm
     latest_body = latest_res.json()
     assert latest_body["available"] is True
     assert latest_body["summary"]["available"] is True
+    assert "average_score_swing" in latest_body["summary"]["stability"]
+    assert "average_spearman_rank_correlation" in latest_body["summary"]["benchmark_alignment"]
 
     section_missing = client.get("/internal/diagnostics/api/latest/benchmark_alignment")
     assert section_missing.status_code == 200
@@ -185,4 +205,4 @@ def test_internal_dashboard_page_contains_property_diagnostics_hooks() -> None:
     assert "include_diagnostics=true" in html
     assert "runPropertyDiagnostics" in html
     assert "Property Diagnostics Query" in html
-
+    assert "Benchmark / Distribution" in html

@@ -25,6 +25,41 @@ def _safe_load_json(path: Path) -> dict[str, Any] | None:
         return None
 
 
+def _mean(values: list[float]) -> float | None:
+    if not values:
+        return None
+    return sum(values) / float(len(values))
+
+
+def _median(values: list[float]) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    n = len(ordered)
+    mid = n // 2
+    if n % 2 == 1:
+        return ordered[mid]
+    return (ordered[mid - 1] + ordered[mid]) / 2.0
+
+
+def _extract_recommendations_from_markdown(text: str | None) -> list[str]:
+    if not text or not isinstance(text, str):
+        return []
+    lines = text.splitlines()
+    out: list[str] = []
+    in_recommendation = False
+    for line in lines:
+        raw = line.strip()
+        if raw.lower().startswith("## recommendation"):
+            in_recommendation = True
+            continue
+        if in_recommendation and raw.startswith("## "):
+            break
+        if in_recommendation and raw.startswith("- "):
+            out.append(raw[2:].strip())
+    return out
+
+
 def resolve_artifact_root(path_hint: str | Path | None = None) -> Path:
     hint = str(path_hint or os.getenv("WF_NO_GROUND_TRUTH_EVAL_DIR") or "").strip()
     if hint:
@@ -183,6 +218,7 @@ def build_no_ground_truth_health_summary(bundle: dict[str, Any]) -> dict[str, An
     distribution = _section_payload("distribution")
     alignment = _section_payload("benchmark_alignment")
     confidence = _section_payload("confidence_diagnostics")
+    summary_markdown = str(bundle.get("summary_markdown") or "")
 
     monotonicity_rows = mono.get("rows") if isinstance(mono.get("rows"), list) else []
     top_violations = [
@@ -221,6 +257,42 @@ def build_no_ground_truth_health_summary(bundle: dict[str, Any]) -> dict[str, An
         key=lambda row: float(row.get("max_abs_score_swing") or 0.0),
         reverse=True,
     )[:8]
+    stability_swing_values = [
+        float(row.get("mean_abs_score_swing") or 0.0)
+        for row in stability_tests
+        if isinstance(row, dict) and row.get("mean_abs_score_swing") is not None
+    ]
+    if not stability_swing_values:
+        stability_swing_values = [
+            float(row.get("max_abs_score_swing") or 0.0)
+            for row in stability_tests
+            if isinstance(row, dict) and row.get("max_abs_score_swing") is not None
+        ]
+    unstable_factor_map: dict[str, list[float]] = {}
+    for test in stability_tests:
+        if not isinstance(test, dict):
+            continue
+        rows = test.get("rows") if isinstance(test.get("rows"), list) else []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            key = str(row.get("variant_type") or "unknown").strip() or "unknown"
+            swing = abs(float(row.get("wildfire_risk_score_delta") or 0.0))
+            unstable_factor_map.setdefault(key, []).append(swing)
+    top_unstable_factors = sorted(
+        [
+            {
+                "factor": key,
+                "mean_abs_swing": _mean(values),
+                "max_abs_swing": max(values) if values else 0.0,
+                "sample_count": len(values),
+            }
+            for key, values in unstable_factor_map.items()
+            if values
+        ],
+        key=lambda row: float(row.get("mean_abs_swing") or 0.0),
+        reverse=True,
+    )[:8]
 
     alignment_rows = alignment.get("rows") if isinstance(alignment.get("rows"), list) else []
     disagreement_count = 0
@@ -234,6 +306,16 @@ def build_no_ground_truth_health_summary(bundle: dict[str, Any]) -> dict[str, An
         disagreements = row.get("disagreement_cases")
         if isinstance(disagreements, list):
             disagreement_count += len(disagreements)
+    spearman_values = [
+        float(row.get("spearman_rank_correlation"))
+        for row in alignment_rows
+        if isinstance(row, dict) and row.get("spearman_rank_correlation") is not None
+    ]
+    agreement_values = [
+        float(row.get("bucket_agreement_ratio"))
+        for row in alignment_rows
+        if isinstance(row, dict) and row.get("bucket_agreement_ratio") is not None
+    ]
 
     warnings: list[str] = []
     for name in ("monotonicity", "counterfactual", "stability", "distribution", "benchmark_alignment", "confidence_diagnostics"):
@@ -242,6 +324,8 @@ def build_no_ground_truth_health_summary(bundle: dict[str, Any]) -> dict[str, An
         section_warnings = payload.get("warnings") if isinstance(payload.get("warnings"), list) else []
         for warning in section_warnings[:5]:
             warnings.append(str(warning))
+
+    recommended_from_summary = _extract_recommendations_from_markdown(summary_markdown)
 
     return {
         "available": True,
@@ -271,8 +355,11 @@ def build_no_ground_truth_health_summary(bundle: dict[str, Any]) -> dict[str, An
         "stability": {
             "status": stability.get("status"),
             "test_count": stability.get("test_count"),
+            "average_score_swing": _mean(stability_swing_values),
+            "median_score_swing": _median(stability_swing_values),
             "unstable_scenario_count": len(unstable_tests),
             "top_unstable_tests": top_unstable,
+            "top_unstable_factors": top_unstable_factors,
             "warnings": (stability.get("warnings") if isinstance(stability.get("warnings"), list) else [])[:10],
         },
         "distribution": {
@@ -287,6 +374,8 @@ def build_no_ground_truth_health_summary(bundle: dict[str, Any]) -> dict[str, An
             "available": bool((sections.get("benchmark_alignment") or {}).get("available")),
             "signals_used": sorted(set(signals_used)),
             "rule_count": alignment.get("rule_count"),
+            "average_spearman_rank_correlation": _mean(spearman_values),
+            "average_bucket_agreement_ratio": _mean(agreement_values),
             "disagreement_review_count": disagreement_count,
             "warnings": (alignment.get("warnings") if isinstance(alignment.get("warnings"), list) else [])[:10],
             "caveat": "Benchmark alignment is a sanity check only and not ground-truth validation.",
@@ -298,6 +387,5 @@ def build_no_ground_truth_health_summary(bundle: dict[str, Any]) -> dict[str, An
             "fallback_group_distribution": confidence.get("fallback_group_distribution") or {},
             "warnings": (confidence.get("warnings") if isinstance(confidence.get("warnings"), list) else [])[:10],
         },
-        "recommended_next_actions": sorted(set(warnings))[:12],
+        "recommended_next_actions": sorted(set(recommended_from_summary + warnings))[:16],
     }
-

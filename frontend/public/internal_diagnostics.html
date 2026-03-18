@@ -547,13 +547,13 @@
               title: "Monotonicity Status",
               value: (summary.monotonicity || {}).status || "unknown",
               className: ((summary.monotonicity || {}).status === "ok" || (summary.monotonicity || {}).status === "pass") ? "good" : "warn",
-              detail: `${(summary.monotonicity || {}).checks_run ?? 0} checks`,
+              detail: `${(summary.monotonicity || {}).checks_run ?? 0} checks | ${(summary.monotonicity || {}).passed_count ?? 0} passed | ${(summary.monotonicity || {}).failed_count ?? 0} failed`,
             },
             {
               title: "Stability Status",
               value: (summary.stability || {}).status || "unknown",
               className: (summary.stability || {}).status === "ok" ? "good" : "warn",
-              detail: `${(summary.stability || {}).unstable_scenario_count ?? 0} unstable scenarios`,
+              detail: `avg swing ${Number((summary.stability || {}).average_score_swing || 0).toFixed(2)} | median ${Number((summary.stability || {}).median_score_swing || 0).toFixed(2)} | ${(summary.stability || {}).unstable_scenario_count ?? 0} unstable`,
             },
             {
               title: "Confidence Diagnostics",
@@ -565,7 +565,7 @@
               title: "Benchmark Alignment",
               value: (summary.benchmark_alignment || {}).available ? ((summary.benchmark_alignment || {}).status || "available") : "unavailable",
               className: (summary.benchmark_alignment || {}).available ? "warn" : "",
-              detail: "Sanity check only, not ground truth",
+              detail: `avg spearman ${Number((summary.benchmark_alignment || {}).average_spearman_rank_correlation || 0).toFixed(2)} | agreement ${Number((summary.benchmark_alignment || {}).average_bucket_agreement_ratio || 0).toFixed(2)}`,
             },
           ];
           renderCards("healthCards", cards);
@@ -611,14 +611,19 @@
             max_swing: row.max_abs_score_swing != null ? Number(row.max_abs_score_swing).toFixed(2) : "",
             tier_flip_rate: row.confidence_tier_change_rate != null ? `${(Number(row.confidence_tier_change_rate) * 100).toFixed(0)}%` : "",
           }));
+          const unstableFactorRows = ((summary.stability || {}).top_unstable_factors || []).map((row) => ({
+            test_id: row.factor || "",
+            max_swing: row.max_abs_swing != null ? Number(row.max_abs_swing).toFixed(2) : "",
+            tier_flip_rate: row.mean_abs_swing != null ? `mean ${Number(row.mean_abs_swing).toFixed(2)}` : "",
+          }));
           renderSimpleTable(
             "stabilityTable",
             [
-              { key: "test_id", label: "Test" },
+              { key: "test_id", label: "Test / Factor" },
               { key: "max_swing", label: "Max Score Swing" },
-              { key: "tier_flip_rate", label: "Tier Flip Rate" },
+              { key: "tier_flip_rate", label: "Tier Flip Rate / Mean Swing" },
             ],
-            unstableRows
+            unstableRows.length ? unstableRows : unstableFactorRows
           );
 
           const alignment = summary.benchmark_alignment || {};
@@ -627,7 +632,9 @@
               <div class="chips">${(alignment.signals_used || []).map((s) => `<span class="chip">${s}</span>`).join("")}</div>
               <p style="margin-top:0.55rem;">
                 Rule count: <strong>${alignment.rule_count ?? 0}</strong>,
-                disagreement reviews: <strong>${alignment.disagreement_review_count ?? 0}</strong>.
+                disagreement reviews: <strong>${alignment.disagreement_review_count ?? 0}</strong>,
+                avg Spearman: <strong>${alignment.average_spearman_rank_correlation != null ? Number(alignment.average_spearman_rank_correlation).toFixed(2) : "N/A"}</strong>,
+                avg agreement: <strong>${alignment.average_bucket_agreement_ratio != null ? Number(alignment.average_bucket_agreement_ratio).toFixed(2) : "N/A"}</strong>.
               </p>
               <div class="note-list">${(alignment.warnings || []).map((w) => `<div class="note">${w}</div>`).join("")}</div>
               <div class="note">${alignment.caveat || "Benchmark alignment is for sanity checks only."}</div>
@@ -690,6 +697,8 @@
 
       function renderPropertyCards(assessment, diagnostics) {
         const topIntervention = ((diagnostics.mitigation_sensitivity || {}).top_interventions || [])[0] || {};
+        const distributionContext = diagnostics.distribution_context || {};
+        const benchmarkContext = diagnostics.benchmark_alignment || {};
         const cards = [
           {
             title: "Wildfire Hazard",
@@ -727,12 +736,37 @@
             className: "",
             detail: topIntervention.estimated_risk_delta != null ? `Risk delta ${Number(topIntervention.estimated_risk_delta).toFixed(2)}` : "",
           },
+          {
+            title: "Monotonicity Status",
+            value: (diagnostics.monotonicity || {}).status || "unknown",
+            className: ((diagnostics.monotonicity || {}).status === "pass") ? "good" : "warn",
+            detail: `${((diagnostics.monotonicity || {}).violations || []).length} violation(s)`,
+          },
+          {
+            title: "Benchmark / Distribution",
+            value: benchmarkContext.available ? (benchmarkContext.local_alignment || "unknown") : "unavailable",
+            className: benchmarkContext.available ? "warn" : "",
+            detail: `Percentile ${distributionContext.relative_risk_percentile != null ? Number(distributionContext.relative_risk_percentile).toFixed(1) : "N/A"} | evidence ${(distributionContext.segment || {}).evidence_tier || "unknown"}`,
+          },
         ];
         renderCards("propertyCards", cards);
       }
 
       function renderPropertyDetails(assessment, diagnostics, raw) {
+        const confidence = diagnostics.confidence || {};
+        const topIntervention = ((diagnostics.mitigation_sensitivity || {}).top_interventions || [])[0] || {};
+        const confidenceReason =
+          confidence.tier === "high"
+            ? "Confidence is high based on current observed evidence coverage."
+            : `Confidence is ${confidence.tier || "unknown"} because ${((confidence.notes || [])[0] || "some required evidence is inferred or missing").toLowerCase()}.`;
+        const improvementReason = topIntervention.name
+          ? `${topIntervention.name} appears to be the strongest modeled mitigation lever for this property run.`
+          : "No strong mitigation lever was identified from the available diagnostics sample.";
+        const sensitivityReason = (diagnostics.stability || {}).rating
+          ? `This result is ${(diagnostics.stability || {}).rating} to small input/location perturbations.`
+          : "Local sensitivity is not available for this run.";
         const explanations = []
+          .concat([confidenceReason, improvementReason, sensitivityReason])
           .concat(diagnostics.explanations || [])
           .concat((diagnostics.confidence || {}).notes || [])
           .concat((diagnostics.stability || {}).notes || [])
@@ -764,7 +798,8 @@
         const warnings = []
           .concat((diagnostics.mitigation_sensitivity || {}).backwards_or_zero_impact_flags || [])
           .concat((diagnostics.monotonicity || {}).violations || [])
-          .concat((diagnostics.stability || {}).notes || []);
+          .concat((diagnostics.stability || {}).notes || [])
+          .concat((diagnostics.distribution_context || {}).notes || []);
         renderNotes(
           "propertyWarnings",
           warnings.length ? warnings.map((w) => `- ${w}`) : ["No critical monotonicity/stability warnings for this property run."]
@@ -813,4 +848,3 @@
     </script>
   </body>
 </html>
-
