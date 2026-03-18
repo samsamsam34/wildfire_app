@@ -151,6 +151,16 @@ def build_wildfire_context(overrides: dict[str, Any] | None = None) -> WildfireC
     payload = default_wildfire_context_dict()
     if overrides:
         payload = _deep_update(payload, overrides)
+    property_level = payload.get("property_level_context") if isinstance(payload.get("property_level_context"), dict) else {}
+    property_ring_metrics = property_level.get("ring_metrics") if isinstance(property_level.get("ring_metrics"), dict) else {}
+    structure_ring_metrics = payload.get("structure_ring_metrics") if isinstance(payload.get("structure_ring_metrics"), dict) else {}
+    # Keep ring metrics synchronized across both context locations so fixtures
+    # can provide either form without silently falling back to defaults.
+    if property_ring_metrics:
+        payload["structure_ring_metrics"] = property_ring_metrics
+    elif structure_ring_metrics and isinstance(property_level, dict):
+        property_level["ring_metrics"] = structure_ring_metrics
+        payload["property_level_context"] = property_level
     return WildfireContext(**payload)
 
 

@@ -1388,6 +1388,58 @@ def test_higher_near_structure_vegetation_does_not_reduce_site_hazard(monkeypatc
     _setup(monkeypatch, tmp_path, _ctx(env=50.0, wildland=50.0, historic=45.0, ring_metrics=high_ring))
     high = _run(_payload("High Near Veg", attrs))
     assert high["site_hazard_score"] >= low["site_hazard_score"]
+    assert high["wildfire_risk_score"] >= low["wildfire_risk_score"] + 1.0
+
+
+def test_0_5_ft_vegetation_mitigation_has_meaningful_delta():
+    attrs = PropertyAttributes(
+        roof_type="class a",
+        vent_type="ember-resistant",
+        defensible_space_ft=20,
+        construction_year=2014,
+    )
+    baseline_ring = {
+        "ring_0_5_ft": {"vegetation_density": 78.0},
+        "ring_5_30_ft": {"vegetation_density": 78.0},
+        "ring_30_100_ft": {"vegetation_density": 74.0},
+        "ring_100_300_ft": {"vegetation_density": 70.0},
+    }
+    mitigate_0_5_ring = {
+        "ring_0_5_ft": {"vegetation_density": 22.0},
+        "ring_5_30_ft": {"vegetation_density": 78.0},
+        "ring_30_100_ft": {"vegetation_density": 74.0},
+        "ring_100_300_ft": {"vegetation_density": 70.0},
+    }
+    mitigate_5_30_ring = {
+        "ring_0_5_ft": {"vegetation_density": 78.0},
+        "ring_5_30_ft": {"vegetation_density": 34.0},
+        "ring_30_100_ft": {"vegetation_density": 74.0},
+        "ring_100_300_ft": {"vegetation_density": 70.0},
+    }
+
+    def _overall(ctx: WildfireContext) -> tuple[float, float]:
+        risk = app_main.risk_engine.score(attrs, 39.7392, -104.9903, ctx)
+        site = app_main.risk_engine.compute_site_hazard_score(risk)
+        home = app_main.risk_engine.compute_home_ignition_vulnerability_score(risk)
+        readiness = app_main.risk_engine.compute_insurance_readiness(attrs, ctx, risk).insurance_readiness_score
+        total = app_main.risk_engine.compute_blended_wildfire_score(site, home, readiness, risk)
+        return total, readiness
+
+    baseline_total, baseline_readiness = _overall(_ctx(env=60.0, wildland=60.0, historic=54.0, ring_metrics=baseline_ring))
+    mitigated_0_5_total, mitigated_0_5_readiness = _overall(
+        _ctx(env=60.0, wildland=60.0, historic=54.0, ring_metrics=mitigate_0_5_ring)
+    )
+    mitigated_5_30_total, mitigated_5_30_readiness = _overall(
+        _ctx(env=60.0, wildland=60.0, historic=54.0, ring_metrics=mitigate_5_30_ring)
+    )
+
+    delta_0_5 = baseline_total - mitigated_0_5_total
+    delta_5_30 = baseline_total - mitigated_5_30_total
+    assert delta_0_5 >= 1.5
+    assert delta_5_30 > 0.0
+    assert delta_0_5 >= delta_5_30
+    assert mitigated_0_5_readiness > baseline_readiness
+    assert mitigated_5_30_readiness > baseline_readiness
 
 
 def test_geocoding_failure_does_not_use_synthetic_coordinate_fallback(monkeypatch, tmp_path):

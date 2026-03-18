@@ -840,6 +840,8 @@ Fallback hierarchy is deterministic and explicit:
 Near-structure defensible-space behavior:
 - Preferred geometry basis: building footprint rings (`0-5 ft`, `5-30 ft`, `30-100 ft`, `100-300 ft`).
 - Fallback geometry basis: point-proxy annulus sampling when footprint geometry is unavailable.
+- Scoring emphasis: dense vegetation in `0-5 ft` is weighted more strongly than wider rings in ignition/vulnerability logic, while `5-30 ft` remains a secondary spread-pressure signal.
+- Mitigation sensitivity: clearing the `0-5 ft` zone is expected to produce a larger risk reduction than equivalent `5-30 ft` thinning in otherwise similar conditions.
 - New response fields:
   - `defensible_space_analysis` (zone metrics, basis geometry, mitigation flags, quality)
   - `top_near_structure_risk_drivers`

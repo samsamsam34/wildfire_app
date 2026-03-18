@@ -34,14 +34,14 @@ class ScoringConfig:
     )
     vulnerability_ring_penalties: Dict[str, Dict[str, float]] = field(
         default_factory=lambda: {
-            "zone_0_5_ft": {"threshold": 55.0, "slope": 0.18},
-            "zone_5_30_ft": {"threshold": 60.0, "slope": 0.12},
+            "zone_0_5_ft": {"threshold": 50.0, "slope": 0.30},
+            "zone_5_30_ft": {"threshold": 58.0, "slope": 0.16},
             "zone_30_100_ft": {"threshold": 65.0, "slope": 0.08},
             "nearest_vegetation_distance_ft": {
                 "critical_max_ft": 5.0,
                 "watch_max_ft": 15.0,
-                "critical_penalty": 6.0,
-                "watch_penalty": 3.0,
+                "critical_penalty": 7.0,
+                "watch_penalty": 3.5,
             },
         }
     )
@@ -58,6 +58,10 @@ class ScoringConfig:
             "fuel_watch": 8.0,
             "vegetation_fail": 14.0,
             "vegetation_watch": 7.0,
+            "immediate_zone_0_5_fail": 8.5,
+            "immediate_zone_0_5_watch": 4.0,
+            "intermediate_zone_5_30_fail": 5.0,
+            "intermediate_zone_5_30_watch": 2.5,
             "severe_env_fail": 12.0,
             "severe_env_watch": 6.0,
         }
@@ -87,10 +91,10 @@ class ScoringConfig:
             "ember_exposure_watch_score": 65.0,
             "severe_environment_fail_score": 85.0,
             "severe_environment_watch_score": 70.0,
-            "zone_0_5_fail_density": 60.0,
-            "zone_0_5_watch_density": 45.0,
-            "zone_5_30_fail_density": 70.0,
-            "zone_5_30_watch_density": 55.0,
+            "zone_0_5_fail_density": 55.0,
+            "zone_0_5_watch_density": 40.0,
+            "zone_5_30_fail_density": 68.0,
+            "zone_5_30_watch_density": 52.0,
         }
     )
     risk_bucket_thresholds: Dict[str, float] = field(

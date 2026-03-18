@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from backend.benchmarking import build_wildfire_context
 from backend.evaluation.no_ground_truth import (
     build_no_ground_truth_summary_markdown,
     evaluate_counterfactual_groups,
@@ -170,3 +171,18 @@ def test_confidence_diagnostics_pass_when_confidence_tracks_evidence_quality() -
     assert not any("increases with fallback weight" in row for row in diag["warnings"])
     assert not any("increases with missing critical field count" in row for row in diag["warnings"])
     assert not any("increases with inferred-field count" in row for row in diag["warnings"])
+
+
+def test_build_wildfire_context_syncs_property_ring_metrics_to_structure_ring_metrics() -> None:
+    context = build_wildfire_context(
+        {
+            "property_level_context": {
+                "ring_metrics": {
+                    "ring_0_5_ft": {"vegetation_density": 12.0},
+                    "ring_5_30_ft": {"vegetation_density": 28.0},
+                }
+            }
+        }
+    )
+    assert context.structure_ring_metrics["ring_0_5_ft"]["vegetation_density"] == 12.0
+    assert context.structure_ring_metrics["ring_5_30_ft"]["vegetation_density"] == 28.0
