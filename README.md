@@ -101,6 +101,8 @@ Review and operations:
 - annotations, review status, assignment, workflow, comparison, scenario history
 - organizations and underwriting rulesets
 - audit and summary endpoints (`/audit/events`, `/admin/summary`)
+- internal diagnostics dashboard: `GET /internal/diagnostics` (internal trust metadata view)
+- internal diagnostics APIs: `/internal/diagnostics/api/*`
 
 Diagnostics opt-in note:
 - `include_diagnostics=true` returns an envelope with:
@@ -270,6 +272,7 @@ Common runtime settings:
 - `WF_REGION_PREP_VALIDATE`, `WF_REGION_PREP_REQUIRE_CORE_LAYERS`, `WF_REGION_PREP_SKIP_OPTIONAL_LAYERS` (queued prep behavior)
 - `WILDFIRE_SCORING_PARAMETERS_PATH` (optional scoring/tuning parameter file, default `config/scoring_parameters.yaml`)
 - `WF_TRUST_REFERENCE_ARTIFACT_DIR` (optional directory with precomputed no-ground-truth diagnostics artifacts for API percentile/alignment context)
+- `WF_NO_GROUND_TRUTH_EVAL_DIR` (optional root for offline no-ground-truth evaluation runs used by internal dashboard APIs)
 - Optional open-data runtime sources:
   - `WF_LAYER_WHP_TIF`
   - `WF_LAYER_MTBS_SEVERITY_TIF`
@@ -688,6 +691,7 @@ Use this as a directional model-quality check only. It does not claim predictive
 
 See `docs/no_ground_truth_evaluation.md` for commands, caveats, and interpretation guidance.
 See `docs/api_diagnostics.md` for API opt-in diagnostics fields and caveats.
+See `docs/internal_diagnostics_dashboard.md` for internal dashboard usage and caveats.
 
 ## Event Backtesting
 

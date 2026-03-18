@@ -9,6 +9,7 @@ import os
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, Iterable
 from uuid import uuid4
 
@@ -40,6 +41,12 @@ from backend.homeowner_advisor import (
     prioritize_mitigation_actions,
 )
 from backend.homeowner_report import build_homeowner_report, render_homeowner_report_pdf
+from backend.internal_diagnostics_artifacts import (
+    SECTION_FILES,
+    build_no_ground_truth_health_summary,
+    list_no_ground_truth_runs,
+    load_no_ground_truth_run_bundle,
+)
 from backend.layer_diagnostics import LAYER_SPECS
 from backend.mitigation import build_mitigation_plan
 from backend.models import (
@@ -10747,6 +10754,115 @@ def layer_diagnostics(payload: AddressRequest, ctx: ActorContext = Depends(get_a
             ),
         },
         "warnings": debug_payload.get("coverage_summary", {}).get("recommended_actions", []),
+    }
+
+
+def _internal_diagnostics_html_path() -> Path:
+    return Path(__file__).resolve().parents[1] / "frontend" / "public" / "internal_diagnostics.html"
+
+
+@app.get("/internal/diagnostics", response_class=HTMLResponse, dependencies=[Depends(require_api_key)])
+def internal_diagnostics_page(_: ActorContext = Depends(get_actor_context)) -> HTMLResponse:
+    path = _internal_diagnostics_html_path()
+    if not path.exists():
+        return HTMLResponse(
+            "<h1>Internal diagnostics page not found.</h1>"
+            "<p>Create frontend/public/internal_diagnostics.html or rebuild frontend assets.</p>",
+            status_code=404,
+        )
+    return HTMLResponse(path.read_text(encoding="utf-8"))
+
+
+@app.get("/internal/diagnostics/api/runs", dependencies=[Depends(require_api_key)])
+def internal_diagnostics_runs(_: ActorContext = Depends(get_actor_context)) -> dict[str, Any]:
+    return list_no_ground_truth_runs()
+
+
+@app.get("/internal/diagnostics/api/latest", dependencies=[Depends(require_api_key)])
+def internal_diagnostics_latest(_: ActorContext = Depends(get_actor_context)) -> dict[str, Any]:
+    bundle = load_no_ground_truth_run_bundle()
+    summary = build_no_ground_truth_health_summary(bundle)
+    return {
+        "available": bool(bundle.get("available")),
+        "run_id": bundle.get("run_id"),
+        "artifact_root": bundle.get("artifact_root"),
+        "summary": summary,
+        "sections_available": {
+            key: bool(((bundle.get("sections") or {}).get(key) or {}).get("available"))
+            for key in SECTION_FILES.keys()
+        },
+        "message": bundle.get("message"),
+    }
+
+
+@app.get("/internal/diagnostics/api/run/{run_id}", dependencies=[Depends(require_api_key)])
+def internal_diagnostics_run(
+    run_id: str,
+    _: ActorContext = Depends(get_actor_context),
+) -> dict[str, Any]:
+    bundle = load_no_ground_truth_run_bundle(run_id=run_id)
+    summary = build_no_ground_truth_health_summary(bundle)
+    return {
+        "available": bool(bundle.get("available")),
+        "run_id": bundle.get("run_id"),
+        "artifact_root": bundle.get("artifact_root"),
+        "summary": summary,
+        "sections_available": {
+            key: bool(((bundle.get("sections") or {}).get(key) or {}).get("available"))
+            for key in SECTION_FILES.keys()
+        },
+        "message": bundle.get("message"),
+    }
+
+
+@app.get("/internal/diagnostics/api/latest/{section_key}", dependencies=[Depends(require_api_key)])
+def internal_diagnostics_latest_section(
+    section_key: str,
+    _: ActorContext = Depends(get_actor_context),
+) -> dict[str, Any]:
+    normalized = str(section_key or "").strip().lower()
+    if normalized not in SECTION_FILES:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "message": "Unknown diagnostics section.",
+                "valid_sections": sorted(SECTION_FILES.keys()),
+            },
+        )
+    bundle = load_no_ground_truth_run_bundle()
+    section = ((bundle.get("sections") or {}).get(normalized) or {}) if isinstance(bundle.get("sections"), dict) else {}
+    return {
+        "available": bool(section.get("available")),
+        "run_id": bundle.get("run_id"),
+        "section": normalized,
+        "payload": section.get("payload") if bool(section.get("available")) else None,
+        "message": section.get("message") or bundle.get("message"),
+    }
+
+
+@app.get("/internal/diagnostics/api/run/{run_id}/{section_key}", dependencies=[Depends(require_api_key)])
+def internal_diagnostics_run_section(
+    run_id: str,
+    section_key: str,
+    _: ActorContext = Depends(get_actor_context),
+) -> dict[str, Any]:
+    normalized = str(section_key or "").strip().lower()
+    if normalized not in SECTION_FILES:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "message": "Unknown diagnostics section.",
+                "valid_sections": sorted(SECTION_FILES.keys()),
+            },
+        )
+    bundle = load_no_ground_truth_run_bundle(run_id=run_id)
+    section = ((bundle.get("sections") or {}).get(normalized) or {}) if isinstance(bundle.get("sections"), dict) else {}
+    return {
+        "available": bool(section.get("available")),
+        "run_id": bundle.get("run_id"),
+        "section": normalized,
+        "payload": section.get("payload") if bool(section.get("available")) else None,
+        "message": section.get("message") or bundle.get("message"),
     }
 
 
