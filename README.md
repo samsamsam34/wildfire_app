@@ -165,9 +165,13 @@ Key response blocks:
 - `feature_bundle_data_sources`: simplified source map used by homeowner/debug surfaces (e.g., building footprint, parcel, vegetation, roads, climate)
 - `feature_bundle_summary.coverage_metrics`: observed/inferred/fallback/missing feature counts plus
   `observed_weight_fraction`, `fallback_dominance_ratio`, `structure_geometry_quality_score`,
-  `environmental_layer_coverage_score`, and `property_specificity_score`
+  `environmental_layer_coverage_score`, `regional_enrichment_consumption_score`,
+  and `property_specificity_score`
 - `feature_bundle_summary.geometry_provenance`: anchor quality (`property_anchor_quality`), anchor method,
   structure selection method, and geometry basis provenance
+- `feature_bundle_summary.enrichment_runtime_status`: per-layer runtime classification
+  (`not_configured`, `configured_but_fetch_failed`, `configured_but_no_coverage`,
+  `present_but_not_consumed`, `present_and_consumed`)
 
 `coverage_status` interpretation:
 - `observed`: sampled successfully
@@ -275,6 +279,8 @@ Common runtime settings:
 - Building-source selection:
   - `WF_BUILDING_SOURCE_PRIORITY` (default: `building_footprints_overture,building_footprints_microsoft,building_footprints,fema_structures`)
   - `WF_OVERTURE_BUILDINGS_VERSION` (optional version tag shown in debug metadata)
+  - `WF_POINT_SELECTION_USE_PARCEL_CONTEXT` (default `true`; when true, point-selected structure matching uses parcel association if available)
+  - `WF_NAIP_FEATURE_MATCH_MAX_DISTANCE_M` (default `45`; max nearest-centroid NAIP feature fallback distance)
 - Runtime enrichment fallback source hooks (optional, file-path based):
   - `WF_ENRICH_OVERTURE_BUILDINGS_PATH`, `WF_ENRICH_MICROSOFT_BUILDINGS_PATH`
   - `WF_ENRICH_PARCELS_PATH`, `WF_ENRICH_ADDRESS_POINTS_PATH`
@@ -865,6 +871,8 @@ After a successful assessment, the frontend shows a map card with property and w
     `matched_structure_centroid` (high-confidence only) or `property_anchor_point`
   - selection fallback fields include `selection_mode`, `final_structure_geometry_source`,
     `structure_geometry_confidence`, and `snapped_structure_distance_m`
+  - point snaps can report `structure_selection_method=point_parcel_intersection_snap`
+    when parcel-assisted structure matching is used
   - map payload includes geocode/structure-match diagnostics (`geocode_precision`,
     `parcel_lookup_method`, `parcel_lookup_distance_m`, `structure_match_status`,
     `structure_match_method`, `matched_structure_id`, `structure_match_distance_m`,

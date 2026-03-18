@@ -4784,6 +4784,11 @@ def test_low_coverage_homeowner_summary_uses_limited_mode_and_grouped_limitation
 
     homeowner_summary = assessed.get("homeowner_summary") or {}
     assert homeowner_summary.get("assessment_mode") == assessed["assessment_mode"]
+    assert homeowner_summary.get("home_hardening_readiness_precision") in {"provisional", "stable"}
+    evidence_snapshot = homeowner_summary.get("evidence_snapshot") or {}
+    assert isinstance(evidence_snapshot, dict)
+    assert "observed_feature_count" in evidence_snapshot
+    assert "regional_enrichment_consumption_score" in evidence_snapshot
     limitations = homeowner_summary.get("assessment_limitations") or []
     assert isinstance(limitations, list)
     assert len(limitations) <= 5

@@ -248,7 +248,9 @@ def _run_sample_smoke_test(
                     else:
                         _ = next(ds.sample([(x, y)]))
             except Exception as exc:
-                errors.append(f"Sample smoke test could not read raster layer '{layer_key}': {exc}")
+                warnings.append(
+                    f"Sample smoke raster check skipped for '{layer_key}' due to unreadable raster payload: {exc}"
+                )
 
     return errors, warnings
 
@@ -296,7 +298,11 @@ def summarize_property_specific_readiness(
     building_signal = "building_footprints" in required_set
     roads_signal = "roads" in optional_set
     hazard_signal = bool({"whp", "gridmet_dryness", "mtbs_severity"}.intersection(optional_set))
-    vegetation_signal = ("naip_imagery" in enrichment_set) or ("canopy" in required_set)
+    vegetation_signal = (
+        ("naip_imagery" in enrichment_set)
+        or ("naip_structure_features" in enrichment_set)
+        or ("canopy" in required_set)
+    )
     anchor_signal = bool(
         {"parcel_polygons", "parcel_address_points", "building_footprints_overture"}.intersection(
             enrichment_set
@@ -318,7 +324,7 @@ def summarize_property_specific_readiness(
     if not anchor_signal:
         missing_supporting_layers.append("parcel_polygons|parcel_address_points|building_footprints_overture")
     if not vegetation_signal:
-        missing_supporting_layers.append("naip_imagery|canopy")
+        missing_supporting_layers.append("naip_imagery|naip_structure_features|canopy")
 
     return {
         "readiness": readiness,

@@ -655,6 +655,11 @@ class RiskEngine:
             if bundle_metrics.get("environmental_layer_coverage_score") is not None
             else 50.0
         )
+        regional_enrichment_consumption_score = float(
+            bundle_metrics.get("regional_enrichment_consumption_score")
+            if bundle_metrics.get("regional_enrichment_consumption_score") is not None
+            else regional_context_coverage_score
+        )
         property_specificity_score = float(
             bundle_metrics.get("property_specificity_score")
             if bundle_metrics.get("property_specificity_score") is not None
@@ -753,6 +758,10 @@ class RiskEngine:
                 multiplier *= 0.62
             if regional_context_coverage_score < 60.0 and submodel in REGIONAL_CONTEXT_SUBMODELS:
                 multiplier *= 0.76
+            if regional_enrichment_consumption_score < 45.0 and submodel in REGIONAL_CONTEXT_SUBMODELS:
+                multiplier *= 0.55
+            elif regional_enrichment_consumption_score < 60.0 and submodel in REGIONAL_CONTEXT_SUBMODELS:
+                multiplier *= 0.72
             if geometry_quality_score < 0.62 and submodel in STRUCTURE_SPECIFIC_SUBMODELS:
                 multiplier *= 0.62
             if property_specificity_score < 55.0 and submodel in GEOMETRY_SENSITIVE_SUBMODELS:

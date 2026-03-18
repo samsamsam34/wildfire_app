@@ -167,6 +167,61 @@ def _normalize_runtime_aliases(runtime_paths: dict[str, str]) -> dict[str, str]:
     return normalized
 
 
+def _classify_enrichment_runtime_status(
+    *,
+    layer_row: dict[str, Any] | None,
+    consumed: bool,
+) -> str:
+    if not isinstance(layer_row, dict):
+        return "not_configured"
+    coverage_status = str(layer_row.get("coverage_status") or "").strip().lower()
+    if coverage_status == "not_configured":
+        return "not_configured"
+    if coverage_status in {"missing_file", "sampling_failed"}:
+        return "configured_but_fetch_failed"
+    if coverage_status in {"outside_extent", "fallback_used"}:
+        return "configured_but_no_coverage"
+    if coverage_status in {"observed", "partial"}:
+        return "present_and_consumed" if consumed else "present_but_not_consumed"
+    return "configured_but_no_coverage"
+
+
+def _build_enrichment_runtime_status(
+    *,
+    layer_coverage_audit: list[dict[str, Any]] | None,
+    property_level_context: dict[str, Any],
+) -> dict[str, str]:
+    audit_map: dict[str, dict[str, Any]] = {}
+    for row in (layer_coverage_audit or []):
+        if not isinstance(row, dict):
+            continue
+        key = str(row.get("layer_key") or "").strip()
+        if key:
+            audit_map[key] = row
+
+    hazard_context = property_level_context.get("hazard_context")
+    moisture_context = property_level_context.get("moisture_context")
+    historical_fire_context = property_level_context.get("historical_fire_context")
+    access_context = property_level_context.get("access_context")
+    naip_source = str(property_level_context.get("naip_feature_source") or "").strip().lower()
+
+    consumed_map = {
+        "whp": isinstance(hazard_context, dict) and str(hazard_context.get("status") or "") == "ok",
+        "mtbs_severity": isinstance(historical_fire_context, dict) and str(historical_fire_context.get("status") or "") == "ok",
+        "gridmet_dryness": isinstance(moisture_context, dict) and str(moisture_context.get("status") or "") == "ok",
+        "roads": isinstance(access_context, dict) and str(access_context.get("status") or "") == "ok",
+        "naip_structure_features": naip_source == "prepared_region_naip",
+    }
+
+    return {
+        layer_key: _classify_enrichment_runtime_status(
+            layer_row=audit_map.get(layer_key),
+            consumed=bool(consumed_map.get(layer_key)),
+        )
+        for layer_key in ("whp", "mtbs_severity", "gridmet_dryness", "roads", "naip_structure_features")
+    }
+
+
 def apply_enrichment_source_fallbacks(
     runtime_paths: dict[str, str],
 ) -> tuple[dict[str, str], dict[str, dict[str, Any]], list[str]]:
@@ -225,6 +280,7 @@ def build_feature_bundle_summary(
     source_status: dict[str, dict[str, Any]],
     runtime_paths: dict[str, str],
     environmental_layer_status: dict[str, str],
+    layer_coverage_audit: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     ring_metrics = property_level_context.get("ring_metrics") if isinstance(property_level_context, dict) else None
     ring_metrics = ring_metrics if isinstance(ring_metrics, dict) else {}
@@ -349,6 +405,26 @@ def build_feature_bundle_summary(
         ),
         1,
     )
+    enrichment_runtime_status = _build_enrichment_runtime_status(
+        layer_coverage_audit=layer_coverage_audit,
+        property_level_context=property_level_context,
+    )
+    enrichment_total = max(1, len(enrichment_runtime_status))
+    enrichment_consumed_count = sum(
+        1 for status in enrichment_runtime_status.values() if status == "present_and_consumed"
+    )
+    enrichment_present_not_consumed_count = sum(
+        1 for status in enrichment_runtime_status.values() if status == "present_but_not_consumed"
+    )
+    enrichment_missing_count = sum(
+        1
+        for status in enrichment_runtime_status.values()
+        if status in {"not_configured", "configured_but_fetch_failed", "configured_but_no_coverage"}
+    )
+    regional_enrichment_consumption_score = round(
+        (float(enrichment_consumed_count) / float(enrichment_total)) * 100.0,
+        1,
+    )
 
     return {
         "bundle_schema_version": "1.0.0",
@@ -381,6 +457,10 @@ def build_feature_bundle_summary(
                 else None
             ),
             "environmental_layer_coverage_score": environmental_layer_coverage_score,
+            "regional_enrichment_consumption_score": regional_enrichment_consumption_score,
+            "enrichment_layers_consumed_count": enrichment_consumed_count,
+            "enrichment_layers_present_not_consumed_count": enrichment_present_not_consumed_count,
+            "enrichment_layers_missing_count": enrichment_missing_count,
             "property_specificity_score": property_specificity_score,
         },
         "geometry_provenance": {
@@ -402,6 +482,7 @@ def build_feature_bundle_summary(
             ),
         },
         "feature_snapshot": feature_snapshot,
+        "enrichment_runtime_status": enrichment_runtime_status,
         "environmental_layer_status": dict(environmental_layer_status or {}),
         "runtime_layer_paths": {k: v for k, v in runtime_paths.items() if str(v or "").strip()},
     }

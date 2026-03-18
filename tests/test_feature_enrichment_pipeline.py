@@ -125,6 +125,58 @@ def test_apply_enrichment_source_fallbacks_normalizes_alias_runtime_keys(tmp_pat
     assert status["roads"]["status"] == "observed"
 
 
+def test_build_feature_bundle_summary_reports_enrichment_consumption_status():
+    summary = build_feature_bundle_summary(
+        lat=46.87,
+        lon=-113.99,
+        region_context={"region_id": "missoula_pilot", "region_status": "prepared"},
+        property_level_context={
+            "footprint_used": True,
+            "hazard_context": {"status": "ok"},
+            "moisture_context": {"status": "missing"},
+            "historical_fire_context": {"status": "ok"},
+            "access_context": {"status": "sampling_failed"},
+            "naip_feature_source": None,
+            "feature_sampling": {
+                "burn_probability": {"index": 55.0, "scope": "region_level"},
+                "hazard_severity": {"index": 52.0, "scope": "region_level"},
+                "moisture_dryness": {"index": None, "scope": "fallback"},
+            },
+        },
+        source_status={
+            "building_footprint": {"source": "building_footprints", "status": "observed"},
+            "parcel": {"source": "county_or_regrid_parcels", "status": "observed"},
+            "vegetation": {"source": "landfire_fuel", "status": "observed"},
+            "canopy": {"source": "landfire_canopy", "status": "observed"},
+            "burn_probability": {"source": "whp", "status": "observed"},
+            "historical_fire": {"source": "mtbs_severity", "status": "observed"},
+            "roads": {"source": "osm_roads", "status": "observed"},
+            "climate_dryness": {"source": "gridmet_dryness", "status": "observed"},
+            "naip_imagery": {"source": "naip_imagery", "status": "observed"},
+            "naip_structure_features": {"source": "naip_structure_features", "status": "observed"},
+        },
+        runtime_paths={},
+        environmental_layer_status={"hazard": "ok", "fire_history": "ok"},
+        layer_coverage_audit=[
+            {"layer_key": "whp", "coverage_status": "observed"},
+            {"layer_key": "mtbs_severity", "coverage_status": "observed"},
+            {"layer_key": "gridmet_dryness", "coverage_status": "outside_extent"},
+            {"layer_key": "roads", "coverage_status": "sampling_failed"},
+            {"layer_key": "naip_structure_features", "coverage_status": "observed"},
+        ],
+    )
+
+    statuses = summary["enrichment_runtime_status"]
+    assert statuses["whp"] == "present_and_consumed"
+    assert statuses["mtbs_severity"] == "present_and_consumed"
+    assert statuses["gridmet_dryness"] == "configured_but_no_coverage"
+    assert statuses["roads"] == "configured_but_fetch_failed"
+    assert statuses["naip_structure_features"] == "present_but_not_consumed"
+    metrics = summary["coverage_metrics"]
+    assert metrics["regional_enrichment_consumption_score"] >= 30.0
+    assert metrics["enrichment_layers_present_not_consumed_count"] >= 1
+
+
 def test_feature_bundle_cache_roundtrip(tmp_path):
     cache = FeatureBundleCache(cache_dir=str(tmp_path), enabled=True, ttl_seconds=3600)
     layer_path = _touch(tmp_path / "fuel.tif", content="dummy")

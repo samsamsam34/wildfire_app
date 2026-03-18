@@ -845,6 +845,11 @@ def _build_confidence(
         or preflight.get("environmental_layer_coverage_score")
         or 0.0
     )
+    regional_enrichment_consumption_score = float(
+        preflight.get("regional_enrichment_consumption_score")
+        if preflight.get("regional_enrichment_consumption_score") is not None
+        else regional_context_coverage_score
+    )
     property_specificity_score = float(preflight.get("property_specificity_score") or 0.0)
     if has_preflight:
         if coverage_percent <= 15.0:
@@ -863,6 +868,10 @@ def _build_confidence(
             confidence = min(confidence, 44.0)
         elif regional_context_coverage_score < 65.0:
             confidence = min(confidence, 52.0)
+        if regional_enrichment_consumption_score < 50.0:
+            confidence = min(confidence, 44.0)
+        elif regional_enrichment_consumption_score < 65.0:
+            confidence = min(confidence, 54.0)
         if property_specificity_score < 45.0:
             confidence = min(confidence, 42.0)
         elif property_specificity_score < 60.0:
@@ -919,6 +928,8 @@ def _build_confidence(
         confidence_drivers.append("Structure geometry quality is high for this run.")
     if regional_context_coverage_score >= 80.0:
         confidence_drivers.append("Regional hazard/burn/dryness coverage is strong.")
+    if regional_enrichment_consumption_score >= 80.0:
+        confidence_drivers.append("Regional enrichment layers are present and consumed by runtime scoring.")
     if observed_feature_count > 0 and observed_feature_count >= fallback_feature_count:
         confidence_drivers.append("Observed feature signals outweigh fallback feature signals.")
     if confirmed_core_count > 0:
@@ -936,6 +947,8 @@ def _build_confidence(
         confidence_limiters.append("Structure geometry quality is limited; property-specific factor weighting was reduced.")
     if regional_context_coverage_score < 65.0:
         confidence_limiters.append("Regional hazard/burn/dryness coverage is incomplete.")
+    if regional_enrichment_consumption_score < 65.0:
+        confidence_limiters.append("Some regional enrichment layers are configured but not fully consumed for this property.")
     if fallback_feature_count > observed_feature_count and has_preflight:
         confidence_limiters.append("Fallback feature count exceeds observed feature count.")
     if critical_unknown_or_stale > 0:
@@ -970,6 +983,8 @@ def _build_confidence(
         low_confidence_flags.append("Structure geometry quality is limited; structure-specific factors are suppressed or downgraded")
     if regional_context_coverage_score < 65.0:
         low_confidence_flags.append("Regional hazard/burn/dryness coverage is limited; regional context confidence is capped")
+    if regional_enrichment_consumption_score < 65.0:
+        low_confidence_flags.append("Regional enrichment layers are partially consumed or missing for this location")
     if property_specificity_score < 60.0:
         low_confidence_flags.append("Property-specific evidence strength is limited for this run")
     if fallback_feature_count > observed_feature_count and has_preflight:
@@ -2070,6 +2085,11 @@ def _build_feature_coverage_preflight(
     fallback_dominance_ratio = float(bundle_metrics.get("fallback_dominance_ratio") or 0.0)
     geometry_quality_score = float(bundle_metrics.get("structure_geometry_quality_score") or 0.0)
     environmental_layer_coverage_score = float(bundle_metrics.get("environmental_layer_coverage_score") or 0.0)
+    regional_enrichment_consumption_score = float(
+        bundle_metrics.get("regional_enrichment_consumption_score")
+        if bundle_metrics.get("regional_enrichment_consumption_score") is not None
+        else environmental_layer_coverage_score
+    )
     property_specificity_score = float(bundle_metrics.get("property_specificity_score") or 0.0)
     geometry_basis = (
         "footprint"
@@ -2109,6 +2129,10 @@ def _build_feature_coverage_preflight(
         assessment_specificity_tier = "address_level"
     if bundle_metrics_present and geometry_quality_score and geometry_quality_score < 0.62 and assessment_specificity_tier == "property_specific":
         assessment_specificity_tier = "address_level"
+    if bundle_metrics_present and regional_enrichment_consumption_score < 60.0 and assessment_specificity_tier == "property_specific":
+        assessment_specificity_tier = "address_level"
+    if bundle_metrics_present and regional_enrichment_consumption_score < 45.0:
+        assessment_specificity_tier = "regional_estimate"
     if bundle_metrics_present and fallback_dominance_ratio >= 0.80:
         assessment_specificity_tier = "regional_estimate"
 
@@ -2119,6 +2143,7 @@ def _build_feature_coverage_preflight(
         or major_environmental_missing_count >= 2
         or (bundle_metrics_present and fallback_dominance_ratio >= 0.70)
         or (bundle_metrics_present and observed_weight_fraction <= 0.35)
+        or (bundle_metrics_present and regional_enrichment_consumption_score < 60.0)
         or region_readiness_state != "property_specific_ready"
         or int(region_readiness.get("region_required_missing_count") or 0) > 0
     )
@@ -2152,6 +2177,7 @@ def _build_feature_coverage_preflight(
         "geometry_quality_score": round(geometry_quality_score, 3),
         "environmental_layer_coverage_score": round(environmental_layer_coverage_score, 1),
         "regional_context_coverage_score": round(environmental_layer_coverage_score, 1),
+        "regional_enrichment_consumption_score": round(regional_enrichment_consumption_score, 1),
         "property_specificity_score": round(property_specificity_score, 1),
         "score_specificity_warning": specificity_warning,
     }
@@ -3321,6 +3347,16 @@ def _build_confidence_improvement_actions(
     required_missing = [str(v).strip() for v in (preflight.get("region_required_layers_missing") or []) if str(v).strip()]
     optional_missing = [str(v).strip() for v in (preflight.get("region_optional_layers_missing") or []) if str(v).strip()]
     enrichment_missing = [str(v).strip() for v in (preflight.get("region_enrichment_layers_missing") or []) if str(v).strip()]
+    feature_bundle_summary = (
+        property_level_context.get("feature_bundle_summary")
+        if isinstance(property_level_context.get("feature_bundle_summary"), dict)
+        else {}
+    )
+    enrichment_runtime_status = (
+        feature_bundle_summary.get("enrichment_runtime_status")
+        if isinstance(feature_bundle_summary.get("enrichment_runtime_status"), dict)
+        else {}
+    )
 
     actions: list[str] = []
     seen: set[str] = set()
@@ -3367,6 +3403,20 @@ def _build_confidence_improvement_actions(
         suffix = ", ..." if len(remaining) > 4 else ""
         _add(
             f"Add optional/enrichment coverage for this region ({readable}{suffix}) to reduce fallback-heavy scoring."
+        )
+
+    present_not_consumed = sorted(
+        [
+            layer
+            for layer, status in enrichment_runtime_status.items()
+            if str(status or "") == "present_but_not_consumed"
+        ]
+    )
+    if present_not_consumed:
+        readable = ", ".join(_friendly_layer_name(layer) for layer in present_not_consumed[:4])
+        suffix = ", ..." if len(present_not_consumed) > 4 else ""
+        _add(
+            f"Some enrichment layers are present but not consumed here ({readable}{suffix}); validate layer extent/CRS and runtime mappings."
         )
 
     for layer in remaining:
@@ -3831,6 +3881,7 @@ def _build_score_sections(
     property_findings: list[str],
     readiness_blockers: list[str],
     confidence_block: ConfidenceBlock,
+    readiness_provisional: bool = False,
 ) -> tuple[ScoreSectionSummary, ScoreSectionSummary, ScoreSectionSummary]:
     def _score_text(value: float | None) -> str:
         return f"{value:.1f}/100" if value is not None else "not computed"
@@ -3897,6 +3948,8 @@ def _build_score_sections(
 
     if confidence_block.use_restriction == "not_for_underwriting_or_binding":
         readiness_section.summary += " Current confidence gating: not for underwriting or binding decisions."
+    if readiness_provisional:
+        readiness_section.summary += " Readiness estimate is provisional because structure/evidence quality is limited."
 
     return site_section, home_section, readiness_section
 
@@ -4834,6 +4887,11 @@ def _run_assessment(
         improvement_actions=confidence_improvement_actions,
     )
     homeowner_assessment_mode = _to_homeowner_assessment_mode(assessment_output_state)
+    readiness_provisional = bool(
+        float(risk.geometry_quality_score) < 0.62
+        or float(risk.fallback_weight_fraction) >= 0.60
+        or float(coverage_preflight.get("regional_enrichment_consumption_score") or 100.0) < 60.0
+    )
     developer_diagnostics = {
         "fallback_decisions": fallback_decisions,
         "score_availability_notes": score_availability_notes,
@@ -4850,6 +4908,11 @@ def _run_assessment(
         "geometry_basis_used_for_weighting": str(risk.geometry_basis),
         "geometry_quality_score": float(risk.geometry_quality_score),
         "regional_context_coverage_score": float(risk.regional_context_coverage_score),
+        "regional_enrichment_consumption_score": float(
+            coverage_preflight.get("regional_enrichment_consumption_score")
+            if coverage_preflight.get("regional_enrichment_consumption_score") is not None
+            else coverage_preflight.get("regional_context_coverage_score") or risk.regional_context_coverage_score
+        ),
         "property_specificity_score": float(risk.property_specificity_score),
         "observed_feature_count": int(coverage_preflight.get("observed_feature_count") or risk.observed_feature_count),
         "inferred_feature_count": int(coverage_preflight.get("inferred_feature_count") or risk.inferred_feature_count),
@@ -4877,6 +4940,25 @@ def _run_assessment(
             if assessment_output_state in {"address_level_estimate", "limited_regional_estimate", "insufficient_data"}
             else "Wildfire Risk Score"
         ),
+        "evidence_snapshot": {
+            "observed_feature_count": int(coverage_preflight.get("observed_feature_count") or risk.observed_feature_count),
+            "estimated_feature_count": int(
+                (coverage_preflight.get("inferred_feature_count") or risk.inferred_feature_count)
+                + (coverage_preflight.get("fallback_feature_count") or risk.fallback_feature_count)
+            ),
+            "missing_feature_count": int(coverage_preflight.get("missing_feature_count") or 0),
+            "fallback_weight_fraction": round(float(risk.fallback_weight_fraction), 3),
+            "geometry_quality_score": round(float(coverage_preflight.get("geometry_quality_score") or risk.geometry_quality_score), 3),
+            "regional_enrichment_consumption_score": round(
+                float(
+                    coverage_preflight.get("regional_enrichment_consumption_score")
+                    if coverage_preflight.get("regional_enrichment_consumption_score") is not None
+                    else coverage_preflight.get("regional_context_coverage_score") or risk.regional_context_coverage_score
+                ),
+                1,
+            ),
+        },
+        "home_hardening_readiness_precision": "provisional" if readiness_provisional else "stable",
         "confidence_summary": homeowner_confidence_summary,
         "assessment_limitations": grouped_limitations,
         "what_was_observed": what_was_observed,
@@ -4918,6 +5000,7 @@ def _run_assessment(
         property_findings=property_findings,
         readiness_blockers=readiness.readiness_blockers,
         confidence_block=confidence_block,
+        readiness_provisional=readiness_provisional,
     )
     if site_hazard_eligibility.caveats:
         site_hazard_section.summary += " " + " ".join(site_hazard_eligibility.caveats[:2])

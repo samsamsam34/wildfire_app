@@ -223,6 +223,44 @@ class WildfireDataClient:
         except (TypeError, ValueError):
             return None
 
+    @staticmethod
+    def _parse_centroid_feature_key(key: str) -> tuple[float, float] | None:
+        token = str(key or "").strip()
+        if not token.startswith("centroid:"):
+            return None
+        payload = token.split(":", 1)[1]
+        parts = payload.split(",")
+        if len(parts) != 2:
+            return None
+        try:
+            lat = float(parts[0])
+            lon = float(parts[1])
+        except (TypeError, ValueError):
+            return None
+        if not (-90.0 <= lat <= 90.0 and -180.0 <= lon <= 180.0):
+            return None
+        return lat, lon
+
+    @staticmethod
+    def _haversine_distance_m(
+        lat_a: float,
+        lon_a: float,
+        lat_b: float,
+        lon_b: float,
+    ) -> float:
+        lat1 = math.radians(float(lat_a))
+        lon1 = math.radians(float(lon_a))
+        lat2 = math.radians(float(lat_b))
+        lon2 = math.radians(float(lon_b))
+        dlat = lat2 - lat1
+        dlon = lon2 - lon1
+        a = (
+            math.sin(dlat / 2.0) ** 2
+            + math.cos(lat1) * math.cos(lat2) * (math.sin(dlon / 2.0) ** 2)
+        )
+        c = 2.0 * math.atan2(math.sqrt(a), math.sqrt(max(1e-12, 1.0 - a)))
+        return float(6371000.0 * c)
+
     def _resolve_naip_feature_artifact_path(
         self,
         *,
@@ -271,6 +309,7 @@ class WildfireDataClient:
         selected_key: str | None = None
         selected_feature: dict[str, Any] | None = None
         match_method: str | None = None
+        match_distance_m: float | None = None
 
         if matched_structure_id and matched_structure_id in keys_by_structure_id:
             selected_key = str(keys_by_structure_id.get(matched_structure_id))
@@ -298,6 +337,48 @@ class WildfireDataClient:
                 selected_key = centroid_key
                 selected_feature = features_by_key.get(centroid_key)
                 match_method = "centroid"
+
+        if selected_feature is None and centroid_lat is not None and centroid_lon is not None:
+            try:
+                nearest_centroid_max_distance_m = float(
+                    str(os.getenv("WF_NAIP_FEATURE_MATCH_MAX_DISTANCE_M", "45")).strip()
+                )
+            except ValueError:
+                nearest_centroid_max_distance_m = 45.0
+            nearest_centroid_max_distance_m = max(5.0, min(500.0, nearest_centroid_max_distance_m))
+
+            best_key: str | None = None
+            best_row: dict[str, Any] | None = None
+            best_distance_m: float | None = None
+            for key, row in features_by_key.items():
+                if not isinstance(row, dict):
+                    continue
+                parsed = self._parse_centroid_feature_key(str(key))
+                if parsed is None:
+                    continue
+                distance_m = self._haversine_distance_m(
+                    float(centroid_lat),
+                    float(centroid_lon),
+                    float(parsed[0]),
+                    float(parsed[1]),
+                )
+                if best_distance_m is None or distance_m < best_distance_m:
+                    best_distance_m = distance_m
+                    best_key = str(key)
+                    best_row = row
+            if (
+                best_row is not None
+                and best_key
+                and best_distance_m is not None
+                and best_distance_m <= nearest_centroid_max_distance_m
+            ):
+                selected_key = best_key
+                selected_feature = best_row
+                match_method = "nearest_centroid"
+                match_distance_m = round(float(best_distance_m), 2)
+                assumptions.append(
+                    f"NAIP feature row matched by nearest centroid within {match_distance_m:.1f} m."
+                )
 
         if not isinstance(selected_feature, dict):
             return ring_context, assumptions, sources
@@ -353,6 +434,7 @@ class WildfireDataClient:
         ring_context["naip_feature_artifact_path"] = artifact_path
         ring_context["naip_feature_match_key"] = selected_key
         ring_context["naip_feature_match_method"] = match_method
+        ring_context["naip_feature_match_distance_m"] = match_distance_m
         ring_context["naip_feature_source"] = "prepared_region_naip"
         ring_context["imagery_ring_metrics"] = selected_ring_metrics
         ring_context["near_structure_vegetation_0_5_pct"] = self._coerce_float(
@@ -2829,6 +2911,7 @@ class WildfireDataClient:
                 },
             }
         )
+        layer_audit_rows = [layer_audit[k] for k in sorted(layer_audit.keys())]
         feature_bundle_summary = build_feature_bundle_summary(
             lat=lat,
             lon=lon,
@@ -2837,11 +2920,11 @@ class WildfireDataClient:
             source_status=enrichment_source_status,
             runtime_paths=runtime_paths,
             environmental_layer_status=environmental_layer_status,
+            layer_coverage_audit=layer_audit_rows,
         )
         property_level_context["feature_bundle_summary"] = feature_bundle_summary
         property_level_context["feature_bundle_data_sources"] = dict(feature_bundle_summary.get("data_sources") or {})
         property_level_context["feature_bundle_coverage_flags"] = dict(feature_bundle_summary.get("coverage_flags") or {})
-        layer_audit_rows = [layer_audit[k] for k in sorted(layer_audit.keys())]
         coverage_summary = summarize_layer_audit(layer_audit_rows)
         property_level_context.update(
             {

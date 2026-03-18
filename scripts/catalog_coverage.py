@@ -51,11 +51,12 @@ def _to_bbox_tuple(bounds: dict[str, float]) -> tuple[float, float, float, float
 
 
 def _bbox_contains(outer: tuple[float, float, float, float], inner: tuple[float, float, float, float]) -> bool:
+    eps = 1e-9
     return (
-        outer[0] <= inner[0]
-        and outer[1] <= inner[1]
-        and outer[2] >= inner[2]
-        and outer[3] >= inner[3]
+        outer[0] <= inner[0] + eps
+        and outer[1] <= inner[1] + eps
+        and outer[2] + eps >= inner[2]
+        and outer[3] + eps >= inner[3]
     )
 
 

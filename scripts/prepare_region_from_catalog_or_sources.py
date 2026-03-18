@@ -124,7 +124,7 @@ ENRICHMENT_LAYER_KEYS: tuple[str, ...] = (
 ENV_REF_PATTERN = re.compile(r"^\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}$")
 
 
-class RegionPrepExecutionError(RuntimeError):
+class RegionPrepExecutionError(ValueError):
     def __init__(self, message: str, *, details: dict[str, Any]):
         super().__init__(message)
         self.details = details
@@ -620,32 +620,32 @@ def _ingest_layer_for_bbox(
     source_endpoint = layer_cfg.get("source_endpoint")
     per_layer_resolution = layer_cfg.get("target_resolution", target_resolution)
 
-    if layer_type == "raster":
-        metadata = ingest_catalog_raster(
+    def _run_ingest(bounds_override: dict[str, float] | None) -> dict[str, Any]:
+        if layer_type == "raster":
+            return ingest_catalog_raster(
+                layer_name=layer_key,
+                source_path=str(source_path) if source_path else None,
+                source_url=str(source_url) if source_url else None,
+                source_endpoint=str(source_endpoint) if source_endpoint else None,
+                provider_type=provider_type,
+                bounds=bounds_override,
+                catalog_root=catalog_root,
+                cache_root=cache_root,
+                prefer_bbox_downloads=prefer_bbox_downloads,
+                allow_full_download_fallback=allow_full_download_fallback,
+                target_resolution=float(per_layer_resolution) if per_layer_resolution is not None else None,
+                timeout_seconds=timeout_seconds,
+                retries=retries,
+                backoff_seconds=backoff_seconds,
+                force=force,
+            )
+        return ingest_catalog_vector(
             layer_name=layer_key,
             source_path=str(source_path) if source_path else None,
             source_url=str(source_url) if source_url else None,
             source_endpoint=str(source_endpoint) if source_endpoint else None,
             provider_type=provider_type,
-            bounds=bounds,
-            catalog_root=catalog_root,
-            cache_root=cache_root,
-            prefer_bbox_downloads=prefer_bbox_downloads,
-            allow_full_download_fallback=allow_full_download_fallback,
-            target_resolution=float(per_layer_resolution) if per_layer_resolution is not None else None,
-            timeout_seconds=timeout_seconds,
-            retries=retries,
-            backoff_seconds=backoff_seconds,
-            force=force,
-        )
-    else:
-        metadata = ingest_catalog_vector(
-            layer_name=layer_key,
-            source_path=str(source_path) if source_path else None,
-            source_url=str(source_url) if source_url else None,
-            source_endpoint=str(source_endpoint) if source_endpoint else None,
-            provider_type=provider_type,
-            bounds=bounds,
+            bounds=bounds_override,
             catalog_root=catalog_root,
             cache_root=cache_root,
             prefer_bbox_downloads=prefer_bbox_downloads,
@@ -655,6 +655,37 @@ def _ingest_layer_for_bbox(
             backoff_seconds=backoff_seconds,
             force=force,
         )
+
+    try:
+        metadata = _run_ingest(bounds)
+    except Exception as exc:
+        error_text = str(exc).lower()
+        if (
+            provider_type == "local_file"
+            and allow_full_download_fallback
+            and bounds is not None
+            and any(
+                token in error_text
+                for token in (
+                    "does not intersect aoi",
+                    "intersection is empty",
+                    "clip window is empty",
+                    "produced no intersecting features",
+                    "produced no features",
+                    "outside extent",
+                )
+            )
+        ):
+            metadata = _run_ingest(None)
+            warnings = metadata.get("warnings")
+            if not isinstance(warnings, list):
+                warnings = []
+            warnings.append(
+                "local_file_full_source_fallback_used: source did not intersect requested bbox; ingested full source for operator diagnostics."
+            )
+            metadata["warnings"] = warnings
+        else:
+            raise
     return metadata
 
 
@@ -1081,7 +1112,11 @@ def _property_specific_readiness(
     hazard_signal = bool({"whp", "gridmet_dryness", "mtbs_severity"}.intersection(optional_set))
     roads_signal = "roads" in optional_set
     building_signal = "building_footprints" in required_set
-    vegetation_signal = ("naip_imagery" in enrichment_set) or ("canopy" in required_set)
+    vegetation_signal = (
+        ("naip_imagery" in enrichment_set)
+        or ("naip_structure_features" in enrichment_set)
+        or ("canopy" in required_set)
+    )
 
     if building_signal and roads_signal and hazard_signal and vegetation_signal and anchor_signal:
         readiness = "property_specific_ready"
@@ -1096,7 +1131,7 @@ def _property_specific_readiness(
     if not hazard_signal:
         missing_supporting_layers.append("whp|gridmet_dryness|mtbs_severity")
     if not vegetation_signal:
-        missing_supporting_layers.append("naip_imagery|canopy")
+        missing_supporting_layers.append("naip_imagery|naip_structure_features|canopy")
     if configured_anchor_layers and not configured_anchor_available:
         missing_supporting_layers.extend(configured_anchor_layers)
 
@@ -1811,127 +1846,159 @@ def prepare_region_from_catalog_or_sources(
         )
     required_missing_after = sorted(set(required_missing_after))
 
+    build_require_core_layers = bool(require_core_layers)
+    build_allow_partial = not bool(require_core_layers)
+    forced_partial_due_to_local_outside_coverage = False
+
     if require_core_layers and required_missing_after:
-        uncovered = [
-            {
-                "layer_key": layer,
-                "failure_type": "coverage_incomplete_after_ingest",
-                "error": "Layer is still missing or partial after acquisition.",
-            }
-            for layer in required_missing_after
-        ]
-        required_failures.extend(uncovered)
-        no_cfg = sorted(
-            {
-                str(item.get("layer_key"))
-                for item in required_failures
-                if str(item.get("failure_type")) == "no_source_config"
-            }
-        )
-        fetch_failed = sorted(
-            {
-                str(item.get("layer_key"))
-                for item in required_failures
-                if str(item.get("failure_type")) == "acquisition_or_ingest_failed"
-            }
-        )
-        incomplete = sorted(
-            {
-                str(item.get("layer_key"))
-                for item in required_failures
-                if str(item.get("failure_type")) == "coverage_incomplete_after_ingest"
-            }
-        )
-        guidance: list[str] = []
-        if no_cfg:
-            guidance.append(
-                "Missing source config for: "
-                + ", ".join(no_cfg)
-                + f". Add these in {cfg_meta.get('source_config_path') or 'the source registry'} "
-                "(source_path/source_url/source_endpoint)."
-            )
-        if fetch_failed:
-            guidance.append("Acquisition/ingest failed for: " + ", ".join(fetch_failed) + ". Check provider endpoint/auth/network.")
-        if incomplete:
-            guidance.append("Coverage still incomplete for: " + ", ".join(incomplete) + ". Retry with larger bbox or alternate source.")
+        local_outside_coverage_only = True
         for layer in required_missing_after:
             diag = per_layer_execution_diagnostics.get(layer)
-            if isinstance(diag, dict) and not diag.get("failure_reason"):
-                diag["failure_reason"] = "coverage_recording_or_recheck_failure"
-                diag["actionable_error"] = (
-                    "Layer ingest completed but catalog coverage still reports missing/partial. "
-                    "Check bounds metadata/index update for this layer."
-                )
-            layer_plan_diag = layer_plan_diagnostics.get(layer)
-            if isinstance(layer_plan_diag, dict) and not layer_plan_diag.get("failure_reason"):
-                layer_plan_diag["failure_reason"] = "coverage_recording_or_recheck_failure"
-                layer_plan_diag["status_classification"] = "configured_but_outside_coverage"
-                next_step, rerun_ok = _status_followup(
-                    layer_key=layer,
-                    status_classification="configured_but_outside_coverage",
-                    source_config_meta=cfg_meta,
-                )
-                layer_plan_diag["operator_next_step"] = next_step
-                layer_plan_diag["rerun_prep_only_sufficient"] = rerun_ok
-        stage_failures = {
-            "acquisition": sorted(
+            if not isinstance(diag, dict):
+                local_outside_coverage_only = False
+                break
+            if not bool(diag.get("catalog_ingest_succeeded")):
+                local_outside_coverage_only = False
+                break
+            if str(diag.get("provider_type") or "").strip().lower() != "local_file":
+                local_outside_coverage_only = False
+                break
+            if str(diag.get("failure_reason") or "").strip():
+                local_outside_coverage_only = False
+                break
+
+        if local_outside_coverage_only:
+            forced_partial_due_to_local_outside_coverage = True
+            build_require_core_layers = False
+            build_allow_partial = True
+            stage_status["region_build"] = {
+                "status": "running",
+                "details": (
+                    "Required layers were ingested from local_file sources but catalog bounds do not intersect "
+                    "the requested bbox; proceeding with partial region build for operator diagnostics."
+                ),
+            }
+        else:
+            uncovered = [
                 {
-                    layer
-                    for layer, diag in per_layer_execution_diagnostics.items()
-                    if diag.get("failure_reason")
-                    in {
-                        "remote_provider_error",
-                        "provider_http_error",
-                        "provider_payload_error",
-                        "endpoint_not_found",
-                        "unsupported_output_format",
-                        "invalid_query",
-                        "invalid_request_url",
-                        "esri_json_parse_error",
-                        "empty_result",
-                        "invalid_provider_payload",
-                        "provider_query_error",
-                        "request_construction_failure",
-                    }
+                    "layer_key": layer,
+                    "failure_type": "coverage_incomplete_after_ingest",
+                    "error": "Layer is still missing or partial after acquisition.",
                 }
-            ),
-            "ingest": sorted(
+                for layer in required_missing_after
+            ]
+            required_failures.extend(uncovered)
+            no_cfg = sorted(
                 {
-                    layer
-                    for layer, diag in per_layer_execution_diagnostics.items()
-                    if diag.get("failure_reason")
-                    in {
-                        "invalid_raster_crs",
-                        "outside_extent",
-                        "runtime_dependency_missing",
-                        "output_write_failure",
-                        "catalog_registration_failure",
-                        "bounds_metadata_failure",
-                        "ingest_failure",
-                    }
+                    str(item.get("layer_key"))
+                    for item in required_failures
+                    if str(item.get("failure_type")) == "no_source_config"
                 }
-            ),
-            "coverage_recheck": sorted(set(required_missing_after)),
-        }
-        stage_status["region_build"] = {
-            "status": "failed",
-            "details": {
-                "failure_stage": "coverage_incomplete_after_ingest",
-                "required_missing_after": required_missing_after,
-            },
-        }
-        raise RegionPrepExecutionError(
-            "Cannot build region due to required core layer blockers (failure_stage=coverage_incomplete_after_ingest): "
-            + ", ".join(required_missing_after)
-            + ". "
-            + " ".join(guidance),
-            details={
-                "failed_required_layers": sorted(set(required_missing_after)),
-                "per_layer_execution_diagnostics": per_layer_execution_diagnostics,
-                "stage_failures": stage_failures,
-                "failed_acquisitions": failed_acquisitions,
-            },
-        )
+            )
+            fetch_failed = sorted(
+                {
+                    str(item.get("layer_key"))
+                    for item in required_failures
+                    if str(item.get("failure_type")) == "acquisition_or_ingest_failed"
+                }
+            )
+            incomplete = sorted(
+                {
+                    str(item.get("layer_key"))
+                    for item in required_failures
+                    if str(item.get("failure_type")) == "coverage_incomplete_after_ingest"
+                }
+            )
+            guidance: list[str] = []
+            if no_cfg:
+                guidance.append(
+                    "Missing source config for: "
+                    + ", ".join(no_cfg)
+                    + f". Add these in {cfg_meta.get('source_config_path') or 'the source registry'} "
+                    "(source_path/source_url/source_endpoint)."
+                )
+            if fetch_failed:
+                guidance.append("Acquisition/ingest failed for: " + ", ".join(fetch_failed) + ". Check provider endpoint/auth/network.")
+            if incomplete:
+                guidance.append("Coverage still incomplete for: " + ", ".join(incomplete) + ". Retry with larger bbox or alternate source.")
+            for layer in required_missing_after:
+                diag = per_layer_execution_diagnostics.get(layer)
+                if isinstance(diag, dict) and not diag.get("failure_reason"):
+                    diag["failure_reason"] = "coverage_recording_or_recheck_failure"
+                    diag["actionable_error"] = (
+                        "Layer ingest completed but catalog coverage still reports missing/partial. "
+                        "Check bounds metadata/index update for this layer."
+                    )
+                layer_plan_diag = layer_plan_diagnostics.get(layer)
+                if isinstance(layer_plan_diag, dict) and not layer_plan_diag.get("failure_reason"):
+                    layer_plan_diag["failure_reason"] = "coverage_recording_or_recheck_failure"
+                    layer_plan_diag["status_classification"] = "configured_but_outside_coverage"
+                    next_step, rerun_ok = _status_followup(
+                        layer_key=layer,
+                        status_classification="configured_but_outside_coverage",
+                        source_config_meta=cfg_meta,
+                    )
+                    layer_plan_diag["operator_next_step"] = next_step
+                    layer_plan_diag["rerun_prep_only_sufficient"] = rerun_ok
+            stage_failures = {
+                "acquisition": sorted(
+                    {
+                        layer
+                        for layer, diag in per_layer_execution_diagnostics.items()
+                        if diag.get("failure_reason")
+                        in {
+                            "remote_provider_error",
+                            "provider_http_error",
+                            "provider_payload_error",
+                            "endpoint_not_found",
+                            "unsupported_output_format",
+                            "invalid_query",
+                            "invalid_request_url",
+                            "esri_json_parse_error",
+                            "empty_result",
+                            "invalid_provider_payload",
+                            "provider_query_error",
+                            "request_construction_failure",
+                        }
+                    }
+                ),
+                "ingest": sorted(
+                    {
+                        layer
+                        for layer, diag in per_layer_execution_diagnostics.items()
+                        if diag.get("failure_reason")
+                        in {
+                            "invalid_raster_crs",
+                            "outside_extent",
+                            "runtime_dependency_missing",
+                            "output_write_failure",
+                            "catalog_registration_failure",
+                            "bounds_metadata_failure",
+                            "ingest_failure",
+                        }
+                    }
+                ),
+                "coverage_recheck": sorted(set(required_missing_after)),
+            }
+            stage_status["region_build"] = {
+                "status": "failed",
+                "details": {
+                    "failure_stage": "coverage_incomplete_after_ingest",
+                    "required_missing_after": required_missing_after,
+                },
+            }
+            raise RegionPrepExecutionError(
+                "Cannot build region due to required core layer blockers (failure_stage=coverage_incomplete_after_ingest): "
+                + ", ".join(required_missing_after)
+                + ". "
+                + " ".join(guidance),
+                details={
+                    "failed_required_layers": sorted(set(required_missing_after)),
+                    "per_layer_execution_diagnostics": per_layer_execution_diagnostics,
+                    "stage_failures": stage_failures,
+                    "failed_acquisitions": failed_acquisitions,
+                },
+            )
 
     stage_status["region_build"] = {"status": "running", "details": "Building region from catalog coverage."}
     manifest = build_region_from_catalog(
@@ -1941,9 +2008,9 @@ def prepare_region_from_catalog_or_sources(
         catalog_root=cat_root,
         regions_root=reg_root,
         overwrite=overwrite,
-        require_core_layers=require_core_layers,
+        require_core_layers=build_require_core_layers,
         skip_optional_layers=skip_optional_layers,
-        allow_partial=not require_core_layers,
+        allow_partial=build_allow_partial,
         validate=False,
         target_resolution=target_resolution,
     )
@@ -1995,6 +2062,8 @@ def prepare_region_from_catalog_or_sources(
 
     final_status = "success"
     if optional_omissions:
+        final_status = "partial"
+    if forced_partial_due_to_local_outside_coverage:
         final_status = "partial"
     if validation_result and validation_result.get("validation_status") == "failed":
         final_status = "partial"

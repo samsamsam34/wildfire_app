@@ -47,6 +47,33 @@ This pass does **not** redesign the full scoring model.
 - Added runner:
   - `scripts/run_confidence_benchmark_pack.py`
 
+## 4. Regional enrichment consumption diagnostics (Phase 3)
+- Feature-bundle summaries now classify runtime enrichment outcomes by layer:
+  - `not_configured`
+  - `configured_but_fetch_failed`
+  - `configured_but_no_coverage`
+  - `present_but_not_consumed`
+  - `present_and_consumed`
+- Coverage metrics now include:
+  - `regional_enrichment_consumption_score`
+  - `enrichment_layers_consumed_count`
+  - `enrichment_layers_present_not_consumed_count`
+  - `enrichment_layers_missing_count`
+- Confidence and specificity gating now respond to low enrichment-consumption score so weak/unused enrichment does not read as high-confidence context.
+
+## 5. NAIP near-structure reliability improvements (Phase 4)
+- NAIP feature matching now supports nearest-centroid fallback when exact structure-id/centroid keys are unavailable.
+- New runtime diagnostics:
+  - `naip_feature_match_method` can include `nearest_centroid`
+  - `naip_feature_match_distance_m`
+- Prepared-region readiness signals now treat `naip_structure_features` as a valid near-structure vegetation signal in addition to `naip_imagery` and canopy.
+
+## 6. Homeowner-safe output tightening (Phase 7)
+- Homeowner summary now includes an evidence snapshot with observed/estimated/missing feature counts plus geometry/enrichment quality indicators.
+- Home hardening readiness now explicitly marks precision (`stable` vs `provisional`) in homeowner output.
+- Readiness section summary now adds a provisional caveat when structure/evidence quality is weak.
+- Confidence-improvement actions now call out enrichment layers that are present but not consumed at runtime.
+
 ## How To Run
 
 ```bash
