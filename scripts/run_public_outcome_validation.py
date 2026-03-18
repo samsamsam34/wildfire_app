@@ -17,9 +17,16 @@ from backend.public_outcome_validation import (  # noqa: E402
     evaluate_public_outcome_dataset_file,
     write_evaluation_rows_csv,
 )
+from backend.public_outcome_governance import (  # noqa: E402
+    build_validation_comparison_markdown,
+    build_validation_run_comparison,
+    list_public_outcome_runs,
+    resolve_baseline_run_id,
+)
 from backend.version import (  # noqa: E402
     API_VERSION,
     BENCHMARK_PACK_VERSION,
+    CALIBRATION_VERSION,
     FACTOR_SCHEMA_VERSION,
     PRODUCT_VERSION,
     RULESET_LOGIC_VERSION,
@@ -49,6 +56,81 @@ def _write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
         for row in rows:
             fh.write(json.dumps(row, sort_keys=True))
             fh.write("\n")
+
+
+def _safe_load_json(path: Path) -> dict[str, Any] | None:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _extract_feature_input_versions(rows: list[dict[str, Any]]) -> dict[str, list[str]]:
+    observed: dict[str, set[str]] = {
+        "scoring_model_versions": set(),
+        "factor_schema_versions": set(),
+        "rules_logic_versions": set(),
+        "region_data_versions": set(),
+        "data_bundle_versions": set(),
+    }
+    for row in rows:
+        governance = row.get("model_governance") if isinstance(row.get("model_governance"), dict) else {}
+        for key, field in (
+            ("scoring_model_versions", "scoring_model_version"),
+            ("factor_schema_versions", "factor_schema_version"),
+            ("rules_logic_versions", "rules_logic_version"),
+            ("region_data_versions", "region_data_version"),
+            ("data_bundle_versions", "data_bundle_version"),
+        ):
+            text = str(governance.get(field) or "").strip()
+            if text:
+                observed[key].add(text)
+    return {key: sorted(values) for key, values in observed.items() if values}
+
+
+def _dataset_governance(dataset_path: Path, rows: list[dict[str, Any]]) -> dict[str, Any]:
+    dataset_manifest_path = dataset_path.parent / "manifest.json"
+    dataset_manifest = _safe_load_json(dataset_manifest_path) if dataset_manifest_path.exists() else None
+    dataset_inputs = dataset_manifest.get("inputs") if isinstance(dataset_manifest, dict) else {}
+    outcomes_path = (
+        Path(str(dataset_inputs.get("normalized_outcomes_path"))).expanduser()
+        if isinstance(dataset_inputs, dict) and dataset_inputs.get("normalized_outcomes_path")
+        else None
+    )
+    outcomes_manifest_path = outcomes_path.parent / "manifest.json" if outcomes_path else None
+    outcomes_manifest = (
+        _safe_load_json(outcomes_manifest_path)
+        if outcomes_manifest_path is not None and outcomes_manifest_path.exists()
+        else None
+    )
+    return {
+        "evaluation_dataset_run_id": dataset_path.parent.name,
+        "evaluation_dataset_schema_version": (
+            dataset_manifest.get("schema_version")
+            if isinstance(dataset_manifest, dict)
+            else None
+        ),
+        "evaluation_dataset_manifest_path": (
+            str(dataset_manifest_path) if dataset_manifest_path.exists() else None
+        ),
+        "outcome_dataset_run_id": (
+            outcomes_manifest.get("run_id")
+            if isinstance(outcomes_manifest, dict)
+            else None
+        ),
+        "outcome_dataset_schema_version": (
+            outcomes_manifest.get("schema_version")
+            if isinstance(outcomes_manifest, dict)
+            else None
+        ),
+        "outcome_dataset_manifest_path": (
+            str(outcomes_manifest_path)
+            if outcomes_manifest_path is not None and outcomes_manifest_path.exists()
+            else None
+        ),
+        "feature_input_versions": _extract_feature_input_versions(rows),
+    }
 
 
 def _count_rows_in_dataset(dataset_path: Path) -> int:
@@ -309,6 +391,7 @@ def run_public_outcome_validation(
     min_slice_size: int = 20,
     false_low_max_score: float = 40.0,
     false_high_min_score: float = 70.0,
+    baseline_run_id: str | None = None,
     overwrite: bool = False,
 ) -> dict[str, Any]:
     run_token = str(run_id or _timestamp_id())
@@ -399,6 +482,52 @@ def run_public_outcome_validation(
     summary_path = output_dir / "summary.md"
     summary_path.write_text(summary_text, encoding="utf-8")
 
+    listing = list_public_outcome_runs(artifact_root=output_root)
+    ordered_ids = [
+        str(item.get("run_id"))
+        for item in (listing.get("runs") or [])
+        if isinstance(item, dict) and item.get("run_id")
+    ]
+    selected_baseline_run = resolve_baseline_run_id(
+        ordered_run_ids=ordered_ids,
+        current_run_id=run_token,
+        baseline_run_id=baseline_run_id,
+    )
+    baseline_manifest: dict[str, Any] | None = None
+    baseline_metrics: dict[str, Any] | None = None
+    if selected_baseline_run:
+        baseline_dir = output_root.expanduser() / selected_baseline_run
+        baseline_manifest = _safe_load_json(baseline_dir / "manifest.json")
+        baseline_metrics = _safe_load_json(baseline_dir / "validation_metrics.json")
+    comparison_payload = build_validation_run_comparison(
+        current_run_id=run_token,
+        current_manifest={
+            "versions": {
+                "product_version": PRODUCT_VERSION,
+                "api_version": API_VERSION,
+                "scoring_model_version": SCORING_MODEL_VERSION,
+                "rules_logic_version": RULESET_LOGIC_VERSION,
+                "factor_schema_version": FACTOR_SCHEMA_VERSION,
+                "benchmark_pack_version": BENCHMARK_PACK_VERSION,
+                "calibration_version": CALIBRATION_VERSION,
+            },
+            "inputs": {"evaluation_dataset_path": str(dataset_path)},
+        },
+        current_report=report,
+        baseline_run_id=selected_baseline_run,
+        baseline_manifest=baseline_manifest,
+        baseline_report=baseline_metrics,
+    )
+    comparison_json_path = output_dir / "comparison_to_previous.json"
+    _write_json(comparison_json_path, comparison_payload)
+    comparison_md_path = output_dir / "comparison_to_previous.md"
+    comparison_md_path.write_text(
+        build_validation_comparison_markdown(comparison_payload),
+        encoding="utf-8",
+    )
+
+    dataset_governance = _dataset_governance(dataset_path, rows)
+
     manifest = {
         "schema_version": "1.0.0",
         "run_id": run_token,
@@ -417,6 +546,7 @@ def run_public_outcome_validation(
             "min_slice_size": int(max(2, int(min_slice_size))),
             "false_low_max_score": float(false_low_max_score),
             "false_high_min_score": float(false_high_min_score),
+            "baseline_run_id_requested": baseline_run_id,
         },
         "versions": {
             "product_version": PRODUCT_VERSION,
@@ -425,6 +555,22 @@ def run_public_outcome_validation(
             "rules_logic_version": RULESET_LOGIC_VERSION,
             "factor_schema_version": FACTOR_SCHEMA_VERSION,
             "benchmark_pack_version": BENCHMARK_PACK_VERSION,
+            "calibration_version": CALIBRATION_VERSION,
+        },
+        "governance": {
+            "model_version": SCORING_MODEL_VERSION,
+            "score_logic_version": RULESET_LOGIC_VERSION,
+            "calibration_version": CALIBRATION_VERSION,
+            **dataset_governance,
+            "command_config": {
+                "script": "scripts/run_public_outcome_validation.py",
+                "thresholds": [float(v) for v in (thresholds or list(DEFAULT_THRESHOLDS))],
+                "bins": int(max(2, int(bins))),
+                "min_slice_size": int(max(2, int(min_slice_size))),
+                "false_low_max_score": float(false_low_max_score),
+                "false_high_min_score": float(false_high_min_score),
+                "baseline_run_id": selected_baseline_run,
+            },
         },
         "raw_score_integrity": {
             "raw_wildfire_risk_score_preserved": True,
@@ -437,6 +583,8 @@ def run_public_outcome_validation(
             "false_low_review_set_jsonl": str(false_low_path),
             "false_high_review_set_jsonl": str(false_high_path),
             "evaluation_rows_csv": str(evaluated_rows_csv_path),
+            "comparison_to_previous_json": str(comparison_json_path),
+            "comparison_to_previous_markdown": str(comparison_md_path),
             "summary_markdown": str(summary_path),
         },
         "headline": {
@@ -445,6 +593,12 @@ def run_public_outcome_validation(
             "roc_auc": ((report.get("discrimination_metrics") or {}).get("wildfire_risk_score_auc") if isinstance(report.get("discrimination_metrics"), dict) else None),
             "pr_auc": ((report.get("discrimination_metrics") or {}).get("wildfire_risk_score_pr_auc") if isinstance(report.get("discrimination_metrics"), dict) else None),
             "brier": ((report.get("brier_scores") or {}).get("wildfire_probability_proxy") if isinstance(report.get("brier_scores"), dict) else None),
+        },
+        "comparison_to_previous": {
+            "available": bool(comparison_payload.get("available")),
+            "baseline_run_id": comparison_payload.get("baseline_run_id"),
+            "overall_direction_signals": comparison_payload.get("overall_direction_signals"),
+            "likely_change_drivers": comparison_payload.get("likely_change_drivers"),
         },
     }
     manifest_path = output_dir / "manifest.json"
@@ -456,6 +610,8 @@ def run_public_outcome_validation(
         "manifest_path": str(manifest_path),
         "summary_path": str(summary_path),
         "validation_metrics_path": str(validation_metrics_path),
+        "comparison_json_path": str(comparison_json_path),
+        "comparison_markdown_path": str(comparison_md_path),
     }
 
 
@@ -499,6 +655,11 @@ def main() -> int:
     parser.add_argument("--min-slice-size", type=int, default=20, help="Minimum slice size before small-sample warning.")
     parser.add_argument("--false-low-max-score", type=float, default=40.0)
     parser.add_argument("--false-high-min-score", type=float, default=70.0)
+    parser.add_argument(
+        "--baseline-run-id",
+        default="",
+        help="Optional baseline validation run id to compare against. Defaults to previous run.",
+    )
     parser.add_argument("--overwrite", action="store_true", help="Overwrite output run directory if present.")
     args = parser.parse_args()
 
@@ -514,6 +675,7 @@ def main() -> int:
         min_slice_size=max(2, int(args.min_slice_size)),
         false_low_max_score=float(args.false_low_max_score),
         false_high_min_score=float(args.false_high_min_score),
+        baseline_run_id=(args.baseline_run_id or None),
         overwrite=bool(args.overwrite),
     )
     print(json.dumps(result, indent=2, sort_keys=True))

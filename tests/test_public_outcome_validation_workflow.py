@@ -178,6 +178,8 @@ def test_public_outcome_validation_orchestration_is_deterministic_with_fixed_run
     assert (output_root / "fixed_validation_run" / "threshold_metrics.json").exists()
     assert (output_root / "fixed_validation_run" / "false_low_review_set.jsonl").exists()
     assert (output_root / "fixed_validation_run" / "false_high_review_set.jsonl").exists()
+    assert (output_root / "fixed_validation_run" / "comparison_to_previous.json").exists()
+    assert (output_root / "fixed_validation_run" / "comparison_to_previous.md").exists()
 
 
 def test_evaluation_jsonl_dataset_supports_join_confidence_slices(tmp_path: Path) -> None:

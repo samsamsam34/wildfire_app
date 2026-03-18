@@ -48,6 +48,7 @@ from backend.internal_diagnostics_artifacts import (
     list_no_ground_truth_runs,
     load_no_ground_truth_run_bundle,
 )
+from backend.public_outcome_artifacts import load_public_outcome_governance_snapshot
 from backend.layer_diagnostics import LAYER_SPECS
 from backend.mitigation import build_mitigation_plan
 from backend.models import (
@@ -11024,6 +11025,13 @@ def internal_diagnostics_compare(
         current_run_id=run_id,
         baseline_run_id=baseline_run_id,
     )
+
+
+@app.get("/internal/diagnostics/api/public-outcomes", dependencies=[Depends(require_api_key)])
+def internal_diagnostics_public_outcomes(
+    _: ActorContext = Depends(get_actor_context),
+) -> dict[str, Any]:
+    return load_public_outcome_governance_snapshot()
 
 
 @app.get("/internal/diagnostics/api/latest/{section_key}", dependencies=[Depends(require_api_key)])

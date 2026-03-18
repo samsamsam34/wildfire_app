@@ -19,10 +19,17 @@ if str(REPO_ROOT) not in sys.path:
 from backend.version import (  # noqa: E402
     API_VERSION,
     BENCHMARK_PACK_VERSION,
+    CALIBRATION_VERSION,
     FACTOR_SCHEMA_VERSION,
     PRODUCT_VERSION,
     RULESET_LOGIC_VERSION,
     SCORING_MODEL_VERSION,
+)
+from backend.public_outcome_governance import (  # noqa: E402
+    build_calibration_comparison_markdown,
+    build_calibration_run_comparison,
+    list_public_outcome_runs,
+    resolve_baseline_run_id,
 )
 
 DEFAULT_EVALUATION_DATASET_ROOT = Path("benchmark/public_outcomes/evaluation_dataset")
@@ -717,6 +724,86 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
     path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
 
 
+def _safe_load_json(path: Path) -> dict[str, Any] | None:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _extract_feature_input_versions(raw_rows: list[dict[str, Any]]) -> dict[str, list[str]]:
+    observed: dict[str, set[str]] = {
+        "scoring_model_versions": set(),
+        "factor_schema_versions": set(),
+        "rules_logic_versions": set(),
+        "region_data_versions": set(),
+        "data_bundle_versions": set(),
+    }
+    for row in raw_rows:
+        governance = None
+        if isinstance(row.get("model_governance"), dict):
+            governance = row.get("model_governance")
+        elif isinstance(row.get("provenance"), dict) and isinstance((row.get("provenance") or {}).get("model_governance"), dict):
+            governance = (row.get("provenance") or {}).get("model_governance")
+        governance = governance if isinstance(governance, dict) else {}
+        for key, field in (
+            ("scoring_model_versions", "scoring_model_version"),
+            ("factor_schema_versions", "factor_schema_version"),
+            ("rules_logic_versions", "rules_logic_version"),
+            ("region_data_versions", "region_data_version"),
+            ("data_bundle_versions", "data_bundle_version"),
+        ):
+            text = str(governance.get(field) or "").strip()
+            if text:
+                observed[key].add(text)
+    return {key: sorted(values) for key, values in observed.items() if values}
+
+
+def _dataset_governance(dataset_path: Path, raw_rows: list[dict[str, Any]]) -> dict[str, Any]:
+    dataset_manifest_path = dataset_path.parent / "manifest.json"
+    dataset_manifest = _safe_load_json(dataset_manifest_path) if dataset_manifest_path.exists() else None
+    dataset_inputs = dataset_manifest.get("inputs") if isinstance(dataset_manifest, dict) else {}
+    outcomes_path = (
+        Path(str(dataset_inputs.get("normalized_outcomes_path"))).expanduser()
+        if isinstance(dataset_inputs, dict) and dataset_inputs.get("normalized_outcomes_path")
+        else None
+    )
+    outcomes_manifest_path = outcomes_path.parent / "manifest.json" if outcomes_path else None
+    outcomes_manifest = (
+        _safe_load_json(outcomes_manifest_path)
+        if outcomes_manifest_path is not None and outcomes_manifest_path.exists()
+        else None
+    )
+    return {
+        "evaluation_dataset_run_id": dataset_path.parent.name,
+        "evaluation_dataset_schema_version": (
+            dataset_manifest.get("schema_version")
+            if isinstance(dataset_manifest, dict)
+            else None
+        ),
+        "evaluation_dataset_manifest_path": (
+            str(dataset_manifest_path) if dataset_manifest_path.exists() else None
+        ),
+        "outcome_dataset_run_id": (
+            outcomes_manifest.get("run_id")
+            if isinstance(outcomes_manifest, dict)
+            else None
+        ),
+        "outcome_dataset_schema_version": (
+            outcomes_manifest.get("schema_version")
+            if isinstance(outcomes_manifest, dict)
+            else None
+        ),
+        "outcome_dataset_manifest_path": (
+            str(outcomes_manifest_path)
+            if outcomes_manifest_path is not None and outcomes_manifest_path.exists()
+            else None
+        ),
+        "feature_input_versions": _extract_feature_input_versions(raw_rows),
+    }
+
+
 def _build_summary_markdown(
     *,
     run_id: str,
@@ -811,6 +898,7 @@ def run_public_outcome_calibration(
     min_negative: int = 8,
     min_rows_for_isotonic: int = 80,
     min_unique_scores_for_isotonic: int = 25,
+    baseline_run_id: str | None = None,
     overwrite: bool = False,
     export_artifact_path: Path | None = None,
 ) -> dict[str, Any]:
@@ -944,6 +1032,52 @@ def run_public_outcome_calibration(
         encoding="utf-8",
     )
 
+    listing = list_public_outcome_runs(artifact_root=output_root)
+    ordered_ids = [
+        str(item.get("run_id"))
+        for item in (listing.get("runs") or [])
+        if isinstance(item, dict) and item.get("run_id")
+    ]
+    selected_baseline_run = resolve_baseline_run_id(
+        ordered_run_ids=ordered_ids,
+        current_run_id=run_token,
+        baseline_run_id=baseline_run_id,
+    )
+    baseline_manifest: dict[str, Any] | None = None
+    baseline_pre_post: dict[str, Any] | None = None
+    if selected_baseline_run:
+        baseline_dir = output_root.expanduser() / selected_baseline_run
+        baseline_manifest = _safe_load_json(baseline_dir / "manifest.json")
+        baseline_pre_post = _safe_load_json(baseline_dir / "pre_vs_post_metrics.json")
+    comparison_payload = build_calibration_run_comparison(
+        current_run_id=run_token,
+        current_manifest={
+            "versions": {
+                "product_version": PRODUCT_VERSION,
+                "api_version": API_VERSION,
+                "scoring_model_version": SCORING_MODEL_VERSION,
+                "rules_logic_version": RULESET_LOGIC_VERSION,
+                "factor_schema_version": FACTOR_SCHEMA_VERSION,
+                "benchmark_pack_version": BENCHMARK_PACK_VERSION,
+                "calibration_version": CALIBRATION_VERSION,
+            },
+            "inputs": {"dataset_path": str(resolved_dataset)},
+        },
+        current_pre_post=pre_post,
+        baseline_run_id=selected_baseline_run,
+        baseline_manifest=baseline_manifest,
+        baseline_pre_post=baseline_pre_post,
+    )
+    comparison_json_path = run_dir / "comparison_to_previous.json"
+    _write_json(comparison_json_path, comparison_payload)
+    comparison_md_path = run_dir / "comparison_to_previous.md"
+    comparison_md_path.write_text(
+        build_calibration_comparison_markdown(comparison_payload),
+        encoding="utf-8",
+    )
+
+    dataset_governance = _dataset_governance(resolved_dataset, raw_rows)
+
     manifest = {
         "schema_version": "1.0.0",
         "run_id": run_token,
@@ -959,6 +1093,7 @@ def run_public_outcome_calibration(
             "min_negative": int(min_negative),
             "min_rows_for_isotonic": int(min_rows_for_isotonic),
             "min_unique_scores_for_isotonic": int(min_unique_scores_for_isotonic),
+            "baseline_run_id_requested": baseline_run_id,
         },
         "versions": {
             "product_version": PRODUCT_VERSION,
@@ -967,6 +1102,23 @@ def run_public_outcome_calibration(
             "rules_logic_version": RULESET_LOGIC_VERSION,
             "factor_schema_version": FACTOR_SCHEMA_VERSION,
             "benchmark_pack_version": BENCHMARK_PACK_VERSION,
+            "calibration_version": CALIBRATION_VERSION,
+        },
+        "governance": {
+            "model_version": SCORING_MODEL_VERSION,
+            "score_logic_version": RULESET_LOGIC_VERSION,
+            "calibration_version": CALIBRATION_VERSION,
+            **dataset_governance,
+            "command_config": {
+                "script": "scripts/fit_public_outcome_calibration.py",
+                "method_preference": method,
+                "min_rows": int(min_rows),
+                "min_positive": int(min_positive),
+                "min_negative": int(min_negative),
+                "min_rows_for_isotonic": int(min_rows_for_isotonic),
+                "min_unique_scores_for_isotonic": int(min_unique_scores_for_isotonic),
+                "baseline_run_id": selected_baseline_run,
+            },
         },
         "caveat": (
             "Calibration is based on public observed wildfire outcomes and is directional. "
@@ -977,12 +1129,20 @@ def run_public_outcome_calibration(
             "calibration_config": str(calibration_config_path),
             "pre_vs_post_metrics": str(pre_post_metrics_path),
             "calibration_curve": str(calibration_curve_path),
+            "comparison_to_previous_json": str(comparison_json_path),
+            "comparison_to_previous_markdown": str(comparison_md_path),
             "summary_markdown": str(summary_path),
         },
         "warnings": sorted(set(warnings)),
         "raw_score_integrity": {
             "raw_wildfire_risk_score_preserved": True,
             "note": "Calibration is additive and optional; raw model score remains intact.",
+        },
+        "comparison_to_previous": {
+            "available": bool(comparison_payload.get("available")),
+            "baseline_run_id": comparison_payload.get("baseline_run_id"),
+            "overall_direction_signals": comparison_payload.get("overall_direction_signals"),
+            "likely_change_drivers": comparison_payload.get("likely_change_drivers"),
         },
     }
     manifest_path = run_dir / "manifest.json"
@@ -1000,6 +1160,8 @@ def run_public_outcome_calibration(
         "calibration_model_path": str(artifact_path),
         "manifest_path": str(manifest_path),
         "summary_path": str(summary_path),
+        "comparison_json_path": str(comparison_json_path),
+        "comparison_markdown_path": str(comparison_md_path),
         "warnings": sorted(set(warnings)),
     }
 
@@ -1065,6 +1227,11 @@ def main() -> int:
     parser.add_argument("--min-rows-for-isotonic", type=int, default=80)
     parser.add_argument("--min-unique-scores-for-isotonic", type=int, default=25)
     parser.add_argument(
+        "--baseline-run-id",
+        default="",
+        help="Optional baseline calibration run id to compare against. Defaults to previous run.",
+    )
+    parser.add_argument(
         "--output",
         default="",
         help="Optional path to copy/export calibration_model.json for runtime use.",
@@ -1084,6 +1251,7 @@ def main() -> int:
         min_negative=max(1, int(args.min_negative)),
         min_rows_for_isotonic=max(10, int(args.min_rows_for_isotonic)),
         min_unique_scores_for_isotonic=max(5, int(args.min_unique_scores_for_isotonic)),
+        baseline_run_id=(args.baseline_run_id or None),
         overwrite=bool(args.overwrite),
         export_artifact_path=(Path(args.output).expanduser() if args.output else None),
     )

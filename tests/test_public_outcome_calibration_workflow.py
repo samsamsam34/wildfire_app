@@ -73,6 +73,8 @@ def test_run_public_outcome_calibration_writes_bundle(tmp_path: Path) -> None:
     assert (run_dir / "calibration_config.json").exists()
     assert (run_dir / "pre_vs_post_metrics.json").exists()
     assert (run_dir / "calibration_curve.json").exists()
+    assert (run_dir / "comparison_to_previous.json").exists()
+    assert (run_dir / "comparison_to_previous.md").exists()
     assert (run_dir / "summary.md").exists()
     assert (run_dir / "manifest.json").exists()
 

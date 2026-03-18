@@ -29,6 +29,14 @@ python scripts/fit_public_outcome_calibration.py \
   --output config/public_outcome_calibration.json
 ```
 
+Compare explicitly against a baseline calibration run:
+
+```bash
+python scripts/fit_public_outcome_calibration.py \
+  --dataset benchmark/public_outcomes/evaluation_dataset/<run_id>/evaluation_dataset.jsonl \
+  --baseline-run-id <previous_calibration_run_id>
+```
+
 ## Methods
 
 Supported fitting methods:
@@ -49,8 +57,14 @@ Artifacts:
 - `calibration_config.json`
 - `pre_vs_post_metrics.json`
 - `calibration_curve.json`
+- `comparison_to_previous.json`
+- `comparison_to_previous.md`
 - `summary.md`
 - `manifest.json`
+
+`comparison_to_previous.*` compares the current run against:
+- `--baseline-run-id <run_id>` when provided
+- otherwise the most recent prior run in the same output root
 
 ## Guardrails
 
@@ -61,6 +75,17 @@ The fitter warns or skips fitting when:
 - calibrated metrics degrade vs raw baseline
 
 Raw deterministic scores remain preserved and distinct from calibrated outputs.
+
+## Run-to-run Governance
+
+Each calibration `manifest.json` now includes:
+- model/scoring governance versions
+- calibration version
+- dataset lineage metadata (evaluation dataset + normalized outcomes manifest when available)
+- observed feature/input version rollups (if available in dataset rows)
+- command configuration used for the fit
+
+This provides traceable before/after calibration reporting across runs.
 
 ## Runtime Use
 

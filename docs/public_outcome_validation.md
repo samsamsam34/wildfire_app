@@ -28,6 +28,14 @@ python scripts/run_public_outcome_validation.py \
   --evaluation-dataset-run-id <run_id>
 ```
 
+Compare explicitly against a baseline validation run:
+
+```bash
+python scripts/run_public_outcome_validation.py \
+  --evaluation-dataset-run-id <run_id> \
+  --baseline-run-id <previous_validation_run_id>
+```
+
 ## Inputs
 
 Expected labeled dataset:
@@ -49,8 +57,14 @@ Artifacts:
 - `false_low_review_set.jsonl`
 - `false_high_review_set.jsonl`
 - `evaluation_rows.csv`
+- `comparison_to_previous.json`
+- `comparison_to_previous.md`
 - `summary.md`
 - `manifest.json`
+
+`comparison_to_previous.*` compares the current run against:
+- `--baseline-run-id <run_id>` when provided
+- otherwise the most recent prior run in the same output root
 
 ## Metrics Reported
 
@@ -87,6 +101,17 @@ The workflow warns when:
 - leakage-like patterns are detected
 
 If the sample is small, the report still computes available metrics and avoids overstating precision.
+
+## Run-to-run Governance
+
+Each validation `manifest.json` now includes:
+- model/scoring governance versions
+- calibration version
+- dataset lineage metadata (evaluation dataset + normalized outcomes manifest when available)
+- observed feature/input version rollups (if present in joined rows)
+- command configuration used for the run
+
+This supports reproducible before/after comparisons over time.
 
 ## Caveats
 

@@ -22,6 +22,7 @@ Model Health view highlights:
 - distribution spread and evidence-tier context
 - benchmark alignment summaries (signals, correlation/agreement, disagreement counts) with explicit caveats
 - run comparison panel for latest-vs-previous or explicit run-vs-run drift checks
+- public-outcome governance panel with latest validation/calibration summaries and before/after deltas
 
 ## Route
 
@@ -33,6 +34,7 @@ The page is served by the backend and reads internal diagnostics APIs:
 - `GET /internal/diagnostics/api/latest`
 - `GET /internal/diagnostics/api/run/{run_id}`
 - `GET /internal/diagnostics/api/compare?run_id=<current>&baseline_run_id=<baseline>`
+- `GET /internal/diagnostics/api/public-outcomes`
 - `GET /internal/diagnostics/api/latest/{section_key}`
 - `GET /internal/diagnostics/api/run/{run_id}/{section_key}`
 
@@ -62,6 +64,33 @@ Expected files inside each run folder:
 - `comparison_to_previous.md`
 
 If missing, the dashboard degrades gracefully and shows clear empty-state guidance.
+
+### Public-outcome governance artifacts (optional)
+
+Validation root:
+
+- `benchmark/public_outcomes/validation`
+
+Calibration root:
+
+- `benchmark/public_outcomes/calibration`
+
+Overrides:
+
+- `WF_PUBLIC_OUTCOME_VALIDATION_DIR=/path/to/validation/runs`
+- `WF_PUBLIC_OUTCOME_CALIBRATION_DIR=/path/to/calibration/runs`
+
+Expected per-run files used by the dashboard:
+
+- Validation:
+  - `manifest.json`
+  - `validation_metrics.json`
+  - `comparison_to_previous.json`
+- Calibration:
+  - `manifest.json`
+  - `pre_vs_post_metrics.json`
+  - `calibration_model.json`
+  - `comparison_to_previous.json`
 
 ### Property diagnostics
 
@@ -93,6 +122,8 @@ uvicorn backend.main:app --reload
 
 ```bash
 python scripts/run_no_ground_truth_evaluation.py
+python scripts/run_public_outcome_validation.py
+python scripts/fit_public_outcome_calibration.py
 ```
 
 3. Open dashboard:

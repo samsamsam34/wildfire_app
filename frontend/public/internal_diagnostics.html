@@ -350,6 +350,20 @@
             <div id="compareSignals" class="note-list"></div>
           </details>
         </section>
+
+        <section class="card">
+          <h3>Public Outcome Governance (Internal)</h3>
+          <p id="publicOutcomeStatus" class="status">Loading public-outcome validation/calibration summaries...</p>
+          <div id="publicOutcomeCards" class="grid"></div>
+          <details open>
+            <summary>Validation Changes Vs Previous Run</summary>
+            <div id="publicOutcomeValidationCompare" class="note-list"></div>
+          </details>
+          <details>
+            <summary>Calibration Changes Vs Previous Run</summary>
+            <div id="publicOutcomeCalibrationCompare" class="note-list"></div>
+          </details>
+        </section>
       </section>
 
       <section id="panelProperty" class="panel active">
@@ -832,6 +846,96 @@
         }
       }
 
+      async function loadPublicOutcomeGovernance() {
+        setStatus("publicOutcomeStatus", "Loading public-outcome governance summaries...");
+        try {
+          const payload = await api("/internal/diagnostics/api/public-outcomes");
+          const validation = ((payload.validation || {}).latest_summary) || {};
+          const calibration = ((payload.calibration || {}).latest_summary) || {};
+          const validationCompare = ((payload.validation || {}).comparison_to_previous) || {};
+          const calibrationCompare = ((payload.calibration || {}).comparison_to_previous) || {};
+
+          if (!payload.available) {
+            setStatus("publicOutcomeStatus", "No public-outcome validation/calibration artifacts found.", true);
+            renderCards("publicOutcomeCards", []);
+            renderNotes("publicOutcomeValidationCompare", [((payload.validation || {}).listing || {}).message || "No validation runs available."]);
+            renderNotes("publicOutcomeCalibrationCompare", [((payload.calibration || {}).listing || {}).message || "No calibration runs available."]);
+            return;
+          }
+
+          setStatus(
+            "publicOutcomeStatus",
+            `Validation run ${validation.run_id || "N/A"} | Calibration run ${calibration.run_id || "N/A"}`
+          );
+
+          const cards = [
+            {
+              title: "Validation ROC AUC",
+              value: validation.roc_auc != null ? Number(validation.roc_auc).toFixed(3) : "N/A",
+              className: (validation.roc_auc != null && Number(validation.roc_auc) >= 0.65) ? "good" : "warn",
+              detail: `n=${validation.sample_count ?? 0} | prevalence=${validation.prevalence != null ? Number(validation.prevalence).toFixed(3) : "N/A"}`,
+            },
+            {
+              title: "Validation Brier",
+              value: validation.brier_score != null ? Number(validation.brier_score).toFixed(4) : "N/A",
+              className: (validation.brier_score != null && Number(validation.brier_score) <= 0.20) ? "good" : "warn",
+              detail: `ECE=${validation.calibration_error != null ? Number(validation.calibration_error).toFixed(4) : "N/A"} | false lows=${validation.false_low_count ?? 0}`,
+            },
+            {
+              title: "Calibration Method",
+              value: calibration.method || "N/A",
+              className: calibration.fitted ? "good" : "warn",
+              detail: `run ${calibration.run_id || "N/A"} | fitted=${calibration.fitted === true ? "yes" : "no"}`,
+            },
+            {
+              title: "Calibration Gain",
+              value: calibration.brier_improvement != null ? Number(calibration.brier_improvement).toFixed(4) : "N/A",
+              className: (calibration.brier_improvement != null && Number(calibration.brier_improvement) > 0) ? "good" : "warn",
+              detail: `pre=${calibration.pre_brier != null ? Number(calibration.pre_brier).toFixed(4) : "N/A"} | post=${calibration.post_brier != null ? Number(calibration.post_brier).toFixed(4) : "N/A"}`,
+            },
+          ];
+          renderCards("publicOutcomeCards", cards);
+
+          const validationNotes = [];
+          if (validationCompare.available) {
+            const d = validationCompare.delta || {};
+            validationNotes.push(`Run comparison: ${validationCompare.run_id} vs ${validationCompare.baseline_run_id}`);
+            validationNotes.push(`ROC AUC delta: ${d.roc_auc != null ? Number(d.roc_auc).toFixed(4) : "N/A"}`);
+            validationNotes.push(`PR AUC delta: ${d.pr_auc != null ? Number(d.pr_auc).toFixed(4) : "N/A"}`);
+            validationNotes.push(`Brier delta: ${d.brier_score != null ? Number(d.brier_score).toFixed(4) : "N/A"}`);
+            validationNotes.push(`False-low delta: ${d.false_low_count != null ? Number(d.false_low_count).toFixed(0) : "N/A"}`);
+            validationNotes.push(`False-high delta: ${d.false_high_count != null ? Number(d.false_high_count).toFixed(0) : "N/A"}`);
+            (validationCompare.overall_direction_signals || []).forEach((signal) => {
+              validationNotes.push(`Signal: ${signal}`);
+            });
+          } else {
+            validationNotes.push(validationCompare.message || "No previous validation run available for comparison.");
+          }
+          renderNotes("publicOutcomeValidationCompare", validationNotes);
+
+          const calibrationNotes = [];
+          if (calibrationCompare.available) {
+            const d = calibrationCompare.delta || {};
+            calibrationNotes.push(`Run comparison: ${calibrationCompare.run_id} vs ${calibrationCompare.baseline_run_id}`);
+            calibrationNotes.push(`Brier improvement delta: ${d.brier_improvement != null ? Number(d.brier_improvement).toFixed(4) : "N/A"}`);
+            calibrationNotes.push(`Post Brier delta: ${d.post_brier != null ? Number(d.post_brier).toFixed(4) : "N/A"}`);
+            calibrationNotes.push(`Post ROC AUC delta: ${d.post_roc_auc_probability != null ? Number(d.post_roc_auc_probability).toFixed(4) : "N/A"}`);
+            calibrationNotes.push(`Post PR AUC delta: ${d.post_pr_auc_probability != null ? Number(d.post_pr_auc_probability).toFixed(4) : "N/A"}`);
+            (calibrationCompare.overall_direction_signals || []).forEach((signal) => {
+              calibrationNotes.push(`Signal: ${signal}`);
+            });
+          } else {
+            calibrationNotes.push(calibrationCompare.message || "No previous calibration run available for comparison.");
+          }
+          renderNotes("publicOutcomeCalibrationCompare", calibrationNotes);
+        } catch (err) {
+          setStatus("publicOutcomeStatus", `Public-outcome summaries could not be loaded: ${err}`, true);
+          renderCards("publicOutcomeCards", []);
+          renderNotes("publicOutcomeValidationCompare", ["Validation comparison unavailable."]);
+          renderNotes("publicOutcomeCalibrationCompare", ["Calibration comparison unavailable."]);
+        }
+      }
+
       function parseFloatOrNull(value) {
         const n = Number(value);
         return Number.isFinite(n) ? n : null;
@@ -1167,6 +1271,7 @@
           const selected = document.getElementById("runSelect").value || null;
           await loadModelHealth(selected);
           await loadRunComparison(selected, document.getElementById("baselineRunSelect").value || "");
+          await loadPublicOutcomeGovernance();
         });
         document.getElementById("compareRuns").addEventListener("click", async () => {
           const selected = document.getElementById("runSelect").value || null;
@@ -1189,6 +1294,7 @@
         await loadRuns();
         await loadModelHealth(currentRunId);
         await loadRunComparison(currentRunId, document.getElementById("baselineRunSelect").value || "");
+        await loadPublicOutcomeGovernance();
       }
 
       init();

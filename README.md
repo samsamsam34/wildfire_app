@@ -102,7 +102,7 @@ Review and operations:
 - organizations and underwriting rulesets
 - audit and summary endpoints (`/audit/events`, `/admin/summary`)
 - internal diagnostics dashboard: `GET /internal/diagnostics` (internal trust metadata view)
-- internal diagnostics APIs: `/internal/diagnostics/api/*`
+- internal diagnostics APIs: `/internal/diagnostics/api/*` (including `/internal/diagnostics/api/public-outcomes` for validation/calibration governance snapshots)
 
 Diagnostics opt-in note:
 - `include_diagnostics=true` returns an envelope with:
