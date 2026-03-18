@@ -12,331 +12,411 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from backend.event_backtesting import DEFAULT_DATASET_PATH, run_event_backtest
-from backend.public_outcome_validation import (
+from backend.public_outcome_validation import (  # noqa: E402
     DEFAULT_THRESHOLDS,
     evaluate_public_outcome_dataset_file,
     write_evaluation_rows_csv,
 )
-from backend.version import (
+from backend.version import (  # noqa: E402
     API_VERSION,
     BENCHMARK_PACK_VERSION,
-    CALIBRATION_VERSION,
     FACTOR_SCHEMA_VERSION,
     PRODUCT_VERSION,
     RULESET_LOGIC_VERSION,
     SCORING_MODEL_VERSION,
 )
-from scripts.build_calibration_dataset import build_calibration_dataset
-from scripts.fit_public_outcome_calibration import fit_calibration
-from scripts.ingest_public_structure_damage import normalize_public_damage_rows
+
+DEFAULT_EVALUATION_DATASET_ROOT = Path("benchmark/public_outcomes/evaluation_dataset")
+DEFAULT_VALIDATION_OUTPUT_ROOT = Path("benchmark/public_outcomes/validation")
 
 
 def _timestamp_id() -> str:
     return datetime.now(tz=timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
 
-def _deterministic_timestamp(run_id: str | None) -> str:
-    if run_id:
-        return str(run_id)
+def _iso_now() -> str:
     return datetime.now(tz=timezone.utc).isoformat()
 
 
-def _collect_governance(rows: list[dict[str, Any]]) -> dict[str, list[str]]:
-    keys = (
-        "product_version",
-        "api_version",
-        "scoring_model_version",
-        "ruleset_version",
-        "rules_logic_version",
-        "factor_schema_version",
-        "benchmark_pack_version",
-        "calibration_version",
-        "region_data_version",
-        "data_bundle_version",
+def _write_json(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+
+
+def _write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as fh:
+        for row in rows:
+            fh.write(json.dumps(row, sort_keys=True))
+            fh.write("\n")
+
+
+def _count_rows_in_dataset(dataset_path: Path) -> int:
+    suffix = dataset_path.suffix.lower()
+    if suffix == ".jsonl":
+        with dataset_path.open("r", encoding="utf-8") as fh:
+            return sum(1 for line in fh if line.strip())
+    if suffix == ".csv":
+        with dataset_path.open("r", encoding="utf-8", newline="") as fh:
+            return sum(1 for _ in fh) - 1
+    payload = json.loads(dataset_path.read_text(encoding="utf-8"))
+    if isinstance(payload, dict):
+        if isinstance(payload.get("rows"), list):
+            return len(payload["rows"])
+        if isinstance(payload.get("records"), list):
+            return len(payload["records"])
+    if isinstance(payload, list):
+        return len(payload)
+    return 0
+
+
+def _resolve_latest_dataset_jsonl(dataset_root: Path) -> Path:
+    if not dataset_root.exists():
+        raise ValueError(
+            f"Evaluation dataset root does not exist: {dataset_root}. "
+            "Run scripts/build_public_outcome_evaluation_dataset.py first."
+        )
+    run_dirs = sorted(
+        [path for path in dataset_root.iterdir() if path.is_dir()],
+        key=lambda path: path.name,
+        reverse=True,
     )
-    values: dict[str, set[str]] = {key: set() for key in keys}
-    for row in rows:
-        governance = row.get("model_governance")
-        if not isinstance(governance, dict):
-            continue
-        for key in keys:
-            token = str(governance.get(key) or "").strip()
-            if token:
-                values[key].add(token)
-    return {key: sorted(tokens) for key, tokens in values.items() if tokens}
-
-
-def _headline_assessment(evaluation: dict[str, Any]) -> dict[str, Any]:
-    metrics = evaluation.get("discrimination_metrics") or {}
-    brier = evaluation.get("brier_scores") or {}
-    calibration = evaluation.get("calibration_metrics") or {}
-    auc = metrics.get("wildfire_risk_score_auc")
-    spearman = metrics.get("wildfire_vs_outcome_rank_spearman")
-    ece = ((calibration.get("wildfire_risk_score") or {}).get("expected_calibration_error"))
-    raw_brier = brier.get("wildfire_probability_proxy")
-    directional = bool(isinstance(auc, (int, float)) and auc >= 0.6)
-
-    if isinstance(ece, (int, float)):
-        if ece <= 0.06:
-            calibration_quality = "well_calibrated"
-        elif ece <= 0.12:
-            calibration_quality = "mixed_calibration"
-        else:
-            calibration_quality = "poorly_calibrated"
-    else:
-        calibration_quality = "insufficient_data"
-
-    recommendation = str(evaluation.get("calibration_artifact_recommendation") or "not_recommended_yet")
-    return {
-        "directional_predictive_value": directional,
-        "wildfire_risk_score_auc": auc,
-        "wildfire_vs_outcome_rank_spearman": spearman,
-        "wildfire_probability_proxy_brier": raw_brier,
-        "wildfire_probability_proxy_ece": ece,
-        "calibration_quality_assessment": calibration_quality,
-        "calibration_artifact_recommendation": recommendation,
-    }
-
-
-def _format_slice_line(name: str, detail: dict[str, Any]) -> str:
-    return (
-        f"- `{name}`: count={detail.get('count')}, "
-        f"auc={detail.get('wildfire_risk_score_auc')}, "
-        f"brier={detail.get('wildfire_risk_score_brier')}, "
-        f"positive_rate={detail.get('positive_rate')}"
+    for run_dir in run_dirs:
+        candidate = run_dir / "evaluation_dataset.jsonl"
+        if candidate.exists():
+            return candidate
+    raise ValueError(
+        f"No evaluation_dataset.jsonl files found under {dataset_root}. "
+        "Run scripts/build_public_outcome_evaluation_dataset.py first."
     )
 
 
-def _build_markdown_summary(
+def _resolve_dataset_path(
+    *,
+    dataset_path: Path | None,
+    dataset_root: Path,
+    dataset_run_id: str | None,
+) -> Path:
+    if dataset_path is not None:
+        resolved = dataset_path.expanduser()
+        if not resolved.exists():
+            raise ValueError(f"Evaluation dataset not found: {resolved}")
+        return resolved
+    if dataset_run_id:
+        run_dir = dataset_root / str(dataset_run_id)
+        candidate_jsonl = run_dir / "evaluation_dataset.jsonl"
+        candidate_json = run_dir / "evaluation_dataset.json"
+        if candidate_jsonl.exists():
+            return candidate_jsonl
+        if candidate_json.exists():
+            return candidate_json
+        raise ValueError(
+            f"Run '{dataset_run_id}' not found under {dataset_root} or missing evaluation_dataset.jsonl."
+        )
+    return _resolve_latest_dataset_jsonl(dataset_root)
+
+
+def _format_float(value: Any) -> str:
+    if not isinstance(value, (int, float)):
+        return "n/a"
+    return f"{float(value):.4f}"
+
+
+def _build_summary_markdown(
     *,
     run_id: str,
-    evaluation: dict[str, Any],
-    manifest: dict[str, Any],
-    fitted_calibration_artifact_path: str | None,
+    generated_at: str,
+    dataset_path: Path,
+    report: dict[str, Any],
 ) -> str:
-    headline = _headline_assessment(evaluation)
-    guardrails = evaluation.get("guardrails") or {}
-    slice_metrics = evaluation.get("slice_metrics") or {}
-    by_confidence = slice_metrics.get("by_confidence_tier") or {}
-    by_evidence = slice_metrics.get("by_evidence_group") or {}
+    sample_counts = report.get("sample_counts") if isinstance(report.get("sample_counts"), dict) else {}
+    discrimination = report.get("discrimination_metrics") if isinstance(report.get("discrimination_metrics"), dict) else {}
+    brier = report.get("brier_scores") if isinstance(report.get("brier_scores"), dict) else {}
+    default_threshold = report.get("default_threshold_70") if isinstance(report.get("default_threshold_70"), dict) else {}
+    guardrails = report.get("guardrails") if isinstance(report.get("guardrails"), dict) else {}
+    slice_metrics = report.get("slice_metrics") if isinstance(report.get("slice_metrics"), dict) else {}
+    review_sets = report.get("false_review_sets") if isinstance(report.get("false_review_sets"), dict) else {}
+    calibration_metrics = report.get("calibration_metrics") if isinstance(report.get("calibration_metrics"), dict) else {}
+    wildfire_calibration = (
+        calibration_metrics.get("wildfire_risk_score")
+        if isinstance(calibration_metrics.get("wildfire_risk_score"), dict)
+        else {}
+    )
 
     lines = [
-        "# Public Outcome Validation v1",
+        "# Public Outcome Validation",
+        "",
+        "Validation against public observed wildfire outcomes.",
+        "This is directional validation and not carrier claims truth or underwriting-performance truth.",
+        "Outcome target: `structure_loss_or_major_damage` (major damage or destroyed = 1).",
         "",
         f"- Run ID: `{run_id}`",
-        f"- Generated at: `{manifest.get('generated_at')}`",
-        f"- Dataset rows (usable): `{(evaluation.get('sample_counts') or {}).get('row_count_usable')}`",
-        f"- Positive rate: `{(evaluation.get('sample_counts') or {}).get('positive_rate')}`",
+        f"- Generated at: `{generated_at}`",
+        f"- Input labeled dataset: `{dataset_path}`",
+        f"- Usable labeled rows: `{sample_counts.get('row_count_usable')}`",
+        f"- Outcome prevalence (adverse): `{_format_float(sample_counts.get('positive_rate'))}`",
         "",
-        "## Directional Predictive Value",
-        (
-            "- **Directional predictive value detected**."
-            if headline.get("directional_predictive_value")
-            else "- **Directional predictive value not yet established**."
-        ),
-        f"- ROC AUC (wildfire risk): `{headline.get('wildfire_risk_score_auc')}`",
-        f"- Spearman (risk vs outcome rank): `{headline.get('wildfire_vs_outcome_rank_spearman')}`",
+        "## Discrimination",
+        f"- ROC AUC (wildfire risk): `{_format_float(discrimination.get('wildfire_risk_score_auc'))}`",
+        f"- PR AUC (wildfire risk): `{_format_float(discrimination.get('wildfire_risk_score_pr_auc'))}`",
+        f"- Spearman rank correlation: `{_format_float(discrimination.get('wildfire_vs_outcome_rank_spearman'))}`",
         "",
-        "## Calibration Quality",
-        f"- Brier score (raw wildfire probability proxy): `{headline.get('wildfire_probability_proxy_brier')}`",
-        f"- ECE (raw wildfire probability proxy): `{headline.get('wildfire_probability_proxy_ece')}`",
-        f"- Assessment: `{headline.get('calibration_quality_assessment')}`",
+        "## Calibration",
+        f"- Brier score (raw wildfire probability proxy): `{_format_float(brier.get('wildfire_probability_proxy'))}`",
+        f"- ECE (raw wildfire risk): `{_format_float(wildfire_calibration.get('expected_calibration_error'))}`",
         "",
-        "## Confidence/Evidence Slices",
+        "## Default Threshold (70)",
+        f"- Precision: `{_format_float(default_threshold.get('precision'))}`",
+        f"- Recall: `{_format_float(default_threshold.get('recall'))}`",
+        f"- F1: `{_format_float(default_threshold.get('f1'))}`",
+        "",
+        "## Sliced Analysis Highlights",
     ]
-    if by_confidence:
-        lines.append("### By Confidence Tier")
-        for name in sorted(by_confidence.keys()):
-            lines.append(_format_slice_line(name, by_confidence[name]))
+
+    by_evidence = slice_metrics.get("by_evidence_group") if isinstance(slice_metrics.get("by_evidence_group"), dict) else {}
+    by_confidence = slice_metrics.get("by_confidence_tier") if isinstance(slice_metrics.get("by_confidence_tier"), dict) else {}
+    by_join = slice_metrics.get("by_join_confidence_tier") if isinstance(slice_metrics.get("by_join_confidence_tier"), dict) else {}
     if by_evidence:
-        lines.append("")
         lines.append("### By Evidence Group")
-        for name in sorted(by_evidence.keys()):
-            lines.append(_format_slice_line(name, by_evidence[name]))
+        for name in sorted(by_evidence):
+            detail = by_evidence[name] if isinstance(by_evidence[name], dict) else {}
+            lines.append(
+                f"- `{name}`: n={detail.get('count')}, "
+                f"auc={_format_float(detail.get('wildfire_risk_score_auc'))}, "
+                f"pr_auc={_format_float(detail.get('wildfire_risk_score_pr_auc'))}"
+            )
+    if by_confidence:
+        lines.append("")
+        lines.append("### By Confidence Tier")
+        for name in sorted(by_confidence):
+            detail = by_confidence[name] if isinstance(by_confidence[name], dict) else {}
+            lines.append(
+                f"- `{name}`: n={detail.get('count')}, "
+                f"auc={_format_float(detail.get('wildfire_risk_score_auc'))}, "
+                f"brier={_format_float(detail.get('wildfire_risk_score_brier'))}"
+            )
+    if by_join:
+        lines.append("")
+        lines.append("### By Join-Confidence Tier")
+        for name in sorted(by_join):
+            detail = by_join[name] if isinstance(by_join[name], dict) else {}
+            lines.append(
+                f"- `{name}`: n={detail.get('count')}, "
+                f"auc={_format_float(detail.get('wildfire_risk_score_auc'))}, "
+                f"pr_auc={_format_float(detail.get('wildfire_risk_score_pr_auc'))}"
+            )
 
     lines.extend(
         [
+            "",
+            "## Error Review Sets",
+            f"- False-low count: `{review_sets.get('false_low_count')}`",
+            f"- False-high count: `{review_sets.get('false_high_count')}`",
+            f"- Unstable but outcome-positive count: `{review_sets.get('unstable_positive_count')}`",
+            f"- Low-confidence but outcome-positive count: `{review_sets.get('low_confidence_positive_count')}`",
             "",
             "## Guardrails",
         ]
     )
-    warnings = list(guardrails.get("warnings") or [])
-    if not warnings:
-        lines.append("- No additional guardrail warnings.")
-    else:
+    warnings = guardrails.get("warnings") if isinstance(guardrails.get("warnings"), list) else []
+    if warnings:
         for warning in warnings:
             lines.append(f"- {warning}")
+    else:
+        lines.append("- No guardrail warnings.")
 
     lines.extend(
         [
             "",
-            "## Calibration Artifact Decision",
-            f"- Recommendation: `{headline.get('calibration_artifact_recommendation')}`",
-            (
-                f"- Fitted artifact: `{fitted_calibration_artifact_path}`"
-                if fitted_calibration_artifact_path
-                else "- Fitted artifact: not produced in this run."
-            ),
-            "",
             "## Caveats",
-            "- This is directional validation against public outcomes, not carrier claims truth.",
-            "- Deterministic raw model scores remain unchanged; calibration artifacts are optional overlays.",
-            "- Fallback-heavy cohorts should not be used as primary calibration anchors.",
+            "- Public observed outcomes are imperfect and incomplete.",
+            "- This report preserves and evaluates raw, uncalibrated model scores before any calibration overlay.",
+            "- Treat results as directional model validation, not insurer claims validation.",
         ]
     )
     return "\n".join(lines) + "\n"
 
 
+def _insufficient_data_report(
+    *,
+    generated_at: str,
+    dataset_path: Path,
+    error: str,
+) -> dict[str, Any]:
+    total_rows = _count_rows_in_dataset(dataset_path)
+    return {
+        "schema_version": "1.1.0",
+        "generated_at": generated_at,
+        "status": "insufficient_data",
+        "error": error,
+        "row_count_labeled": 0,
+        "sample_counts": {
+            "row_count_total": total_rows,
+            "row_count_usable": 0,
+            "positive_count": 0,
+            "negative_count": 0,
+            "positive_rate": None,
+            "validation_exclusions": {
+                "missing_required_fields": {},
+                "invalid_row_examples": [],
+            },
+        },
+        "discrimination_metrics": {
+            "wildfire_risk_score_auc": None,
+            "wildfire_risk_score_pr_auc": None,
+            "wildfire_vs_outcome_rank_spearman": None,
+        },
+        "threshold_metrics_wildfire_risk_score": {},
+        "default_threshold_70": {"confusion_matrix": {"tp": 0, "fp": 0, "tn": 0, "fn": 0}, "precision": None, "recall": None, "f1": None},
+        "brier_scores": {"wildfire_probability_proxy": None},
+        "calibration_metrics": {"wildfire_risk_score": {"bins": [], "expected_calibration_error": None}},
+        "slice_metrics": {
+            "by_confidence_tier": {},
+            "by_evidence_group": {},
+            "by_join_confidence_tier": {},
+        },
+        "false_review_sets": {
+            "false_low_count": 0,
+            "false_high_count": 0,
+            "unstable_positive_count": 0,
+            "low_confidence_positive_count": 0,
+            "false_low_examples": [],
+            "false_high_examples": [],
+        },
+        "guardrails": {
+            "warnings": [
+                "Insufficient usable labeled rows for stable public-outcome validation metrics.",
+                error,
+            ],
+            "small_sample_warning": True,
+            "fallback_heavy_warning": False,
+            "leakage_warning": False,
+        },
+        "directional_predictive_value": False,
+        "calibration_artifact_recommendation": "not_recommended_yet",
+    }
+
+
 def run_public_outcome_validation(
     *,
-    outcomes_input: Path,
-    feature_artifacts: list[Path] | None = None,
-    backtest_datasets: list[Path] | None = None,
-    output_root: Path = Path("benchmark/public_outcome_validation"),
+    evaluation_dataset: Path | None = None,
+    evaluation_dataset_root: Path = DEFAULT_EVALUATION_DATASET_ROOT,
+    evaluation_dataset_run_id: str | None = None,
+    output_root: Path = DEFAULT_VALIDATION_OUTPUT_ROOT,
     run_id: str | None = None,
     thresholds: list[float] | None = None,
     bins: int = 10,
-    fit_calibration_artifact: bool = False,
-    min_rows_for_fit: int = 50,
-    fallback_heavy_fit_threshold: float = 0.50,
-    allow_fallback_heavy_fit: bool = False,
-    source_name: str | None = None,
-    reuse_existing_assessments: bool = False,
+    min_slice_size: int = 20,
+    false_low_max_score: float = 40.0,
+    false_high_min_score: float = 70.0,
     overwrite: bool = False,
 ) -> dict[str, Any]:
     run_token = str(run_id or _timestamp_id())
-    generated_at = _deterministic_timestamp(run_id)
-    run_dir = Path(output_root).expanduser() / run_token
-    if run_dir.exists() and not overwrite:
-        raise ValueError(f"Output run directory already exists: {run_dir}. Use --overwrite to replace it.")
-    run_dir.mkdir(parents=True, exist_ok=True)
+    generated_at = str(run_id) if run_id else _iso_now()
+    output_dir = output_root.expanduser() / run_token
+    if output_dir.exists() and not overwrite:
+        raise ValueError(f"Output run directory already exists: {output_dir}. Use --overwrite to replace it.")
+    output_dir.mkdir(parents=True, exist_ok=True)
 
-    # 1) Normalize public outcomes.
-    normalized = normalize_public_damage_rows(
-        input_path=Path(outcomes_input).expanduser(),
-        source_name=source_name,
+    dataset_path = _resolve_dataset_path(
+        dataset_path=evaluation_dataset,
+        dataset_root=evaluation_dataset_root.expanduser(),
+        dataset_run_id=evaluation_dataset_run_id,
     )
-    normalized["generated_at"] = generated_at
-    normalized_path = run_dir / "public_outcomes_normalized.json"
-    normalized_path.write_text(json.dumps(normalized, indent=2, sort_keys=True), encoding="utf-8")
-    if int(normalized.get("record_count") or 0) == 0:
-        raise ValueError("Outcome normalization produced zero usable records; cannot run validation.")
 
-    # 2) Run or load backtest feature artifacts.
-    artifact_paths: list[Path]
-    backtest_info: dict[str, Any]
-    if feature_artifacts:
-        artifact_paths = [Path(path).expanduser() for path in feature_artifacts]
-        for path in artifact_paths:
-            if not path.exists():
-                raise ValueError(f"Feature artifact not found: {path}")
-        backtest_info = {
-            "mode": "loaded_existing",
-            "feature_artifacts": [str(path) for path in artifact_paths],
-        }
-    else:
-        datasets = backtest_datasets or [DEFAULT_DATASET_PATH]
-        backtest_dir = run_dir / "event_backtest_results"
-        backtest_artifact = run_event_backtest(
-            dataset_paths=[str(path) for path in datasets],
-            output_dir=backtest_dir,
-            reuse_existing_assessments=reuse_existing_assessments,
+    rows: list[dict[str, Any]]
+    try:
+        report, rows = evaluate_public_outcome_dataset_file(
+            dataset_path=dataset_path,
+            thresholds=(thresholds or list(DEFAULT_THRESHOLDS)),
+            bins=max(2, int(bins)),
+            min_slice_size=max(2, int(min_slice_size)),
+            false_low_max_score=float(false_low_max_score),
+            false_high_min_score=float(false_high_min_score),
+            generated_at=generated_at,
         )
-        artifact_paths = [Path(str(backtest_artifact.get("artifact_path")))]
-        backtest_info = {
-            "mode": "executed",
-            "datasets": [str(Path(path).expanduser()) for path in datasets],
-            "artifact_path": str(backtest_artifact.get("artifact_path")),
-            "markdown_summary_path": str(backtest_artifact.get("markdown_summary_path")),
-        }
+    except ValueError as exc:
+        rows = []
+        report = _insufficient_data_report(
+            generated_at=generated_at,
+            dataset_path=dataset_path,
+            error=str(exc),
+        )
 
-    # 3) Build joined calibration dataset.
-    calibration_dataset_path = run_dir / "public_outcome_calibration_dataset.json"
-    calibration_dataset_csv_path = run_dir / "public_outcome_calibration_dataset.csv"
-    calibration_dataset = build_calibration_dataset(
-        outcome_path=normalized_path,
-        feature_artifacts=artifact_paths,
-        output_path=calibration_dataset_path,
-        output_csv=calibration_dataset_csv_path,
-    )
-    calibration_dataset["generated_at"] = generated_at
-    calibration_dataset_path.write_text(
-        json.dumps(calibration_dataset, indent=2, sort_keys=True),
-        encoding="utf-8",
-    )
+    validation_metrics_path = output_dir / "validation_metrics.json"
+    _write_json(validation_metrics_path, report)
 
-    # 4) Evaluate discrimination + calibration.
-    evaluation_path = run_dir / "public_outcome_evaluation.json"
-    evaluation_rows_path = run_dir / "public_outcome_evaluation_rows.csv"
-    evaluation, evaluated_rows = evaluate_public_outcome_dataset_file(
-        dataset_path=calibration_dataset_path,
-        thresholds=thresholds or list(DEFAULT_THRESHOLDS),
-        bins=max(2, int(bins)),
+    calibration_table_payload = {
+        "wildfire_risk_score": (
+            (report.get("calibration_metrics") or {}).get("wildfire_risk_score")
+            if isinstance(report.get("calibration_metrics"), dict)
+            else None
+        ),
+        "calibrated_damage_likelihood": (
+            (report.get("calibration_metrics") or {}).get("calibrated_damage_likelihood")
+            if isinstance(report.get("calibration_metrics"), dict)
+            else None
+        ),
+        "generated_at": generated_at,
+    }
+    calibration_table_path = output_dir / "calibration_table.json"
+    _write_json(calibration_table_path, calibration_table_payload)
+
+    threshold_metrics_payload = {
+        "threshold_metrics_wildfire_risk_score": report.get("threshold_metrics_wildfire_risk_score"),
+        "default_threshold_70": report.get("default_threshold_70"),
+        "generated_at": generated_at,
+    }
+    threshold_metrics_path = output_dir / "threshold_metrics.json"
+    _write_json(threshold_metrics_path, threshold_metrics_payload)
+
+    review_sets = report.get("false_review_sets") if isinstance(report.get("false_review_sets"), dict) else {}
+    false_low_rows = (
+        review_sets.get("false_low_examples")
+        if isinstance(review_sets.get("false_low_examples"), list)
+        else []
+    )
+    false_high_rows = (
+        review_sets.get("false_high_examples")
+        if isinstance(review_sets.get("false_high_examples"), list)
+        else []
+    )
+    false_low_path = output_dir / "false_low_review_set.jsonl"
+    false_high_path = output_dir / "false_high_review_set.jsonl"
+    _write_jsonl(false_low_path, [row for row in false_low_rows if isinstance(row, dict)])
+    _write_jsonl(false_high_path, [row for row in false_high_rows if isinstance(row, dict)])
+
+    # Keep a compact row export for operator review.
+    evaluated_rows_csv_path = output_dir / "evaluation_rows.csv"
+    write_evaluation_rows_csv(rows=rows, output_csv=evaluated_rows_csv_path)
+
+    summary_text = _build_summary_markdown(
+        run_id=run_token,
         generated_at=generated_at,
+        dataset_path=dataset_path,
+        report=report,
     )
-    evaluation_path.write_text(json.dumps(evaluation, indent=2, sort_keys=True), encoding="utf-8")
-    write_evaluation_rows_csv(rows=evaluated_rows, output_csv=evaluation_rows_path)
+    summary_path = output_dir / "summary.md"
+    summary_path.write_text(summary_text, encoding="utf-8")
 
-    # 5) Optionally fit calibration artifact.
-    fitted_calibration_artifact_path: Path | None = None
-    fit_status = "not_requested"
-    fit_warnings: list[str] = []
-    fallback_heavy_fraction = float(
-        ((evaluation.get("sample_counts") or {}).get("fallback_heavy_fraction") or 0.0)
-    )
-    usable_rows = int((evaluation.get("sample_counts") or {}).get("row_count_usable") or 0)
-    if fit_calibration_artifact:
-        if usable_rows < max(10, int(min_rows_for_fit)):
-            fit_status = "skipped_small_sample"
-            fit_warnings.append(
-                f"Calibration fit skipped: usable_rows={usable_rows} is below min_rows_for_fit={min_rows_for_fit}."
-            )
-        elif fallback_heavy_fraction > float(fallback_heavy_fit_threshold) and not allow_fallback_heavy_fit:
-            fit_status = "skipped_fallback_heavy"
-            fit_warnings.append(
-                "Calibration fit skipped: fallback-heavy fraction exceeds threshold. "
-                "Use --allow-fallback-heavy-fit only for exploratory analysis."
-            )
-        else:
-            fitted_calibration_artifact_path = run_dir / "public_outcome_calibration_artifact.json"
-            artifact = fit_calibration(
-                dataset_path=calibration_dataset_path,
-                output_path=fitted_calibration_artifact_path,
-            )
-            artifact["generated_at"] = generated_at
-            fitted_calibration_artifact_path.write_text(
-                json.dumps(artifact, indent=2, sort_keys=True),
-                encoding="utf-8",
-            )
-            fit_status = "fitted"
-            if fallback_heavy_fraction > float(fallback_heavy_fit_threshold):
-                fit_warnings.append(
-                    "Calibration was fit on fallback-heavy data. Treat artifact as exploratory and non-production."
-                )
-
-    # 6) Write manifest and markdown summary.
-    governance_versions = _collect_governance(calibration_dataset.get("rows") or [])
-    headline = _headline_assessment(evaluation)
     manifest = {
         "schema_version": "1.0.0",
         "run_id": run_token,
         "generated_at": generated_at,
-        "artifacts": {
-            "normalized_outcomes_json": str(normalized_path),
-            "calibration_dataset_json": str(calibration_dataset_path),
-            "calibration_dataset_csv": str(calibration_dataset_csv_path),
-            "evaluation_json": str(evaluation_path),
-            "evaluation_rows_csv": str(evaluation_rows_path),
-            "calibration_artifact_json": (
-                str(fitted_calibration_artifact_path) if fitted_calibration_artifact_path else None
-            ),
-            "summary_markdown": str(run_dir / "public_outcome_validation_summary.md"),
-        },
+        "evaluation_basis": "public_observed_outcomes",
+        "caveat": (
+            "Validation uses public observed wildfire outcomes and is directional; "
+            "it is not carrier claims truth or underwriting-performance truth."
+        ),
         "inputs": {
-            "outcomes_input": str(Path(outcomes_input).expanduser()),
-            "feature_artifacts": [str(path) for path in artifact_paths],
-            "backtest": backtest_info,
+            "evaluation_dataset_path": str(dataset_path),
+            "evaluation_dataset_root": str(evaluation_dataset_root.expanduser()),
+            "evaluation_dataset_run_id": evaluation_dataset_run_id,
+            "thresholds": [float(v) for v in (thresholds or list(DEFAULT_THRESHOLDS))],
+            "bins": int(max(2, int(bins))),
+            "min_slice_size": int(max(2, int(min_slice_size))),
+            "false_low_max_score": float(false_low_max_score),
+            "false_high_min_score": float(false_high_min_score),
         },
         "versions": {
             "product_version": PRODUCT_VERSION,
@@ -345,109 +425,95 @@ def run_public_outcome_validation(
             "rules_logic_version": RULESET_LOGIC_VERSION,
             "factor_schema_version": FACTOR_SCHEMA_VERSION,
             "benchmark_pack_version": BENCHMARK_PACK_VERSION,
-            "calibration_version": CALIBRATION_VERSION,
-            "observed_model_governance_versions": governance_versions,
-        },
-        "evaluation_headline": headline,
-        "guardrails": {
-            "warnings": list((evaluation.get("guardrails") or {}).get("warnings") or []) + fit_warnings,
-            "data_leakage_risks": evaluation.get("data_leakage_risks"),
-        },
-        "calibration_fit": {
-            "requested": bool(fit_calibration_artifact),
-            "status": fit_status,
-            "min_rows_for_fit": int(min_rows_for_fit),
-            "fallback_heavy_fraction": fallback_heavy_fraction,
-            "fallback_heavy_fit_threshold": float(fallback_heavy_fit_threshold),
-            "allow_fallback_heavy_fit": bool(allow_fallback_heavy_fit),
         },
         "raw_score_integrity": {
             "raw_wildfire_risk_score_preserved": True,
-            "note": "Deterministic raw model outputs are unchanged; optional calibration artifacts are additive.",
+            "note": "Validation metrics are computed on raw deterministic model outputs before optional calibration overlays.",
+        },
+        "artifacts": {
+            "validation_metrics_json": str(validation_metrics_path),
+            "calibration_table_json": str(calibration_table_path),
+            "threshold_metrics_json": str(threshold_metrics_path),
+            "false_low_review_set_jsonl": str(false_low_path),
+            "false_high_review_set_jsonl": str(false_high_path),
+            "evaluation_rows_csv": str(evaluated_rows_csv_path),
+            "summary_markdown": str(summary_path),
+        },
+        "headline": {
+            "row_count_labeled": report.get("row_count_labeled"),
+            "positive_rate": ((report.get("sample_counts") or {}).get("positive_rate") if isinstance(report.get("sample_counts"), dict) else None),
+            "roc_auc": ((report.get("discrimination_metrics") or {}).get("wildfire_risk_score_auc") if isinstance(report.get("discrimination_metrics"), dict) else None),
+            "pr_auc": ((report.get("discrimination_metrics") or {}).get("wildfire_risk_score_pr_auc") if isinstance(report.get("discrimination_metrics"), dict) else None),
+            "brier": ((report.get("brier_scores") or {}).get("wildfire_probability_proxy") if isinstance(report.get("brier_scores"), dict) else None),
         },
     }
+    manifest_path = output_dir / "manifest.json"
+    _write_json(manifest_path, manifest)
 
-    summary_markdown = _build_markdown_summary(
-        run_id=run_token,
-        evaluation=evaluation,
-        manifest=manifest,
-        fitted_calibration_artifact_path=(
-            str(fitted_calibration_artifact_path) if fitted_calibration_artifact_path else None
-        ),
-    )
-    summary_path = run_dir / "public_outcome_validation_summary.md"
-    summary_path.write_text(summary_markdown, encoding="utf-8")
-    manifest_path = run_dir / "manifest.json"
-    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
     return {
-        "run_dir": str(run_dir),
+        "run_id": run_token,
+        "run_dir": str(output_dir),
         "manifest_path": str(manifest_path),
         "summary_path": str(summary_path),
-        "evaluation_path": str(evaluation_path),
-        "fit_status": fit_status,
-        "calibration_artifact_path": (
-            str(fitted_calibration_artifact_path) if fitted_calibration_artifact_path else None
-        ),
+        "validation_metrics_path": str(validation_metrics_path),
     }
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Run Public Outcome Validation v1 end-to-end and emit a reproducible artifact bundle."
+        description=(
+            "Run public-outcome model validation on a labeled evaluation dataset "
+            "and write a reproducible metrics bundle."
+        )
     )
     parser.add_argument(
-        "--outcomes-input",
-        default=str(DEFAULT_DATASET_PATH),
-        help="Public outcomes input path (CSV/JSON/GeoJSON) for normalization.",
+        "--evaluation-dataset",
+        default="",
+        help=(
+            "Path to labeled evaluation dataset (.json, .jsonl, .csv). "
+            "If omitted, latest run under --evaluation-dataset-root is used."
+        ),
     )
     parser.add_argument(
-        "--feature-artifact",
-        action="append",
-        default=[],
-        help="Existing event backtest artifact path(s). If omitted, backtest will be executed.",
+        "--evaluation-dataset-root",
+        default=str(DEFAULT_EVALUATION_DATASET_ROOT),
+        help="Root containing timestamped evaluation dataset runs.",
     )
     parser.add_argument(
-        "--dataset",
-        action="append",
-        default=[],
-        help="Event dataset path(s) for backtest execution when --feature-artifact is not provided.",
+        "--evaluation-dataset-run-id",
+        default="",
+        help="Optional specific evaluation dataset run id under --evaluation-dataset-root.",
     )
     parser.add_argument(
         "--output-root",
-        default="benchmark/public_outcome_validation",
-        help="Root output directory for timestamped validation runs.",
+        default=str(DEFAULT_VALIDATION_OUTPUT_ROOT),
+        help="Root output directory for validation bundles.",
     )
-    parser.add_argument("--run-id", default="", help="Optional fixed run id for deterministic output naming.")
+    parser.add_argument("--run-id", default="", help="Optional deterministic output run id.")
     parser.add_argument(
         "--thresholds",
         default="30,40,50,60,70,80",
-        help="Comma-separated wildfire-risk thresholds for PR/confusion summaries.",
+        help="Comma-separated wildfire-risk thresholds for precision/recall/confusion summaries.",
     )
-    parser.add_argument("--bins", type=int, default=10, help="Number of quantile bins for calibration tables.")
-    parser.add_argument("--source-name", default="", help="Optional normalized outcome source-name override.")
-    parser.add_argument("--fit-calibration", action="store_true", help="Fit and save optional calibration artifact.")
-    parser.add_argument("--min-rows-for-fit", type=int, default=50)
-    parser.add_argument("--fallback-heavy-fit-threshold", type=float, default=0.5)
-    parser.add_argument("--allow-fallback-heavy-fit", action="store_true")
-    parser.add_argument("--reuse-existing-assessments", action="store_true")
-    parser.add_argument("--overwrite", action="store_true", help="Overwrite run directory if it already exists.")
+    parser.add_argument("--bins", type=int, default=10, help="Number of quantile bins for calibration table.")
+    parser.add_argument("--min-slice-size", type=int, default=20, help="Minimum slice size before small-sample warning.")
+    parser.add_argument("--false-low-max-score", type=float, default=40.0)
+    parser.add_argument("--false-high-min-score", type=float, default=70.0)
+    parser.add_argument("--overwrite", action="store_true", help="Overwrite output run directory if present.")
     args = parser.parse_args()
 
     thresholds = [float(token) for token in str(args.thresholds).split(",") if token.strip()]
     result = run_public_outcome_validation(
-        outcomes_input=Path(args.outcomes_input).expanduser(),
-        feature_artifacts=[Path(path).expanduser() for path in args.feature_artifact],
-        backtest_datasets=[Path(path).expanduser() for path in args.dataset],
+        evaluation_dataset=(Path(args.evaluation_dataset).expanduser() if args.evaluation_dataset else None),
+        evaluation_dataset_root=Path(args.evaluation_dataset_root).expanduser(),
+        evaluation_dataset_run_id=(args.evaluation_dataset_run_id or None),
         output_root=Path(args.output_root).expanduser(),
         run_id=(args.run_id or None),
         thresholds=thresholds,
         bins=max(2, int(args.bins)),
-        fit_calibration_artifact=bool(args.fit_calibration),
-        min_rows_for_fit=max(10, int(args.min_rows_for_fit)),
-        fallback_heavy_fit_threshold=float(args.fallback_heavy_fit_threshold),
-        allow_fallback_heavy_fit=bool(args.allow_fallback_heavy_fit),
-        source_name=(args.source_name or None),
-        reuse_existing_assessments=bool(args.reuse_existing_assessments),
+        min_slice_size=max(2, int(args.min_slice_size)),
+        false_low_max_score=float(args.false_low_max_score),
+        false_high_min_score=float(args.false_high_min_score),
         overwrite=bool(args.overwrite),
     )
     print(json.dumps(result, indent=2, sort_keys=True))

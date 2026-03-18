@@ -39,7 +39,8 @@ For a single reproducible run bundle, use:
 python scripts/run_public_outcome_validation.py
 ```
 
-This produces normalized outcomes, joined dataset, evaluation outputs, markdown summary, and manifest under `benchmark/public_outcome_validation/<timestamp>/`.
+This validates against an existing labeled evaluation dataset and writes outputs under `benchmark/public_outcomes/validation/<timestamp>/`.
+To build that labeled dataset first, run steps 1-3 below.
 
 ### 1) Normalize public outcome records
 

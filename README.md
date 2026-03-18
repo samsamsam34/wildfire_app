@@ -742,36 +742,23 @@ For the reproducible trust-validation bundle, use the single orchestrator:
 python scripts/run_public_outcome_validation.py
 ```
 
-This writes a full artifact bundle under `benchmark/public_outcome_validation/<timestamp>/`, including normalized outcomes, joined dataset, evaluation report, markdown summary, manifest, and optional calibration artifact.
+This writes a validation bundle under `benchmark/public_outcomes/validation/<timestamp>/` using the latest labeled dataset from `benchmark/public_outcomes/evaluation_dataset/<run_id>/evaluation_dataset.jsonl` (or an explicitly supplied dataset path).
 
 End-to-end workflow:
 
 ```bash
 # 1) Normalize public structure-damage outcomes
-python scripts/ingest_public_structure_damage.py \
-  --input path/to/public_damage_records.csv \
-  --output-json benchmark/calibration/public_structure_damage_normalized.json
+python scripts/ingest_public_outcomes.py \
+  --input path/to/public_damage_records.csv
 
-# 2) Generate scored event artifacts
-python scripts/run_event_backtest.py \
-  --dataset benchmark/event_backtest_sample_v1.json \
-  --output-dir benchmark/event_backtest_results
+# 2) Build labeled public-outcome evaluation dataset
+python scripts/build_public_outcome_evaluation_dataset.py \
+  --outcomes benchmark/public_outcomes/normalized/<run_id>/normalized_outcomes.json \
+  --feature-artifact benchmark/event_backtest_results/event_backtest_YYYYMMDDTHHMMSSZ.json
 
-# 3) Join outcomes to scored feature records
-python scripts/build_calibration_dataset.py \
-  --outcomes benchmark/calibration/public_structure_damage_normalized.json \
-  --feature-artifact benchmark/event_backtest_results/event_backtest_YYYYMMDDTHHMMSSZ.json \
-  --output benchmark/calibration/public_outcome_calibration_dataset.json
-
-# 4) Evaluate discrimination/calibration quality
-python scripts/evaluate_model_against_public_outcomes.py \
-  --dataset benchmark/calibration/public_outcome_calibration_dataset.json \
-  --output-json benchmark/calibration/public_outcome_evaluation.json
-
-# 5) Fit calibration artifact (optional)
-python scripts/fit_public_outcome_calibration.py \
-  --dataset benchmark/calibration/public_outcome_calibration_dataset.json \
-  --output config/public_outcome_calibration.json
+# 3) Validate discrimination/calibration against public observed outcomes
+python scripts/run_public_outcome_validation.py \
+  --evaluation-dataset benchmark/public_outcomes/evaluation_dataset/<run_id>/evaluation_dataset.jsonl
 ```
 
 Runtime calibration (optional):

@@ -1,106 +1,95 @@
-# Public Outcome Validation v1
+# Public Outcome Validation
 
-This workflow provides a reproducible trustworthiness check against public wildfire structure-impact outcomes before changing core model logic.
+This workflow evaluates model discrimination and calibration against **public observed wildfire outcomes**.
 
-It is directional model validation. It is not insurer claims truth and not pricing validation.
+It is directional validation and does **not** establish carrier-claims truth, underwriting truth, or insurer approval.
 
-## One-Command Run
+## Command
 
 ```bash
 python scripts/run_public_outcome_validation.py
 ```
 
-By default this uses `benchmark/event_backtest_sample_v1.json` as both:
-- normalization input for public outcomes
-- event-backtest dataset input (if no `--feature-artifact` is provided)
+Default behavior:
+- looks for the latest labeled dataset under `benchmark/public_outcomes/evaluation_dataset/<run_id>/evaluation_dataset.jsonl`
+- writes a new validation bundle under `benchmark/public_outcomes/validation/<run_id>/`
 
-Run with explicit inputs:
-
-```bash
-python scripts/run_public_outcome_validation.py \
-  --outcomes-input path/to/public_damage_records.csv \
-  --dataset path/to/event_backtest_dataset.json \
-  --fit-calibration
-```
-
-Optional dedicated ingestion step (multi-source normalization + dedupe + quality report):
-
-```bash
-python scripts/ingest_public_outcomes.py \
-  --input path/to/public_damage_source_a.csv \
-  --source-name source_a \
-  --input path/to/public_damage_source_b.geojson \
-  --source-name source_b
-```
-
-Then pass the resulting `normalized_outcomes.json` into `--outcomes-input`.
-
-Run against existing feature artifacts (skip backtest execution):
+Use an explicit dataset path:
 
 ```bash
 python scripts/run_public_outcome_validation.py \
-  --outcomes-input path/to/public_damage_records.csv \
-  --feature-artifact benchmark/event_backtest_results/event_backtest_20260318T120000Z.json
+  --evaluation-dataset benchmark/public_outcomes/evaluation_dataset/<run_id>/evaluation_dataset.jsonl
 ```
+
+Use a specific dataset run id:
+
+```bash
+python scripts/run_public_outcome_validation.py \
+  --evaluation-dataset-run-id <run_id>
+```
+
+## Inputs
+
+Expected labeled dataset:
+- joined output from `scripts/build_public_outcome_evaluation_dataset.py`
+- supported formats: `.jsonl` (preferred), `.json`, `.csv`
+
+The evaluator preserves raw, uncalibrated model outputs and computes metrics on those values.
 
 ## Output Bundle
 
-Each run writes to:
+Each run writes:
 
-`benchmark/public_outcome_validation/<timestamp_or_run_id>/`
+`benchmark/public_outcomes/validation/<timestamp_or_run_id>/`
 
 Artifacts:
-- `public_outcomes_normalized.json`
-- `public_outcome_calibration_dataset.json`
-- `public_outcome_calibration_dataset.csv`
-- `public_outcome_evaluation.json`
-- `public_outcome_evaluation_rows.csv`
-- `public_outcome_validation_summary.md`
+- `validation_metrics.json`
+- `calibration_table.json`
+- `threshold_metrics.json`
+- `false_low_review_set.jsonl`
+- `false_high_review_set.jsonl`
+- `evaluation_rows.csv`
+- `summary.md`
 - `manifest.json`
-- `public_outcome_calibration_artifact.json` (only when `--fit-calibration`)
 
-## What Is Evaluated
+## Metrics Reported
 
-`public_outcome_evaluation.json` includes:
-- sample counts overall and by event/region
-- score distributions by outcome class
-- ROC AUC, threshold precision/recall, confusion summaries
+Where label/sample coverage allows:
+- sample counts and prevalence
+- ROC AUC
+- PR AUC
+- precision/recall/F1 at configured thresholds
+- confusion summaries
 - Brier score
-- calibration-by-bin (decile/quantile) and ECE
-- rank correlation between risk score and outcome rank
-- slices by confidence tier, evidence-quality tier, and evidence group
-- fallback-heavy vs high-evidence diagnostics
-- false-low and false-high review sets with top factor contributions
-- leakage-risk checks and guardrail warnings
+- calibration-by-bin and ECE
+- rank correlation (Spearman)
 
-For explicit join diagnostics before full evaluation/calibration, you can build a standalone joined labeled dataset:
+Sliced metrics include:
+- event
+- region (if available)
+- confidence tier
+- evidence tier/group
+- fallback-heavy vs non-fallback-heavy
+- join-confidence tier
 
-```bash
-python scripts/build_public_outcome_evaluation_dataset.py \
-  --outcomes benchmark/public_outcomes/normalized/<run_id>/normalized_outcomes.json \
-  --feature-artifact benchmark/event_backtest_results/event_backtest_<stamp>.json
-```
+Error-analysis review sets include:
+- false lows
+- false highs
+- unstable but outcome-positive rows
+- low-confidence but outcome-positive rows
 
 ## Guardrails
 
-The workflow explicitly:
-- fails if required fields are missing from usable rows (`structure_loss_or_major_damage`, `scores.wildfire_risk_score`)
-- warns on small sample sizes and severe class imbalance
-- warns on leakage-risk patterns (outcome-like tokens in feature vectors, suspiciously perfect small-sample separation)
-- warns/skips calibration fitting when fallback-heavy share is too high unless explicitly overridden
+The workflow warns when:
+- sample size is small
+- class balance is highly skewed
+- fallback-heavy rows dominate
+- leakage-like patterns are detected
 
-## Calibration Fit Policy
+If the sample is small, the report still computes available metrics and avoids overstating precision.
 
-Calibration fitting is optional (`--fit-calibration`) and keeps deterministic raw scores unchanged.
+## Caveats
 
-Default fitting guardrails:
-- minimum rows (`--min-rows-for-fit`, default `50`)
-- fallback-heavy cap (`--fallback-heavy-fit-threshold`, default `0.5`)
-- explicit override flag: `--allow-fallback-heavy-fit`
-
-## Assumptions and Caveats
-
-- Public outcome datasets are partial and heterogeneous.
-- Labels are proxy outcomes and should be interpreted directionally.
-- Regional/temporal coverage gaps can dominate results in fallback-heavy cohorts.
-- Use this workflow to decide whether additional data quality work is required before production calibration adoption.
+- Public outcomes are incomplete and heterogeneous.
+- Join quality and event-time consistency influence reliability.
+- Use this as directional model-quality evidence, not claims-performance validation.

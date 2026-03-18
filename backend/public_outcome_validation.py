@@ -140,7 +140,39 @@ def _precision_recall(conf: dict[str, int]) -> dict[str, float | None]:
     fn = int(conf.get("fn") or 0)
     precision = tp / float(tp + fp) if (tp + fp) > 0 else None
     recall = tp / float(tp + fn) if (tp + fn) > 0 else None
-    return {"precision": precision, "recall": recall}
+    f1 = (
+        (2.0 * precision * recall) / (precision + recall)
+        if isinstance(precision, float) and isinstance(recall, float) and (precision + recall) > 0.0
+        else None
+    )
+    return {"precision": precision, "recall": recall, "f1": f1}
+
+
+def _pr_auc(y_true: list[int], y_score: list[float]) -> float | None:
+    if len(y_true) != len(y_score) or len(y_true) < 3:
+        return None
+    pos_total = sum(1 for y in y_true if y == 1)
+    if pos_total <= 0:
+        return None
+    pairs = sorted(zip(y_score, y_true), key=lambda item: item[0], reverse=True)
+    tp = 0
+    fp = 0
+    curve: list[tuple[float, float]] = [(0.0, 1.0)]
+    for _, truth in pairs:
+        if truth == 1:
+            tp += 1
+        else:
+            fp += 1
+        recall = tp / float(pos_total)
+        precision = tp / float(tp + fp) if (tp + fp) > 0 else 1.0
+        curve.append((recall, precision))
+    area = 0.0
+    prev_recall, prev_precision = curve[0]
+    for recall, precision in curve[1:]:
+        area += max(0.0, recall - prev_recall) * ((precision + prev_precision) / 2.0)
+        prev_recall = recall
+        prev_precision = precision
+    return max(0.0, min(1.0, area))
 
 
 def _calibration_table(
@@ -199,7 +231,9 @@ def _normalize_label(value: Any) -> str:
 
 def _extract_score(row: dict[str, Any], key: str) -> float | None:
     scores = row.get("scores") if isinstance(row.get("scores"), dict) else {}
-    return _safe_float(scores.get(key))
+    if key in scores:
+        return _safe_float(scores.get(key))
+    return _safe_float(row.get(key))
 
 
 def _extract_confidence_tier(row: dict[str, Any]) -> str:
@@ -234,7 +268,24 @@ def _extract_region_id(row: dict[str, Any]) -> str:
     return "unknown"
 
 
-def _extract_fallback_flags(row: dict[str, Any]) -> dict[str, int]:
+def _extract_join_confidence_tier(row: dict[str, Any]) -> str:
+    direct = str(row.get("join_confidence_tier") or "").strip().lower()
+    if direct:
+        return direct
+    join_meta = row.get("join_metadata") if isinstance(row.get("join_metadata"), dict) else {}
+    tier = str(join_meta.get("join_confidence_tier") or "").strip().lower()
+    return tier or "unknown"
+
+
+def _extract_join_confidence_score(row: dict[str, Any]) -> float | None:
+    direct = _safe_float(row.get("join_confidence_score"))
+    if direct is not None:
+        return direct
+    join_meta = row.get("join_metadata") if isinstance(row.get("join_metadata"), dict) else {}
+    return _safe_float(join_meta.get("join_confidence_score"))
+
+
+def _extract_fallback_flags(row: dict[str, Any]) -> dict[str, float | int]:
     flags = row.get("fallback_default_flags") if isinstance(row.get("fallback_default_flags"), dict) else {}
     return {
         "fallback_factor_count": int(_safe_int(flags.get("fallback_factor_count")) or 0),
@@ -242,10 +293,11 @@ def _extract_fallback_flags(row: dict[str, Any]) -> dict[str, int]:
         "inferred_factor_count": int(_safe_int(flags.get("inferred_factor_count")) or 0),
         "coverage_failed_count": int(_safe_int(flags.get("coverage_failed_count")) or 0),
         "coverage_fallback_count": int(_safe_int(flags.get("coverage_fallback_count")) or 0),
+        "fallback_weight_fraction": _safe_float(flags.get("fallback_weight_fraction")) or 0.0,
     }
 
 
-def _derive_evidence_group(*, evidence_tier: str, fallback_flags: dict[str, int]) -> str:
+def _derive_evidence_group(*, evidence_tier: str, fallback_flags: dict[str, float | int]) -> str:
     if evidence_tier in {"low", "preliminary"}:
         return "fallback_heavy"
     if evidence_tier == "high":
@@ -333,6 +385,154 @@ def _distribution_by_outcome(rows: list[dict[str, Any]], score_key: str) -> dict
     return out
 
 
+def _normalize_damage_class(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    if text in {"destroyed", "total_loss"}:
+        return "destroyed"
+    if text in {"major", "major_damage", "severe", "severe_damage"}:
+        return "major_damage"
+    if text in {"minor", "minor_damage", "affected"}:
+        return "minor_damage"
+    if text in {"none", "no_damage", "no_known_damage", "undamaged"}:
+        return "no_damage"
+    return "unknown"
+
+
+def _flatten_joined_labeled_row(row: dict[str, Any]) -> dict[str, Any]:
+    # Accept rows from scripts/build_public_outcome_evaluation_dataset.py.
+    event = row.get("event") if isinstance(row.get("event"), dict) else {}
+    feature = row.get("feature") if isinstance(row.get("feature"), dict) else {}
+    outcome = row.get("outcome") if isinstance(row.get("outcome"), dict) else {}
+    scores = row.get("scores") if isinstance(row.get("scores"), dict) else {}
+    confidence = row.get("confidence") if isinstance(row.get("confidence"), dict) else {}
+    evidence = row.get("evidence") if isinstance(row.get("evidence"), dict) else {}
+    evidence_summary = (
+        evidence.get("evidence_quality_summary")
+        if isinstance(evidence.get("evidence_quality_summary"), dict)
+        else {}
+    )
+    coverage_summary = evidence.get("coverage_summary") if isinstance(evidence.get("coverage_summary"), dict) else {}
+    feature_snapshot = row.get("feature_snapshot") if isinstance(row.get("feature_snapshot"), dict) else {}
+    join_meta = row.get("join_metadata") if isinstance(row.get("join_metadata"), dict) else {}
+    provenance = row.get("provenance") if isinstance(row.get("provenance"), dict) else {}
+    governance = provenance.get("model_governance") if isinstance(provenance.get("model_governance"), dict) else {}
+
+    outcome_label = _normalize_damage_class(
+        outcome.get("damage_label") or outcome.get("damage_severity_class")
+    )
+    target = _safe_int(outcome.get("structure_loss_or_major_damage"))
+    if target not in {0, 1}:
+        target = 1 if outcome_label in {"major_damage", "destroyed"} else (0 if outcome_label in {"minor_damage", "no_damage"} else None)
+
+    fallback_default_flags = {
+        "fallback_factor_count": int(_safe_int(evidence_summary.get("fallback_factor_count")) or 0),
+        "missing_factor_count": int(_safe_int(evidence_summary.get("missing_factor_count")) or 0),
+        "inferred_factor_count": int(_safe_int(evidence_summary.get("inferred_factor_count")) or 0),
+        "coverage_failed_count": int(_safe_int(coverage_summary.get("failed_count")) or 0),
+        "coverage_fallback_count": int(_safe_int(coverage_summary.get("fallback_count")) or 0),
+        "fallback_weight_fraction": _safe_float(evidence_summary.get("fallback_weight_fraction")) or 0.0,
+    }
+
+    return {
+        "event_id": event.get("event_id"),
+        "event_name": event.get("event_name"),
+        "event_date": event.get("event_date"),
+        "record_id": feature.get("record_id") or outcome.get("record_id"),
+        "source_record_id": feature.get("source_record_id") or outcome.get("source_record_id"),
+        "address_text": feature.get("address_text") or outcome.get("address_text"),
+        "latitude": _safe_float(feature.get("latitude") or outcome.get("latitude")),
+        "longitude": _safe_float(feature.get("longitude") or outcome.get("longitude")),
+        "region_id": governance.get("region_data_version"),
+        "outcome_label": outcome_label,
+        "outcome_rank": OUTCOME_RANKS.get(outcome_label, 0),
+        "structure_loss_or_major_damage": target,
+        "scores": {
+            "wildfire_risk_score": _safe_float(scores.get("wildfire_risk_score")),
+            "site_hazard_score": _safe_float(scores.get("site_hazard_score")),
+            "home_ignition_vulnerability_score": _safe_float(scores.get("home_ignition_vulnerability_score")),
+            "insurance_readiness_score": _safe_float(scores.get("insurance_readiness_score")),
+            "calibrated_damage_likelihood": _safe_float(scores.get("calibrated_damage_likelihood")),
+        },
+        "confidence_tier": str(confidence.get("confidence_tier") or "unknown").strip().lower(),
+        "confidence_score": _safe_float(confidence.get("confidence_score")),
+        "evidence_quality_tier": str(evidence.get("evidence_quality_tier") or "unknown").strip().lower(),
+        "evidence_quality_summary": evidence_summary,
+        "coverage_summary": coverage_summary,
+        "fallback_default_flags": fallback_default_flags,
+        "raw_feature_vector": (
+            feature_snapshot.get("raw_feature_vector")
+            if isinstance(feature_snapshot.get("raw_feature_vector"), dict)
+            else {}
+        ),
+        "transformed_feature_vector": (
+            feature_snapshot.get("transformed_feature_vector")
+            if isinstance(feature_snapshot.get("transformed_feature_vector"), dict)
+            else {}
+        ),
+        "factor_contribution_breakdown": (
+            feature_snapshot.get("factor_contribution_breakdown")
+            if isinstance(feature_snapshot.get("factor_contribution_breakdown"), dict)
+            else {}
+        ),
+        "compression_flags": (
+            feature_snapshot.get("compression_flags")
+            if isinstance(feature_snapshot.get("compression_flags"), list)
+            else []
+        ),
+        "join_metadata": join_meta,
+        "join_method": join_meta.get("join_method"),
+        "join_confidence_tier": join_meta.get("join_confidence_tier"),
+        "join_confidence_score": join_meta.get("join_confidence_score"),
+        "caveat_flags": row.get("caveat_flags") if isinstance(row.get("caveat_flags"), list) else [],
+        "leakage_flags": row.get("leakage_flags") if isinstance(row.get("leakage_flags"), list) else [],
+        "model_governance": governance,
+    }
+
+
+def _load_rows_from_dataset_file(dataset_path: Path) -> tuple[list[dict[str, Any]], str]:
+    suffix = dataset_path.suffix.lower()
+    if suffix == ".jsonl":
+        rows: list[dict[str, Any]] = []
+        with dataset_path.open("r", encoding="utf-8") as fh:
+            for line in fh:
+                text = line.strip()
+                if not text:
+                    continue
+                payload = json.loads(text)
+                if not isinstance(payload, dict):
+                    continue
+                rows.append(
+                    _flatten_joined_labeled_row(payload)
+                    if ("outcome" in payload and "scores" in payload)
+                    else payload
+                )
+        return rows, "jsonl"
+
+    if suffix == ".csv":
+        with dataset_path.open("r", encoding="utf-8", newline="") as fh:
+            reader = csv.DictReader(fh)
+            rows = [dict(row) for row in reader]
+        return rows, "csv"
+
+    payload = json.loads(dataset_path.read_text(encoding="utf-8"))
+    if isinstance(payload, dict):
+        if isinstance(payload.get("rows"), list):
+            return [row for row in payload["rows"] if isinstance(row, dict)], "json_rows"
+        if isinstance(payload.get("records"), list):
+            rows = [row for row in payload["records"] if isinstance(row, dict)]
+            if rows and isinstance(rows[0], dict) and ("outcome" in rows[0] and "scores" in rows[0]):
+                return [_flatten_joined_labeled_row(row) for row in rows], "json_records_joined"
+            return rows, "json_records"
+    if isinstance(payload, list):
+        rows = [row for row in payload if isinstance(row, dict)]
+        if rows and ("outcome" in rows[0] and "scores" in rows[0]):
+            return [_flatten_joined_labeled_row(row) for row in rows], "json_list_joined"
+        return rows, "json_list"
+    raise ValueError(
+        "Unsupported dataset format. Expected JSON with rows/records, JSONL, or CSV."
+    )
+
+
 def _slice_metrics(
     rows: list[dict[str, Any]],
     *,
@@ -352,7 +552,10 @@ def _slice_metrics(
             "count": len(bucket),
             "positive_rate": _mean([float(v) for v in y_true]),
             "wildfire_risk_score_auc": auc,
+            "wildfire_risk_score_pr_auc": _pr_auc(y_true, probs),
             "wildfire_risk_score_brier": _brier(y_true, probs),
+            "wildfire_risk_score_mean": _mean([float(row["wildfire_risk_score"]) for row in bucket]),
+            "wildfire_risk_score_stddev": _stddev([float(row["wildfire_risk_score"]) for row in bucket]),
             "fallback_heavy_rate": _mean([1.0 if str(row.get("evidence_group")) == "fallback_heavy" else 0.0 for row in bucket]),
             "small_sample_warning": (len(bucket) < max(1, int(min_slice_size))),
         }
@@ -427,12 +630,16 @@ def _false_review_sets(
 ) -> dict[str, Any]:
     false_low: list[dict[str, Any]] = []
     false_high: list[dict[str, Any]] = []
+    unstable_positive: list[dict[str, Any]] = []
+    low_confidence_positive: list[dict[str, Any]] = []
     low_factor_counter: Counter[str] = Counter()
     high_factor_counter: Counter[str] = Counter()
 
     for row in rows:
         score = float(row["wildfire_risk_score"])
         label = int(row["structure_loss_or_major_damage"])
+        caveat_flags = row.get("caveat_flags") if isinstance(row.get("caveat_flags"), list) else []
+        join_tier = str(row.get("join_confidence_tier") or "unknown")
         review_entry = {
             "event_id": row.get("event_id"),
             "record_id": row.get("record_id"),
@@ -441,7 +648,9 @@ def _false_review_sets(
             "wildfire_risk_score": score,
             "confidence_tier": row.get("confidence_tier"),
             "evidence_group": row.get("evidence_group"),
+            "join_confidence_tier": join_tier,
             "fallback_default_flags": row.get("fallback_default_flags"),
+            "caveat_flags": caveat_flags,
             "top_factor_contributions": _top_factor_contributions(row, limit=5),
         }
         if label == 1 and score < false_low_max_score:
@@ -452,16 +661,31 @@ def _false_review_sets(
             false_high.append(review_entry)
             for factor in review_entry["top_factor_contributions"]:
                 high_factor_counter[str(factor.get("factor"))] += 1
+        if label == 1 and (
+            join_tier == "low"
+            or "low_confidence_join" in caveat_flags
+            or "high_join_distance" in caveat_flags
+            or str(row.get("evidence_group")) == "fallback_heavy"
+        ):
+            unstable_positive.append(review_entry)
+        if label == 1 and str(row.get("confidence_tier") or "unknown") in {"low", "unknown"}:
+            low_confidence_positive.append(review_entry)
 
     false_low.sort(key=lambda row: float(row.get("wildfire_risk_score") or 0.0))
     false_high.sort(key=lambda row: float(row.get("wildfire_risk_score") or 0.0), reverse=True)
+    unstable_positive.sort(key=lambda row: float(row.get("wildfire_risk_score") or 0.0))
+    low_confidence_positive.sort(key=lambda row: float(row.get("wildfire_risk_score") or 0.0))
     return {
         "false_low_max_score": float(false_low_max_score),
         "false_high_min_score": float(false_high_min_score),
         "false_low_count": len(false_low),
         "false_high_count": len(false_high),
+        "unstable_positive_count": len(unstable_positive),
+        "low_confidence_positive_count": len(low_confidence_positive),
         "false_low_examples": false_low[:100],
         "false_high_examples": false_high[:100],
+        "unstable_positive_examples": unstable_positive[:100],
+        "low_confidence_positive_examples": low_confidence_positive[:100],
         "common_top_factors_false_low": low_factor_counter.most_common(12),
         "common_top_factors_false_high": high_factor_counter.most_common(12),
     }
@@ -498,6 +722,8 @@ def _prepare_rows(
         fallback_flags = _extract_fallback_flags(row)
         evidence_tier = _extract_evidence_tier(row)
         confidence_tier = _extract_confidence_tier(row)
+        join_tier = _extract_join_confidence_tier(row)
+        join_score = _extract_join_confidence_score(row)
         evidence_group = _derive_evidence_group(
             evidence_tier=evidence_tier,
             fallback_flags=fallback_flags,
@@ -514,6 +740,14 @@ def _prepare_rows(
         prepared_row["evidence_group"] = evidence_group
         prepared_row["region_id"] = _extract_region_id(row)
         prepared_row["fallback_default_flags"] = fallback_flags
+        prepared_row["join_confidence_tier"] = join_tier
+        prepared_row["join_confidence_score"] = join_score
+        prepared_row["join_method"] = (
+            str(row.get("join_method") or "").strip()
+            or str(((row.get("join_metadata") or {}).get("join_method") if isinstance(row.get("join_metadata"), dict) else "")).strip()
+            or "unknown"
+        )
+        prepared_row["fallback_status"] = "fallback_heavy" if evidence_group == "fallback_heavy" else "not_fallback_heavy"
         prepared.append(prepared_row)
 
     return prepared, {
@@ -587,11 +821,14 @@ def evaluate_public_outcome_dataset_rows(
 
     by_event: dict[str, Any] = {}
     by_region: dict[str, Any] = {}
+    by_join_confidence_tier: dict[str, Any] = {}
     event_groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
     region_groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    join_tier_groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in prepared_rows:
         event_groups[str(row.get("event_id") or "unknown")].append(row)
         region_groups[str(row.get("region_id") or "unknown")].append(row)
+        join_tier_groups[str(row.get("join_confidence_tier") or "unknown")].append(row)
     for key in sorted(event_groups.keys()):
         bucket = event_groups[key]
         by_event[key] = {
@@ -601,6 +838,12 @@ def evaluate_public_outcome_dataset_rows(
     for key in sorted(region_groups.keys()):
         bucket = region_groups[key]
         by_region[key] = {
+            "count": len(bucket),
+            "positive_rate": _mean([float(row["structure_loss_or_major_damage"]) for row in bucket]),
+        }
+    for key in sorted(join_tier_groups.keys()):
+        bucket = join_tier_groups[key]
+        by_join_confidence_tier[key] = {
             "count": len(bucket),
             "positive_rate": _mean([float(row["structure_loss_or_major_damage"]) for row in bucket]),
         }
@@ -663,10 +906,12 @@ def evaluate_public_outcome_dataset_rows(
             "fallback_heavy_fraction": fallback_heavy_fraction,
             "by_event": by_event,
             "by_region": by_region,
+            "by_join_confidence_tier": by_join_confidence_tier,
             "validation_exclusions": validation,
         },
         "discrimination_metrics": {
             "wildfire_risk_score_auc": raw_auc,
+            "wildfire_risk_score_pr_auc": _pr_auc(y_true, raw_probs),
             "site_hazard_score_auc": _roc_auc(
                 y_true,
                 [max(0.0, min(1.0, (_extract_score(row, "site_hazard_score") or 0.0) / 100.0)) for row in prepared_rows],
@@ -733,6 +978,16 @@ def evaluate_public_outcome_dataset_rows(
                 slice_key="evidence_group",
                 min_slice_size=min_slice_size,
             ),
+            "by_join_confidence_tier": _slice_metrics(
+                prepared_rows,
+                slice_key="join_confidence_tier",
+                min_slice_size=min_slice_size,
+            ),
+            "by_fallback_status": _slice_metrics(
+                prepared_rows,
+                slice_key="fallback_status",
+                min_slice_size=min_slice_size,
+            ),
         },
         "fallback_diagnostics": fallback_stats,
         "factor_contribution_summary_by_confusion_class": _factor_summary_by_confusion_class(prepared_rows),
@@ -760,11 +1015,7 @@ def evaluate_public_outcome_dataset_file(
     false_high_min_score: float = 70.0,
     generated_at: str | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    payload = json.loads(dataset_path.read_text(encoding="utf-8"))
-    rows = payload.get("rows")
-    if not isinstance(rows, list):
-        raise ValueError("Calibration dataset must contain a rows array.")
-    clean_rows = [row for row in rows if isinstance(row, dict)]
+    clean_rows, dataset_format = _load_rows_from_dataset_file(dataset_path)
     report, eval_rows = evaluate_public_outcome_dataset_rows(
         rows=clean_rows,
         thresholds=thresholds,
@@ -775,7 +1026,11 @@ def evaluate_public_outcome_dataset_file(
         generated_at=generated_at,
     )
     report["dataset_path"] = str(dataset_path)
-    report["dataset_schema_version"] = payload.get("schema_version")
+    report["dataset_format"] = dataset_format
+    if dataset_path.suffix.lower() == ".json":
+        payload = json.loads(dataset_path.read_text(encoding="utf-8"))
+        if isinstance(payload, dict):
+            report["dataset_schema_version"] = payload.get("schema_version")
     return report, eval_rows
 
 
@@ -796,12 +1051,16 @@ def write_evaluation_rows_csv(*, rows: list[dict[str, Any]], output_csv: Path) -
                 "confidence_tier",
                 "evidence_quality_tier",
                 "evidence_group",
+                "join_confidence_tier",
+                "join_confidence_score",
+                "join_method",
                 "confusion_class_default_threshold_70",
                 "fallback_factor_count",
                 "missing_factor_count",
                 "inferred_factor_count",
                 "coverage_failed_count",
                 "coverage_fallback_count",
+                "fallback_weight_fraction",
             ],
         )
         writer.writeheader()
@@ -820,11 +1079,15 @@ def write_evaluation_rows_csv(*, rows: list[dict[str, Any]], output_csv: Path) -
                     "confidence_tier": row.get("confidence_tier"),
                     "evidence_quality_tier": row.get("evidence_quality_tier"),
                     "evidence_group": row.get("evidence_group"),
+                    "join_confidence_tier": row.get("join_confidence_tier"),
+                    "join_confidence_score": row.get("join_confidence_score"),
+                    "join_method": row.get("join_method"),
                     "confusion_class_default_threshold_70": row.get("_confusion_class"),
                     "fallback_factor_count": flags.get("fallback_factor_count"),
                     "missing_factor_count": flags.get("missing_factor_count"),
                     "inferred_factor_count": flags.get("inferred_factor_count"),
                     "coverage_failed_count": flags.get("coverage_failed_count"),
                     "coverage_fallback_count": flags.get("coverage_fallback_count"),
+                    "fallback_weight_fraction": flags.get("fallback_weight_fraction"),
                 }
             )
