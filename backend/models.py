@@ -119,6 +119,7 @@ class AddressRequest(BaseModel):
     tags: List[str] = Field(default_factory=list)
     organization_id: Optional[str] = None
     ruleset_id: str = "default"
+    include_calibrated_outputs: bool = False
 
 
 class ReassessmentRequest(BaseModel):
@@ -811,6 +812,29 @@ class TrustDiagnostics(BaseModel):
     explanations: List[str] = Field(default_factory=list)
 
 
+class CalibratedPublicOutcomeMetadata(BaseModel):
+    requested: bool = False
+    available: bool = False
+    availability_status: str = "not_requested"
+    calibration_version: Optional[str] = None
+    label_definition: str = (
+        "structure_loss_or_major_damage (major_damage or destroyed = 1; minor_damage or no_damage = 0)"
+    )
+    calibrated_public_outcome_probability: Optional[float] = None
+    calibration_basis_summary: str = (
+        "Public observed wildfire structure-damage outcomes were used to calibrate this optional probability layer."
+    )
+    calibration_caveat: str = (
+        "This calibrated value is based on public observed wildfire damage outcomes and should not be interpreted "
+        "as carrier underwriting probability or claims likelihood."
+    )
+    calibration_data_coverage_tier: str = "unknown"
+    calibration_data_coverage_note: Optional[str] = None
+    raw_score_reference: Dict[str, Any] = Field(default_factory=dict)
+    fallback_state: Optional[str] = None
+    notes: List[str] = Field(default_factory=list)
+
+
 class AssessmentResult(BaseModel):
     assessment_id: str
     address: str
@@ -853,6 +877,7 @@ class AssessmentResult(BaseModel):
     calibration_status: str = "disabled"
     calibration_limitations: List[str] = Field(default_factory=list)
     calibration_scope_warning: Optional[str] = None
+    calibrated_public_outcome_metadata: Optional[CalibratedPublicOutcomeMetadata] = None
     wildfire_risk_score_available: bool = False
     site_hazard_score_available: bool = False
     home_ignition_vulnerability_score_available: bool = False

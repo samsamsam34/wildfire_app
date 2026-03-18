@@ -8,6 +8,8 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+from backend.version import SCORING_MODEL_VERSION
+
 
 def _safe_float(value: Any) -> float | None:
     try:
@@ -122,6 +124,28 @@ def _scope_status(artifact: dict[str, Any], resolved_region_id: str | None) -> t
     return True, None
 
 
+def _version_compatibility_status(artifact: dict[str, Any]) -> tuple[bool, str | None]:
+    model_compat = artifact.get("model_compatibility")
+    if isinstance(model_compat, dict):
+        allowed = model_compat.get("scoring_model_versions")
+        if isinstance(allowed, list) and allowed:
+            allowed_set = {str(v).strip() for v in allowed if str(v).strip()}
+            if SCORING_MODEL_VERSION not in allowed_set:
+                return (
+                    False,
+                    "Calibration artifact model-compatibility excludes this scoring_model_version.",
+                )
+    allowed_direct = artifact.get("compatible_scoring_model_versions")
+    if isinstance(allowed_direct, list) and allowed_direct:
+        allowed_set = {str(v).strip() for v in allowed_direct if str(v).strip()}
+        if SCORING_MODEL_VERSION not in allowed_set:
+            return (
+                False,
+                "Calibration artifact compatible_scoring_model_versions excludes this scoring_model_version.",
+            )
+    return True, None
+
+
 def resolve_public_calibration(
     *,
     raw_wildfire_score: float | None,
@@ -159,6 +183,12 @@ def resolve_public_calibration(
     base["calibration_limitations"] = list(artifact.get("limitations") or artifact.get("notes") or [])
     if not artifact:
         base["calibration_status"] = "invalid_artifact"
+        return base
+    version_ok, version_warning = _version_compatibility_status(artifact)
+    if not version_ok:
+        base["calibration_status"] = "incompatible_version"
+        if version_warning:
+            base["calibration_limitations"] = list(base["calibration_limitations"] or []) + [version_warning]
         return base
     if score is None:
         base["calibration_status"] = "score_unavailable"

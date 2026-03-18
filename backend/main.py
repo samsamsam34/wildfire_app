@@ -122,6 +122,7 @@ from backend.models import (
     SourceType,
     ProviderStatus,
     AssessmentWithDiagnosticsResponse,
+    CalibratedPublicOutcomeMetadata,
     ScoreFamilyInputQuality,
     ScoreEligibility,
     ScoreEvidenceFactor,
@@ -4403,6 +4404,94 @@ def _apply_ruleset_to_result(result: AssessmentResult, ruleset: UnderwritingRule
     return _refresh_result_governance(result)
 
 
+def _calibration_coverage_tier(calibration_payload: dict[str, Any]) -> tuple[str, str | None]:
+    dataset_meta = calibration_payload.get("outcome_dataset")
+    if not isinstance(dataset_meta, dict):
+        return "unknown", "Calibration artifact dataset coverage metadata is unavailable."
+    try:
+        row_count = int(float(dataset_meta.get("row_count") or 0))
+    except (TypeError, ValueError):
+        row_count = 0
+    if row_count >= 1000:
+        tier = "high"
+    elif row_count >= 250:
+        tier = "moderate"
+    elif row_count > 0:
+        tier = "low"
+    else:
+        tier = "unknown"
+    if row_count <= 0:
+        note = "Calibration artifact did not expose usable row-count metadata."
+    else:
+        note = f"Calibration artifact was fit using {row_count} labeled public-outcome rows."
+    return tier, note
+
+
+def _calibration_availability_state(calibration_payload: dict[str, Any]) -> str:
+    status = str(calibration_payload.get("calibration_status") or "disabled").strip().lower()
+    mapping = {
+        "applied": "available_applied",
+        "disabled_no_artifact": "unavailable_no_artifact",
+        "invalid_artifact": "unavailable_incompatible_artifact",
+        "incompatible_version": "unavailable_incompatible_artifact",
+        "invalid_method_or_parameters": "unavailable_incompatible_artifact",
+        "out_of_scope": "unavailable_out_of_scope",
+        "score_unavailable": "unavailable_raw_score_missing",
+    }
+    return mapping.get(status, f"unavailable_{status}" if status else "unavailable_unknown")
+
+
+def _build_calibrated_public_outcome_metadata(
+    *,
+    requested: bool,
+    calibration_payload: dict[str, Any],
+    calibration_version: str,
+    raw_wildfire_risk_score: float | None,
+) -> CalibratedPublicOutcomeMetadata | None:
+    if not requested:
+        return None
+    available = bool(calibration_payload.get("calibration_applied"))
+    coverage_tier, coverage_note = _calibration_coverage_tier(calibration_payload)
+    caveat = (
+        "This calibrated value is based on public observed wildfire damage outcomes and should not be interpreted "
+        "as carrier underwriting probability or claims likelihood. "
+        "Availability depends on calibration artifact coverage and model version compatibility."
+    )
+    notes: list[str] = []
+    notes.extend([str(x) for x in (calibration_payload.get("calibration_limitations") or []) if str(x).strip()])
+    if calibration_payload.get("scope_warning"):
+        notes.append(str(calibration_payload.get("scope_warning")))
+    calibrated_prob = calibration_payload.get("calibrated_damage_likelihood")
+    metadata = CalibratedPublicOutcomeMetadata(
+        requested=True,
+        available=available,
+        availability_status=_calibration_availability_state(calibration_payload),
+        calibration_version=str(calibration_version or CALIBRATION_VERSION),
+        calibrated_public_outcome_probability=(
+            float(calibrated_prob) if calibrated_prob is not None else None
+        ),
+        calibration_basis_summary=(
+            "Public observed wildfire structure-damage outcomes were used to fit an optional calibration layer "
+            "on top of raw deterministic wildfire risk scores."
+        ),
+        calibration_caveat=caveat,
+        calibration_data_coverage_tier=coverage_tier,
+        calibration_data_coverage_note=coverage_note,
+        raw_score_reference={
+            "raw_wildfire_risk_score": raw_wildfire_risk_score,
+            "calibration_raw_score_input": calibration_payload.get("raw_wildfire_risk_score"),
+            "raw_score_units": "0-100 wildfire_risk_score",
+        },
+        fallback_state=(
+            "calibration_unavailable_using_raw_scores_only"
+            if not available
+            else "calibration_applied"
+        ),
+        notes=notes[:8],
+    )
+    return metadata
+
+
 def _run_assessment(
     payload: AddressRequest,
     *,
@@ -4413,6 +4502,7 @@ def _run_assessment(
     tags: list[str] | None = None,
     geocode_resolution: GeocodeResolution | None = None,
     coverage_resolution: RegionCoverageResolution | None = None,
+    include_calibrated_outputs: bool = False,
 ) -> tuple[AssessmentResult, dict]:
     requested_anchor = _coerce_point_payload(payload.property_anchor_point or payload.user_selected_point)
     geocode_resolution = geocode_resolution or _resolve_trusted_geocode(
@@ -5335,6 +5425,16 @@ def _run_assessment(
         region_data_version=region_data_version,
         benchmark_pack_version=BENCHMARK_PACK_VERSION,
     )
+    calibrated_public_outcome_metadata = _build_calibrated_public_outcome_metadata(
+        requested=bool(include_calibrated_outputs or payload.include_calibrated_outputs),
+        calibration_payload=calibration_payload,
+        calibration_version=str(governance["calibration_version"] or CALIBRATION_VERSION),
+        raw_wildfire_risk_score=blended_wildfire_risk_score,
+    )
+    if calibrated_public_outcome_metadata is not None:
+        property_level_context["calibrated_public_outcome_metadata"] = (
+            calibrated_public_outcome_metadata.model_dump()
+        )
 
     result = AssessmentResult(
         assessment_id=assessment_id or str(uuid4()),
@@ -5395,6 +5495,7 @@ def _run_assessment(
             if calibration_payload.get("scope_warning")
             else None
         ),
+        calibrated_public_outcome_metadata=calibrated_public_outcome_metadata,
         wildfire_risk_score_available=bool(score_outputs["wildfire_risk_score_available"]),
         site_hazard_score_available=bool(score_outputs["site_hazard_score_available"]),
         home_ignition_vulnerability_score_available=bool(score_outputs["home_ignition_vulnerability_score_available"]),
@@ -5869,6 +5970,7 @@ def _compute_assessment(
     tags: list[str] | None = None,
     geocode_resolution: GeocodeResolution | None = None,
     coverage_resolution: RegionCoverageResolution | None = None,
+    include_calibrated_outputs: bool = False,
 ) -> AssessmentResult:
     result, _ = _run_assessment(
         payload,
@@ -5878,6 +5980,7 @@ def _compute_assessment(
         tags=tags,
         geocode_resolution=geocode_resolution,
         coverage_resolution=coverage_resolution,
+        include_calibrated_outputs=include_calibrated_outputs,
     )
     return result
 
@@ -10262,6 +10365,13 @@ def assess_risk(
             "These diagnostics are coherence/evidence checks and are not ground-truth accuracy claims."
         ),
     ),
+    include_calibrated_outputs: bool = Query(
+        default=False,
+        description=(
+            "Include optional calibrated public-outcome metadata. "
+            "This does not replace raw scores and is not carrier underwriting probability."
+        ),
+    ),
     ctx: ActorContext = Depends(get_actor_context),
 ) -> AssessmentResult | AssessmentWithDiagnosticsResponse:
     _require_role(ctx, WRITE_ROLES, "Viewer role cannot create assessments")
@@ -10449,6 +10559,7 @@ def assess_risk(
         ruleset=ruleset,
         geocode_resolution=geocode_resolution,
         coverage_resolution=coverage_resolution,
+        include_calibrated_outputs=bool(include_calibrated_outputs or payload.include_calibrated_outputs),
     )
     store.save(result)
     _log_audit(

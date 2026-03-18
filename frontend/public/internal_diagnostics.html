@@ -426,6 +426,10 @@
             <div id="propertyWarnings" class="note-list"><div class="empty">No property run yet.</div></div>
           </details>
           <details>
+            <summary>Calibrated Public-Outcome Metadata (Internal)</summary>
+            <div id="propertyCalibratedMeta" class="note-list"><div class="empty">No property run yet.</div></div>
+          </details>
+          <details>
             <summary>Raw Response (Internal Debug)</summary>
             <pre id="propertyRaw">No property diagnostics loaded.</pre>
           </details>
@@ -870,6 +874,7 @@
         document.getElementById("inferredFields").innerHTML = '<div class="empty">No property run yet.</div>';
         document.getElementById("propertyInterventionTable").innerHTML = '<div class="empty">No property run yet.</div>';
         document.getElementById("propertyWarnings").innerHTML = '<div class="empty">No property run yet.</div>';
+        document.getElementById("propertyCalibratedMeta").innerHTML = '<div class="empty">No property run yet.</div>';
         document.getElementById("propertyRaw").textContent = "No property diagnostics loaded.";
         document.getElementById("propertyCaveat").textContent =
           "These diagnostics are internal trust metadata and not proof of real-world predictive accuracy.";
@@ -901,7 +906,7 @@
           tags: ["internal-diagnostics"],
         };
         try {
-          const raw = await api("/risk/assess?include_diagnostics=true", { method: "POST", body: payload });
+          const raw = await api("/risk/assess?include_diagnostics=true&include_calibrated_outputs=true", { method: "POST", body: payload });
           const assessment = raw.assessment || raw;
           const diagnostics = raw.diagnostics || assessment.diagnostics || null;
           if (!diagnostics) {
@@ -928,6 +933,7 @@
           document.getElementById("inferredFields").innerHTML = '<div class="empty">No diagnostics available.</div>';
           document.getElementById("propertyInterventionTable").innerHTML = '<div class="empty">No diagnostics available.</div>';
           document.getElementById("propertyWarnings").innerHTML = '<div class="empty">No diagnostics available.</div>';
+          document.getElementById("propertyCalibratedMeta").innerHTML = '<div class="empty">No diagnostics available.</div>';
           document.getElementById("propertyRaw").textContent = String(err);
         } finally {
           setPropertyLoading(false);
@@ -942,6 +948,8 @@
         const distributionContext = diag.distribution_context || {};
         const benchmarkContext = diag.benchmark_alignment || {};
         const vegetationSignal = diag.vegetation_signal || {};
+        const calibratedMeta = assessment.calibrated_public_outcome_metadata || {};
+        const calibratedProbability = calibratedMeta.calibrated_public_outcome_probability;
         const hasDiagnostics = Boolean(diagnostics);
         const cards = [
           {
@@ -999,6 +1007,12 @@
             detail: `${((diag.monotonicity || {}).violations || []).length} violation(s)`,
           },
           {
+            title: "Calibrated Public Outcome",
+            value: calibratedProbability != null ? Number(calibratedProbability).toFixed(3) : "unavailable",
+            className: calibratedMeta.available ? "warn" : "",
+            detail: calibratedMeta.availability_status || "not_requested",
+          },
+          {
             title: "Benchmark / Distribution",
             value: hasDiagnostics && benchmarkContext.available ? (benchmarkContext.local_alignment || "unknown") : "unavailable",
             className: hasDiagnostics && benchmarkContext.available ? "warn" : "",
@@ -1027,6 +1041,7 @@
           document.getElementById("missingCritical").innerHTML = '<div class="empty">Unavailable because diagnostics were not returned.</div>';
           document.getElementById("inferredFields").innerHTML = '<div class="empty">Unavailable because diagnostics were not returned.</div>';
           document.getElementById("propertyInterventionTable").innerHTML = '<div class="empty">Unavailable because diagnostics were not returned.</div>';
+          document.getElementById("propertyCalibratedMeta").innerHTML = '<div class="empty">Unavailable because diagnostics were not returned.</div>';
           renderNotes(
             "propertyWarnings",
             assessmentWarnings.length ? assessmentWarnings : ["No diagnostics warnings available for this run."]
@@ -1110,6 +1125,20 @@
         renderNotes(
           "propertyWarnings",
           warnings.length ? warnings.map((w) => `- ${w}`) : ["No critical monotonicity/stability warnings for this property run."]
+        );
+        const calibratedMeta = assessment.calibrated_public_outcome_metadata || {};
+        const calibratedNotes = []
+          .concat(calibratedMeta.available === true ? [`Calibrated public-outcome probability: ${calibratedMeta.calibrated_public_outcome_probability}`] : [])
+          .concat(calibratedMeta.availability_status ? [`Availability: ${calibratedMeta.availability_status}`] : [])
+          .concat(calibratedMeta.calibration_basis_summary ? [calibratedMeta.calibration_basis_summary] : [])
+          .concat(calibratedMeta.calibration_caveat ? [calibratedMeta.calibration_caveat] : [])
+          .concat(calibratedMeta.calibration_data_coverage_note ? [calibratedMeta.calibration_data_coverage_note] : [])
+          .concat(calibratedMeta.notes || []);
+        renderNotes(
+          "propertyCalibratedMeta",
+          calibratedNotes.length
+            ? calibratedNotes
+            : ["Calibrated public-outcome metadata was not returned for this run."],
         );
         document.getElementById("propertyCaveat").textContent =
           diag.caveat ||

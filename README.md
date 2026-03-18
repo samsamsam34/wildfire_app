@@ -75,7 +75,7 @@ Full route docs are available at `/docs` when running locally.
 
 Core assessment:
 - `GET /health`
-- `POST /risk/assess` (`?include_diagnostics=true` for opt-in trust metadata)
+- `POST /risk/assess` (`?include_diagnostics=true` for opt-in trust metadata, `?include_calibrated_outputs=true` for optional calibrated public-outcome metadata)
 - `POST /risk/reassess/{assessment_id}`
 - `POST /risk/simulate`
 - `POST /risk/debug`
@@ -108,6 +108,9 @@ Diagnostics opt-in note:
 - `include_diagnostics=true` returns an envelope with:
   - `assessment` (the existing `AssessmentResult`)
   - `diagnostics` (no-ground-truth trust metadata)
+- `include_calibrated_outputs=true` adds optional `calibrated_public_outcome_metadata` to `AssessmentResult`:
+  - raw model scores remain unchanged and primary
+  - calibrated values are public-outcome-based metadata only
 - default behavior remains unchanged when the flag is absent.
 - trust diagnostics are coherence/evidence metadata only, not claims-validation proof.
 
@@ -779,6 +782,7 @@ export WF_PUBLIC_CALIBRATION_ARTIFACT=config/public_outcome_calibration.json
 When enabled, `/risk/assess` and `/risk/debug` include calibration metadata (`calibration_status`, method/artifact metadata, and calibrated likelihood proxies) while preserving deterministic raw scores and evidence outputs.
 
 See `docs/public_outcome_calibration.md` for details and caveats.
+See `docs/api_calibrated_outputs.md` for API opt-in behavior and response examples.
 See `docs/public_outcome_validation.md` for the v1 reproducible validation workflow and guardrails.
 See `docs/calibration_gap_analysis.md` for the empirical-gap rationale behind this calibration step.
 
