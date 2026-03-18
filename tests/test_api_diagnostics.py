@@ -113,6 +113,7 @@ def test_diagnostics_included_when_flag_enabled(monkeypatch, tmp_path: Path) -> 
     assert "assumption_sensitive" in diagnostics["stability"]
     assert "major_driver" in diagnostics["vegetation_signal"]
     assert "driver_strength" in diagnostics["vegetation_signal"]
+    assert "fallback_heavy" in diagnostics["confidence"]
 
 
 def test_missing_reference_artifacts_degrade_gracefully(monkeypatch, tmp_path: Path) -> None:
@@ -160,3 +161,6 @@ def test_report_endpoint_supports_opt_in_diagnostics(monkeypatch, tmp_path: Path
     assert "assessment" in body
     assert "diagnostics" in body
     assert "do not establish real-world predictive accuracy" in body["diagnostics"]["caveat"].lower()
+    assert "vegetation_signal" in body["diagnostics"]
+    assert "confidence_reduction_reasons" in body["diagnostics"]["confidence"]
+    assert "assumption_sensitive" in body["diagnostics"]["stability"]

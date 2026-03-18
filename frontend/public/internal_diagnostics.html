@@ -972,7 +972,7 @@
             title: "Confidence",
             value: hasDiagnostics ? `${confidence.tier || "unknown"} (${Number(confidence.score || 0).toFixed(1)})` : "unavailable",
             className: confidence.tier === "high" ? "good" : "warn",
-            detail: `Evidence completeness ${confidence.evidence_completeness ?? "N/A"} | fallback weight ${confidence.fallback_weight_fraction ?? "N/A"}`,
+            detail: `Evidence completeness ${confidence.evidence_completeness ?? "N/A"} | fallback-heavy ${confidence.fallback_heavy ? "yes" : "no"} | fallback weight ${confidence.fallback_weight_fraction ?? "N/A"}`,
           },
           {
             title: "Stability",

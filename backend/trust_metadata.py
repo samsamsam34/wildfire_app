@@ -91,9 +91,12 @@ def _build_vegetation_signal(result: AssessmentResult) -> TrustDiagnosticsVegeta
     total_contribution = 0.0
     vegetation_contribution = 0.0
     for key, row in weighted.items():
-        if not hasattr(row, "contribution"):
-            continue
-        contribution = _safe_float(getattr(row, "contribution", None))
+        contribution_value: Any = None
+        if isinstance(row, dict):
+            contribution_value = row.get("contribution")
+        elif hasattr(row, "contribution"):
+            contribution_value = getattr(row, "contribution", None)
+        contribution = _safe_float(contribution_value)
         if contribution is None:
             continue
         abs_contribution = abs(contribution)
@@ -162,11 +165,18 @@ def _build_vegetation_signal(result: AssessmentResult) -> TrustDiagnosticsVegeta
         notes.append(
             f"Vegetation-linked submodels contribute about {contribution_share * 100.0:.1f}% of modeled weighted risk pressure."
         )
-    related_submodels = [
-        key
-        for key in vegetation_submodels
-        if key in weighted and _safe_float(getattr(weighted[key], "contribution", None)) is not None
-    ]
+    related_submodels: list[str] = []
+    for key in vegetation_submodels:
+        if key not in weighted:
+            continue
+        row = weighted[key]
+        contribution_value: Any = None
+        if isinstance(row, dict):
+            contribution_value = row.get("contribution")
+        elif hasattr(row, "contribution"):
+            contribution_value = getattr(row, "contribution", None)
+        if _safe_float(contribution_value) is not None:
+            related_submodels.append(key)
     return TrustDiagnosticsVegetationSignal(
         major_driver=major_driver,
         driver_strength=strength,

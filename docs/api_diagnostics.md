@@ -65,6 +65,7 @@ curl -sS -X POST "http://127.0.0.1:8000/risk/assess" \
   It is reduced when fallback weight, inferred/proxy dependence, or missing critical fields increase.
 - `confidence` now includes explicit counts/ratios used by the confidence logic:
   - `fallback_weight_fraction`
+  - `fallback_heavy`
   - `observed_feature_count`, `inferred_feature_count`, `fallback_feature_count`, `missing_feature_count`
   - `missing_critical_field_count`, `inferred_field_count`
   - `confidence_reduction_reasons`
