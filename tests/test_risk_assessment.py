@@ -838,6 +838,66 @@ def test_wildfire_data_point_selection_snaps_to_nearby_footprint(monkeypatch):
     assert any("user-selected map point" in note.lower() for note in assumptions)
 
 
+def test_wildfire_data_point_selection_uses_parcel_intersection_snap_method(monkeypatch):
+    _require_shapely()
+    client = WildfireDataClient()
+    footprint = Polygon(
+        [
+            (-105.00010, 40.00010),
+            (-104.99992, 40.00010),
+            (-104.99992, 39.99992),
+            (-105.00010, 39.99992),
+            (-105.00010, 40.00010),
+        ]
+    )
+
+    monkeypatch.setattr(
+        client.footprints,
+        "get_building_footprint",
+        lambda _lat, _lon, **_kwargs: BuildingFootprintResult(
+            found=True,
+            footprint=footprint,
+            centroid=(40.0, -105.0),
+            source="fixture",
+            confidence=0.79,
+            match_status="matched",
+            match_method="parcel_intersection",
+            matched_structure_id="parcel-home",
+            match_distance_m=6.2,
+            candidate_count=2,
+            candidate_summaries=[],
+            assumptions=[],
+        ),
+    )
+    monkeypatch.setattr(
+        client,
+        "_summarize_ring_canopy",
+        lambda _geom, canopy_path: {
+            "canopy_mean": 49.0,
+            "canopy_max": 68.0,
+            "coverage_pct": 44.0,
+            "vegetation_density": 51.0,
+        },
+    )
+    monkeypatch.setattr(client, "_summarize_ring_fuel_presence", lambda _geom, fuel_path: 38.0)
+
+    context_blob, _assumptions, _sources = client._compute_structure_ring_metrics(
+        40.0,
+        -105.0,
+        canopy_path="canopy.tif",
+        fuel_path="fuel.tif",
+        selection_mode="point",
+        user_selected_point={"latitude": 40.0, "longitude": -105.0},
+        parcel_polygon=footprint,
+        use_parcel_association_for_point_mode=True,
+    )
+
+    assert context_blob["footprint_used"] is True
+    assert context_blob["final_structure_geometry_source"] == "user_selected_point_snapped"
+    assert context_blob["structure_selection_method"] == "point_parcel_intersection_snap"
+    assert context_blob["geometry_basis"] == "footprint"
+
+
 def test_wildfire_data_point_selection_detects_point_inside_footprint(monkeypatch):
     _require_shapely()
     client = WildfireDataClient()

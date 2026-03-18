@@ -1665,6 +1665,7 @@ def _normalize_property_level_context(raw_context: object) -> dict[str, Any]:
             "matched_structure_centroid": None,
             "matched_structure_footprint": None,
             "parcel_id": None,
+            "parcel_source": None,
             "parcel_lookup_method": None,
             "parcel_lookup_distance_m": None,
             "parcel_geometry": None,
@@ -1809,6 +1810,7 @@ def _normalize_property_level_context(raw_context: object) -> dict[str, Any]:
         else None
     )
     normalized.setdefault("parcel_id", None)
+    normalized.setdefault("parcel_source", normalized.get("parcel_source_name"))
     normalized.setdefault("parcel_lookup_method", None)
     normalized.setdefault("parcel_lookup_distance_m", None)
     normalized.setdefault("parcel_geometry", None)
@@ -5335,6 +5337,15 @@ def _run_assessment(
             str(property_level_context.get("parcel_id"))
             if property_level_context.get("parcel_id")
             else None
+        ),
+        parcel_source=(
+            str(property_level_context.get("parcel_source"))
+            if property_level_context.get("parcel_source")
+            else (
+                str(property_level_context.get("parcel_source_name"))
+                if property_level_context.get("parcel_source_name")
+                else None
+            )
         ),
         parcel_lookup_method=(
             str(property_level_context.get("parcel_lookup_method"))
@@ -10300,6 +10311,7 @@ def layer_diagnostics(payload: AddressRequest, ctx: ActorContext = Depends(get_a
             "parcel_lookup_distance_m": (debug_payload.get("property_level_context") or {}).get("parcel_lookup_distance_m"),
             "parcel_source_name": (debug_payload.get("property_level_context") or {}).get("parcel_source_name"),
             "parcel_source_vintage": (debug_payload.get("property_level_context") or {}).get("parcel_source_vintage"),
+            "parcel_source": (debug_payload.get("property_level_context") or {}).get("parcel_source"),
             "structure_match_status": (debug_payload.get("property_level_context") or {}).get("structure_match_status"),
             "structure_match_method": (debug_payload.get("property_level_context") or {}).get("structure_match_method"),
             "structure_selection_method": (debug_payload.get("property_level_context") or {}).get("structure_selection_method"),

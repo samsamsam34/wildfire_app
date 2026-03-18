@@ -62,6 +62,8 @@ def test_build_feature_bundle_summary_returns_source_map():
         region_context={"region_id": "winthrop_large", "region_status": "prepared"},
         property_level_context={
             "footprint_used": True,
+            "structure_selection_method": "parcel_intersection",
+            "parcel_source_name": "county_or_regrid_parcels",
             "ring_metrics": {
                 "ring_0_5_ft": {"vegetation_density": 66.0},
                 "ring_5_30_ft": {"vegetation_density": 72.0},
@@ -106,6 +108,8 @@ def test_build_feature_bundle_summary_returns_source_map():
     assert metrics["property_specificity_score"] > 0
     geometry = summary["geometry_provenance"]
     assert geometry["geometry_basis"] == "footprint"
+    assert geometry["structure_selection_method"] == "parcel_intersection"
+    assert geometry["parcel_source"] == "county_or_regrid_parcels"
 
 
 def test_apply_enrichment_source_fallbacks_normalizes_alias_runtime_keys(tmp_path):

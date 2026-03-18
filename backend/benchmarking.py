@@ -246,6 +246,20 @@ def _scenario_snapshot(
     result: AssessmentResult,
     debug_payload: dict[str, Any],
 ) -> dict[str, Any]:
+    suppressed_factor_count = 0
+    fallback_factor_status_count = 0
+    for row in (result.weighted_contributions or {}).values():
+        if isinstance(row, dict):
+            status = str(row.get("factor_evidence_status") or "").strip().lower()
+            omitted = bool(row.get("omitted_due_to_missing"))
+        else:
+            status = str(getattr(row, "factor_evidence_status", "") or "").strip().lower()
+            omitted = bool(getattr(row, "omitted_due_to_missing", False))
+        if status == "suppressed" or omitted:
+            suppressed_factor_count += 1
+        if status == "fallback":
+            fallback_factor_status_count += 1
+
     warnings = [
         n
         for n in (result.scoring_notes or [])
@@ -302,6 +316,21 @@ def _scenario_snapshot(
         "coverage_summary": result.coverage_summary.model_dump(),
         "evidence_quality_summary": result.evidence_quality_summary.model_dump(),
         "score_evidence_ledger_summary": _ledger_contributions(result),
+        "evidence_metrics": {
+            "observed_feature_count": int(result.observed_feature_count),
+            "inferred_feature_count": int(result.inferred_feature_count),
+            "fallback_feature_count": int(result.fallback_feature_count),
+            "missing_feature_count": int(result.missing_feature_count),
+            "observed_factor_count": int(result.observed_factor_count),
+            "fallback_factor_count": int(result.fallback_factor_count),
+            "fallback_factor_status_count": int(fallback_factor_status_count),
+            "suppressed_factor_count": int(suppressed_factor_count),
+            "fallback_weight_fraction": float(result.fallback_weight_fraction),
+            "observed_weight_fraction": float(result.observed_weight_fraction),
+            "geometry_quality_score": float(result.geometry_quality_score),
+            "regional_context_coverage_score": float(result.regional_context_coverage_score),
+            "property_specificity_score": float(result.property_specificity_score),
+        },
         "fallback_mode": (result.property_level_context or {}).get("fallback_mode"),
         "footprint_used": bool((result.property_level_context or {}).get("footprint_used")),
         "debug_excerpt": {

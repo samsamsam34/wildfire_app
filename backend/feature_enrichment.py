@@ -228,11 +228,15 @@ def build_feature_bundle_summary(
 ) -> dict[str, Any]:
     ring_metrics = property_level_context.get("ring_metrics") if isinstance(property_level_context, dict) else None
     ring_metrics = ring_metrics if isinstance(ring_metrics, dict) else {}
-    geometry_basis = (
-        "footprint"
-        if bool(property_level_context.get("footprint_used"))
-        else ("parcel" if bool(property_level_context.get("parcel_geometry")) else "geocode_point")
-    )
+    normalized_geometry_basis = str(property_level_context.get("geometry_basis") or "").strip().lower()
+    if normalized_geometry_basis in {"footprint", "parcel", "point", "geocode_point"}:
+        geometry_basis = "geocode_point" if normalized_geometry_basis == "point" else normalized_geometry_basis
+    else:
+        geometry_basis = (
+            "footprint"
+            if bool(property_level_context.get("footprint_used"))
+            else ("parcel" if bool(property_level_context.get("parcel_geometry")) else "geocode_point")
+        )
 
     data_sources = {
         "building_footprint": (source_status.get("building_footprint") or {}).get("source") or "missing",
@@ -304,10 +308,25 @@ def build_feature_bundle_summary(
     geometry_quality_score = float(geometry_quality_by_basis.get(geometry_basis, 0.46))
     anchor_quality_score = None
     try:
-        anchor_quality_score = float(property_level_context.get("property_anchor_quality_score"))
+        anchor_quality_score = float(
+            property_level_context.get("property_anchor_quality_score")
+            if property_level_context.get("property_anchor_quality_score") is not None
+            else property_level_context.get("anchor_quality_score")
+        )
     except (TypeError, ValueError):
         anchor_quality_score = None
-    if anchor_quality_score is not None:
+    structure_geometry_confidence = None
+    try:
+        structure_geometry_confidence = float(property_level_context.get("structure_geometry_confidence"))
+    except (TypeError, ValueError):
+        structure_geometry_confidence = None
+    if structure_geometry_confidence is not None:
+        geometry_quality_score = (
+            (geometry_quality_score * 0.5)
+            + (max(0.0, min(1.0, structure_geometry_confidence)) * 0.35)
+            + (max(0.0, min(1.0, anchor_quality_score)) * 0.15 if anchor_quality_score is not None else 0.0)
+        )
+    elif anchor_quality_score is not None:
         geometry_quality_score = (geometry_quality_score * 0.7) + (max(0.0, min(1.0, anchor_quality_score)) * 0.3)
     environmental_keys = ("burn_probability", "historical_fire", "roads", "climate_dryness", "vegetation", "canopy")
     environmental_layer_coverage_score = round(
@@ -351,6 +370,16 @@ def build_feature_bundle_summary(
             "observed_weight_fraction": observed_weight_fraction,
             "fallback_dominance_ratio": fallback_dominance_ratio,
             "structure_geometry_quality_score": round(float(geometry_quality_score), 3),
+            "structure_geometry_confidence": (
+                round(max(0.0, min(1.0, float(structure_geometry_confidence))), 3)
+                if structure_geometry_confidence is not None
+                else None
+            ),
+            "anchor_quality_score": (
+                round(max(0.0, min(1.0, float(anchor_quality_score))), 3)
+                if anchor_quality_score is not None
+                else None
+            ),
             "environmental_layer_coverage_score": environmental_layer_coverage_score,
             "property_specificity_score": property_specificity_score,
         },
@@ -361,9 +390,16 @@ def build_feature_bundle_summary(
             "property_anchor_quality": property_level_context.get("property_anchor_quality"),
             "property_anchor_quality_score": property_level_context.get("property_anchor_quality_score"),
             "property_anchor_selection_method": property_level_context.get("property_anchor_selection_method"),
-            "structure_selection_method": property_level_context.get("structure_match_method"),
+            "structure_selection_method": (
+                property_level_context.get("structure_selection_method")
+                or property_level_context.get("structure_match_method")
+            ),
             "footprint_source": property_level_context.get("footprint_source"),
             "parcel_lookup_method": property_level_context.get("parcel_lookup_method"),
+            "parcel_source": (
+                property_level_context.get("parcel_source")
+                or property_level_context.get("parcel_source_name")
+            ),
         },
         "feature_snapshot": feature_snapshot,
         "environmental_layer_status": dict(environmental_layer_status or {}),

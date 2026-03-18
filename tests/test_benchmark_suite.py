@@ -136,6 +136,9 @@ def test_run_benchmark_suite_outputs_artifact_and_passes(tmp_path):
     assert "governance" in artifact
     assert "relative_assertions" in artifact
     assert "monotonic_assertions" in artifact
+    first_snapshot = artifact["scenario_results"][0]["snapshot"]
+    assert "evidence_metrics" in first_snapshot
+    assert "fallback_weight_fraction" in first_snapshot["evidence_metrics"]
 
 
 def test_run_benchmark_suite_detects_monotonic_failure(tmp_path):
@@ -217,3 +220,27 @@ def test_run_benchmark_suite_script_exit_behavior(tmp_path):
     )
     assert ok.returncode == 0, ok.stderr
     assert bad.returncode != 0, bad.stdout
+
+
+def test_run_confidence_benchmark_pack_script_outputs_summary(tmp_path):
+    script = Path("scripts") / "run_confidence_benchmark_pack.py"
+    out_dir = tmp_path / "confidence_artifacts"
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(script),
+            "--pack",
+            "benchmark/scenario_pack_confidence_v2.json",
+            "--output-dir",
+            str(out_dir),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    payload = json.loads(proc.stdout)
+    assert payload["summary"]["passed"] is True
+    assert payload["distribution"]["fallback_weight_fraction"]["count"] >= 1
+    assert payload["distribution"]["suppressed_factor_count"]["count"] >= 1
+    assert payload["spread_checks"]["wildfire_risk_score_spread"] is not None

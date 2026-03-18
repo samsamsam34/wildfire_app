@@ -617,7 +617,9 @@ Main coverage areas:
 
 The repo includes a versioned benchmark scenario pack for calibration discipline and drift checks:
 - `benchmark/scenario_pack_v1.json`
+- `benchmark/scenario_pack_confidence_v2.json` (geometry/enrichment/fallback-confidence stress pack)
 - runner: `scripts/run_benchmark_suite.py`
+- confidence runner: `scripts/run_confidence_benchmark_pack.py`
 
 Run the suite:
 
@@ -631,6 +633,12 @@ Compare against a previous artifact:
 python scripts/run_benchmark_suite.py \
   --compare-to benchmark/results/benchmark_run_YYYYMMDDTHHMMSSZ.json \
   --fail-on-drift
+```
+
+Run the confidence-focused pack (score spread + fallback/suppression diagnostics):
+
+```bash
+python scripts/run_confidence_benchmark_pack.py
 ```
 
 What it checks:

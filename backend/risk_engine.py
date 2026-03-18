@@ -632,6 +632,24 @@ class RiskEngine:
             if bundle_metrics.get("structure_geometry_quality_score") is not None
             else (0.92 if geometry_basis == "footprint" else (0.74 if geometry_basis == "parcel" else 0.46))
         )
+        structure_geometry_confidence = float(
+            bundle_metrics.get("structure_geometry_confidence")
+            if bundle_metrics.get("structure_geometry_confidence") is not None
+            else (
+                property_level_context.get("structure_geometry_confidence")
+                if property_level_context.get("structure_geometry_confidence") is not None
+                else geometry_quality_score
+            )
+        )
+        anchor_quality_score = float(
+            bundle_metrics.get("anchor_quality_score")
+            if bundle_metrics.get("anchor_quality_score") is not None
+            else (
+                property_level_context.get("anchor_quality_score")
+                if property_level_context.get("anchor_quality_score") is not None
+                else property_level_context.get("property_anchor_quality_score") or 0.0
+            )
+        )
         regional_context_coverage_score = float(
             bundle_metrics.get("environmental_layer_coverage_score")
             if bundle_metrics.get("environmental_layer_coverage_score") is not None
@@ -688,33 +706,39 @@ class RiskEngine:
                 multiplier *= max(0.40, 1.0 - (0.11 * float(assumption_hits)))
             if geometry_basis == "point":
                 if submodel == "defensible_space_risk":
-                    multiplier *= 0.08
+                    multiplier *= 0.05
                 elif submodel == "ember_exposure_risk":
-                    multiplier *= 0.28
+                    multiplier *= 0.18
                 elif submodel == "flame_contact_risk":
-                    multiplier *= 0.22
+                    multiplier *= 0.18
                 elif submodel == "fuel_proximity_risk":
-                    multiplier *= 0.62
+                    multiplier *= 0.48
                 elif submodel == "vegetation_intensity_risk":
-                    multiplier *= 0.55
+                    multiplier *= 0.42
             elif geometry_basis == "parcel":
                 if submodel == "defensible_space_risk":
-                    multiplier *= 0.45
+                    multiplier *= 0.38
                 elif submodel == "ember_exposure_risk":
-                    multiplier *= 0.72
+                    multiplier *= 0.60
             if not footprint_used and submodel in {
                 "vegetation_intensity_risk",
                 "fuel_proximity_risk",
                 "flame_contact_risk",
                 "defensible_space_risk",
             }:
-                multiplier *= 0.58
+                multiplier *= 0.50
             if not parcel_available and submodel == "defensible_space_risk":
-                multiplier *= 0.70
+                multiplier *= 0.64
             if not ring_has_direct_geometry and submodel in {"defensible_space_risk", "flame_contact_risk"}:
-                multiplier *= 0.58
+                multiplier *= 0.52
             if not near_structure_observed and submodel in {"vegetation_intensity_risk", "fuel_proximity_risk", "flame_contact_risk"}:
-                multiplier *= 0.65
+                multiplier *= 0.56
+            if structure_geometry_confidence < 0.60 and submodel in GEOMETRY_SENSITIVE_SUBMODELS:
+                multiplier *= 0.68
+            if structure_geometry_confidence < 0.45 and submodel in GEOMETRY_SENSITIVE_SUBMODELS:
+                multiplier *= 0.52
+            if anchor_quality_score < 0.60 and submodel in GEOMETRY_SENSITIVE_SUBMODELS:
+                multiplier *= 0.72
             if dryness_missing and submodel in {"vegetation_intensity_risk", "flame_contact_risk"}:
                 multiplier *= 0.62
             if burn_missing and submodel == "ember_exposure_risk":
@@ -722,9 +746,11 @@ class RiskEngine:
             if hazard_missing and submodel == "ember_exposure_risk":
                 multiplier *= 0.64
             if major_env_missing_count >= 2 and submodel in PROPERTY_SURROUNDINGS_SUBMODELS:
-                multiplier *= 0.82
+                multiplier *= 0.74
             if major_env_missing_count >= 2 and submodel in REGIONAL_CONTEXT_SUBMODELS:
-                multiplier *= 0.72
+                multiplier *= 0.60
+            if regional_context_coverage_score < 50.0 and submodel in REGIONAL_CONTEXT_SUBMODELS:
+                multiplier *= 0.62
             if regional_context_coverage_score < 60.0 and submodel in REGIONAL_CONTEXT_SUBMODELS:
                 multiplier *= 0.76
             if geometry_quality_score < 0.62 and submodel in STRUCTURE_SPECIFIC_SUBMODELS:
@@ -770,8 +796,12 @@ class RiskEngine:
                 )
                 if weak_geometry_context and name in {"defensible_space_risk", "flame_contact_risk"}:
                     suppressed_by_evidence = True
+                elif weak_geometry_context and name == "ember_exposure_risk" and structure_geometry_confidence < 0.45:
+                    suppressed_by_evidence = True
                 elif weak_geometry_context and name in {"vegetation_intensity_risk", "fuel_proximity_risk"}:
-                    effective_weight *= 0.55
+                    effective_weight *= 0.45
+                elif weak_geometry_context and name == "ember_exposure_risk":
+                    effective_weight *= 0.38
             if (
                 not omitted_due_to_missing
                 and observed_fraction < 0.25
@@ -1099,12 +1129,16 @@ class RiskEngine:
                 struct_multiplier *= 0.55
             elif risk.geometry_basis == "parcel":
                 struct_multiplier *= 0.80
+            if risk.geometry_quality_score < 0.62:
+                struct_multiplier *= 0.72
             env_weight *= env_multiplier
             struct_weight *= struct_multiplier
             if risk.geometry_basis == "point":
                 readiness_weight *= 0.45
             elif risk.geometry_basis == "parcel":
                 readiness_weight *= 0.75
+            if risk.geometry_quality_score < 0.62:
+                readiness_weight *= 0.55
             if risk.fallback_weight_fraction >= 0.55 or risk.observed_weight_fraction < 0.45:
                 readiness_weight *= 0.35
             if risk.property_specificity_score < 55.0:
@@ -1142,7 +1176,11 @@ class RiskEngine:
             float((risk.weighted_contributions.get(name) or {}).get("weight", 0.0))
             for name in STRUCTURE_SPECIFIC_SUBMODELS
         )
-        if risk.geometry_basis == "point" and structure_evidence_weight < 0.22:
+        weak_structure_evidence = (
+            (risk.geometry_basis == "point" and structure_evidence_weight < 0.22)
+            or (risk.geometry_quality_score < 0.62 and structure_evidence_weight < 0.28)
+        )
+        if weak_structure_evidence:
             evidence_penalty = max(4.0, float(p.get("defensible_watch", 8.0)) * 0.45)
             factors.append(
                 {

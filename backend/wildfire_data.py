@@ -910,6 +910,7 @@ class WildfireDataClient:
         footprint_path: str | None = None,
         fallback_footprint_path: str | None = None,
         parcel_polygon: Any | None = None,
+        use_parcel_association_for_point_mode: bool = False,
         property_anchor_point: dict[str, Any] | None = None,
         anchor_precision: str | None = None,
         structure_geometry_source: str | None = None,
@@ -984,7 +985,7 @@ class WildfireDataClient:
                         query_lon,
                         parcel_polygon=(
                             parcel_polygon
-                            if normalized_selection_mode != "point"
+                            if (normalized_selection_mode != "point" or use_parcel_association_for_point_mode)
                             else None
                         ),
                         anchor_precision=anchor_precision,
@@ -1147,7 +1148,12 @@ class WildfireDataClient:
                     structure_selection_method = "point_unsnapped_low_confidence_or_distance"
                 else:
                     structure_selection_method = "point_unsnapped_no_match"
-            geometry_basis = "parcel" if (parcel_polygon is not None and normalized_selection_mode != "point") else "point"
+            geometry_basis = "parcel" if parcel_polygon is not None else "point"
+            structure_geometry_confidence = (
+                0.52
+                if geometry_basis == "parcel"
+                else (0.42 if normalized_selection_mode == "point" else 0.0)
+            )
             return {
                 "footprint_used": False,
                 "footprint_found": False,
@@ -1173,7 +1179,7 @@ class WildfireDataClient:
                 "selected_structure_id": selected_structure_id,
                 "selected_structure_geometry": selected_structure_geometry if isinstance(selected_structure_geometry, dict) else None,
                 "final_structure_geometry_source": final_geometry_source,
-                "structure_geometry_confidence": 0.42 if normalized_selection_mode == "point" else 0.0,
+                "structure_geometry_confidence": structure_geometry_confidence,
                 "snapped_structure_distance_m": None,
                 "user_selected_point_in_footprint": False,
                 "display_point_source": "property_anchor_point",
@@ -1277,7 +1283,11 @@ class WildfireDataClient:
             structure_selection_method = (
                 "point_inside_footprint_snap"
                 if (match_distance is not None and float(match_distance) <= 0.5)
-                else "point_nearest_footprint_snap"
+                else (
+                    "point_parcel_intersection_snap"
+                    if str(match_method or "") == "parcel_intersection"
+                    else "point_nearest_footprint_snap"
+                )
             )
         else:
             final_structure_geometry_source = "auto_detected"
@@ -1868,13 +1878,24 @@ class WildfireDataClient:
         structure_query_lat = float(anchor.anchor_latitude)
         structure_query_lon = float(anchor.anchor_longitude)
         parcel_for_matching = anchor.parcel_polygon
+        point_mode_use_parcel_context = str(
+            os.getenv("WF_POINT_SELECTION_USE_PARCEL_CONTEXT", "true")
+        ).strip().lower() in {"1", "true", "yes", "on"}
         if normalized_selection_mode == "point" and user_selected_point_coords is not None:
             structure_query_lat = float(user_selected_point_coords[0])
             structure_query_lon = float(user_selected_point_coords[1])
-            parcel_for_matching = None
             assumptions.append(
                 "Point-based structure selection mode enabled; structure lookup is centered on the user-selected map location."
             )
+            if point_mode_use_parcel_context and anchor.parcel_polygon is not None:
+                assumptions.append(
+                    "Point-based structure selection is using parcel context to improve building matching reliability."
+                )
+            else:
+                parcel_for_matching = None
+                assumptions.append(
+                    "Point-based structure selection is running without parcel context; weak or distant matches will remain unsnapped."
+                )
 
         ring_context, ring_assumptions, ring_sources = self._compute_structure_ring_metrics(
             structure_query_lat,
@@ -1885,6 +1906,7 @@ class WildfireDataClient:
             footprint_path=runtime_paths.get("footprints"),
             fallback_footprint_path=runtime_paths.get("fema_structures"),
             parcel_polygon=parcel_for_matching,
+            use_parcel_association_for_point_mode=point_mode_use_parcel_context,
             property_anchor_point=(
                 {"latitude": explicit_anchor_override[0], "longitude": explicit_anchor_override[1]}
                 if explicit_anchor_override is not None
@@ -2040,6 +2062,10 @@ class WildfireDataClient:
         property_level_context["geocode_to_anchor_distance_m"] = geocode_to_anchor_distance_m
         property_level_context["source_conflict_flag"] = bool(anchor.source_conflict_flag)
         property_level_context["alignment_notes"] = list(anchor.alignment_notes)
+        property_level_context["parcel_source"] = (
+            property_level_context.get("parcel_source_name")
+            or property_level_context.get("parcel_source")
+        )
         property_level_context["anchor_quality"] = str(property_level_context.get("property_anchor_quality") or "low")
         property_level_context["anchor_quality_score"] = (
             float(property_level_context.get("property_anchor_quality_score"))

@@ -842,6 +842,7 @@ class AssessmentResult(BaseModel):
     property_anchor_precision: Optional[str] = None
     assessed_property_display_point: Optional[Dict[str, float]] = None
     parcel_id: Optional[str] = None
+    parcel_source: Optional[str] = None
     parcel_lookup_method: Optional[str] = None
     parcel_lookup_distance_m: Optional[float] = None
     source_conflict_flag: bool = False

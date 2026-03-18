@@ -1,0 +1,450 @@
+{
+  "benchmark_pack_version": "1.1.0-confidence",
+  "factor_schema_version": "1.3.0",
+  "description": "Confidence/accuracy benchmark pack focused on geometry quality, enrichment coverage, and fallback-weight suppression.",
+  "scenarios": [
+    {
+      "scenario_id": "missoula_point_sparse_baseline",
+      "description": "Missoula-style low-evidence run with point-based geometry and sparse enrichment coverage.",
+      "profile_tags": ["missoula", "point_based", "fallback_heavy", "low_confidence"],
+      "input_payload": {
+        "address": "400 Sparse Anchor Ln, Missoula, MT",
+        "attributes": {
+          "roof_type": null,
+          "vent_type": null,
+          "defensible_space_ft": null,
+          "construction_year": null
+        },
+        "confirmed_fields": [],
+        "audience": "homeowner",
+        "tags": ["benchmark", "confidence-pass"]
+      },
+      "location": {"lat": 46.8721, "lon": -113.994, "geocode_source": "benchmark-confidence-pack"},
+      "context": {
+        "burn_probability_index": null,
+        "hazard_severity_index": null,
+        "slope_index": 52.0,
+        "fuel_index": 58.0,
+        "moisture_index": null,
+        "canopy_index": 60.0,
+        "wildland_distance_index": 54.0,
+        "historic_fire_index": null,
+        "environmental_layer_status": {
+          "burn_probability": "missing",
+          "hazard": "missing",
+          "slope": "ok",
+          "fuel": "ok",
+          "canopy": "ok",
+          "fire_history": "missing"
+        },
+        "property_level_context": {
+          "footprint_used": false,
+          "footprint_status": "not_found",
+          "fallback_mode": "point_based",
+          "geometry_basis": "point",
+          "structure_geometry_confidence": 0.34,
+          "selection_mode": "point",
+          "final_structure_geometry_source": "user_selected_point_unsnapped",
+          "structure_selection_method": "point_unsnapped_low_confidence_or_distance",
+          "feature_bundle_summary": {
+            "coverage_metrics": {
+              "observed_feature_count": 3,
+              "inferred_feature_count": 1,
+              "fallback_feature_count": 8,
+              "missing_feature_count": 4,
+              "observed_weight_fraction": 0.25,
+              "fallback_dominance_ratio": 0.5,
+              "structure_geometry_quality_score": 0.36,
+              "structure_geometry_confidence": 0.34,
+              "anchor_quality_score": 0.51,
+              "environmental_layer_coverage_score": 38.0,
+              "property_specificity_score": 31.0
+            }
+          }
+        }
+      },
+      "expected": {
+        "confidence_tiers": ["preliminary", "low", "moderate"],
+        "assessment_status_in": ["partially_scored", "insufficient_data", "fully_scored"],
+        "fallback_mode": "point_based"
+      }
+    },
+    {
+      "scenario_id": "missoula_footprint_enriched_improved",
+      "description": "Same broad region profile with resolved footprint, stronger enrichment, and better observed evidence.",
+      "profile_tags": ["missoula", "footprint_resolved", "enriched", "higher_confidence"],
+      "input_payload": {
+        "address": "401 Observed Anchor Ln, Missoula, MT",
+        "attributes": {
+          "roof_type": "class a",
+          "vent_type": "ember-resistant",
+          "defensible_space_ft": 28,
+          "construction_year": 2012
+        },
+        "confirmed_fields": ["roof_type", "vent_type", "defensible_space_ft", "construction_year"],
+        "audience": "homeowner",
+        "tags": ["benchmark", "confidence-pass"]
+      },
+      "location": {"lat": 46.8746, "lon": -114.01, "geocode_source": "benchmark-confidence-pack"},
+      "context": {
+        "burn_probability_index": 58.0,
+        "hazard_severity_index": 63.0,
+        "slope_index": 57.0,
+        "fuel_index": 62.0,
+        "moisture_index": 52.0,
+        "canopy_index": 56.0,
+        "wildland_distance_index": 60.0,
+        "historic_fire_index": 54.0,
+        "environmental_layer_status": {
+          "burn_probability": "ok",
+          "hazard": "ok",
+          "slope": "ok",
+          "fuel": "ok",
+          "canopy": "ok",
+          "fire_history": "ok"
+        },
+        "property_level_context": {
+          "footprint_used": true,
+          "footprint_status": "used",
+          "fallback_mode": "footprint",
+          "geometry_basis": "footprint",
+          "structure_geometry_confidence": 0.93,
+          "selection_mode": "polygon",
+          "structure_selection_method": "parcel_intersection",
+          "feature_bundle_summary": {
+            "coverage_metrics": {
+              "observed_feature_count": 12,
+              "inferred_feature_count": 1,
+              "fallback_feature_count": 1,
+              "missing_feature_count": 1,
+              "observed_weight_fraction": 0.8,
+              "fallback_dominance_ratio": 0.067,
+              "structure_geometry_quality_score": 0.91,
+              "structure_geometry_confidence": 0.93,
+              "anchor_quality_score": 0.9,
+              "environmental_layer_coverage_score": 92.0,
+              "property_specificity_score": 88.0
+            }
+          },
+          "ring_metrics": {
+            "ring_0_5_ft": {"vegetation_density": 34.0},
+            "ring_5_30_ft": {"vegetation_density": 41.0},
+            "ring_30_100_ft": {"vegetation_density": 48.0}
+          }
+        }
+      },
+      "expected": {
+        "confidence_tiers": ["moderate", "high"],
+        "assessment_status_in": ["partially_scored", "fully_scored"],
+        "fallback_mode": "footprint"
+      }
+    },
+    {
+      "scenario_id": "wui_dense_forested_enriched",
+      "description": "High-hazard dense forest WUI property with strong observed evidence.",
+      "profile_tags": ["fire_regime", "wui", "high_hazard", "enriched"],
+      "input_payload": {
+        "address": "710 Timberline Ridge, WUI, MT",
+        "attributes": {
+          "roof_type": "wood",
+          "vent_type": "standard",
+          "defensible_space_ft": 8,
+          "construction_year": 1996
+        },
+        "confirmed_fields": ["roof_type", "vent_type", "defensible_space_ft"],
+        "audience": "insurer",
+        "tags": ["benchmark", "confidence-pass"]
+      },
+      "location": {"lat": 47.01, "lon": -114.2, "geocode_source": "benchmark-confidence-pack"},
+      "context": {
+        "burn_probability_index": 82.0,
+        "hazard_severity_index": 85.0,
+        "slope_index": 74.0,
+        "fuel_index": 83.0,
+        "moisture_index": 68.0,
+        "canopy_index": 80.0,
+        "wildland_distance_index": 86.0,
+        "historic_fire_index": 78.0,
+        "property_level_context": {
+          "footprint_used": true,
+          "fallback_mode": "footprint",
+          "geometry_basis": "footprint",
+          "structure_geometry_confidence": 0.9,
+          "feature_bundle_summary": {
+            "coverage_metrics": {
+              "observed_feature_count": 12,
+              "inferred_feature_count": 1,
+              "fallback_feature_count": 1,
+              "missing_feature_count": 1,
+              "observed_weight_fraction": 0.8,
+              "fallback_dominance_ratio": 0.07,
+              "structure_geometry_quality_score": 0.9,
+              "structure_geometry_confidence": 0.9,
+              "anchor_quality_score": 0.88,
+              "environmental_layer_coverage_score": 90.0,
+              "property_specificity_score": 86.0
+            }
+          },
+          "ring_metrics": {
+            "ring_0_5_ft": {"vegetation_density": 74.0},
+            "ring_5_30_ft": {"vegetation_density": 82.0},
+            "ring_30_100_ft": {"vegetation_density": 84.0}
+          }
+        }
+      },
+      "expected": {
+        "assessment_status_in": ["partially_scored", "fully_scored"],
+        "confidence_tiers": ["moderate", "high"]
+      }
+    },
+    {
+      "scenario_id": "suburban_low_fuel_enriched",
+      "description": "Lower-hazard suburban profile with observed enrichment and stronger mitigation posture.",
+      "profile_tags": ["fire_regime", "suburban", "lower_hazard", "enriched"],
+      "input_payload": {
+        "address": "711 Meadow Loop, Suburban, MT",
+        "attributes": {
+          "roof_type": "class a",
+          "vent_type": "ember-resistant",
+          "defensible_space_ft": 36,
+          "construction_year": 2019
+        },
+        "confirmed_fields": ["roof_type", "vent_type", "defensible_space_ft", "construction_year"],
+        "audience": "insurer",
+        "tags": ["benchmark", "confidence-pass"]
+      },
+      "location": {"lat": 46.95, "lon": -113.85, "geocode_source": "benchmark-confidence-pack"},
+      "context": {
+        "burn_probability_index": 26.0,
+        "hazard_severity_index": 28.0,
+        "slope_index": 24.0,
+        "fuel_index": 30.0,
+        "moisture_index": 38.0,
+        "canopy_index": 26.0,
+        "wildland_distance_index": 34.0,
+        "historic_fire_index": 20.0,
+        "property_level_context": {
+          "footprint_used": true,
+          "fallback_mode": "footprint",
+          "geometry_basis": "footprint",
+          "structure_geometry_confidence": 0.92,
+          "feature_bundle_summary": {
+            "coverage_metrics": {
+              "observed_feature_count": 11,
+              "inferred_feature_count": 2,
+              "fallback_feature_count": 1,
+              "missing_feature_count": 1,
+              "observed_weight_fraction": 0.73,
+              "fallback_dominance_ratio": 0.07,
+              "structure_geometry_quality_score": 0.9,
+              "structure_geometry_confidence": 0.92,
+              "anchor_quality_score": 0.91,
+              "environmental_layer_coverage_score": 90.0,
+              "property_specificity_score": 87.0
+            }
+          },
+          "ring_metrics": {
+            "ring_0_5_ft": {"vegetation_density": 20.0},
+            "ring_5_30_ft": {"vegetation_density": 27.0},
+            "ring_30_100_ft": {"vegetation_density": 34.0}
+          }
+        }
+      },
+      "expected": {
+        "assessment_status_in": ["partially_scored", "fully_scored"],
+        "confidence_tiers": ["moderate", "high"]
+      }
+    },
+    {
+      "scenario_id": "enrichment_missing_variant",
+      "description": "Same property profile with WHP/MTBS/gridMET-style context missing.",
+      "profile_tags": ["enrichment", "missing", "fallback_pressure"],
+      "input_payload": {
+        "address": "820 Missing Enrichment Rd, MT",
+        "attributes": {
+          "roof_type": "composite",
+          "vent_type": "standard",
+          "defensible_space_ft": 18,
+          "construction_year": 2004
+        },
+        "confirmed_fields": ["roof_type", "vent_type", "defensible_space_ft"],
+        "audience": "insurer",
+        "tags": ["benchmark", "confidence-pass"]
+      },
+      "location": {"lat": 46.89, "lon": -114.06, "geocode_source": "benchmark-confidence-pack"},
+      "context": {
+        "burn_probability_index": null,
+        "hazard_severity_index": null,
+        "slope_index": 58.0,
+        "fuel_index": 61.0,
+        "moisture_index": null,
+        "canopy_index": 57.0,
+        "wildland_distance_index": 66.0,
+        "historic_fire_index": null,
+        "environmental_layer_status": {
+          "burn_probability": "missing",
+          "hazard": "missing",
+          "slope": "ok",
+          "fuel": "ok",
+          "canopy": "ok",
+          "fire_history": "missing"
+        },
+        "property_level_context": {
+          "footprint_used": true,
+          "fallback_mode": "footprint",
+          "geometry_basis": "footprint",
+          "structure_geometry_confidence": 0.87,
+          "feature_bundle_summary": {
+            "coverage_metrics": {
+              "observed_feature_count": 7,
+              "inferred_feature_count": 1,
+              "fallback_feature_count": 6,
+              "missing_feature_count": 2,
+              "observed_weight_fraction": 0.44,
+              "fallback_dominance_ratio": 0.375,
+              "structure_geometry_quality_score": 0.84,
+              "structure_geometry_confidence": 0.87,
+              "anchor_quality_score": 0.86,
+              "environmental_layer_coverage_score": 50.0,
+              "property_specificity_score": 61.0
+            }
+          },
+          "ring_metrics": {
+            "ring_0_5_ft": {"vegetation_density": 42.0},
+            "ring_5_30_ft": {"vegetation_density": 56.0},
+            "ring_30_100_ft": {"vegetation_density": 62.0}
+          }
+        }
+      },
+      "expected": {
+        "assessment_status_in": ["partially_scored", "fully_scored"]
+      }
+    },
+    {
+      "scenario_id": "enrichment_present_variant",
+      "description": "Same profile with WHP/MTBS/gridMET-style context available and observed.",
+      "profile_tags": ["enrichment", "present", "observed_context"],
+      "input_payload": {
+        "address": "820 Present Enrichment Rd, MT",
+        "attributes": {
+          "roof_type": "composite",
+          "vent_type": "standard",
+          "defensible_space_ft": 18,
+          "construction_year": 2004
+        },
+        "confirmed_fields": ["roof_type", "vent_type", "defensible_space_ft"],
+        "audience": "insurer",
+        "tags": ["benchmark", "confidence-pass"]
+      },
+      "location": {"lat": 46.89, "lon": -114.06, "geocode_source": "benchmark-confidence-pack"},
+      "context": {
+        "burn_probability_index": 61.0,
+        "hazard_severity_index": 64.0,
+        "slope_index": 58.0,
+        "fuel_index": 61.0,
+        "moisture_index": 54.0,
+        "canopy_index": 57.0,
+        "wildland_distance_index": 66.0,
+        "historic_fire_index": 59.0,
+        "environmental_layer_status": {
+          "burn_probability": "ok",
+          "hazard": "ok",
+          "slope": "ok",
+          "fuel": "ok",
+          "canopy": "ok",
+          "fire_history": "ok"
+        },
+        "property_level_context": {
+          "footprint_used": true,
+          "fallback_mode": "footprint",
+          "geometry_basis": "footprint",
+          "structure_geometry_confidence": 0.87,
+          "feature_bundle_summary": {
+            "coverage_metrics": {
+              "observed_feature_count": 12,
+              "inferred_feature_count": 1,
+              "fallback_feature_count": 1,
+              "missing_feature_count": 1,
+              "observed_weight_fraction": 0.8,
+              "fallback_dominance_ratio": 0.07,
+              "structure_geometry_quality_score": 0.84,
+              "structure_geometry_confidence": 0.87,
+              "anchor_quality_score": 0.86,
+              "environmental_layer_coverage_score": 90.0,
+              "property_specificity_score": 83.0
+            }
+          },
+          "ring_metrics": {
+            "ring_0_5_ft": {"vegetation_density": 42.0},
+            "ring_5_30_ft": {"vegetation_density": 56.0},
+            "ring_30_100_ft": {"vegetation_density": 62.0}
+          }
+        }
+      },
+      "expected": {
+        "assessment_status_in": ["partially_scored", "fully_scored"],
+        "confidence_tiers": ["moderate", "high"]
+      }
+    }
+  ],
+  "relative_assertions": [
+    {
+      "assertion_id": "missoula_improved_confidence_gt_sparse",
+      "left": "missoula_footprint_enriched_improved",
+      "metric": "confidence.confidence_score",
+      "op": ">",
+      "right": "missoula_point_sparse_baseline"
+    },
+    {
+      "assertion_id": "missoula_improved_fallback_weight_lt_sparse",
+      "left": "missoula_footprint_enriched_improved",
+      "metric": "evidence_metrics.fallback_weight_fraction",
+      "op": "<",
+      "right": "missoula_point_sparse_baseline"
+    },
+    {
+      "assertion_id": "missoula_improved_suppressed_factor_count_lt_sparse",
+      "left": "missoula_footprint_enriched_improved",
+      "metric": "evidence_metrics.suppressed_factor_count",
+      "op": "<",
+      "right": "missoula_point_sparse_baseline"
+    },
+    {
+      "assertion_id": "wui_risk_gt_suburban_risk",
+      "left": "wui_dense_forested_enriched",
+      "metric": "scores.wildfire_risk_score",
+      "op": ">",
+      "right": "suburban_low_fuel_enriched"
+    },
+    {
+      "assertion_id": "enrichment_present_confidence_gt_missing",
+      "left": "enrichment_present_variant",
+      "metric": "confidence.confidence_score",
+      "op": ">",
+      "right": "enrichment_missing_variant"
+    },
+    {
+      "assertion_id": "enrichment_present_fallback_weight_lt_missing",
+      "left": "enrichment_present_variant",
+      "metric": "evidence_metrics.fallback_weight_fraction",
+      "op": "<",
+      "right": "enrichment_missing_variant"
+    }
+  ],
+  "monotonic_assertions": [
+    {
+      "assertion_id": "enrichment_present_observed_features_gt_missing",
+      "left": "enrichment_present_variant",
+      "metric": "evidence_metrics.observed_feature_count",
+      "op": ">",
+      "right": "enrichment_missing_variant"
+    },
+    {
+      "assertion_id": "point_sparse_suppressed_ge_enriched",
+      "left": "missoula_point_sparse_baseline",
+      "metric": "evidence_metrics.suppressed_factor_count",
+      "op": ">=",
+      "right": "missoula_footprint_enriched_improved"
+    }
+  ]
+}
