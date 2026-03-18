@@ -18,11 +18,13 @@ from backend.models import (
     TrustDiagnosticsMonotonicity,
     TrustDiagnosticsStability,
 )
+from backend.scoring_config import load_scoring_config
 
 TRUST_DIAGNOSTIC_CAVEAT = (
     "These diagnostics measure model coherence, stability, evidence quality, and external alignment. "
     "They do not establish real-world predictive accuracy or insurer approval."
 )
+_RISK_BUCKET_THRESHOLDS = load_scoring_config().risk_bucket_thresholds or {}
 
 
 def _safe_float(value: Any) -> float | None:
@@ -37,9 +39,17 @@ def _safe_float(value: Any) -> float | None:
 def _risk_band(score: float | None) -> str:
     if score is None:
         return "unknown"
-    if score < 33.0:
+    try:
+        low_max = float(_RISK_BUCKET_THRESHOLDS.get("low_max", 40.0))
+    except (TypeError, ValueError):
+        low_max = 40.0
+    try:
+        medium_max = float(_RISK_BUCKET_THRESHOLDS.get("medium_max", 60.0))
+    except (TypeError, ValueError):
+        medium_max = 60.0
+    if score < low_max:
         return "low"
-    if score < 66.0:
+    if score < medium_max:
         return "moderate"
     return "high"
 

@@ -59,3 +59,6 @@ Files:
 - Follow with labeled public-outcome validation and calibration when enough outcome data is available.
 - Confidence diagnostics are evidence-quality checks: confidence should increase with observed evidence
   and decrease with fallback, inferred/proxy inputs, and missing critical fields.
+- Risk-bucket diagnostics are triage-oriented resolution checks (`low` / `medium` / `high`) using configured
+  thresholds (`risk_bucket_thresholds` in `config/scoring_parameters.yaml`), not claims-calibrated probability bands.
+- Better bucket separation indicates improved screening resolution, but it is not itself predictive-accuracy validation.

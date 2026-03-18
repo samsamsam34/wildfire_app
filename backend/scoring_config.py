@@ -99,8 +99,8 @@ class ScoringConfig:
     )
     risk_bucket_thresholds: Dict[str, float] = field(
         default_factory=lambda: {
-            "low_max": 33.0,
-            "medium_max": 66.0,
+            "low_max": 40.0,
+            "medium_max": 60.0,
         }
     )
     benchmark_risk_band_thresholds: Dict[str, float] = field(

@@ -5884,9 +5884,18 @@ def _compute_assessment(
 def _risk_band_for_score(score: float | None) -> str:
     if score is None:
         return "unknown"
-    if score < 33.0:
+    thresholds = scoring_config.risk_bucket_thresholds or {}
+    try:
+        low_max = float(thresholds.get("low_max", 40.0))
+    except (TypeError, ValueError):
+        low_max = 40.0
+    try:
+        medium_max = float(thresholds.get("medium_max", 60.0))
+    except (TypeError, ValueError):
+        medium_max = 60.0
+    if score < low_max:
         return "low"
-    if score < 66.0:
+    if score < medium_max:
         return "moderate"
     return "high"
 

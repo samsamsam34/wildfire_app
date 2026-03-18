@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from backend.benchmarking import build_wildfire_context
@@ -7,6 +8,7 @@ from backend.evaluation.no_ground_truth import (
     build_no_ground_truth_summary_markdown,
     evaluate_counterfactual_groups,
     evaluate_confidence_diagnostics,
+    evaluate_distribution,
     evaluate_monotonicity_rules,
     evaluate_stability,
 )
@@ -126,7 +128,32 @@ def test_orchestration_is_deterministic_with_fixed_run_id(tmp_path: Path) -> Non
     mono_1 = (output_root / "fixed_no_gt_run" / "monotonicity_results.json").read_text(encoding="utf-8")
     mono_2 = (output_root / "fixed_no_gt_run" / "monotonicity_results.json").read_text(encoding="utf-8")
     assert mono_1 == mono_2
+    distribution = json.loads((output_root / "fixed_no_gt_run" / "distribution_results.json").read_text(encoding="utf-8"))
+    assert distribution["largest_bucket_fraction"] < 0.75
+    assert distribution["occupied_risk_bucket_count"] >= 3
     assert Path(first["summary_path"]).exists()
+
+
+def test_distribution_bucketing_uses_thresholds_and_reports_balance() -> None:
+    scenarios = {
+        "s_low": {"region": "r1", "segments": ["a"]},
+        "s_medium": {"region": "r1", "segments": ["a"]},
+        "s_high": {"region": "r1", "segments": ["b"]},
+    }
+    snapshots = {
+        "s_low": {"scores": {"wildfire_risk_score": 35.0}, "confidence": {"confidence_tier": "moderate"}, "evidence_metrics": {}},
+        "s_medium": {"scores": {"wildfire_risk_score": 50.0}, "confidence": {"confidence_tier": "moderate"}, "evidence_metrics": {}},
+        "s_high": {"scores": {"wildfire_risk_score": 72.0}, "confidence": {"confidence_tier": "high"}, "evidence_metrics": {}},
+    }
+    distribution = evaluate_distribution(
+        scenarios_by_id=scenarios,
+        snapshots_by_id=snapshots,
+    )
+    assert distribution["risk_bucket_counts"]["low"] == 1
+    assert distribution["risk_bucket_counts"]["medium"] == 1
+    assert distribution["risk_bucket_counts"]["high"] == 1
+    assert distribution["occupied_risk_bucket_count"] == 3
+    assert distribution["largest_bucket_fraction"] == 0.3333
 
 
 def test_confidence_diagnostics_warn_on_backwards_fallback_relationship() -> None:

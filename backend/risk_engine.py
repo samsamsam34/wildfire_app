@@ -1135,12 +1135,28 @@ class RiskEngine:
             if insurance_readiness_score is not None
             else 0.0
         )
-        blended = (
+        base_blended = (
             site_hazard_score * env_weight
             + home_ignition_vulnerability_score * struct_weight
             + readiness_risk_equivalent * max(0.0, readiness_weight)
         ) / denom
-        return round(max(0.0, min(100.0, blended)), 1)
+        # Mild interaction and contrast expansion improves score separation
+        # between clearly different risk profiles while preserving determinism.
+        overlap_high = max(0.0, min(float(site_hazard_score), float(home_ignition_vulnerability_score)) - 55.0)
+        high_risk_compound = overlap_high * 0.10
+        readiness_drag = 0.0
+        low_risk_credit = 0.0
+        if insurance_readiness_score is not None:
+            readiness_value = max(0.0, min(100.0, float(insurance_readiness_score)))
+            if readiness_value < 45.0:
+                readiness_drag = (45.0 - readiness_value) * 0.08
+            low_overlap = max(0.0, 42.0 - max(float(site_hazard_score), float(home_ignition_vulnerability_score)))
+            if readiness_value >= 70.0 and low_overlap > 0.0:
+                low_risk_credit = low_overlap * 0.07
+
+        interaction_adjusted = base_blended + high_risk_compound + readiness_drag - low_risk_credit
+        contrast_adjusted = 50.0 + ((interaction_adjusted - 50.0) * 1.08)
+        return round(max(0.0, min(100.0, contrast_adjusted)), 1)
 
     def resolve_blend_weights(
         self,

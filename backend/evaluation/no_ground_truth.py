@@ -21,6 +21,7 @@ from backend.no_ground_truth_paths import (
     DEFAULT_NO_GROUND_TRUTH_ARTIFACT_ROOT,
     DEFAULT_NO_GROUND_TRUTH_FIXTURE_PATH,
 )
+from backend.scoring_config import load_scoring_config
 from backend.version import (
     API_VERSION,
     FACTOR_SCHEMA_VERSION,
@@ -34,6 +35,7 @@ LOGGER = logging.getLogger(__name__)
 DEFAULT_FIXTURE_PATH = DEFAULT_NO_GROUND_TRUTH_FIXTURE_PATH
 DEFAULT_OUTPUT_ROOT = DEFAULT_NO_GROUND_TRUTH_ARTIFACT_ROOT
 DEFAULT_EVAL_VERSION = "1.0.0"
+_RISK_BUCKET_THRESHOLDS = load_scoring_config().risk_bucket_thresholds or {}
 
 
 def _timestamp_id() -> str:
@@ -129,9 +131,17 @@ def _spearman(x: list[float], y: list[float]) -> float | None:
 def _risk_bucket(score: float | None) -> str:
     if score is None:
         return "unknown"
-    if score < 33.0:
+    try:
+        low_max = float(_RISK_BUCKET_THRESHOLDS.get("low_max", 40.0))
+    except (TypeError, ValueError):
+        low_max = 40.0
+    try:
+        medium_max = float(_RISK_BUCKET_THRESHOLDS.get("medium_max", 60.0))
+    except (TypeError, ValueError):
+        medium_max = 60.0
+    if score < low_max:
         return "low"
-    if score < 66.0:
+    if score < medium_max:
         return "medium"
     return "high"
 
@@ -692,7 +702,9 @@ def evaluate_distribution(
     else:
         dynamic_range = None
     largest_bucket = max(bucket_counts.values()) if bucket_counts else 0
-    if records and (largest_bucket / float(len(records))) >= 0.75:
+    largest_bucket_fraction = (largest_bucket / float(len(records))) if records else 0.0
+    occupied_bucket_count = sum(1 for count in bucket_counts.values() if int(count) > 0)
+    if records and largest_bucket_fraction >= 0.75:
         warnings.append("Most scenarios collapse into one risk bucket.")
 
     return {
@@ -715,6 +727,8 @@ def evaluate_distribution(
             },
         },
         "risk_bucket_counts": bucket_counts,
+        "largest_bucket_fraction": round(largest_bucket_fraction, 4),
+        "occupied_risk_bucket_count": occupied_bucket_count,
         "confidence_tier_counts": confidence_tier_counts,
         "fallback_group_counts": fallback_group_counts,
         "segment_stats": by_segment,
@@ -947,6 +961,8 @@ def build_no_ground_truth_summary_markdown(
         f"- Flagged counterfactual interventions: `{len(counterfactual.get('flagged_interventions') or [])}`",
         f"- Stability warnings: `{len(stability.get('warnings') or [])}`",
         f"- Distribution warnings: `{len(distribution.get('warnings') or [])}`",
+        f"- Risk bucket counts: `{distribution.get('risk_bucket_counts')}`",
+        f"- Largest bucket fraction: `{distribution.get('largest_bucket_fraction')}`",
         f"- Confidence warnings: `{len(confidence_diagnostics.get('warnings') or [])}`",
         "",
         "## External Alignment Caveat",
