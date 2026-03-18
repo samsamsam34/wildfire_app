@@ -263,7 +263,12 @@
             <label for="runSelect">Artifact run</label>
             <select id="runSelect"></select>
           </div>
+          <div>
+            <label for="baselineRunSelect">Baseline run (optional)</label>
+            <select id="baselineRunSelect"></select>
+          </div>
           <button id="reloadHealth">Reload Model Health</button>
+          <button id="compareRuns" type="button" class="secondary">Compare Runs</button>
         </div>
       </section>
 
@@ -325,6 +330,24 @@
           <details>
             <summary>Recommended Next Actions</summary>
             <div id="nextActions" class="note-list"></div>
+          </details>
+        </section>
+
+        <section class="card">
+          <h3>Run Comparison (Before/After)</h3>
+          <p id="compareMeta" class="status">Comparison not loaded yet.</p>
+          <div id="compareCards" class="grid"></div>
+          <details open>
+            <summary>Monotonicity Changes</summary>
+            <div id="compareMonoChanges" class="note-list"></div>
+          </details>
+          <details>
+            <summary>Top Intervention Deltas</summary>
+            <div id="compareInterventions" class="table-wrap"></div>
+          </details>
+          <details>
+            <summary>Direction Signals</summary>
+            <div id="compareSignals" class="note-list"></div>
           </details>
         </section>
       </section>
@@ -406,6 +429,7 @@
       const apiBase = (window.WILDFIRE_API_BASE || window.location.origin).replace(/\/$/, "");
       let currentRunId = null;
       let currentHealthSummary = null;
+      let runCatalog = [];
 
       function authHeaders() {
         const headers = { "Content-Type": "application/json" };
@@ -522,23 +546,51 @@
 
       async function loadRuns() {
         const select = document.getElementById("runSelect");
+        const baselineSelect = document.getElementById("baselineRunSelect");
         select.innerHTML = "";
+        baselineSelect.innerHTML = "";
         try {
           const payload = await api("/internal/diagnostics/api/runs");
           const runs = Array.isArray(payload.runs) ? payload.runs : [];
+          runCatalog = runs;
           if (!runs.length) {
             select.innerHTML = `<option value="">No artifacts found</option>`;
+            baselineSelect.innerHTML = `<option value="">No baseline available</option>`;
             currentRunId = null;
             return;
           }
           select.innerHTML = runs.map((row) => `
             <option value="${row.run_id}">${row.run_id} (${(row.generated_at || "").slice(0, 19)})</option>
           `).join("");
+          baselineSelect.innerHTML = ['<option value="">Auto: previous run</option>'].concat(
+            runs.map((row) => `<option value="${row.run_id}">${row.run_id}</option>`)
+          ).join("");
           currentRunId = payload.latest_run_id || runs[0].run_id;
           select.value = currentRunId;
+          const currentIndex = runs.findIndex((row) => row.run_id === currentRunId);
+          if (currentIndex >= 0 && runs[currentIndex + 1]) {
+            baselineSelect.value = runs[currentIndex + 1].run_id;
+          } else {
+            baselineSelect.value = "";
+          }
         } catch (err) {
           select.innerHTML = `<option value="">Unable to load runs</option>`;
+          baselineSelect.innerHTML = `<option value="">Unable to load runs</option>`;
           setStatus("healthMeta", String(err), true);
+        }
+      }
+
+      function updateBaselineDefaultForCurrentRun() {
+        const baselineSelect = document.getElementById("baselineRunSelect");
+        if (!Array.isArray(runCatalog) || !runCatalog.length) {
+          baselineSelect.value = "";
+          return;
+        }
+        const idx = runCatalog.findIndex((row) => row.run_id === currentRunId);
+        if (idx >= 0 && runCatalog[idx + 1]) {
+          baselineSelect.value = runCatalog[idx + 1].run_id;
+        } else {
+          baselineSelect.value = "";
         }
       }
 
@@ -673,6 +725,98 @@
           setStatus("healthMeta", String(err), true);
           renderCards("healthCards", []);
           renderNotes("distributionWarnings", ["Diagnostics could not be loaded for model health."]);
+        }
+      }
+
+      async function loadRunComparison(runId = null, baselineRunId = "") {
+        const compareMeta = document.getElementById("compareMeta");
+        compareMeta.textContent = "Loading comparison...";
+        compareMeta.className = "status";
+        const params = new URLSearchParams();
+        if (runId) params.set("run_id", runId);
+        if (baselineRunId) params.set("baseline_run_id", baselineRunId);
+        const endpoint = `/internal/diagnostics/api/compare${params.toString() ? `?${params.toString()}` : ""}`;
+        try {
+          const payload = await api(endpoint);
+          if (!payload.available) {
+            compareMeta.textContent = payload.message || "No baseline run available for comparison.";
+            compareMeta.className = "status error";
+            renderCards("compareCards", []);
+            renderNotes("compareMonoChanges", [payload.message || "Comparison unavailable."]);
+            renderSimpleTable("compareInterventions", [], []);
+            renderNotes("compareSignals", []);
+            return;
+          }
+          compareMeta.textContent = `Current ${payload.run_id} vs baseline ${payload.baseline_run_id} (${payload.comparison_mode || "comparison"})`;
+          const monotonicity = payload.monotonicity || {};
+          const stability = payload.stability || {};
+          const confidence = payload.confidence_diagnostics || {};
+          const distribution = payload.distribution || {};
+          renderCards("compareCards", [
+            {
+              title: "Monotonicity Failed Delta",
+              value: `${Number(monotonicity.failed_count_delta || 0)}`,
+              className: Number(monotonicity.failed_count_delta || 0) < 0 ? "good" : (Number(monotonicity.failed_count_delta || 0) > 0 ? "bad" : "warn"),
+              detail: `${monotonicity.previous_failed_count ?? "N/A"} -> ${monotonicity.current_failed_count ?? "N/A"}`,
+            },
+            {
+              title: "Stability Unstable Delta",
+              value: `${Number(((stability.delta || {}).unstable_count) || 0)}`,
+              className: Number(((stability.delta || {}).unstable_count) || 0) < 0 ? "good" : (Number(((stability.delta || {}).unstable_count) || 0) > 0 ? "bad" : "warn"),
+              detail: `${((stability.previous || {}).unstable_count) ?? "N/A"} -> ${((stability.current || {}).unstable_count) ?? "N/A"}`,
+            },
+            {
+              title: "Confidence Warning Delta",
+              value: `${Number(confidence.warning_count_delta || 0)}`,
+              className: Number(confidence.warning_count_delta || 0) < 0 ? "good" : (Number(confidence.warning_count_delta || 0) > 0 ? "bad" : "warn"),
+              detail: `${confidence.previous_warning_count ?? "N/A"} -> ${confidence.current_warning_count ?? "N/A"}`,
+            },
+            {
+              title: "Largest Bucket Fraction Delta",
+              value: Number(distribution.largest_bucket_fraction_delta || 0).toFixed(3),
+              className: Number(distribution.largest_bucket_fraction_delta || 0) < 0 ? "good" : (Number(distribution.largest_bucket_fraction_delta || 0) > 0 ? "bad" : "warn"),
+              detail: `${distribution.previous_largest_bucket_fraction ?? "N/A"} -> ${distribution.current_largest_bucket_fraction ?? "N/A"}`,
+            },
+          ]);
+          const resolved = (monotonicity.violations_resolved || []).map((ruleId) => `Resolved: ${ruleId}`);
+          const added = (monotonicity.violations_added || []).map((ruleId) => `Added: ${ruleId}`);
+          const comparisonNotes = []
+            .concat(resolved)
+            .concat(added)
+            .slice(0, 12);
+          renderNotes(
+            "compareMonoChanges",
+            comparisonNotes.length ? comparisonNotes : ["No monotonicity violations were added or resolved."]
+          );
+          const interventionRows = (payload.counterfactual || {}).intervention_delta_table || [];
+          renderSimpleTable(
+            "compareInterventions",
+            [
+              { key: "intervention", label: "Intervention" },
+              { key: "previous_median_risk_delta", label: "Previous Median Delta" },
+              { key: "current_median_risk_delta", label: "Current Median Delta" },
+              { key: "median_delta_change", label: "Change" },
+            ],
+            interventionRows.map((row) => ({
+              intervention: row.intervention || "",
+              previous_median_risk_delta: row.previous_median_risk_delta != null ? Number(row.previous_median_risk_delta).toFixed(2) : "",
+              current_median_risk_delta: row.current_median_risk_delta != null ? Number(row.current_median_risk_delta).toFixed(2) : "",
+              median_delta_change: row.median_delta_change != null ? Number(row.median_delta_change).toFixed(2) : "",
+            }))
+          );
+          renderNotes(
+            "compareSignals",
+            []
+              .concat((payload.overall_direction_signals || []).map((row) => `Signal: ${row}`))
+              .concat((payload.likely_change_drivers || []).map((row) => `Driver: ${row}`))
+          );
+        } catch (err) {
+          compareMeta.textContent = `Comparison could not be loaded: ${err}`;
+          compareMeta.className = "status error";
+          renderCards("compareCards", []);
+          renderNotes("compareMonoChanges", ["Comparison data unavailable."]);
+          renderSimpleTable("compareInterventions", [], []);
+          renderNotes("compareSignals", []);
         }
       }
 
@@ -949,9 +1093,19 @@
         document.getElementById("reloadHealth").addEventListener("click", async () => {
           const selected = document.getElementById("runSelect").value || null;
           await loadModelHealth(selected);
+          await loadRunComparison(selected, document.getElementById("baselineRunSelect").value || "");
+        });
+        document.getElementById("compareRuns").addEventListener("click", async () => {
+          const selected = document.getElementById("runSelect").value || null;
+          const baseline = document.getElementById("baselineRunSelect").value || "";
+          await loadRunComparison(selected, baseline);
         });
         document.getElementById("runSelect").addEventListener("change", async (ev) => {
-          await loadModelHealth(ev.target.value || null);
+          currentRunId = ev.target.value || null;
+          updateBaselineDefaultForCurrentRun();
+          const selected = currentRunId;
+          await loadModelHealth(selected);
+          await loadRunComparison(selected, document.getElementById("baselineRunSelect").value || "");
         });
         document.getElementById("runPropertyDiag").addEventListener("click", runPropertyDiagnostics);
         document.getElementById("clearPropertyDiag").addEventListener("click", () => {
@@ -961,6 +1115,7 @@
         resetPropertyDetailsUi();
         await loadRuns();
         await loadModelHealth(currentRunId);
+        await loadRunComparison(currentRunId, document.getElementById("baselineRunSelect").value || "");
       }
 
       init();

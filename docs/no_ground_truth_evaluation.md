@@ -34,6 +34,16 @@ python scripts/run_no_ground_truth_evaluation.py \
   --overwrite
 ```
 
+Compare against a specific prior run while generating a new run:
+
+```bash
+python scripts/run_no_ground_truth_evaluation.py \
+  --fixture benchmark/fixtures/no_ground_truth/scenario_pack_v1.json \
+  --output-root benchmark/no_ground_truth_evaluation \
+  --run-id after_fix_v2 \
+  --compare-to-run before_fix_v1
+```
+
 ## Artifacts
 
 Each run writes:
@@ -49,7 +59,15 @@ Files:
 - `distribution_results.json`
 - `benchmark_alignment_results.json`
 - `confidence_diagnostics.json`
+- `comparison_to_previous.json`
+- `comparison_to_previous.md`
 - `summary.md`
+
+Comparison behavior:
+
+- By default, each run compares to the most recent previous run in the artifact root.
+- Use `--compare-to-run <run_id>` to force a specific baseline.
+- If no baseline exists, comparison artifacts still write with `available: false` and a clear reason.
 
 ## Interpretation
 
@@ -62,3 +80,5 @@ Files:
 - Risk-bucket diagnostics are triage-oriented resolution checks (`low` / `medium` / `high`) using configured
   thresholds (`risk_bucket_thresholds` in `config/scoring_parameters.yaml`), not claims-calibrated probability bands.
 - Better bucket separation indicates improved screening resolution, but it is not itself predictive-accuracy validation.
+- Use `comparison_to_previous.md` for quick before/after drift review across monotonicity, interventions, stability,
+  confidence warnings, and score distribution behavior.

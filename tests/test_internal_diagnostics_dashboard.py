@@ -165,6 +165,7 @@ def test_artifact_loader_and_summary_with_fixture(monkeypatch, tmp_path: Path) -
     assert summary["stability"]["top_unstable_factors"]
     assert summary["benchmark_alignment"]["average_spearman_rank_correlation"] is not None
     assert summary["benchmark_alignment"]["average_bucket_agreement_ratio"] is not None
+    assert "comparison_to_previous" in summary
     assert summary["recommended_next_actions"]
 
 
@@ -197,6 +198,49 @@ def test_internal_dashboard_endpoints_with_and_without_artifacts(monkeypatch, tm
     section_missing = client.get("/internal/diagnostics/api/latest/benchmark_alignment")
     assert section_missing.status_code == 200
     assert section_missing.json()["available"] is False
+
+
+def test_internal_dashboard_compare_endpoint(monkeypatch, tmp_path: Path) -> None:
+    auth.API_KEYS = set()
+    root = tmp_path / "runs"
+    _write_run(root, "20260318T000000Z", include_alignment=True)
+    _write_run(root, "20260319T000000Z", include_alignment=True)
+    # Improve monotonicity in newer run so comparison delta is non-zero.
+    (root / "20260319T000000Z" / "monotonicity_results.json").write_text(
+        json.dumps(
+            {
+                "status": "ok",
+                "rule_count": 4,
+                "passed_count": 4,
+                "failed_count": 0,
+                "rows": [],
+                "violated_rules": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("WF_NO_GROUND_TRUTH_EVAL_DIR", str(root))
+
+    explicit = client.get(
+        "/internal/diagnostics/api/compare",
+        params={"run_id": "20260319T000000Z", "baseline_run_id": "20260318T000000Z"},
+    )
+    assert explicit.status_code == 200
+    body = explicit.json()
+    assert body["available"] is True
+    assert body["run_id"] == "20260319T000000Z"
+    assert body["baseline_run_id"] == "20260318T000000Z"
+    assert body["comparison_mode"] == "explicit_runs"
+    assert body["monotonicity"]["failed_count_delta"] == -1
+
+    auto = client.get(
+        "/internal/diagnostics/api/compare",
+        params={"run_id": "20260319T000000Z"},
+    )
+    assert auto.status_code == 200
+    auto_body = auto.json()
+    assert auto_body["available"] is True
+    assert auto_body["comparison_mode"] == "latest_vs_previous"
 
 
 def test_internal_dashboard_page_contains_property_diagnostics_hooks() -> None:

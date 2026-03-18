@@ -20,6 +20,7 @@ Model Health view highlights:
 - stability swing summaries (average/median/max) and unstable factors/tests
 - distribution spread and evidence-tier context
 - benchmark alignment summaries (signals, correlation/agreement, disagreement counts) with explicit caveats
+- run comparison panel for latest-vs-previous or explicit run-vs-run drift checks
 
 ## Route
 
@@ -30,6 +31,7 @@ The page is served by the backend and reads internal diagnostics APIs:
 - `GET /internal/diagnostics/api/runs`
 - `GET /internal/diagnostics/api/latest`
 - `GET /internal/diagnostics/api/run/{run_id}`
+- `GET /internal/diagnostics/api/compare?run_id=<current>&baseline_run_id=<baseline>`
 - `GET /internal/diagnostics/api/latest/{section_key}`
 - `GET /internal/diagnostics/api/run/{run_id}/{section_key}`
 
@@ -55,6 +57,8 @@ Expected files inside each run folder:
 - `distribution_results.json`
 - `benchmark_alignment_results.json`
 - `confidence_diagnostics.json`
+- `comparison_to_previous.json`
+- `comparison_to_previous.md`
 
 If missing, the dashboard degrades gracefully and shows clear empty-state guidance.
 

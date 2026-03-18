@@ -44,6 +44,7 @@ from backend.homeowner_report import build_homeowner_report, render_homeowner_re
 from backend.internal_diagnostics_artifacts import (
     SECTION_FILES,
     build_no_ground_truth_health_summary,
+    compare_no_ground_truth_runs,
     list_no_ground_truth_runs,
     load_no_ground_truth_run_bundle,
 )
@@ -10900,6 +10901,18 @@ def internal_diagnostics_run(
         },
         "message": bundle.get("message"),
     }
+
+
+@app.get("/internal/diagnostics/api/compare", dependencies=[Depends(require_api_key)])
+def internal_diagnostics_compare(
+    run_id: str | None = Query(default=None, description="Current run to compare."),
+    baseline_run_id: str | None = Query(default=None, description="Baseline run. Defaults to prior run."),
+    _: ActorContext = Depends(get_actor_context),
+) -> dict[str, Any]:
+    return compare_no_ground_truth_runs(
+        current_run_id=run_id,
+        baseline_run_id=baseline_run_id,
+    )
 
 
 @app.get("/internal/diagnostics/api/latest/{section_key}", dependencies=[Depends(require_api_key)])

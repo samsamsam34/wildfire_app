@@ -27,6 +27,8 @@ REQUIRED_ARTIFACTS = [
     "stability_results.json",
     "distribution_results.json",
     "confidence_diagnostics.json",
+    "comparison_to_previous.json",
+    "comparison_to_previous.md",
 ]
 OPTIONAL_ARTIFACTS = [
     "benchmark_alignment_results.json",
@@ -106,6 +108,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--fixture", default=str(DEFAULT_FIXTURE_PATH))
     parser.add_argument("--output-root", default=str(DEFAULT_OUTPUT_ROOT))
     parser.add_argument("--run-id", default="", help="Optional fixed run ID for deterministic output naming.")
+    parser.add_argument(
+        "--compare-to-run",
+        default="",
+        help="Optional baseline run ID to compare against. Defaults to the most recent prior run when omitted.",
+    )
     parser.add_argument("--seed", type=int, default=None, help="Optional deterministic seed override.")
     parser.add_argument("--overwrite", action="store_true", help="Overwrite output directory when run-id exists.")
     parser.add_argument("--verbose", action="store_true", help="Enable info-level logs.")
@@ -159,6 +166,7 @@ def main(argv: list[str] | None = None) -> int:
             run_id=(args.run_id or None),
             seed=args.seed,
             overwrite=bool(args.overwrite),
+            compare_to_run_id=(args.compare_to_run or None),
         )
     except FileNotFoundError as err:
         _print_lines(
@@ -190,6 +198,8 @@ def main(argv: list[str] | None = None) -> int:
         [
             f"[no-gt-eval] run_id: {result.get('run_id')}",
             f"[no-gt-eval] run_dir: {run_dir}",
+            f"[no-gt-eval] comparison_json: {result.get('comparison_json_path')}",
+            f"[no-gt-eval] comparison_markdown: {result.get('comparison_markdown_path')}",
         ]
     )
     missing_required = [name for name in REQUIRED_ARTIFACTS if not (run_dir / name).exists()]

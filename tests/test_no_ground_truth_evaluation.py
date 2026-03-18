@@ -134,6 +134,50 @@ def test_orchestration_is_deterministic_with_fixed_run_id(tmp_path: Path) -> Non
     assert Path(first["summary_path"]).exists()
 
 
+def test_orchestration_writes_comparison_to_previous_when_baseline_exists(tmp_path: Path) -> None:
+    fixture = Path("benchmark/fixtures/no_ground_truth/scenario_pack_v1.json")
+    output_root = tmp_path / "no_gt_runs"
+    run_no_ground_truth_evaluation(
+        fixture_path=fixture,
+        output_root=output_root,
+        run_id="run_a",
+        seed=17,
+        overwrite=True,
+    )
+    run_no_ground_truth_evaluation(
+        fixture_path=fixture,
+        output_root=output_root,
+        run_id="run_b",
+        seed=17,
+        overwrite=True,
+    )
+    comparison = json.loads(
+        (output_root / "run_b" / "comparison_to_previous.json").read_text(encoding="utf-8")
+    )
+    assert comparison["available"] is True
+    assert comparison["run_id"] == "run_b"
+    assert comparison["baseline_run_id"] == "run_a"
+    assert "monotonicity" in comparison
+    assert "distribution" in comparison
+
+
+def test_orchestration_marks_comparison_unavailable_without_baseline(tmp_path: Path) -> None:
+    fixture = Path("benchmark/fixtures/no_ground_truth/scenario_pack_v1.json")
+    output_root = tmp_path / "no_gt_runs"
+    run_no_ground_truth_evaluation(
+        fixture_path=fixture,
+        output_root=output_root,
+        run_id="only_run",
+        seed=17,
+        overwrite=True,
+    )
+    comparison = json.loads(
+        (output_root / "only_run" / "comparison_to_previous.json").read_text(encoding="utf-8")
+    )
+    assert comparison["available"] is False
+    assert comparison["reason"] == "no_previous_run_available"
+
+
 def test_distribution_bucketing_uses_thresholds_and_reports_balance() -> None:
     scenarios = {
         "s_low": {"region": "r1", "segments": ["a"]},

@@ -976,6 +976,409 @@ def build_no_ground_truth_summary_markdown(
     return "\n".join(lines) + "\n"
 
 
+def _load_section_payload(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _list_run_dirs(root: Path) -> list[Path]:
+    if not root.exists() or not root.is_dir():
+        return []
+    dirs = [row for row in root.iterdir() if row.is_dir() and (row / "evaluation_manifest.json").exists()]
+    dirs.sort(key=lambda row: row.name)
+    return dirs
+
+
+def _resolve_baseline_run_dir(
+    *,
+    root: Path,
+    current_run_id: str,
+    compare_to_run_id: str | None,
+) -> Path | None:
+    if compare_to_run_id:
+        candidate = root / str(compare_to_run_id)
+        return candidate if candidate.exists() and candidate.is_dir() else None
+    dirs = [row for row in _list_run_dirs(root) if row.name != current_run_id]
+    return dirs[-1] if dirs else None
+
+
+def _stability_rollup(payload: dict[str, Any]) -> dict[str, float | int | None]:
+    tests = payload.get("tests") if isinstance(payload.get("tests"), list) else []
+    rows = [row for row in tests if isinstance(row, dict)]
+    mean_swings = [float(row.get("mean_abs_score_swing")) for row in rows if row.get("mean_abs_score_swing") is not None]
+    max_swings = [float(row.get("max_abs_score_swing")) for row in rows if row.get("max_abs_score_swing") is not None]
+    unstable_count = 0
+    for row in rows:
+        max_swing = float(row.get("max_abs_score_swing") or 0.0)
+        tier_change = float(row.get("confidence_tier_change_rate") or 0.0)
+        if max_swing >= 12.0 or tier_change >= 0.35:
+            unstable_count += 1
+    return {
+        "avg_mean_abs_score_swing": _mean(mean_swings),
+        "max_abs_score_swing": max(max_swings) if max_swings else None,
+        "unstable_count": unstable_count,
+    }
+
+
+def _alignment_rollup(payload: dict[str, Any]) -> dict[str, float | int | None]:
+    rows = payload.get("rows") if isinstance(payload.get("rows"), list) else []
+    valid_rows = [row for row in rows if isinstance(row, dict)]
+    spearman = [
+        float(row.get("spearman_rank_correlation"))
+        for row in valid_rows
+        if row.get("spearman_rank_correlation") is not None
+    ]
+    agreement = [
+        float(row.get("bucket_agreement_ratio"))
+        for row in valid_rows
+        if row.get("bucket_agreement_ratio") is not None
+    ]
+    disagreements = 0
+    for row in valid_rows:
+        cases = row.get("disagreement_cases")
+        if isinstance(cases, list):
+            disagreements += len(cases)
+    return {
+        "rule_count": len(valid_rows),
+        "avg_spearman_rank_correlation": _mean(spearman),
+        "avg_bucket_agreement_ratio": _mean(agreement),
+        "disagreement_case_count": disagreements,
+    }
+
+
+def _counterfactual_intervention_deltas(
+    current: dict[str, Any],
+    previous: dict[str, Any],
+) -> list[dict[str, Any]]:
+    cur_table = (
+        current.get("top_interventions_by_median_impact")
+        if isinstance(current.get("top_interventions_by_median_impact"), list)
+        else []
+    )
+    prev_table = (
+        previous.get("top_interventions_by_median_impact")
+        if isinstance(previous.get("top_interventions_by_median_impact"), list)
+        else []
+    )
+    cur_map = {
+        str(row.get("intervention")): row
+        for row in cur_table
+        if isinstance(row, dict) and str(row.get("intervention") or "").strip()
+    }
+    prev_map = {
+        str(row.get("intervention")): row
+        for row in prev_table
+        if isinstance(row, dict) and str(row.get("intervention") or "").strip()
+    }
+    names = sorted(set(cur_map.keys()) | set(prev_map.keys()))
+    deltas: list[dict[str, Any]] = []
+    for name in names:
+        cur = cur_map.get(name, {})
+        prev = prev_map.get(name, {})
+        cur_median = _safe_float(cur.get("median_risk_delta"))
+        prev_median = _safe_float(prev.get("median_risk_delta"))
+        deltas.append(
+            {
+                "intervention": name,
+                "current_median_risk_delta": cur_median,
+                "previous_median_risk_delta": prev_median,
+                "median_delta_change": (
+                    (cur_median - prev_median)
+                    if (cur_median is not None and prev_median is not None)
+                    else None
+                ),
+                "current_count": int(cur.get("count") or 0),
+                "previous_count": int(prev.get("count") or 0),
+            }
+        )
+    deltas.sort(
+        key=lambda row: (
+            row.get("median_delta_change") is None,
+            -abs(float(row.get("median_delta_change") or 0.0)),
+        )
+    )
+    return deltas[:12]
+
+
+def build_no_ground_truth_run_comparison(
+    *,
+    current_run_id: str,
+    current_manifest: dict[str, Any],
+    current_sections: dict[str, dict[str, Any]],
+    baseline_run_id: str | None,
+    baseline_manifest: dict[str, Any] | None,
+    baseline_sections: dict[str, dict[str, Any]] | None,
+) -> dict[str, Any]:
+    if not baseline_run_id or not baseline_manifest or not baseline_sections:
+        return {
+            "available": False,
+            "run_id": current_run_id,
+            "baseline_run_id": baseline_run_id,
+            "reason": "no_previous_run_available",
+            "message": (
+                "No previous run was found for before/after comparison. "
+                "Run the evaluation again to compare latest vs previous."
+            ),
+        }
+
+    current_mono = current_sections.get("monotonicity", {})
+    baseline_mono = baseline_sections.get("monotonicity", {})
+    current_counter = current_sections.get("counterfactual", {})
+    baseline_counter = baseline_sections.get("counterfactual", {})
+    current_stability = current_sections.get("stability", {})
+    baseline_stability = baseline_sections.get("stability", {})
+    current_dist = current_sections.get("distribution", {})
+    baseline_dist = baseline_sections.get("distribution", {})
+    current_conf = current_sections.get("confidence_diagnostics", {})
+    baseline_conf = baseline_sections.get("confidence_diagnostics", {})
+    current_align = current_sections.get("benchmark_alignment", {})
+    baseline_align = baseline_sections.get("benchmark_alignment", {})
+
+    cur_violations = {
+        str(row)
+        for row in (current_mono.get("violated_rules") if isinstance(current_mono.get("violated_rules"), list) else [])
+    }
+    prev_violations = {
+        str(row)
+        for row in (baseline_mono.get("violated_rules") if isinstance(baseline_mono.get("violated_rules"), list) else [])
+    }
+
+    current_stability_rollup = _stability_rollup(current_stability)
+    baseline_stability_rollup = _stability_rollup(baseline_stability)
+    current_alignment_rollup = _alignment_rollup(current_align)
+    baseline_alignment_rollup = _alignment_rollup(baseline_align)
+
+    current_bucket_counts = (
+        current_dist.get("risk_bucket_counts")
+        if isinstance(current_dist.get("risk_bucket_counts"), dict)
+        else {}
+    )
+    baseline_bucket_counts = (
+        baseline_dist.get("risk_bucket_counts")
+        if isinstance(baseline_dist.get("risk_bucket_counts"), dict)
+        else {}
+    )
+    current_tier_counts = (
+        current_conf.get("confidence_tier_distribution")
+        if isinstance(current_conf.get("confidence_tier_distribution"), dict)
+        else {}
+    )
+    baseline_tier_counts = (
+        baseline_conf.get("confidence_tier_distribution")
+        if isinstance(baseline_conf.get("confidence_tier_distribution"), dict)
+        else {}
+    )
+
+    same_fixture = str(current_manifest.get("fixture_path") or "") == str(baseline_manifest.get("fixture_path") or "")
+    same_seed = str(current_manifest.get("seed") or "") == str(baseline_manifest.get("seed") or "")
+    cur_versions = current_manifest.get("versions") if isinstance(current_manifest.get("versions"), dict) else {}
+    prev_versions = baseline_manifest.get("versions") if isinstance(baseline_manifest.get("versions"), dict) else {}
+    same_scoring_version = str(cur_versions.get("scoring_model_version") or "") == str(prev_versions.get("scoring_model_version") or "")
+    same_rules_logic = str(cur_versions.get("rules_logic_version") or "") == str(prev_versions.get("rules_logic_version") or "")
+
+    likely_change_drivers: list[str] = []
+    if not same_scoring_version:
+        likely_change_drivers.append("scoring_model_version_changed")
+    if not same_rules_logic:
+        likely_change_drivers.append("rules_logic_version_changed")
+    if not same_fixture:
+        likely_change_drivers.append("fixture_or_scenario_pack_changed")
+    if not same_seed:
+        likely_change_drivers.append("seed_changed")
+    if not likely_change_drivers:
+        likely_change_drivers.append("likely_logic_or_weight_tuning_with_constant_fixture")
+
+    comparison = {
+        "available": True,
+        "run_id": current_run_id,
+        "baseline_run_id": baseline_run_id,
+        "comparability": {
+            "same_fixture_path": same_fixture,
+            "same_seed": same_seed,
+            "same_scoring_model_version": same_scoring_version,
+            "same_rules_logic_version": same_rules_logic,
+        },
+        "likely_change_drivers": likely_change_drivers,
+        "monotonicity": {
+            "current_status": current_mono.get("status"),
+            "previous_status": baseline_mono.get("status"),
+            "current_rule_count": int(current_mono.get("rule_count") or 0),
+            "previous_rule_count": int(baseline_mono.get("rule_count") or 0),
+            "current_failed_count": int(current_mono.get("failed_count") or 0),
+            "previous_failed_count": int(baseline_mono.get("failed_count") or 0),
+            "failed_count_delta": int(current_mono.get("failed_count") or 0) - int(baseline_mono.get("failed_count") or 0),
+            "violations_added": sorted(cur_violations - prev_violations),
+            "violations_resolved": sorted(prev_violations - cur_violations),
+        },
+        "counterfactual": {
+            "current_status": current_counter.get("status"),
+            "previous_status": baseline_counter.get("status"),
+            "intervention_delta_table": _counterfactual_intervention_deltas(current_counter, baseline_counter),
+            "current_flagged_count": len(current_counter.get("flagged_interventions") or []),
+            "previous_flagged_count": len(baseline_counter.get("flagged_interventions") or []),
+        },
+        "stability": {
+            "current_status": current_stability.get("status"),
+            "previous_status": baseline_stability.get("status"),
+            "current": current_stability_rollup,
+            "previous": baseline_stability_rollup,
+            "delta": {
+                "avg_mean_abs_score_swing": (
+                    (_safe_float(current_stability_rollup.get("avg_mean_abs_score_swing")) or 0.0)
+                    - (_safe_float(baseline_stability_rollup.get("avg_mean_abs_score_swing")) or 0.0)
+                ),
+                "max_abs_score_swing": (
+                    (_safe_float(current_stability_rollup.get("max_abs_score_swing")) or 0.0)
+                    - (_safe_float(baseline_stability_rollup.get("max_abs_score_swing")) or 0.0)
+                ),
+                "unstable_count": int(current_stability_rollup.get("unstable_count") or 0)
+                - int(baseline_stability_rollup.get("unstable_count") or 0),
+            },
+        },
+        "confidence_diagnostics": {
+            "current_status": current_conf.get("status"),
+            "previous_status": baseline_conf.get("status"),
+            "current_warning_count": len(current_conf.get("warnings") or []),
+            "previous_warning_count": len(baseline_conf.get("warnings") or []),
+            "warning_count_delta": len(current_conf.get("warnings") or []) - len(baseline_conf.get("warnings") or []),
+            "current_confidence_tier_counts": current_tier_counts,
+            "previous_confidence_tier_counts": baseline_tier_counts,
+        },
+        "distribution": {
+            "current_status": current_dist.get("status"),
+            "previous_status": baseline_dist.get("status"),
+            "current_dynamic_range": _safe_float(((current_dist.get("overall") or {}).get("wildfire_risk_score") or {}).get("dynamic_range")),
+            "previous_dynamic_range": _safe_float(((baseline_dist.get("overall") or {}).get("wildfire_risk_score") or {}).get("dynamic_range")),
+            "dynamic_range_delta": (
+                (_safe_float(((current_dist.get("overall") or {}).get("wildfire_risk_score") or {}).get("dynamic_range")) or 0.0)
+                - (_safe_float(((baseline_dist.get("overall") or {}).get("wildfire_risk_score") or {}).get("dynamic_range")) or 0.0)
+            ),
+            "current_bucket_counts": current_bucket_counts,
+            "previous_bucket_counts": baseline_bucket_counts,
+            "current_largest_bucket_fraction": _safe_float(current_dist.get("largest_bucket_fraction")),
+            "previous_largest_bucket_fraction": _safe_float(baseline_dist.get("largest_bucket_fraction")),
+            "largest_bucket_fraction_delta": (
+                (_safe_float(current_dist.get("largest_bucket_fraction")) or 0.0)
+                - (_safe_float(baseline_dist.get("largest_bucket_fraction")) or 0.0)
+            ),
+            "current_occupied_bucket_count": int(current_dist.get("occupied_risk_bucket_count") or 0),
+            "previous_occupied_bucket_count": int(baseline_dist.get("occupied_risk_bucket_count") or 0),
+        },
+        "benchmark_alignment": {
+            "current_status": current_align.get("status"),
+            "previous_status": baseline_align.get("status"),
+            "current": current_alignment_rollup,
+            "previous": baseline_alignment_rollup,
+            "delta": {
+                "avg_spearman_rank_correlation": (
+                    (_safe_float(current_alignment_rollup.get("avg_spearman_rank_correlation")) or 0.0)
+                    - (_safe_float(baseline_alignment_rollup.get("avg_spearman_rank_correlation")) or 0.0)
+                ),
+                "avg_bucket_agreement_ratio": (
+                    (_safe_float(current_alignment_rollup.get("avg_bucket_agreement_ratio")) or 0.0)
+                    - (_safe_float(baseline_alignment_rollup.get("avg_bucket_agreement_ratio")) or 0.0)
+                ),
+                "disagreement_case_count": int(current_alignment_rollup.get("disagreement_case_count") or 0)
+                - int(baseline_alignment_rollup.get("disagreement_case_count") or 0),
+            },
+            "note": "Benchmark alignment is a sanity check only and not ground-truth validation.",
+        },
+    }
+
+    overall_signals: list[str] = []
+    mono_delta = int(comparison["monotonicity"]["failed_count_delta"])
+    if mono_delta < 0:
+        overall_signals.append("monotonicity_improved")
+    elif mono_delta > 0:
+        overall_signals.append("monotonicity_worsened")
+
+    bucket_delta = _safe_float(comparison["distribution"]["largest_bucket_fraction_delta"]) or 0.0
+    if bucket_delta < -0.01:
+        overall_signals.append("bucket_collapse_reduced")
+    elif bucket_delta > 0.01:
+        overall_signals.append("bucket_collapse_worsened")
+
+    warning_delta = int(comparison["confidence_diagnostics"]["warning_count_delta"])
+    if warning_delta < 0:
+        overall_signals.append("confidence_warnings_reduced")
+    elif warning_delta > 0:
+        overall_signals.append("confidence_warnings_increased")
+
+    unstable_delta = int((comparison["stability"]["delta"] or {}).get("unstable_count") or 0)
+    if unstable_delta < 0:
+        overall_signals.append("stability_improved")
+    elif unstable_delta > 0:
+        overall_signals.append("stability_worsened")
+
+    comparison["overall_direction_signals"] = overall_signals
+    comparison["summary"] = (
+        "Comparison generated between the latest run and prior baseline. "
+        "Review comparability flags to distinguish logic changes from fixture/data differences."
+    )
+    return comparison
+
+
+def build_no_ground_truth_comparison_markdown(payload: dict[str, Any]) -> str:
+    if not bool(payload.get("available")):
+        return (
+            "# No-Ground-Truth Run Comparison\n\n"
+            f"- Status: unavailable\n"
+            f"- Message: {payload.get('message') or payload.get('reason') or 'No baseline run available.'}\n"
+        )
+
+    monotonicity = payload.get("monotonicity") if isinstance(payload.get("monotonicity"), dict) else {}
+    counter = payload.get("counterfactual") if isinstance(payload.get("counterfactual"), dict) else {}
+    stability = payload.get("stability") if isinstance(payload.get("stability"), dict) else {}
+    distribution = payload.get("distribution") if isinstance(payload.get("distribution"), dict) else {}
+    confidence = payload.get("confidence_diagnostics") if isinstance(payload.get("confidence_diagnostics"), dict) else {}
+    comparability = payload.get("comparability") if isinstance(payload.get("comparability"), dict) else {}
+    lines = [
+        "# No-Ground-Truth Run Comparison",
+        "",
+        f"- Current run: `{payload.get('run_id')}`",
+        f"- Baseline run: `{payload.get('baseline_run_id')}`",
+        f"- Likely change drivers: `{payload.get('likely_change_drivers')}`",
+        f"- Comparability flags: `{comparability}`",
+        "",
+        "## Monotonicity",
+        f"- Current failed count: `{monotonicity.get('current_failed_count')}`",
+        f"- Previous failed count: `{monotonicity.get('previous_failed_count')}`",
+        f"- Failed-count delta: `{monotonicity.get('failed_count_delta')}`",
+        f"- Violations resolved: `{monotonicity.get('violations_resolved')}`",
+        f"- Violations added: `{monotonicity.get('violations_added')}`",
+        "",
+        "## Counterfactual Mitigation",
+        f"- Current status: `{counter.get('current_status')}`",
+        f"- Previous status: `{counter.get('previous_status')}`",
+        f"- Intervention deltas (top): `{(counter.get('intervention_delta_table') or [])[:5]}`",
+        "",
+        "## Stability",
+        f"- Delta avg mean swing: `{((stability.get('delta') or {}).get('avg_mean_abs_score_swing'))}`",
+        f"- Delta max swing: `{((stability.get('delta') or {}).get('max_abs_score_swing'))}`",
+        f"- Delta unstable count: `{((stability.get('delta') or {}).get('unstable_count'))}`",
+        "",
+        "## Confidence",
+        f"- Warning-count delta: `{confidence.get('warning_count_delta')}`",
+        f"- Current tier counts: `{confidence.get('current_confidence_tier_counts')}`",
+        f"- Previous tier counts: `{confidence.get('previous_confidence_tier_counts')}`",
+        "",
+        "## Distribution",
+        f"- Dynamic-range delta: `{distribution.get('dynamic_range_delta')}`",
+        f"- Largest-bucket-fraction delta: `{distribution.get('largest_bucket_fraction_delta')}`",
+        f"- Current buckets: `{distribution.get('current_bucket_counts')}`",
+        f"- Previous buckets: `{distribution.get('previous_bucket_counts')}`",
+        "",
+        "## Caveat",
+        "- This is directional diagnostics drift tracking, not ground-truth predictive validation.",
+    ]
+    return "\n".join(lines) + "\n"
+
+
 def run_no_ground_truth_evaluation(
     *,
     fixture_path: str | Path | None = None,
@@ -983,6 +1386,7 @@ def run_no_ground_truth_evaluation(
     run_id: str | None = None,
     seed: int | None = None,
     overwrite: bool = False,
+    compare_to_run_id: str | None = None,
 ) -> dict[str, Any]:
     fixture = load_no_ground_truth_fixture(fixture_path)
     run_token = str(run_id or _timestamp_id())
@@ -1056,6 +1460,72 @@ def run_no_ground_truth_evaluation(
     summary_path = run_dir / "summary.md"
     summary_path.write_text(summary_md, encoding="utf-8")
 
+    current_sections = {
+        "monotonicity": monotonicity,
+        "counterfactual": counterfactual,
+        "stability": stability,
+        "distribution": distribution,
+        "benchmark_alignment": benchmark_alignment,
+        "confidence_diagnostics": confidence_diagnostics,
+    }
+
+    current_versions = {
+        "product_version": PRODUCT_VERSION,
+        "api_version": API_VERSION,
+        "scoring_model_version": SCORING_MODEL_VERSION,
+        "rules_logic_version": RULESET_LOGIC_VERSION,
+        "factor_schema_version": FACTOR_SCHEMA_VERSION,
+        "no_ground_truth_evaluation_version": DEFAULT_EVAL_VERSION,
+    }
+    current_manifest_seed = {
+        "run_id": run_token,
+        "generated_at": generated_at,
+        "seed": fixture_seed,
+        "fixture_path": str(Path(fixture_path or DEFAULT_FIXTURE_PATH).expanduser()),
+        "versions": current_versions,
+    }
+    baseline_run_dir = _resolve_baseline_run_dir(
+        root=root,
+        current_run_id=run_token,
+        compare_to_run_id=compare_to_run_id,
+    )
+    baseline_run_id = baseline_run_dir.name if baseline_run_dir is not None else None
+    baseline_manifest = (
+        _load_section_payload(baseline_run_dir / "evaluation_manifest.json")
+        if baseline_run_dir is not None
+        else None
+    )
+    baseline_sections = (
+        {
+            "monotonicity": _load_section_payload(baseline_run_dir / "monotonicity_results.json"),
+            "counterfactual": _load_section_payload(baseline_run_dir / "counterfactual_results.json"),
+            "stability": _load_section_payload(baseline_run_dir / "stability_results.json"),
+            "distribution": _load_section_payload(baseline_run_dir / "distribution_results.json"),
+            "benchmark_alignment": _load_section_payload(baseline_run_dir / "benchmark_alignment_results.json"),
+            "confidence_diagnostics": _load_section_payload(baseline_run_dir / "confidence_diagnostics.json"),
+        }
+        if baseline_run_dir is not None
+        else None
+    )
+    comparison_payload = build_no_ground_truth_run_comparison(
+        current_run_id=run_token,
+        current_manifest=current_manifest_seed,
+        current_sections=current_sections,
+        baseline_run_id=baseline_run_id,
+        baseline_manifest=baseline_manifest,
+        baseline_sections=baseline_sections,
+    )
+    comparison_json_path = run_dir / "comparison_to_previous.json"
+    comparison_md_path = run_dir / "comparison_to_previous.md"
+    comparison_json_path.write_text(
+        json.dumps(comparison_payload, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    comparison_md_path.write_text(
+        build_no_ground_truth_comparison_markdown(comparison_payload),
+        encoding="utf-8",
+    )
+
     manifest = {
         "schema_version": DEFAULT_EVAL_VERSION,
         "run_id": run_token,
@@ -1071,16 +1541,11 @@ def run_no_ground_truth_evaluation(
             "distribution_results_json": str(run_dir / "distribution_results.json"),
             "benchmark_alignment_results_json": str(run_dir / "benchmark_alignment_results.json"),
             "confidence_diagnostics_json": str(run_dir / "confidence_diagnostics.json"),
+            "comparison_to_previous_json": str(comparison_json_path),
+            "comparison_to_previous_markdown": str(comparison_md_path),
             "summary_markdown": str(summary_path),
         },
-        "versions": {
-            "product_version": PRODUCT_VERSION,
-            "api_version": API_VERSION,
-            "scoring_model_version": SCORING_MODEL_VERSION,
-            "rules_logic_version": RULESET_LOGIC_VERSION,
-            "factor_schema_version": FACTOR_SCHEMA_VERSION,
-            "no_ground_truth_evaluation_version": DEFAULT_EVAL_VERSION,
-        },
+        "versions": current_versions,
         "status_summary": {
             "monotonicity": monotonicity.get("status"),
             "counterfactual": counterfactual.get("status"),
@@ -1088,6 +1553,13 @@ def run_no_ground_truth_evaluation(
             "distribution": distribution.get("status"),
             "benchmark_alignment": benchmark_alignment.get("status"),
             "confidence_diagnostics": confidence_diagnostics.get("status"),
+            "comparison_to_previous": comparison_payload.get("available"),
+        },
+        "comparison_to_previous": {
+            "available": bool(comparison_payload.get("available")),
+            "baseline_run_id": comparison_payload.get("baseline_run_id"),
+            "compare_to_run_id_requested": compare_to_run_id,
+            "likely_change_drivers": comparison_payload.get("likely_change_drivers"),
         },
     }
     manifest_path = run_dir / "evaluation_manifest.json"
@@ -1097,4 +1569,6 @@ def run_no_ground_truth_evaluation(
         "run_dir": str(run_dir),
         "manifest_path": str(manifest_path),
         "summary_path": str(summary_path),
+        "comparison_json_path": str(comparison_json_path),
+        "comparison_markdown_path": str(comparison_md_path),
     }

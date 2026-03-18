@@ -15,7 +15,16 @@ SECTION_FILES = {
     "distribution": "distribution_results.json",
     "benchmark_alignment": "benchmark_alignment_results.json",
     "confidence_diagnostics": "confidence_diagnostics.json",
+    "comparison_to_previous": "comparison_to_previous.json",
 }
+COMPARABLE_SECTION_KEYS = (
+    "monotonicity",
+    "counterfactual",
+    "stability",
+    "distribution",
+    "benchmark_alignment",
+    "confidence_diagnostics",
+)
 
 
 def _safe_load_json(path: Path) -> dict[str, Any] | None:
@@ -59,6 +68,16 @@ def _extract_recommendations_from_markdown(text: str | None) -> list[str]:
         if in_recommendation and raw.startswith("- "):
             out.append(raw[2:].strip())
     return out
+
+
+def _bundle_section_payloads(bundle: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    sections = bundle.get("sections") if isinstance(bundle.get("sections"), dict) else {}
+    payloads: dict[str, dict[str, Any]] = {}
+    for section_key in COMPARABLE_SECTION_KEYS:
+        row = sections.get(section_key) if isinstance(sections.get(section_key), dict) else {}
+        payload = row.get("payload")
+        payloads[section_key] = payload if isinstance(payload, dict) else {}
+    return payloads
 
 
 def resolve_artifact_root(path_hint: str | Path | None = None) -> Path:
@@ -202,6 +221,114 @@ def load_no_ground_truth_run_bundle(
     }
 
 
+def compare_no_ground_truth_runs(
+    *,
+    current_run_id: str | None = None,
+    baseline_run_id: str | None = None,
+    artifact_root: str | Path | None = None,
+) -> dict[str, Any]:
+    from backend.evaluation.no_ground_truth import build_no_ground_truth_run_comparison
+
+    listing = list_no_ground_truth_runs(artifact_root=artifact_root)
+    if not bool(listing.get("available")):
+        return {
+            "available": False,
+            "artifact_root": listing.get("artifact_root"),
+            "run_id": None,
+            "baseline_run_id": None,
+            "reason": "no_runs_available",
+            "message": listing.get("message"),
+        }
+
+    runs = listing.get("runs") if isinstance(listing.get("runs"), list) else []
+    ordered_ids = [str(row.get("run_id")) for row in runs if isinstance(row, dict) and row.get("run_id")]
+    if not ordered_ids:
+        return {
+            "available": False,
+            "artifact_root": listing.get("artifact_root"),
+            "run_id": None,
+            "baseline_run_id": None,
+            "reason": "no_runs_available",
+            "message": "No run directories were found in the diagnostics artifact root.",
+        }
+
+    selected_current = str(current_run_id or listing.get("latest_run_id") or ordered_ids[0])
+    if selected_current not in ordered_ids:
+        return {
+            "available": False,
+            "artifact_root": listing.get("artifact_root"),
+            "run_id": selected_current,
+            "baseline_run_id": None,
+            "reason": "current_run_not_found",
+            "message": f"Current run '{selected_current}' was not found.",
+            "available_run_ids": ordered_ids,
+        }
+
+    selected_baseline = str(baseline_run_id) if baseline_run_id else ""
+    if not selected_baseline:
+        current_idx = ordered_ids.index(selected_current)
+        selected_baseline = ordered_ids[current_idx + 1] if current_idx + 1 < len(ordered_ids) else ""
+    elif selected_baseline not in ordered_ids:
+        return {
+            "available": False,
+            "artifact_root": listing.get("artifact_root"),
+            "run_id": selected_current,
+            "baseline_run_id": selected_baseline,
+            "reason": "baseline_run_not_found",
+            "message": f"Baseline run '{selected_baseline}' was not found.",
+            "available_run_ids": ordered_ids,
+        }
+
+    if not selected_baseline:
+        return {
+            "available": False,
+            "artifact_root": listing.get("artifact_root"),
+            "run_id": selected_current,
+            "baseline_run_id": None,
+            "reason": "no_previous_run_available",
+            "message": (
+                "No previous run was found for before/after comparison. "
+                "Run the evaluation again to compare latest vs previous."
+            ),
+            "available_run_ids": ordered_ids,
+        }
+
+    current_bundle = load_no_ground_truth_run_bundle(
+        run_id=selected_current,
+        artifact_root=artifact_root,
+    )
+    baseline_bundle = load_no_ground_truth_run_bundle(
+        run_id=selected_baseline,
+        artifact_root=artifact_root,
+    )
+    if not bool(current_bundle.get("available")) or not bool(baseline_bundle.get("available")):
+        return {
+            "available": False,
+            "artifact_root": listing.get("artifact_root"),
+            "run_id": selected_current,
+            "baseline_run_id": selected_baseline,
+            "reason": "bundle_load_failed",
+            "message": "Unable to load one or both runs for comparison.",
+        }
+
+    current_manifest = current_bundle.get("manifest") if isinstance(current_bundle.get("manifest"), dict) else {}
+    baseline_manifest = baseline_bundle.get("manifest") if isinstance(baseline_bundle.get("manifest"), dict) else {}
+    comparison = build_no_ground_truth_run_comparison(
+        current_run_id=selected_current,
+        current_manifest=current_manifest,
+        current_sections=_bundle_section_payloads(current_bundle),
+        baseline_run_id=selected_baseline,
+        baseline_manifest=baseline_manifest,
+        baseline_sections=_bundle_section_payloads(baseline_bundle),
+    )
+    comparison["artifact_root"] = listing.get("artifact_root")
+    comparison["comparison_mode"] = (
+        "explicit_runs" if baseline_run_id else "latest_vs_previous"
+    )
+    comparison["available_run_ids"] = ordered_ids
+    return comparison
+
+
 def build_no_ground_truth_health_summary(bundle: dict[str, Any]) -> dict[str, Any]:
     if not bool(bundle.get("available")):
         return {
@@ -234,6 +361,7 @@ def build_no_ground_truth_health_summary(bundle: dict[str, Any]) -> dict[str, An
     distribution = _section_payload("distribution")
     alignment = _section_payload("benchmark_alignment")
     confidence = _section_payload("confidence_diagnostics")
+    comparison = _section_payload("comparison_to_previous")
     summary_markdown = str(bundle.get("summary_markdown") or "")
 
     monotonicity_rows = mono.get("rows") if isinstance(mono.get("rows"), list) else []
@@ -402,6 +530,15 @@ def build_no_ground_truth_health_summary(bundle: dict[str, Any]) -> dict[str, An
             "confidence_tier_distribution": confidence.get("confidence_tier_distribution") or {},
             "fallback_group_distribution": confidence.get("fallback_group_distribution") or {},
             "warnings": (confidence.get("warnings") if isinstance(confidence.get("warnings"), list) else [])[:10],
+        },
+        "comparison_to_previous": {
+            "available": bool(comparison.get("available")),
+            "baseline_run_id": comparison.get("baseline_run_id"),
+            "monotonicity_failed_count_delta": ((comparison.get("monotonicity") or {}).get("failed_count_delta")),
+            "confidence_warning_count_delta": ((comparison.get("confidence_diagnostics") or {}).get("warning_count_delta")),
+            "largest_bucket_fraction_delta": ((comparison.get("distribution") or {}).get("largest_bucket_fraction_delta")),
+            "overall_direction_signals": comparison.get("overall_direction_signals") or [],
+            "likely_change_drivers": comparison.get("likely_change_drivers") or [],
         },
         "recommended_next_actions": sorted(set(recommended_from_summary + warnings))[:16],
     }
