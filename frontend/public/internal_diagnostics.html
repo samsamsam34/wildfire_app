@@ -86,6 +86,10 @@
         padding: 0.58rem 0.9rem;
         font-weight: 600;
       }
+      button:disabled {
+        opacity: 0.6;
+        cursor: not-allowed;
+      }
       button.secondary {
         background: #374151;
       }
@@ -107,7 +111,7 @@
         color: #fff;
         border-color: #2b3747;
       }
-      .panel { display: none; }
+      .panel { display: grid; gap: 0.95rem; }
       .panel.active { display: grid; gap: 0.95rem; }
       .grid {
         display: grid;
@@ -273,13 +277,14 @@
 
       <section class="card">
         <div class="tabs">
-          <button id="tabHealth" class="tab active" type="button">Model Health</button>
-          <button id="tabProperty" class="tab" type="button">Property Diagnostics</button>
+          <button id="tabHealth" class="tab active" type="button">Jump To Model Health</button>
+          <button id="tabProperty" class="tab" type="button">Jump To Property Diagnostics</button>
         </div>
       </section>
 
       <section id="panelHealth" class="panel active">
         <section class="card">
+          <h2>Model Health</h2>
           <h3>Overview</h3>
           <p id="healthMeta" class="status">Loading latest offline diagnostics artifact...</p>
           <div id="healthCards" class="grid"></div>
@@ -324,8 +329,9 @@
         </section>
       </section>
 
-      <section id="panelProperty" class="panel">
+      <section id="panelProperty" class="panel active">
         <section class="card">
+          <h2>Property Diagnostics</h2>
           <h3>Property Diagnostics Query</h3>
           <p>
             This runs the normal assessment endpoint with diagnostics enabled and displays risk/readiness
@@ -354,27 +360,39 @@
             <button id="clearPropertyDiag" type="button" class="secondary">Clear</button>
             <span id="propertyStatus" class="status"></span>
           </div>
+          <div id="propertyDiagMissingWarning" class="note" style="display:none; margin-top:0.6rem;"></div>
         </section>
 
         <section class="card">
           <h3>Property Summary</h3>
-          <div id="propertyCards" class="grid"></div>
-          <div id="propertyExplanations" class="note-list"></div>
+          <div id="propertyCards" class="grid">
+            <div class="empty">Run a property search to render assessment and diagnostics cards.</div>
+          </div>
+          <div id="propertyExplanations" class="note-list">
+            <div class="empty">Empty state: no property diagnostics loaded yet.</div>
+          </div>
+          <div id="propertyCaveat" class="note" style="margin-top:0.55rem;">
+            These diagnostics are internal trust metadata and not proof of real-world predictive accuracy.
+          </div>
         </section>
 
         <section class="card">
           <h3>Detailed Diagnostics</h3>
           <details open>
             <summary>Missing Critical Fields</summary>
-            <div id="missingCritical" class="chips"></div>
+            <div id="missingCritical" class="chips"><div class="empty">No property run yet.</div></div>
+          </details>
+          <details>
+            <summary>Inferred Fields</summary>
+            <div id="inferredFields" class="chips"><div class="empty">No property run yet.</div></div>
           </details>
           <details>
             <summary>Top Mitigation Interventions</summary>
-            <div id="propertyInterventionTable" class="table-wrap"></div>
+            <div id="propertyInterventionTable" class="table-wrap"><div class="empty">No property run yet.</div></div>
           </details>
           <details>
             <summary>Monotonicity And Stability Notes</summary>
-            <div id="propertyWarnings" class="note-list"></div>
+            <div id="propertyWarnings" class="note-list"><div class="empty">No property run yet.</div></div>
           </details>
           <details>
             <summary>Raw Response (Internal Debug)</summary>
@@ -428,6 +446,14 @@
         const node = document.getElementById(id);
         node.textContent = text || "";
         node.className = isError ? "status error" : "status";
+      }
+
+      function setPropertyLoading(isLoading) {
+        const runBtn = document.getElementById("runPropertyDiag");
+        const clearBtn = document.getElementById("clearPropertyDiag");
+        runBtn.disabled = Boolean(isLoading);
+        clearBtn.disabled = Boolean(isLoading);
+        runBtn.textContent = isLoading ? "Running..." : "Run Property Diagnostics";
       }
 
       function renderCards(targetId, cards) {
@@ -655,12 +681,55 @@
         return Number.isFinite(n) ? n : null;
       }
 
+      function getDiagnosticsWarningNode() {
+        return document.getElementById("propertyDiagMissingWarning");
+      }
+
+      function showDiagnosticsMissingWarning(message) {
+        const node = getDiagnosticsWarningNode();
+        node.style.display = "block";
+        node.textContent = message;
+      }
+
+      function hideDiagnosticsMissingWarning() {
+        const node = getDiagnosticsWarningNode();
+        node.style.display = "none";
+        node.textContent = "";
+      }
+
+      function inferredFieldsFromDiagnostics(diagnostics) {
+        if (!diagnostics || typeof diagnostics !== "object") return [];
+        const confidence = diagnostics.confidence || {};
+        const fields = []
+          .concat(confidence.inferred_fields || [])
+          .concat(confidence.estimated_fields || [])
+          .concat(confidence.inferred_or_estimated_fields || [])
+          .concat(diagnostics.inferred_fields || [])
+          .concat(diagnostics.estimated_fields || []);
+        return Array.from(new Set(fields.filter((value) => typeof value === "string" && value.trim())));
+      }
+
+      function resetPropertyDetailsUi() {
+        renderCards("propertyCards", []);
+        renderNotes("propertyExplanations", ["Empty state: no property diagnostics loaded yet."]);
+        document.getElementById("missingCritical").innerHTML = '<div class="empty">No property run yet.</div>';
+        document.getElementById("inferredFields").innerHTML = '<div class="empty">No property run yet.</div>';
+        document.getElementById("propertyInterventionTable").innerHTML = '<div class="empty">No property run yet.</div>';
+        document.getElementById("propertyWarnings").innerHTML = '<div class="empty">No property run yet.</div>';
+        document.getElementById("propertyRaw").textContent = "No property diagnostics loaded.";
+        document.getElementById("propertyCaveat").textContent =
+          "These diagnostics are internal trust metadata and not proof of real-world predictive accuracy.";
+        hideDiagnosticsMissingWarning();
+      }
+
       async function runPropertyDiagnostics() {
         const address = (document.getElementById("addressInput").value || "").trim();
         if (!address) {
           setStatus("propertyStatus", "Enter an address to run diagnostics.", true);
           return;
         }
+        hideDiagnosticsMissingWarning();
+        setPropertyLoading(true);
         setStatus("propertyStatus", "Running property diagnostics...");
         const roofType = (document.getElementById("roofInput").value || "").trim();
         const ventType = (document.getElementById("ventInput").value || "").trim();
@@ -680,26 +749,50 @@
         try {
           const raw = await api("/risk/assess?include_diagnostics=true", { method: "POST", body: payload });
           const assessment = raw.assessment || raw;
-          const diagnostics = raw.diagnostics || null;
+          const diagnostics = raw.diagnostics || assessment.diagnostics || null;
           if (!diagnostics) {
-            throw new Error("Diagnostics payload missing from response.");
+            showDiagnosticsMissingWarning(
+              "Diagnostics were requested but not returned by the API. Assessment results are shown below without trust metadata."
+            );
+            setStatus(
+              "propertyStatus",
+              `Assessment loaded for ${assessment.address || address}, but diagnostics were not returned.`,
+              true
+            );
+          } else {
+            setStatus("propertyStatus", `Loaded diagnostics for ${assessment.address || address}`);
           }
-          setStatus("propertyStatus", `Loaded diagnostics for ${assessment.address || address}`);
           renderPropertyCards(assessment, diagnostics);
           renderPropertyDetails(assessment, diagnostics, raw);
         } catch (err) {
           setStatus("propertyStatus", `Diagnostics could not be loaded for this property: ${err}`, true);
           renderCards("propertyCards", []);
           renderNotes("propertyExplanations", ["Diagnostics could not be loaded for this property."]);
+          document.getElementById("missingCritical").innerHTML = '<div class="empty">No diagnostics available.</div>';
+          document.getElementById("inferredFields").innerHTML = '<div class="empty">No diagnostics available.</div>';
+          document.getElementById("propertyInterventionTable").innerHTML = '<div class="empty">No diagnostics available.</div>';
+          document.getElementById("propertyWarnings").innerHTML = '<div class="empty">No diagnostics available.</div>';
           document.getElementById("propertyRaw").textContent = String(err);
+        } finally {
+          setPropertyLoading(false);
         }
       }
 
       function renderPropertyCards(assessment, diagnostics) {
-        const topIntervention = ((diagnostics.mitigation_sensitivity || {}).top_interventions || [])[0] || {};
-        const distributionContext = diagnostics.distribution_context || {};
-        const benchmarkContext = diagnostics.benchmark_alignment || {};
+        const diag = diagnostics || {};
+        const confidence = diag.confidence || {};
+        const stability = diag.stability || {};
+        const topIntervention = ((diag.mitigation_sensitivity || {}).top_interventions || [])[0] || {};
+        const distributionContext = diag.distribution_context || {};
+        const benchmarkContext = diag.benchmark_alignment || {};
+        const hasDiagnostics = Boolean(diagnostics);
         const cards = [
+          {
+            title: "Wildfire Risk",
+            value: assessment.wildfire_risk_score != null ? Number(assessment.wildfire_risk_score).toFixed(1) : "N/A",
+            className: scoreClass(assessment.wildfire_risk_score),
+            detail: "Overall blended risk score",
+          },
           {
             title: "Wildfire Hazard",
             value: assessment.site_hazard_score != null ? Number(assessment.site_hazard_score).toFixed(1) : "N/A",
@@ -720,32 +813,32 @@
           },
           {
             title: "Confidence",
-            value: `${(diagnostics.confidence || {}).tier || "unknown"} (${Number((diagnostics.confidence || {}).score || 0).toFixed(1)})`,
-            className: (diagnostics.confidence || {}).tier === "high" ? "good" : "warn",
-            detail: `Evidence completeness ${(diagnostics.confidence || {}).evidence_completeness ?? "N/A"}`,
+            value: hasDiagnostics ? `${confidence.tier || "unknown"} (${Number(confidence.score || 0).toFixed(1)})` : "unavailable",
+            className: confidence.tier === "high" ? "good" : "warn",
+            detail: `Evidence completeness ${confidence.evidence_completeness ?? "N/A"}`,
           },
           {
             title: "Stability",
-            value: (diagnostics.stability || {}).rating || "unknown",
-            className: (diagnostics.stability || {}).rating === "stable" ? "good" : "warn",
-            detail: `Local sensitivity ${(diagnostics.stability || {}).local_sensitivity_score ?? "N/A"}`,
+            value: hasDiagnostics ? (stability.rating || "unknown") : "unavailable",
+            className: stability.rating === "stable" ? "good" : "warn",
+            detail: `Local sensitivity ${stability.local_sensitivity_score ?? "N/A"}`,
           },
           {
             title: "Top Intervention",
-            value: topIntervention.name || "N/A",
+            value: hasDiagnostics ? (topIntervention.name || "N/A") : "unavailable",
             className: "",
             detail: topIntervention.estimated_risk_delta != null ? `Risk delta ${Number(topIntervention.estimated_risk_delta).toFixed(2)}` : "",
           },
           {
             title: "Monotonicity Status",
-            value: (diagnostics.monotonicity || {}).status || "unknown",
-            className: ((diagnostics.monotonicity || {}).status === "pass") ? "good" : "warn",
-            detail: `${((diagnostics.monotonicity || {}).violations || []).length} violation(s)`,
+            value: hasDiagnostics ? ((diag.monotonicity || {}).status || "unknown") : "unavailable",
+            className: ((diag.monotonicity || {}).status === "pass") ? "good" : "warn",
+            detail: `${((diag.monotonicity || {}).violations || []).length} violation(s)`,
           },
           {
             title: "Benchmark / Distribution",
-            value: benchmarkContext.available ? (benchmarkContext.local_alignment || "unknown") : "unavailable",
-            className: benchmarkContext.available ? "warn" : "",
+            value: hasDiagnostics && benchmarkContext.available ? (benchmarkContext.local_alignment || "unknown") : "unavailable",
+            className: hasDiagnostics && benchmarkContext.available ? "warn" : "",
             detail: `Percentile ${distributionContext.relative_risk_percentile != null ? Number(distributionContext.relative_risk_percentile).toFixed(1) : "N/A"} | evidence ${(distributionContext.segment || {}).evidence_tier || "unknown"}`,
           },
         ];
@@ -753,8 +846,31 @@
       }
 
       function renderPropertyDetails(assessment, diagnostics, raw) {
-        const confidence = diagnostics.confidence || {};
-        const topIntervention = ((diagnostics.mitigation_sensitivity || {}).top_interventions || [])[0] || {};
+        const hasDiagnostics = Boolean(diagnostics);
+        const diag = diagnostics || {};
+        const confidence = diag.confidence || {};
+        const topIntervention = ((diag.mitigation_sensitivity || {}).top_interventions || [])[0] || {};
+        if (!hasDiagnostics) {
+          const assessmentWarnings = []
+            .concat(assessment.assumptions_and_unknowns || [])
+            .concat(assessment.top_risk_drivers || [])
+            .slice(0, 6);
+          renderNotes("propertyExplanations", [
+            "Diagnostics were not returned by the API for this request.",
+            "Assessment values are shown, but trust metadata could not be rendered.",
+          ]);
+          document.getElementById("missingCritical").innerHTML = '<div class="empty">Unavailable because diagnostics were not returned.</div>';
+          document.getElementById("inferredFields").innerHTML = '<div class="empty">Unavailable because diagnostics were not returned.</div>';
+          document.getElementById("propertyInterventionTable").innerHTML = '<div class="empty">Unavailable because diagnostics were not returned.</div>';
+          renderNotes(
+            "propertyWarnings",
+            assessmentWarnings.length ? assessmentWarnings : ["No diagnostics warnings available for this run."]
+          );
+          document.getElementById("propertyCaveat").textContent =
+            "Diagnostics were requested but are missing from this API response. This view is assessment-only for now.";
+          document.getElementById("propertyRaw").textContent = JSON.stringify({ assessment, raw }, null, 2);
+          return;
+        }
         const confidenceReason =
           confidence.tier === "high"
             ? "Confidence is high based on current observed evidence coverage."
@@ -767,18 +883,21 @@
           : "Local sensitivity is not available for this run.";
         const explanations = []
           .concat([confidenceReason, improvementReason, sensitivityReason])
-          .concat(diagnostics.explanations || [])
-          .concat((diagnostics.confidence || {}).notes || [])
-          .concat((diagnostics.stability || {}).notes || [])
-          .concat((diagnostics.benchmark_alignment || {}).notes || [])
+          .concat(diag.explanations || [])
+          .concat((diag.confidence || {}).notes || [])
+          .concat((diag.stability || {}).notes || [])
+          .concat((diag.benchmark_alignment || {}).notes || [])
           .slice(0, 10);
         renderNotes("propertyExplanations", explanations.length ? explanations : ["No additional explanation notes available."]);
 
-        const missing = (diagnostics.confidence || {}).missing_critical_fields || [];
+        const missing = confidence.missing_critical_fields || [];
         const chips = missing.map((m) => `<span class="chip">${m}</span>`).join("");
         document.getElementById("missingCritical").innerHTML = chips || '<div class="empty">No missing critical fields detected.</div>';
+        const inferred = inferredFieldsFromDiagnostics(diag);
+        const inferredChips = inferred.map((m) => `<span class="chip">${m}</span>`).join("");
+        document.getElementById("inferredFields").innerHTML = inferredChips || '<div class="empty">No inferred fields reported.</div>';
 
-        const intRows = ((diagnostics.mitigation_sensitivity || {}).top_interventions || []).map((row) => ({
+        const intRows = ((diag.mitigation_sensitivity || {}).top_interventions || []).map((row) => ({
           name: row.name || "",
           risk_delta: row.estimated_risk_delta != null ? Number(row.estimated_risk_delta).toFixed(2) : "",
           readiness_delta: row.estimated_readiness_delta != null ? Number(row.estimated_readiness_delta).toFixed(2) : "",
@@ -796,14 +915,17 @@
         );
 
         const warnings = []
-          .concat((diagnostics.mitigation_sensitivity || {}).backwards_or_zero_impact_flags || [])
-          .concat((diagnostics.monotonicity || {}).violations || [])
-          .concat((diagnostics.stability || {}).notes || [])
-          .concat((diagnostics.distribution_context || {}).notes || []);
+          .concat((diag.mitigation_sensitivity || {}).backwards_or_zero_impact_flags || [])
+          .concat((diag.monotonicity || {}).violations || [])
+          .concat((diag.stability || {}).notes || [])
+          .concat((diag.distribution_context || {}).notes || []);
         renderNotes(
           "propertyWarnings",
           warnings.length ? warnings.map((w) => `- ${w}`) : ["No critical monotonicity/stability warnings for this property run."]
         );
+        document.getElementById("propertyCaveat").textContent =
+          diag.caveat ||
+          "These diagnostics are internal trust metadata and not proof of real-world predictive accuracy.";
 
         document.getElementById("propertyRaw").textContent = JSON.stringify(
           { assessment, diagnostics, raw },
@@ -812,17 +934,18 @@
         );
       }
 
-      function setActivePanel(panel) {
-        const health = panel === "health";
-        document.getElementById("tabHealth").classList.toggle("active", health);
-        document.getElementById("tabProperty").classList.toggle("active", !health);
-        document.getElementById("panelHealth").classList.toggle("active", health);
-        document.getElementById("panelProperty").classList.toggle("active", !health);
+      function jumpToPanel(panelId, activeTabId) {
+        document.getElementById("tabHealth").classList.toggle("active", activeTabId === "tabHealth");
+        document.getElementById("tabProperty").classList.toggle("active", activeTabId === "tabProperty");
+        const panel = document.getElementById(panelId);
+        if (panel) {
+          panel.scrollIntoView({ behavior: "smooth", block: "start" });
+        }
       }
 
       async function init() {
-        document.getElementById("tabHealth").addEventListener("click", () => setActivePanel("health"));
-        document.getElementById("tabProperty").addEventListener("click", () => setActivePanel("property"));
+        document.getElementById("tabHealth").addEventListener("click", () => jumpToPanel("panelHealth", "tabHealth"));
+        document.getElementById("tabProperty").addEventListener("click", () => jumpToPanel("panelProperty", "tabProperty"));
         document.getElementById("reloadHealth").addEventListener("click", async () => {
           const selected = document.getElementById("runSelect").value || null;
           await loadModelHealth(selected);
@@ -833,13 +956,9 @@
         document.getElementById("runPropertyDiag").addEventListener("click", runPropertyDiagnostics);
         document.getElementById("clearPropertyDiag").addEventListener("click", () => {
           document.getElementById("propertyStatus").textContent = "";
-          renderCards("propertyCards", []);
-          renderNotes("propertyExplanations", []);
-          document.getElementById("missingCritical").innerHTML = "";
-          document.getElementById("propertyInterventionTable").innerHTML = "";
-          document.getElementById("propertyWarnings").innerHTML = "";
-          document.getElementById("propertyRaw").textContent = "No property diagnostics loaded.";
+          resetPropertyDetailsUi();
         });
+        resetPropertyDetailsUi();
         await loadRuns();
         await loadModelHealth(currentRunId);
       }

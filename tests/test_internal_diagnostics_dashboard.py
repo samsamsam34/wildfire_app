@@ -202,7 +202,12 @@ def test_internal_dashboard_page_contains_property_diagnostics_hooks() -> None:
     assert response.status_code == 200
     html = response.text
     assert "Model Diagnostics" in html
+    assert "Model Health" in html
+    assert "Property Diagnostics" in html
     assert "include_diagnostics=true" in html
     assert "runPropertyDiagnostics" in html
     assert "Property Diagnostics Query" in html
+    assert "Run a property search to render assessment and diagnostics cards." in html
+    assert 'id="propertyDiagMissingWarning"' in html
+    assert 'id="inferredFields"' in html
     assert "Benchmark / Distribution" in html
