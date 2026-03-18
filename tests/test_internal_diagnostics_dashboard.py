@@ -340,6 +340,23 @@ def test_internal_dashboard_public_outcome_governance_endpoint(monkeypatch, tmp_
     assert payload["validation"]["comparison_to_previous"]["available"] is True
     assert payload["calibration"]["comparison_to_previous"]["available"] is True
 
+    explicit = client.get(
+        "/internal/diagnostics/api/public-outcomes",
+        params={
+            "validation_run_id": "20260318T000000Z",
+            "validation_baseline_run_id": "20260319T000000Z",
+            "calibration_run_id": "20260318T000000Z",
+            "calibration_baseline_run_id": "20260319T000000Z",
+        },
+    )
+    assert explicit.status_code == 200
+    explicit_body = explicit.json()
+    selected = explicit_body.get("selected_run_ids") or {}
+    assert selected.get("validation_run_id") == "20260318T000000Z"
+    assert selected.get("calibration_run_id") == "20260318T000000Z"
+    assert ((explicit_body.get("validation") or {}).get("latest_summary") or {}).get("run_id") == "20260318T000000Z"
+    assert ((explicit_body.get("calibration") or {}).get("latest_summary") or {}).get("run_id") == "20260318T000000Z"
+
 
 def test_internal_dashboard_page_contains_property_diagnostics_hooks() -> None:
     auth.API_KEYS = set()

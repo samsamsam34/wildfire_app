@@ -11029,9 +11029,18 @@ def internal_diagnostics_compare(
 
 @app.get("/internal/diagnostics/api/public-outcomes", dependencies=[Depends(require_api_key)])
 def internal_diagnostics_public_outcomes(
+    validation_run_id: str | None = Query(default=None, description="Optional validation run id."),
+    validation_baseline_run_id: str | None = Query(default=None, description="Optional validation baseline run id."),
+    calibration_run_id: str | None = Query(default=None, description="Optional calibration run id."),
+    calibration_baseline_run_id: str | None = Query(default=None, description="Optional calibration baseline run id."),
     _: ActorContext = Depends(get_actor_context),
 ) -> dict[str, Any]:
-    return load_public_outcome_governance_snapshot()
+    return load_public_outcome_governance_snapshot(
+        validation_run_id=validation_run_id,
+        validation_baseline_run_id=validation_baseline_run_id,
+        calibration_run_id=calibration_run_id,
+        calibration_baseline_run_id=calibration_baseline_run_id,
+    )
 
 
 @app.get("/internal/diagnostics/api/latest/{section_key}", dependencies=[Depends(require_api_key)])

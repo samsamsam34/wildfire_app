@@ -35,6 +35,11 @@ The page is served by the backend and reads internal diagnostics APIs:
 - `GET /internal/diagnostics/api/run/{run_id}`
 - `GET /internal/diagnostics/api/compare?run_id=<current>&baseline_run_id=<baseline>`
 - `GET /internal/diagnostics/api/public-outcomes`
+  - optional params:
+    - `validation_run_id`
+    - `validation_baseline_run_id`
+    - `calibration_run_id`
+    - `calibration_baseline_run_id`
 - `GET /internal/diagnostics/api/latest/{section_key}`
 - `GET /internal/diagnostics/api/run/{run_id}/{section_key}`
 

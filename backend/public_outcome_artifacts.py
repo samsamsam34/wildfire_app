@@ -128,6 +128,24 @@ def _compare_validation_runs(root: Path, run_id: str, baseline_run_id: str | Non
         for item in (listing.get("runs") or [])
         if isinstance(item, dict) and item.get("run_id")
     ]
+    if run_id not in ordered_ids:
+        return {
+            "available": False,
+            "run_id": run_id,
+            "baseline_run_id": baseline_run_id,
+            "reason": "run_not_found",
+            "message": f"Validation run '{run_id}' was not found.",
+            "available_run_ids": ordered_ids,
+        }
+    if baseline_run_id and str(baseline_run_id).strip() not in ordered_ids:
+        return {
+            "available": False,
+            "run_id": run_id,
+            "baseline_run_id": baseline_run_id,
+            "reason": "baseline_run_not_found",
+            "message": f"Validation baseline run '{baseline_run_id}' was not found.",
+            "available_run_ids": ordered_ids,
+        }
     baseline = resolve_baseline_run_id(
         ordered_run_ids=ordered_ids,
         current_run_id=run_id,
@@ -174,6 +192,24 @@ def _compare_calibration_runs(root: Path, run_id: str, baseline_run_id: str | No
         for item in (listing.get("runs") or [])
         if isinstance(item, dict) and item.get("run_id")
     ]
+    if run_id not in ordered_ids:
+        return {
+            "available": False,
+            "run_id": run_id,
+            "baseline_run_id": baseline_run_id,
+            "reason": "run_not_found",
+            "message": f"Calibration run '{run_id}' was not found.",
+            "available_run_ids": ordered_ids,
+        }
+    if baseline_run_id and str(baseline_run_id).strip() not in ordered_ids:
+        return {
+            "available": False,
+            "run_id": run_id,
+            "baseline_run_id": baseline_run_id,
+            "reason": "baseline_run_not_found",
+            "message": f"Calibration baseline run '{baseline_run_id}' was not found.",
+            "available_run_ids": ordered_ids,
+        }
     baseline = resolve_baseline_run_id(
         ordered_run_ids=ordered_ids,
         current_run_id=run_id,
@@ -213,7 +249,32 @@ def _compare_calibration_runs(root: Path, run_id: str, baseline_run_id: str | No
     )
 
 
-def load_public_outcome_governance_snapshot() -> dict[str, Any]:
+def _select_run_id(listing: dict[str, Any], requested_run_id: str | None) -> tuple[str | None, str | None]:
+    ordered_ids = [
+        str(item.get("run_id"))
+        for item in (listing.get("runs") or [])
+        if isinstance(item, dict) and item.get("run_id")
+    ]
+    if not ordered_ids:
+        return None, "No runs are available in artifact listing."
+    if requested_run_id:
+        requested = str(requested_run_id).strip()
+        if requested in ordered_ids:
+            return requested, None
+        return None, f"Run '{requested}' was not found."
+    latest = str(listing.get("latest_run_id") or ordered_ids[0])
+    if latest in ordered_ids:
+        return latest, None
+    return ordered_ids[0], None
+
+
+def load_public_outcome_governance_snapshot(
+    *,
+    validation_run_id: str | None = None,
+    validation_baseline_run_id: str | None = None,
+    calibration_run_id: str | None = None,
+    calibration_baseline_run_id: str | None = None,
+) -> dict[str, Any]:
     validation_root = resolve_public_outcome_validation_root()
     calibration_root = resolve_public_outcome_calibration_root()
     validation_listing = list_public_outcome_runs(artifact_root=validation_root)
@@ -230,29 +291,49 @@ def load_public_outcome_governance_snapshot() -> dict[str, Any]:
             "available": False,
             "message": validation_listing.get("message"),
         }
+        selected_validation_run_id = None
     else:
-        validation_run_id = str(validation_listing.get("latest_run_id"))
-        validation_bundle = _load_run_payload(
-            root=validation_root,
-            run_id=validation_run_id,
-            files={"manifest": "manifest.json", "validation_metrics": "validation_metrics.json"},
-        )
-        manifest = (
-            validation_bundle.get("manifest")
-            if isinstance(validation_bundle.get("manifest"), dict)
-            else {}
-        )
-        metrics = (
-            validation_bundle.get("validation_metrics")
-            if isinstance(validation_bundle.get("validation_metrics"), dict)
-            else {}
-        )
-        validation_summary = _validation_summary(manifest, metrics)
-        validation_comparison = _compare_validation_runs(
-            validation_root,
+        selected_validation_run_id, validation_select_error = _select_run_id(
+            validation_listing,
             validation_run_id,
-            baseline_run_id=None,
         )
+        if validation_select_error:
+            validation_summary = {
+                "available": False,
+                "message": validation_select_error,
+                "available_run_ids": [
+                    str(item.get("run_id"))
+                    for item in (validation_listing.get("runs") or [])
+                    if isinstance(item, dict) and item.get("run_id")
+                ],
+            }
+            validation_comparison = {
+                "available": False,
+                "message": validation_select_error,
+            }
+        else:
+            assert selected_validation_run_id is not None
+            validation_bundle = _load_run_payload(
+                root=validation_root,
+                run_id=selected_validation_run_id,
+                files={"manifest": "manifest.json", "validation_metrics": "validation_metrics.json"},
+            )
+            manifest = (
+                validation_bundle.get("manifest")
+                if isinstance(validation_bundle.get("manifest"), dict)
+                else {}
+            )
+            metrics = (
+                validation_bundle.get("validation_metrics")
+                if isinstance(validation_bundle.get("validation_metrics"), dict)
+                else {}
+            )
+            validation_summary = _validation_summary(manifest, metrics)
+            validation_comparison = _compare_validation_runs(
+                validation_root,
+                selected_validation_run_id,
+                baseline_run_id=validation_baseline_run_id,
+            )
 
     calibration_summary: dict[str, Any]
     calibration_comparison: dict[str, Any]
@@ -265,38 +346,58 @@ def load_public_outcome_governance_snapshot() -> dict[str, Any]:
             "available": False,
             "message": calibration_listing.get("message"),
         }
+        selected_calibration_run_id = None
     else:
-        calibration_run_id = str(calibration_listing.get("latest_run_id"))
-        calibration_bundle = _load_run_payload(
-            root=calibration_root,
-            run_id=calibration_run_id,
-            files={
-                "manifest": "manifest.json",
-                "pre_vs_post_metrics": "pre_vs_post_metrics.json",
-                "calibration_model": "calibration_model.json",
-            },
-        )
-        manifest = (
-            calibration_bundle.get("manifest")
-            if isinstance(calibration_bundle.get("manifest"), dict)
-            else {}
-        )
-        pre_post = (
-            calibration_bundle.get("pre_vs_post_metrics")
-            if isinstance(calibration_bundle.get("pre_vs_post_metrics"), dict)
-            else {}
-        )
-        calibration_model = (
-            calibration_bundle.get("calibration_model")
-            if isinstance(calibration_bundle.get("calibration_model"), dict)
-            else {}
-        )
-        calibration_summary = _calibration_summary(manifest, pre_post, calibration_model)
-        calibration_comparison = _compare_calibration_runs(
-            calibration_root,
+        selected_calibration_run_id, calibration_select_error = _select_run_id(
+            calibration_listing,
             calibration_run_id,
-            baseline_run_id=None,
         )
+        if calibration_select_error:
+            calibration_summary = {
+                "available": False,
+                "message": calibration_select_error,
+                "available_run_ids": [
+                    str(item.get("run_id"))
+                    for item in (calibration_listing.get("runs") or [])
+                    if isinstance(item, dict) and item.get("run_id")
+                ],
+            }
+            calibration_comparison = {
+                "available": False,
+                "message": calibration_select_error,
+            }
+        else:
+            assert selected_calibration_run_id is not None
+            calibration_bundle = _load_run_payload(
+                root=calibration_root,
+                run_id=selected_calibration_run_id,
+                files={
+                    "manifest": "manifest.json",
+                    "pre_vs_post_metrics": "pre_vs_post_metrics.json",
+                    "calibration_model": "calibration_model.json",
+                },
+            )
+            manifest = (
+                calibration_bundle.get("manifest")
+                if isinstance(calibration_bundle.get("manifest"), dict)
+                else {}
+            )
+            pre_post = (
+                calibration_bundle.get("pre_vs_post_metrics")
+                if isinstance(calibration_bundle.get("pre_vs_post_metrics"), dict)
+                else {}
+            )
+            calibration_model = (
+                calibration_bundle.get("calibration_model")
+                if isinstance(calibration_bundle.get("calibration_model"), dict)
+                else {}
+            )
+            calibration_summary = _calibration_summary(manifest, pre_post, calibration_model)
+            calibration_comparison = _compare_calibration_runs(
+                calibration_root,
+                selected_calibration_run_id,
+                baseline_run_id=calibration_baseline_run_id,
+            )
 
     return {
         "available": bool(validation_listing.get("available") or calibration_listing.get("available")),
@@ -304,6 +405,12 @@ def load_public_outcome_governance_snapshot() -> dict[str, Any]:
             "Public-outcome reports are directional validation artifacts based on public observed outcomes. "
             "They are not carrier-claims truth or underwriting-performance guarantees."
         ),
+        "selected_run_ids": {
+            "validation_run_id": selected_validation_run_id,
+            "validation_baseline_run_id": validation_baseline_run_id,
+            "calibration_run_id": selected_calibration_run_id,
+            "calibration_baseline_run_id": calibration_baseline_run_id,
+        },
         "validation": {
             "artifact_root": str(validation_root),
             "listing": validation_listing,
