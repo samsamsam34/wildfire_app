@@ -1,139 +1,93 @@
 # Public Outcome Calibration
 
-This repo supports an optional, additive empirical calibration workflow using public wildfire structure-damage outcomes (for example CAL FIRE DINS-style records).
+This workflow fits an optional calibration layer that maps raw `wildfire_risk_score` to a public-observed adverse-outcome probability proxy.
 
-The deterministic rules-based scoring engine remains the primary model. Calibration maps the existing `wildfire_risk_score` to an empirical damage-likelihood proxy for benchmarking and directional decision support.
+Calibration here is directional and based on public outcomes. It is not carrier claims truth.
 
-## What Public Data Is Used
-
-Primary target source classes:
-- CAL FIRE structure-damage / DINS-style records
-- Other public structure-impact datasets with usable coordinates and damage categories
-
-Expected input fields (or synonyms):
-- damage status/label
-- structure coordinates (`latitude`, `longitude`)
-- event/incident metadata (`event_id`, `event_name`, `event_date`)
-- optional address and quality/confidence fields
-
-## Label Definitions
-
-Canonical normalized labels:
-- `no_damage`
-- `minor_damage`
-- `major_damage`
-- `destroyed`
-
-Binary calibration target:
-- `structure_loss_or_major_damage`:
-  - `1` for `major_damage` or `destroyed`
-  - `0` for `no_damage` or `minor_damage`
-
-Unknown/unusable labels are retained in normalized artifacts but excluded from calibration fitting.
-
-## Workflow
-
-For a single reproducible run bundle, use:
+## Command
 
 ```bash
-python scripts/run_public_outcome_validation.py
+python scripts/fit_public_outcome_calibration.py
 ```
 
-This validates against an existing labeled evaluation dataset and writes outputs under `benchmark/public_outcomes/validation/<timestamp>/`.
-To build that labeled dataset first, run steps 1-3 below.
+By default this:
+- loads the latest labeled dataset from `benchmark/public_outcomes/evaluation_dataset/<run_id>/evaluation_dataset.jsonl`
+- writes a timestamped calibration bundle to `benchmark/public_outcomes/calibration/<run_id>/`
 
-### 1) Normalize public outcome records
-
-```bash
-python scripts/ingest_public_outcomes.py \
-  --input path/to/public_damage_records.csv \
-  --source-name calfire_dins \
-  --output-root benchmark/public_outcomes/normalized
-```
-
-This writes a timestamped bundle under `benchmark/public_outcomes/normalized/<run_id>/`.
-Use `normalized_outcomes.json` from that bundle as the `--outcomes` input in step 3.
-
-### 2) Produce scored feature artifacts
-
-Run backtesting with one or more event datasets so each record has model scores + debug feature vectors:
-
-```bash
-python scripts/run_event_backtest.py \
-  --dataset benchmark/event_backtest_sample_v1.json \
-  --output-dir benchmark/event_backtest_results
-```
-
-### 3) Build a calibration/evaluation dataset
-
-```bash
-python scripts/build_calibration_dataset.py \
-  --outcomes benchmark/public_outcomes/normalized/<run_id>/normalized_outcomes.json \
-  --feature-artifact benchmark/event_backtest_results/event_backtest_YYYYMMDDTHHMMSSZ.json \
-  --output benchmark/calibration/public_outcome_calibration_dataset.json \
-  --output-csv benchmark/calibration/public_outcome_calibration_dataset.csv
-```
-
-### 4) Evaluate discrimination and calibration quality
-
-```bash
-python scripts/evaluate_model_against_public_outcomes.py \
-  --dataset benchmark/calibration/public_outcome_calibration_dataset.json \
-  --output-json benchmark/calibration/public_outcome_evaluation.json \
-  --output-csv benchmark/calibration/public_outcome_evaluation_rows.csv
-```
-
-Outputs include:
-- score distributions by outcome class
-- ROC AUC for top-level scores
-- threshold precision/recall and confusion matrices
-- calibration table for wildfire risk score
-- fallback/default usage diagnostics
-- factor contribution summaries by TP/FP/FN/TN class
-
-### 5) Fit an optional calibration artifact
+Use an explicit dataset:
 
 ```bash
 python scripts/fit_public_outcome_calibration.py \
-  --dataset benchmark/calibration/public_outcome_calibration_dataset.json \
+  --dataset benchmark/public_outcomes/evaluation_dataset/<run_id>/evaluation_dataset.jsonl
+```
+
+Copy/export the fitted artifact for runtime use:
+
+```bash
+python scripts/fit_public_outcome_calibration.py \
+  --dataset benchmark/public_outcomes/evaluation_dataset/<run_id>/evaluation_dataset.jsonl \
   --output config/public_outcome_calibration.json
 ```
 
-Enable runtime calibration:
+## Methods
+
+Supported fitting methods:
+- `logistic` (Platt-style)
+- `isotonic` (piecewise monotonic fit)
+- `auto` (default): selects a cautious method using validation Brier comparison and data sufficiency checks
+
+If isotonic sample support is weak, the fitter falls back to logistic with warnings.
+
+## Output Bundle
+
+Each run writes:
+
+`benchmark/public_outcomes/calibration/<run_id>/`
+
+Artifacts:
+- `calibration_model.json`
+- `calibration_config.json`
+- `pre_vs_post_metrics.json`
+- `calibration_curve.json`
+- `summary.md`
+- `manifest.json`
+
+## Guardrails
+
+The fitter warns or skips fitting when:
+- sample size is too small
+- positive/negative labels are too sparse
+- low-confidence / low-quality joins dominate
+- calibrated metrics degrade vs raw baseline
+
+Raw deterministic scores remain preserved and distinct from calibrated outputs.
+
+## Runtime Use
+
+Set:
 
 ```bash
 export WF_PUBLIC_CALIBRATION_ARTIFACT=config/public_outcome_calibration.json
 ```
 
-## Runtime Behavior
+Runtime continues to expose raw score fields and applies calibration additively when artifact scope/method is valid.
 
-When `WF_PUBLIC_CALIBRATION_ARTIFACT` is configured:
-- `/risk/assess` includes:
-  - `calibrated_damage_likelihood`
-  - `empirical_damage_likelihood_proxy`
-  - `empirical_loss_likelihood_proxy`
-  - `calibration_applied`
-  - `calibration_method`
-  - `calibration_status`
-  - `calibration_limitations`
-- `/risk/debug` includes calibration metadata:
-  - enabled/applied state
-  - artifact metadata (`artifact_version`, `generated_at`, dataset metadata)
-  - scope/out-of-scope warning when applicable
+## Semantics
 
-If no valid artifact is configured, calibration remains disabled and core deterministic scoring is unchanged.
+Calibrated output semantic:
+- `calibrated_adverse_outcome_probability_public`
 
-## What Calibration Does Not Mean
+Target definition:
+- `structure_loss_or_major_damage = 1` for `major_damage` or `destroyed`
+- `0` for `minor_damage` or `no_damage`
 
-- It is **not** an insurer claims-probability model.
-- It does **not** replace the deterministic score engine.
-- It is geographically/temporally limited by public outcome coverage.
-- It should be described as an empirical proxy for directional risk validation.
+Backward-compatible runtime fields remain:
+- `calibrated_damage_likelihood`
+- `empirical_damage_likelihood_proxy`
+- `empirical_loss_likelihood_proxy`
 
-## Coverage and Interpretation Limits
+## Caveats
 
-- Public outcome data is incomplete and uneven by region/event.
-- Damage labels are proxies and may not reflect full insured loss outcomes.
-- Calibration artifacts can become stale as hazard, fuels, and mitigation patterns change.
-
-Use `calibration_status`, `calibration_limitations`, and governance metadata when interpreting calibrated values.
+- Public outcomes are heterogeneous and incomplete.
+- Join confidence and evidence quality directly affect calibration trust.
+- Calibration should be treated as directional model alignment, not underwriting validation.

@@ -51,6 +51,12 @@ def _apply_logistic(score: float, artifact: dict[str, Any]) -> float | None:
 
 def _apply_piecewise(score: float, artifact: dict[str, Any]) -> float | None:
     points = artifact.get("points")
+    if not isinstance(points, list):
+        params = artifact.get("parameters")
+        if isinstance(params, dict):
+            candidate = params.get("points")
+            if isinstance(candidate, list):
+                points = candidate
     if not isinstance(points, list) or len(points) < 2:
         return None
     parsed: list[tuple[float, float]] = []
@@ -167,9 +173,9 @@ def resolve_public_calibration(
 
     method = str(artifact.get("method") or "").strip().lower()
     base["calibration_method"] = method or None
-    if method == "logistic":
+    if method in {"logistic", "platt_logistic"}:
         calibrated = _apply_logistic(score, artifact)
-    elif method in {"piecewise_linear", "piecewise"}:
+    elif method in {"piecewise_linear", "piecewise", "isotonic", "isotonic_piecewise"}:
         calibrated = _apply_piecewise(score, artifact)
     else:
         calibrated = None
