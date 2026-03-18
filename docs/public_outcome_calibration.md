@@ -44,12 +44,14 @@ This produces normalized outcomes, joined dataset, evaluation outputs, markdown 
 ### 1) Normalize public outcome records
 
 ```bash
-python scripts/ingest_public_structure_damage.py \
+python scripts/ingest_public_outcomes.py \
   --input path/to/public_damage_records.csv \
-  --output-json benchmark/calibration/public_structure_damage_normalized.json \
-  --output-csv benchmark/calibration/public_structure_damage_normalized.csv \
-  --source-name calfire_dins
+  --source-name calfire_dins \
+  --output-root benchmark/public_outcomes/normalized
 ```
+
+This writes a timestamped bundle under `benchmark/public_outcomes/normalized/<run_id>/`.
+Use `normalized_outcomes.json` from that bundle as the `--outcomes` input in step 3.
 
 ### 2) Produce scored feature artifacts
 
@@ -65,7 +67,7 @@ python scripts/run_event_backtest.py \
 
 ```bash
 python scripts/build_calibration_dataset.py \
-  --outcomes benchmark/calibration/public_structure_damage_normalized.json \
+  --outcomes benchmark/public_outcomes/normalized/<run_id>/normalized_outcomes.json \
   --feature-artifact benchmark/event_backtest_results/event_backtest_YYYYMMDDTHHMMSSZ.json \
   --output benchmark/calibration/public_outcome_calibration_dataset.json \
   --output-csv benchmark/calibration/public_outcome_calibration_dataset.csv

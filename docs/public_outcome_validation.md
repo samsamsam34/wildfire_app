@@ -23,6 +23,18 @@ python scripts/run_public_outcome_validation.py \
   --fit-calibration
 ```
 
+Optional dedicated ingestion step (multi-source normalization + dedupe + quality report):
+
+```bash
+python scripts/ingest_public_outcomes.py \
+  --input path/to/public_damage_source_a.csv \
+  --source-name source_a \
+  --input path/to/public_damage_source_b.geojson \
+  --source-name source_b
+```
+
+Then pass the resulting `normalized_outcomes.json` into `--outcomes-input`.
+
 Run against existing feature artifacts (skip backtest execution):
 
 ```bash
