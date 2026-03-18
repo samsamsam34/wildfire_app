@@ -73,6 +73,14 @@ Artifacts:
 - false-low and false-high review sets with top factor contributions
 - leakage-risk checks and guardrail warnings
 
+For explicit join diagnostics before full evaluation/calibration, you can build a standalone joined labeled dataset:
+
+```bash
+python scripts/build_public_outcome_evaluation_dataset.py \
+  --outcomes benchmark/public_outcomes/normalized/<run_id>/normalized_outcomes.json \
+  --feature-artifact benchmark/event_backtest_results/event_backtest_<stamp>.json
+```
+
 ## Guardrails
 
 The workflow explicitly:
