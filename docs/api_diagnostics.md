@@ -63,11 +63,21 @@ curl -sS -X POST "http://127.0.0.1:8000/risk/assess" \
 - `confidence`: evidence completeness and fallback pressure for this specific run.
 - `confidence` is not wildfire-loss accuracy; it is evidence quality for this run.
   It is reduced when fallback weight, inferred/proxy dependence, or missing critical fields increase.
+- `confidence` now includes explicit counts/ratios used by the confidence logic:
+  - `fallback_weight_fraction`
+  - `observed_feature_count`, `inferred_feature_count`, `fallback_feature_count`, `missing_feature_count`
+  - `missing_critical_field_count`, `inferred_field_count`
+  - `confidence_reduction_reasons`
 - `stability`: bounded local perturbation sensitivity (small geocode jitter + fallback-assumption perturbation).
+- `stability.assumption_sensitive` indicates whether fallback-assumption perturbation materially shifts the result.
 - `mitigation_sensitivity`: lightweight counterfactuals using existing mitigation-relevant inputs.
 - `monotonicity`: directional checks over the mitigation counterfactual set.
 - `benchmark_alignment`: sanity-check context from precomputed no-ground-truth reference artifacts, if available.
 - `distribution_context`: optional percentile/segment context from reference distribution artifacts.
+- `vegetation_signal`: near-structure vegetation/fuel driver diagnostics for the current property:
+  - `major_driver`, `driver_strength`, `contribution_share`
+  - `related_submodels`, `related_risk_drivers`
+  - `near_structure_summary`, `notes`
 
 ## Offline Reference Artifacts
 

@@ -17,6 +17,7 @@ from backend.models import (
     TrustDiagnosticsMitigationSensitivity,
     TrustDiagnosticsMonotonicity,
     TrustDiagnosticsStability,
+    TrustDiagnosticsVegetationSignal,
 )
 from backend.scoring_config import load_scoring_config
 
@@ -67,6 +68,114 @@ def _percentile(value: float, samples: list[float]) -> float | None:
         return None
     below_or_equal = sum(1 for row in samples if row <= value)
     return round((below_or_equal / float(len(samples))) * 100.0, 1)
+
+
+def _as_str_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(row) for row in value if isinstance(row, str) and str(row).strip()]
+
+
+def _build_vegetation_signal(result: AssessmentResult) -> TrustDiagnosticsVegetationSignal:
+    vegetation_submodels = [
+        "vegetation_intensity_risk",
+        "fuel_proximity_risk",
+        "flame_contact_risk",
+        "defensible_space_risk",
+    ]
+    weighted = (
+        result.weighted_contributions
+        if isinstance(result.weighted_contributions, dict)
+        else {}
+    )
+    total_contribution = 0.0
+    vegetation_contribution = 0.0
+    for key, row in weighted.items():
+        if not hasattr(row, "contribution"):
+            continue
+        contribution = _safe_float(getattr(row, "contribution", None))
+        if contribution is None:
+            continue
+        abs_contribution = abs(contribution)
+        total_contribution += abs_contribution
+        if str(key) in vegetation_submodels:
+            vegetation_contribution += abs_contribution
+    contribution_share = (
+        round((vegetation_contribution / total_contribution), 4)
+        if total_contribution > 0.0
+        else None
+    )
+    top_driver_text = [str(row) for row in (result.top_risk_drivers or []) if str(row).strip()]
+    near_structure_drivers = [
+        str(row) for row in (result.top_near_structure_risk_drivers or []) if str(row).strip()
+    ]
+    driver_text_pool = " ".join(top_driver_text + near_structure_drivers).lower()
+    keywords = (
+        "vegetation",
+        "defensible",
+        "fuel",
+        "0-5",
+        "5-30",
+        "canopy",
+        "near-structure",
+    )
+    vegetation_driver_mentions = [
+        row
+        for row in (top_driver_text + near_structure_drivers)
+        if any(token in str(row).lower() for token in keywords)
+    ]
+    keyword_hit = any(token in driver_text_pool for token in keywords)
+    major_driver = bool(
+        (contribution_share is not None and contribution_share >= 0.30)
+        or (near_structure_drivers and keyword_hit)
+        or len(vegetation_driver_mentions) >= 2
+    )
+    if contribution_share is None:
+        strength = "unknown"
+    elif contribution_share >= 0.40:
+        strength = "high"
+    elif contribution_share >= 0.25:
+        strength = "moderate"
+    elif contribution_share > 0.0:
+        strength = "low"
+    else:
+        strength = "unknown"
+
+    defensible = (
+        result.defensible_space_analysis
+        if isinstance(result.defensible_space_analysis, dict)
+        else {}
+    )
+    near_structure_summary = (
+        str(defensible.get("summary"))
+        if defensible.get("summary") is not None
+        else None
+    )
+    data_quality = defensible.get("data_quality") if isinstance(defensible.get("data_quality"), dict) else {}
+    analysis_status = str(data_quality.get("analysis_status") or "").strip().lower()
+    notes: list[str] = []
+    if near_structure_summary:
+        notes.append(near_structure_summary)
+    if analysis_status in {"partial", "unavailable"}:
+        notes.append("Near-structure vegetation evidence is incomplete; some vegetation effects use proxy inputs.")
+    if major_driver and contribution_share is not None:
+        notes.append(
+            f"Vegetation-linked submodels contribute about {contribution_share * 100.0:.1f}% of modeled weighted risk pressure."
+        )
+    related_submodels = [
+        key
+        for key in vegetation_submodels
+        if key in weighted and _safe_float(getattr(weighted[key], "contribution", None)) is not None
+    ]
+    return TrustDiagnosticsVegetationSignal(
+        major_driver=major_driver,
+        driver_strength=strength,
+        contribution_share=contribution_share,
+        related_submodels=related_submodels,
+        related_risk_drivers=vegetation_driver_mentions[:8],
+        near_structure_summary=near_structure_summary,
+        notes=notes[:8],
+    )
 
 
 def _resolve_reference_root(path_hint: str | Path | None = None) -> Path | None:
@@ -162,6 +271,7 @@ def build_trust_diagnostics(
     if evidence_completeness is None or evidence_completeness <= 0.0:
         evidence_completeness = round(float(result.observed_weight_fraction or 0.0) * 100.0, 1)
 
+    fallback_weight_fraction = float(result.fallback_weight_fraction or 0.0)
     fallback_heavy = bool(
         float(result.fallback_weight_fraction or 0.0) >= 0.45
         or int(result.fallback_feature_count or 0) > int(result.observed_feature_count or 0)
@@ -171,6 +281,13 @@ def build_trust_diagnostics(
             list(result.assessment_diagnostics.inferred_inputs or [])
             + list(result.assessment_diagnostics.heuristic_inputs or [])
         )
+    )
+    confidence_reduction_reasons = sorted(
+        {
+            *[str(row) for row in (result.assessment_diagnostics.confidence_downgrade_reasons or []) if str(row).strip()],
+            *[str(row) for row in (result.assessment_diagnostics.trust_tier_blockers or []) if str(row).strip()],
+            *[str(row) for row in (result.low_confidence_flags or []) if str(row).strip()],
+        }
     )
     confidence_notes: list[str] = []
     if fallback_heavy:
@@ -187,8 +304,16 @@ def build_trust_diagnostics(
         score=float(result.confidence_score or 0.0),
         evidence_completeness=float(evidence_completeness or 0.0),
         fallback_heavy=fallback_heavy,
+        fallback_weight_fraction=round(fallback_weight_fraction, 4),
+        observed_feature_count=int(result.observed_feature_count or 0),
+        inferred_feature_count=int(result.inferred_feature_count or 0),
+        fallback_feature_count=int(result.fallback_feature_count or 0),
+        missing_feature_count=int(result.missing_feature_count or 0),
         missing_critical_fields=list(result.assessment_diagnostics.critical_inputs_missing or []),
+        missing_critical_field_count=len(result.assessment_diagnostics.critical_inputs_missing or []),
         inferred_fields=inferred_fields,
+        inferred_field_count=len(inferred_fields),
+        confidence_reduction_reasons=confidence_reduction_reasons[:10],
         notes=confidence_notes,
     )
 
@@ -230,6 +355,7 @@ def build_trust_diagnostics(
         local_sensitivity_score=round(local_sensitivity_score, 1),
         geocode_jitter_swing=round(max_jitter, 1),
         fallback_assumption_swing=round(max_fallback, 1),
+        assumption_sensitive=bool(max_fallback >= 4.0 or tier_flips >= 1),
         tier_flip_risk=tier_flip_risk,
         notes=stability_notes,
     )
@@ -340,6 +466,7 @@ def build_trust_diagnostics(
         segment=segment,
         notes=distribution_notes,
     )
+    vegetation_signal = _build_vegetation_signal(result)
 
     explanations: list[str] = []
     if confidence.notes:
@@ -355,6 +482,16 @@ def build_trust_diagnostics(
         explanations.append(
             f"Highest estimated mitigation leverage: {top.name} (risk delta {top.estimated_risk_delta:+.1f})."
         )
+    if vegetation_signal.major_driver:
+        explanations.append("Near-structure vegetation appears to be a major contributor to this property risk profile.")
+    elif vegetation_signal.driver_strength in {"moderate", "low"}:
+        explanations.append("Near-structure vegetation contributes to risk, but it is not the dominant modeled driver.")
+    if confidence.confidence_reduction_reasons:
+        explanations.append(
+            "Confidence reductions are driven by: "
+            + ", ".join(confidence.confidence_reduction_reasons[:3])
+            + "."
+        )
 
     return TrustDiagnostics(
         generated_at=result.generated_at,
@@ -365,5 +502,6 @@ def build_trust_diagnostics(
         monotonicity=monotonicity,
         benchmark_alignment=benchmark_alignment,
         distribution_context=distribution_context,
+        vegetation_signal=vegetation_signal,
         explanations=explanations,
     )

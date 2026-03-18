@@ -257,4 +257,7 @@ def test_internal_dashboard_page_contains_property_diagnostics_hooks() -> None:
     assert "Run a property search to render assessment and diagnostics cards." in html
     assert 'id="propertyDiagMissingWarning"' in html
     assert 'id="inferredFields"' in html
+    assert 'id="confidenceReasons"' in html
+    assert 'id="vegetationSignal"' in html
     assert "Benchmark / Distribution" in html
+    assert "Near-Structure Vegetation Signal" in html

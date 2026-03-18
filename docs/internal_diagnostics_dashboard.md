@@ -12,6 +12,7 @@ The internal dashboard helps teams:
 - inspect per-property diagnostics from the live assessment API
 - compare risk/readiness outputs with trust metadata
 - identify unstable assumptions and strongest mitigation levers
+- inspect whether near-structure vegetation is a major modeled driver and why confidence is reduced
 
 Model Health view highlights:
 
@@ -102,4 +103,6 @@ python scripts/run_no_ground_truth_evaluation.py
 
 - Use Model Health to spot systematic issues (monotonicity violations, unstable tests, clustering).
 - Use Property Diagnostics for per-address confidence, sensitivity, and mitigation diagnostics.
+- Property Diagnostics now explicitly surfaces confidence-reduction reasons, fallback pressure, and
+  near-structure vegetation driver diagnostics (`major_driver`, `driver_strength`, and related notes).
 - Treat all outputs as internal decision-support diagnostics, not external performance claims.

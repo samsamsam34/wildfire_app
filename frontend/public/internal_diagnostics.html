@@ -402,6 +402,14 @@
         <section class="card">
           <h3>Detailed Diagnostics</h3>
           <details open>
+            <summary>Confidence Reduction Reasons</summary>
+            <div id="confidenceReasons" class="note-list"><div class="empty">No property run yet.</div></div>
+          </details>
+          <details>
+            <summary>Near-Structure Vegetation Signal</summary>
+            <div id="vegetationSignal" class="note-list"><div class="empty">No property run yet.</div></div>
+          </details>
+          <details open>
             <summary>Missing Critical Fields</summary>
             <div id="missingCritical" class="chips"><div class="empty">No property run yet.</div></div>
           </details>
@@ -856,6 +864,8 @@
       function resetPropertyDetailsUi() {
         renderCards("propertyCards", []);
         renderNotes("propertyExplanations", ["Empty state: no property diagnostics loaded yet."]);
+        document.getElementById("confidenceReasons").innerHTML = '<div class="empty">No property run yet.</div>';
+        document.getElementById("vegetationSignal").innerHTML = '<div class="empty">No property run yet.</div>';
         document.getElementById("missingCritical").innerHTML = '<div class="empty">No property run yet.</div>';
         document.getElementById("inferredFields").innerHTML = '<div class="empty">No property run yet.</div>';
         document.getElementById("propertyInterventionTable").innerHTML = '<div class="empty">No property run yet.</div>';
@@ -912,6 +922,8 @@
           setStatus("propertyStatus", `Diagnostics could not be loaded for this property: ${err}`, true);
           renderCards("propertyCards", []);
           renderNotes("propertyExplanations", ["Diagnostics could not be loaded for this property."]);
+          document.getElementById("confidenceReasons").innerHTML = '<div class="empty">No diagnostics available.</div>';
+          document.getElementById("vegetationSignal").innerHTML = '<div class="empty">No diagnostics available.</div>';
           document.getElementById("missingCritical").innerHTML = '<div class="empty">No diagnostics available.</div>';
           document.getElementById("inferredFields").innerHTML = '<div class="empty">No diagnostics available.</div>';
           document.getElementById("propertyInterventionTable").innerHTML = '<div class="empty">No diagnostics available.</div>';
@@ -929,6 +941,7 @@
         const topIntervention = ((diag.mitigation_sensitivity || {}).top_interventions || [])[0] || {};
         const distributionContext = diag.distribution_context || {};
         const benchmarkContext = diag.benchmark_alignment || {};
+        const vegetationSignal = diag.vegetation_signal || {};
         const hasDiagnostics = Boolean(diagnostics);
         const cards = [
           {
@@ -959,19 +972,25 @@
             title: "Confidence",
             value: hasDiagnostics ? `${confidence.tier || "unknown"} (${Number(confidence.score || 0).toFixed(1)})` : "unavailable",
             className: confidence.tier === "high" ? "good" : "warn",
-            detail: `Evidence completeness ${confidence.evidence_completeness ?? "N/A"}`,
+            detail: `Evidence completeness ${confidence.evidence_completeness ?? "N/A"} | fallback weight ${confidence.fallback_weight_fraction ?? "N/A"}`,
           },
           {
             title: "Stability",
             value: hasDiagnostics ? (stability.rating || "unknown") : "unavailable",
             className: stability.rating === "stable" ? "good" : "warn",
-            detail: `Local sensitivity ${stability.local_sensitivity_score ?? "N/A"}`,
+            detail: `Local sensitivity ${stability.local_sensitivity_score ?? "N/A"} | assumption-sensitive ${stability.assumption_sensitive ? "yes" : "no"}`,
           },
           {
             title: "Top Intervention",
             value: hasDiagnostics ? (topIntervention.name || "N/A") : "unavailable",
             className: "",
             detail: topIntervention.estimated_risk_delta != null ? `Risk delta ${Number(topIntervention.estimated_risk_delta).toFixed(2)}` : "",
+          },
+          {
+            title: "Vegetation Driver",
+            value: hasDiagnostics ? (vegetationSignal.major_driver ? "major" : (vegetationSignal.driver_strength || "unknown")) : "unavailable",
+            className: vegetationSignal.major_driver ? "bad" : "warn",
+            detail: `Strength ${vegetationSignal.driver_strength || "unknown"} | share ${vegetationSignal.contribution_share != null ? Number(vegetationSignal.contribution_share * 100.0).toFixed(1) + "%" : "N/A"}`,
           },
           {
             title: "Monotonicity Status",
@@ -1003,6 +1022,8 @@
             "Diagnostics were not returned by the API for this request.",
             "Assessment values are shown, but trust metadata could not be rendered.",
           ]);
+          document.getElementById("confidenceReasons").innerHTML = '<div class="empty">Unavailable because diagnostics were not returned.</div>';
+          document.getElementById("vegetationSignal").innerHTML = '<div class="empty">Unavailable because diagnostics were not returned.</div>';
           document.getElementById("missingCritical").innerHTML = '<div class="empty">Unavailable because diagnostics were not returned.</div>';
           document.getElementById("inferredFields").innerHTML = '<div class="empty">Unavailable because diagnostics were not returned.</div>';
           document.getElementById("propertyInterventionTable").innerHTML = '<div class="empty">Unavailable because diagnostics were not returned.</div>';
@@ -1019,20 +1040,43 @@
           confidence.tier === "high"
             ? "Confidence is high based on current observed evidence coverage."
             : `Confidence is ${confidence.tier || "unknown"} because ${((confidence.notes || [])[0] || "some required evidence is inferred or missing").toLowerCase()}.`;
+        const confidenceReductionReasons = []
+          .concat(confidence.confidence_reduction_reasons || [])
+          .concat(confidence.notes || [])
+          .slice(0, 10);
         const improvementReason = topIntervention.name
           ? `${topIntervention.name} appears to be the strongest modeled mitigation lever for this property run.`
           : "No strong mitigation lever was identified from the available diagnostics sample.";
         const sensitivityReason = (diagnostics.stability || {}).rating
           ? `This result is ${(diagnostics.stability || {}).rating} to small input/location perturbations.`
           : "Local sensitivity is not available for this run.";
+        const vegetationSignal = diagnostics.vegetation_signal || {};
+        const vegetationReason = vegetationSignal.major_driver
+          ? "Near-structure vegetation is a major modeled contributor for this property."
+          : "Near-structure vegetation is present but not dominant in the current modeled risk profile.";
         const explanations = []
-          .concat([confidenceReason, improvementReason, sensitivityReason])
+          .concat([confidenceReason, improvementReason, sensitivityReason, vegetationReason])
           .concat(diag.explanations || [])
           .concat((diag.confidence || {}).notes || [])
           .concat((diag.stability || {}).notes || [])
+          .concat((diag.vegetation_signal || {}).notes || [])
           .concat((diag.benchmark_alignment || {}).notes || [])
           .slice(0, 10);
         renderNotes("propertyExplanations", explanations.length ? explanations : ["No additional explanation notes available."]);
+        renderNotes(
+          "confidenceReasons",
+          confidenceReductionReasons.length
+            ? confidenceReductionReasons
+            : ["No explicit confidence-reduction reasons were reported for this run."]
+        );
+        renderNotes(
+          "vegetationSignal",
+          []
+            .concat(vegetationSignal.near_structure_summary ? [vegetationSignal.near_structure_summary] : [])
+            .concat((vegetationSignal.notes || []))
+            .concat((vegetationSignal.related_risk_drivers || []))
+            .slice(0, 10)
+        );
 
         const missing = confidence.missing_critical_fields || [];
         const chips = missing.map((m) => `<span class="chip">${m}</span>`).join("");

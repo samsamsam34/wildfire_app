@@ -106,7 +106,13 @@ def test_diagnostics_included_when_flag_enabled(monkeypatch, tmp_path: Path) -> 
     assert "monotonicity" in diagnostics
     assert "benchmark_alignment" in diagnostics
     assert "distribution_context" in diagnostics
+    assert "vegetation_signal" in diagnostics
     assert "inferred_fields" in diagnostics["confidence"]
+    assert "fallback_weight_fraction" in diagnostics["confidence"]
+    assert "confidence_reduction_reasons" in diagnostics["confidence"]
+    assert "assumption_sensitive" in diagnostics["stability"]
+    assert "major_driver" in diagnostics["vegetation_signal"]
+    assert "driver_strength" in diagnostics["vegetation_signal"]
 
 
 def test_missing_reference_artifacts_degrade_gracefully(monkeypatch, tmp_path: Path) -> None:
@@ -132,9 +138,11 @@ def test_diagnostics_metrics_are_deterministic_for_fixed_fixture_inputs(monkeypa
     d1 = first.json()["diagnostics"]
     d2 = second.json()["diagnostics"]
     assert d1["confidence"]["fallback_heavy"] == d2["confidence"]["fallback_heavy"]
+    assert d1["confidence"]["fallback_weight_fraction"] == d2["confidence"]["fallback_weight_fraction"]
     assert d1["stability"]["local_sensitivity_score"] == d2["stability"]["local_sensitivity_score"]
     assert d1["stability"]["tier_flip_risk"] == d2["stability"]["tier_flip_risk"]
     assert d1["mitigation_sensitivity"]["top_interventions"] == d2["mitigation_sensitivity"]["top_interventions"]
+    assert d1["vegetation_signal"] == d2["vegetation_signal"]
 
 
 def test_report_endpoint_supports_opt_in_diagnostics(monkeypatch, tmp_path: Path) -> None:

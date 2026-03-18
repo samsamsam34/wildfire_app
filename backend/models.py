@@ -714,8 +714,16 @@ class TrustDiagnosticsConfidence(BaseModel):
     score: float = 0.0
     evidence_completeness: float = 0.0
     fallback_heavy: bool = False
+    fallback_weight_fraction: float = 0.0
+    observed_feature_count: int = 0
+    inferred_feature_count: int = 0
+    fallback_feature_count: int = 0
+    missing_feature_count: int = 0
     missing_critical_fields: List[str] = Field(default_factory=list)
+    missing_critical_field_count: int = 0
     inferred_fields: List[str] = Field(default_factory=list)
+    inferred_field_count: int = 0
+    confidence_reduction_reasons: List[str] = Field(default_factory=list)
     notes: List[str] = Field(default_factory=list)
 
 
@@ -724,6 +732,7 @@ class TrustDiagnosticsStability(BaseModel):
     local_sensitivity_score: float = 0.0
     geocode_jitter_swing: float = 0.0
     fallback_assumption_swing: float = 0.0
+    assumption_sensitive: bool = False
     tier_flip_risk: Literal["low", "medium", "high"] = "medium"
     notes: List[str] = Field(default_factory=list)
 
@@ -766,6 +775,16 @@ class TrustDiagnosticsDistributionContext(BaseModel):
     notes: List[str] = Field(default_factory=list)
 
 
+class TrustDiagnosticsVegetationSignal(BaseModel):
+    major_driver: bool = False
+    driver_strength: Literal["high", "moderate", "low", "unknown"] = "unknown"
+    contribution_share: Optional[float] = None
+    related_submodels: List[str] = Field(default_factory=list)
+    related_risk_drivers: List[str] = Field(default_factory=list)
+    near_structure_summary: Optional[str] = None
+    notes: List[str] = Field(default_factory=list)
+
+
 class TrustDiagnostics(BaseModel):
     version: str = "ngt_eval_v1"
     generated_at: datetime
@@ -785,6 +804,9 @@ class TrustDiagnostics(BaseModel):
     )
     distribution_context: TrustDiagnosticsDistributionContext = Field(
         default_factory=TrustDiagnosticsDistributionContext
+    )
+    vegetation_signal: TrustDiagnosticsVegetationSignal = Field(
+        default_factory=TrustDiagnosticsVegetationSignal
     )
     explanations: List[str] = Field(default_factory=list)
 
