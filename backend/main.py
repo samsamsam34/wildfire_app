@@ -10770,7 +10770,13 @@ def internal_diagnostics_page(_: ActorContext = Depends(get_actor_context)) -> H
             "<p>Create frontend/public/internal_diagnostics.html or rebuild frontend assets.</p>",
             status_code=404,
         )
-    return HTMLResponse(path.read_text(encoding="utf-8"))
+    return HTMLResponse(
+        path.read_text(encoding="utf-8"),
+        headers={
+            "Cache-Control": "no-store, max-age=0",
+            "Pragma": "no-cache",
+        },
+    )
 
 
 @app.get("/internal/diagnostics/api/runs", dependencies=[Depends(require_api_key)])
