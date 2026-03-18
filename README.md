@@ -75,7 +75,7 @@ Full route docs are available at `/docs` when running locally.
 
 Core assessment:
 - `GET /health`
-- `POST /risk/assess`
+- `POST /risk/assess` (`?include_diagnostics=true` for opt-in trust metadata)
 - `POST /risk/reassess/{assessment_id}`
 - `POST /risk/simulate`
 - `POST /risk/debug`
@@ -84,7 +84,7 @@ Core assessment:
 - `POST /regions/prepare`, `GET /regions/prepare/{job_id}` (queue/poll offline region-prep jobs)
 
 Reports:
-- `GET /report/{assessment_id}`
+- `GET /report/{assessment_id}` (`?include_diagnostics=true` for opt-in trust metadata)
 - `GET /report/{assessment_id}/export`
 - `GET /report/{assessment_id}/view`
 - `GET /report/{assessment_id}/homeowner`
@@ -101,6 +101,13 @@ Review and operations:
 - annotations, review status, assignment, workflow, comparison, scenario history
 - organizations and underwriting rulesets
 - audit and summary endpoints (`/audit/events`, `/admin/summary`)
+
+Diagnostics opt-in note:
+- `include_diagnostics=true` returns an envelope with:
+  - `assessment` (the existing `AssessmentResult`)
+  - `diagnostics` (no-ground-truth trust metadata)
+- default behavior remains unchanged when the flag is absent.
+- trust diagnostics are coherence/evidence metadata only, not claims-validation proof.
 
 ## Model Governance / Versioning
 
@@ -262,6 +269,7 @@ Common runtime settings:
 - `WF_REGION_PREP_SOURCE_CONFIG` (optional source config path for queued prep jobs)
 - `WF_REGION_PREP_VALIDATE`, `WF_REGION_PREP_REQUIRE_CORE_LAYERS`, `WF_REGION_PREP_SKIP_OPTIONAL_LAYERS` (queued prep behavior)
 - `WILDFIRE_SCORING_PARAMETERS_PATH` (optional scoring/tuning parameter file, default `config/scoring_parameters.yaml`)
+- `WF_TRUST_REFERENCE_ARTIFACT_DIR` (optional directory with precomputed no-ground-truth diagnostics artifacts for API percentile/alignment context)
 - Optional open-data runtime sources:
   - `WF_LAYER_WHP_TIF`
   - `WF_LAYER_MTBS_SEVERITY_TIF`
@@ -679,6 +687,7 @@ This writes reproducible artifacts under `benchmark/no_ground_truth_evaluation/<
 Use this as a directional model-quality check only. It does not claim predictive accuracy.
 
 See `docs/no_ground_truth_evaluation.md` for commands, caveats, and interpretation guidance.
+See `docs/api_diagnostics.md` for API opt-in diagnostics fields and caveats.
 
 ## Event Backtesting
 

@@ -709,6 +709,85 @@ class HomeownerConfidenceSummary(BaseModel):
     accuracy_improvements: List[str] = Field(default_factory=list)
 
 
+class TrustDiagnosticsConfidence(BaseModel):
+    tier: ConfidenceTier = "preliminary"
+    score: float = 0.0
+    evidence_completeness: float = 0.0
+    fallback_heavy: bool = False
+    missing_critical_fields: List[str] = Field(default_factory=list)
+    notes: List[str] = Field(default_factory=list)
+
+
+class TrustDiagnosticsStability(BaseModel):
+    rating: Literal["stable", "moderate", "unstable"] = "moderate"
+    local_sensitivity_score: float = 0.0
+    geocode_jitter_swing: float = 0.0
+    fallback_assumption_swing: float = 0.0
+    tier_flip_risk: Literal["low", "medium", "high"] = "medium"
+    notes: List[str] = Field(default_factory=list)
+
+
+class TrustDiagnosticsInterventionImpact(BaseModel):
+    name: str
+    estimated_risk_delta: float = 0.0
+    estimated_readiness_delta: float = 0.0
+    directionally_expected: bool = True
+    notes: List[str] = Field(default_factory=list)
+
+
+class TrustDiagnosticsMitigationSensitivity(BaseModel):
+    top_interventions: List[TrustDiagnosticsInterventionImpact] = Field(default_factory=list)
+    backwards_or_zero_impact_flags: List[str] = Field(default_factory=list)
+
+
+class TrustDiagnosticsMonotonicity(BaseModel):
+    checks_run: List[str] = Field(default_factory=list)
+    violations: List[str] = Field(default_factory=list)
+    status: Literal["pass", "warn", "fail"] = "warn"
+
+
+class TrustDiagnosticsBenchmarkAlignment(BaseModel):
+    available: bool = False
+    signals_used: List[str] = Field(default_factory=list)
+    local_alignment: Literal["high", "moderate", "low", "unknown"] = "unknown"
+    notes: List[str] = Field(default_factory=list)
+
+
+class TrustDiagnosticsDistributionSegment(BaseModel):
+    region: Optional[str] = None
+    settlement_pattern: Optional[str] = None
+    evidence_tier: Optional[str] = None
+
+
+class TrustDiagnosticsDistributionContext(BaseModel):
+    relative_risk_percentile: Optional[float] = None
+    segment: TrustDiagnosticsDistributionSegment = Field(default_factory=TrustDiagnosticsDistributionSegment)
+    notes: List[str] = Field(default_factory=list)
+
+
+class TrustDiagnostics(BaseModel):
+    version: str = "ngt_eval_v1"
+    generated_at: datetime
+    evaluation_basis: Literal["no_ground_truth"] = "no_ground_truth"
+    caveat: str = (
+        "These diagnostics measure model coherence, stability, evidence quality, and external alignment. "
+        "They do not establish real-world predictive accuracy or insurer approval."
+    )
+    confidence: TrustDiagnosticsConfidence = Field(default_factory=TrustDiagnosticsConfidence)
+    stability: TrustDiagnosticsStability = Field(default_factory=TrustDiagnosticsStability)
+    mitigation_sensitivity: TrustDiagnosticsMitigationSensitivity = Field(
+        default_factory=TrustDiagnosticsMitigationSensitivity
+    )
+    monotonicity: TrustDiagnosticsMonotonicity = Field(default_factory=TrustDiagnosticsMonotonicity)
+    benchmark_alignment: TrustDiagnosticsBenchmarkAlignment = Field(
+        default_factory=TrustDiagnosticsBenchmarkAlignment
+    )
+    distribution_context: TrustDiagnosticsDistributionContext = Field(
+        default_factory=TrustDiagnosticsDistributionContext
+    )
+    explanations: List[str] = Field(default_factory=list)
+
+
 class AssessmentResult(BaseModel):
     assessment_id: str
     address: str
@@ -993,6 +1072,11 @@ class ReportExport(BaseModel):
     coverage_summary: LayerCoverageSummary = Field(default_factory=LayerCoverageSummary)
     mitigation_recommendations: List[MitigationAction]
     simulation: Optional[Dict[str, object]] = None
+
+
+class AssessmentWithDiagnosticsResponse(BaseModel):
+    assessment: AssessmentResult
+    diagnostics: TrustDiagnostics
 
 
 class HomeownerReportAction(BaseModel):

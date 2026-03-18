@@ -113,6 +113,7 @@ from backend.models import (
     SimulationScenarioItem,
     SourceType,
     ProviderStatus,
+    AssessmentWithDiagnosticsResponse,
     ScoreFamilyInputQuality,
     ScoreEligibility,
     ScoreEvidenceFactor,
@@ -131,6 +132,7 @@ from backend.models import (
 from backend.normalization import normalize_property_attributes, normalized_attribute_changes
 from backend.risk_engine import RiskComputation, RiskEngine
 from backend.scoring_config import load_scoring_config
+from backend.trust_metadata import build_trust_diagnostics, load_trust_reference_artifacts
 from backend.version import (
     API_VERSION,
     BENCHMARK_PACK_VERSION,
@@ -5800,6 +5802,208 @@ def _compute_assessment(
     return result
 
 
+def _risk_band_for_score(score: float | None) -> str:
+    if score is None:
+        return "unknown"
+    if score < 33.0:
+        return "low"
+    if score < 66.0:
+        return "moderate"
+    return "high"
+
+
+def _clone_payload_with_attribute_overrides(
+    payload: AddressRequest,
+    *,
+    overrides: dict[str, object],
+    remove_confirmed_fields: list[str] | None = None,
+) -> AddressRequest:
+    cloned = payload.model_copy(deep=True)
+    attrs = cloned.attributes.model_dump()
+    for key, value in overrides.items():
+        attrs[key] = value
+    cloned.attributes = PropertyAttributes.model_validate(attrs)
+    confirmed = [str(token) for token in (cloned.confirmed_fields or [])]
+    if remove_confirmed_fields:
+        removal = {str(token) for token in remove_confirmed_fields}
+        confirmed = [token for token in confirmed if token not in removal]
+    for key, value in overrides.items():
+        if value is not None and str(key) not in confirmed:
+            confirmed.append(str(key))
+    cloned.confirmed_fields = sorted(set(confirmed))
+    return cloned
+
+
+def _jitter_geocode_resolution(
+    base: GeocodeResolution,
+    *,
+    lat_offset: float,
+    lon_offset: float,
+) -> GeocodeResolution:
+    lat = float(base.latitude) + float(lat_offset)
+    lon = float(base.longitude) + float(lon_offset)
+    meta = dict(base.geocode_meta or {})
+    meta["resolved_latitude"] = lat
+    meta["resolved_longitude"] = lon
+    meta["final_coordinates_used"] = {"latitude": lat, "longitude": lon}
+    meta["geocoded_point"] = {"latitude": lat, "longitude": lon}
+    return GeocodeResolution(
+        raw_input=base.raw_input,
+        normalized_address=base.normalized_address,
+        geocode_status=base.geocode_status,
+        candidate_count=base.candidate_count,
+        selected_candidate=base.selected_candidate,
+        confidence_score=base.confidence_score,
+        latitude=lat,
+        longitude=lon,
+        geocode_source=base.geocode_source,
+        geocode_meta=meta,
+        geocode_outcome=base.geocode_outcome,
+        trusted_match_status=base.trusted_match_status,
+        rejection_reason=base.rejection_reason,
+    )
+
+
+def _build_assessment_trust_metadata(
+    *,
+    result: AssessmentResult,
+    payload: AddressRequest,
+    organization_id: str,
+    ruleset: UnderwritingRuleset,
+    geocode_resolution: GeocodeResolution,
+    coverage_resolution: RegionCoverageResolution,
+) -> Any:
+    base_risk = float(result.wildfire_risk_score) if result.wildfire_risk_score is not None else None
+    base_readiness = (
+        float(result.insurance_readiness_score) if result.insurance_readiness_score is not None else None
+    )
+    base_conf_tier = str(result.confidence_tier or "unknown")
+    base_band = _risk_band_for_score(result.wildfire_risk_score)
+    stability_samples: list[dict[str, object]] = []
+    mitigation_samples: list[dict[str, object]] = []
+
+    def _risk_delta(variant: AssessmentResult) -> float | None:
+        if base_risk is None or variant.wildfire_risk_score is None:
+            return None
+        return float(variant.wildfire_risk_score) - base_risk
+
+    def _readiness_delta(variant: AssessmentResult) -> float | None:
+        if base_readiness is None or variant.insurance_readiness_score is None:
+            return None
+        return float(variant.insurance_readiness_score) - base_readiness
+
+    def _run_variant(
+        variant_payload: AddressRequest,
+        *,
+        geocode_override: GeocodeResolution | None = None,
+    ) -> AssessmentResult | None:
+        try:
+            return _compute_assessment(
+                variant_payload,
+                organization_id=organization_id,
+                ruleset=ruleset,
+                geocode_resolution=geocode_override or geocode_resolution,
+                coverage_resolution=coverage_resolution,
+            )
+        except Exception:
+            return None
+
+    # Local stability checks: tiny geocode jitter + fallback-assumption perturbation.
+    jitter_offsets = [("jitter_north", 0.00010, 0.0), ("jitter_west", 0.0, -0.00010)]
+    for name, dlat, dlon in jitter_offsets:
+        jitter_geo = _jitter_geocode_resolution(geocode_resolution, lat_offset=dlat, lon_offset=dlon)
+        jitter_payload = payload.model_copy(deep=True)
+        jitter_payload.selection_mode = "point"
+        jitter_payload.property_anchor_point = Coordinates(latitude=jitter_geo.latitude, longitude=jitter_geo.longitude)
+        jitter_payload.user_selected_point = Coordinates(latitude=jitter_geo.latitude, longitude=jitter_geo.longitude)
+        variant = _run_variant(jitter_payload, geocode_override=jitter_geo)
+        if variant is None:
+            continue
+        stability_samples.append(
+            {
+                "name": name,
+                "sample_type": "geocode_jitter",
+                "risk_delta": _risk_delta(variant),
+                "tier_changed": str(variant.confidence_tier or "unknown") != base_conf_tier,
+                "band_changed": _risk_band_for_score(variant.wildfire_risk_score) != base_band,
+            }
+        )
+
+    fallback_payload = _clone_payload_with_attribute_overrides(
+        payload,
+        overrides={"roof_type": None, "vent_type": None, "defensible_space_ft": None},
+        remove_confirmed_fields=["roof_type", "vent_type", "defensible_space_ft"],
+    )
+    fallback_variant = _run_variant(fallback_payload)
+    if fallback_variant is not None:
+        stability_samples.append(
+            {
+                "name": "fallback_assumption_toggle",
+                "sample_type": "fallback_assumption",
+                "risk_delta": _risk_delta(fallback_variant),
+                "tier_changed": str(fallback_variant.confidence_tier or "unknown") != base_conf_tier,
+                "band_changed": _risk_band_for_score(fallback_variant.wildfire_risk_score) != base_band,
+            }
+        )
+
+    # Mitigation sensitivity checks (bounded counterfactual variants).
+    current_defensible = payload.attributes.defensible_space_ft
+    target_defensible = max(30.0, float(current_defensible or 0.0))
+    mitigation_variants: list[tuple[str, AddressRequest, str, list[str]]] = [
+        (
+            "clear_0_5ft_zone",
+            _clone_payload_with_attribute_overrides(
+                payload,
+                overrides={"defensible_space_ft": target_defensible},
+            ),
+            "down",
+            ["Approximation from defensible-space input rather than imagery-derived ring editing."],
+        ),
+        (
+            "upgrade_roof_class_a",
+            _clone_payload_with_attribute_overrides(payload, overrides={"roof_type": "class a"}),
+            "down",
+            [],
+        ),
+        (
+            "add_ember_resistant_vents",
+            _clone_payload_with_attribute_overrides(payload, overrides={"vent_type": "ember-resistant"}),
+            "down",
+            [],
+        ),
+        (
+            "degrade_hardening_control",
+            _clone_payload_with_attribute_overrides(
+                payload,
+                overrides={"roof_type": "wood", "vent_type": "standard", "defensible_space_ft": 5.0},
+            ),
+            "up",
+            [],
+        ),
+    ]
+    for name, variant_payload, expected_direction, notes in mitigation_variants:
+        variant = _run_variant(variant_payload)
+        if variant is None:
+            continue
+        mitigation_samples.append(
+            {
+                "name": name,
+                "expected_direction": expected_direction,
+                "risk_delta": _risk_delta(variant),
+                "readiness_delta": _readiness_delta(variant),
+                "notes": notes,
+            }
+        )
+
+    reference_artifacts = load_trust_reference_artifacts()
+    return build_trust_diagnostics(
+        result=result,
+        stability_samples=stability_samples,
+        mitigation_samples=mitigation_samples,
+        reference_artifacts=reference_artifacts,
+    )
+
+
 def _payload_from_assessment(existing: AssessmentResult) -> AddressRequest:
     property_ctx = existing.property_level_context if isinstance(existing.property_level_context, dict) else {}
     selection_mode = str(property_ctx.get("selection_mode") or "polygon").strip().lower()
@@ -5837,6 +6041,72 @@ def _payload_from_assessment(existing: AssessmentResult) -> AddressRequest:
         tags=list(existing.tags),
         organization_id=existing.organization_id,
         ruleset_id=existing.ruleset_id,
+    )
+
+
+def _geocode_resolution_from_assessment(existing: AssessmentResult) -> GeocodeResolution:
+    geocode = existing.geocoding if isinstance(existing.geocoding, GeocodingDetails) else GeocodingDetails()
+    geocode_meta = geocode.model_dump(mode="json")
+    lat = float(existing.latitude)
+    lon = float(existing.longitude)
+    if not isinstance(geocode_meta.get("resolved_latitude"), (int, float)):
+        geocode_meta["resolved_latitude"] = lat
+    if not isinstance(geocode_meta.get("resolved_longitude"), (int, float)):
+        geocode_meta["resolved_longitude"] = lon
+    if not isinstance(geocode_meta.get("geocoded_point"), dict):
+        geocode_meta["geocoded_point"] = {"latitude": lat, "longitude": lon}
+    if not isinstance(geocode_meta.get("final_coordinates_used"), dict):
+        geocode_meta["final_coordinates_used"] = {"latitude": lat, "longitude": lon}
+    return GeocodeResolution(
+        raw_input=existing.address,
+        normalized_address=str(geocode.normalized_address or normalize_address(existing.address)),
+        geocode_status=str(geocode.geocode_status or "accepted"),
+        candidate_count=int(geocode.candidate_count or 0),
+        selected_candidate=(
+            geocode.final_candidate_selected
+            if isinstance(geocode.final_candidate_selected, dict)
+            else None
+        ),
+        confidence_score=(
+            float(geocode.confidence_score)
+            if geocode.confidence_score is not None
+            else None
+        ),
+        latitude=lat,
+        longitude=lon,
+        geocode_source=str(geocode.geocode_source or geocode.provider or "stored_assessment"),
+        geocode_meta=geocode_meta,
+        geocode_outcome=str(geocode.geocode_outcome or "geocode_succeeded_trusted"),
+        trusted_match_status=str(geocode.trusted_match_status or "trusted"),
+        rejection_reason=geocode.rejection_reason,
+    )
+
+
+def _coverage_resolution_from_assessment(existing: AssessmentResult) -> RegionCoverageResolution:
+    region_resolution = (
+        existing.region_resolution
+        if isinstance(existing.region_resolution, RegionResolution)
+        else RegionResolution()
+    )
+    coverage_payload = {
+        "covered": bool(existing.coverage_available or region_resolution.coverage_available),
+        "coverage_available": bool(existing.coverage_available or region_resolution.coverage_available),
+        "resolved_region_id": existing.resolved_region_id or region_resolution.resolved_region_id,
+        "selected_region_id": existing.resolved_region_id or region_resolution.resolved_region_id,
+        "selected_region_display_name": region_resolution.resolved_region_display_name,
+        "reason": region_resolution.reason,
+        "diagnostics": list(region_resolution.diagnostics or []),
+    }
+    return RegionCoverageResolution(
+        coverage_available=bool(coverage_payload.get("coverage_available")),
+        resolved_region_id=(
+            str(coverage_payload.get("resolved_region_id"))
+            if coverage_payload.get("resolved_region_id")
+            else None
+        ),
+        reason=str(coverage_payload.get("reason") or "unknown"),
+        diagnostics=list(coverage_payload.get("diagnostics") or []),
+        coverage=coverage_payload,
     )
 
 
@@ -9889,11 +10159,22 @@ def check_region_coverage(
     return RegionCoverageStatus.model_validate(coverage)
 
 
-@app.post("/risk/assess", response_model=AssessmentResult, dependencies=[Depends(require_api_key)])
+@app.post(
+    "/risk/assess",
+    response_model=AssessmentResult | AssessmentWithDiagnosticsResponse,
+    dependencies=[Depends(require_api_key)],
+)
 def assess_risk(
     payload: AddressRequest,
+    include_diagnostics: bool = Query(
+        default=False,
+        description=(
+            "Include no-ground-truth trust diagnostics metadata. "
+            "These diagnostics are coherence/evidence checks and are not ground-truth accuracy claims."
+        ),
+    ),
     ctx: ActorContext = Depends(get_actor_context),
-) -> AssessmentResult:
+) -> AssessmentResult | AssessmentWithDiagnosticsResponse:
     _require_role(ctx, WRITE_ROLES, "Viewer role cannot create assessments")
     if _is_dev_mode():
         LOGGER.info(
@@ -10089,6 +10370,16 @@ def assess_risk(
         organization_id=organization_id,
         metadata={"ruleset_id": ruleset.ruleset_id},
     )
+    if include_diagnostics:
+        diagnostics = _build_assessment_trust_metadata(
+            result=result,
+            payload=payload,
+            organization_id=organization_id,
+            ruleset=ruleset,
+            geocode_resolution=geocode_resolution,
+            coverage_resolution=coverage_resolution,
+        )
+        return AssessmentWithDiagnosticsResponse(assessment=result, diagnostics=diagnostics)
     return result
 
 
@@ -10746,18 +11037,36 @@ def export_portfolio_csv(
     return PlainTextResponse(content=csv_text, media_type="text/csv")
 
 
-@app.get("/report/{assessment_id}", response_model=AssessmentResult, dependencies=[Depends(require_api_key)])
+@app.get(
+    "/report/{assessment_id}",
+    response_model=AssessmentResult | AssessmentWithDiagnosticsResponse,
+    dependencies=[Depends(require_api_key)],
+)
 def get_report(
     assessment_id: str,
     audience: Audience | None = Query(default=None),
     audience_mode: Audience | None = Query(default=None),
+    include_diagnostics: bool = Query(default=False),
     ctx: ActorContext = Depends(get_actor_context),
-) -> AssessmentResult:
+) -> AssessmentResult | AssessmentWithDiagnosticsResponse:
     result = store.get(assessment_id)
     if not result:
         raise HTTPException(status_code=404, detail="Assessment not found")
     _enforce_org_scope(ctx, result.organization_id)
-    return _apply_audience_view(result, actor=ctx, audience=audience, audience_mode=audience_mode)
+    viewed = _apply_audience_view(result, actor=ctx, audience=audience, audience_mode=audience_mode)
+    if not include_diagnostics:
+        return viewed
+    payload = _payload_from_assessment(viewed)
+    ruleset = _get_ruleset_or_default(viewed.ruleset_id)
+    diagnostics = _build_assessment_trust_metadata(
+        result=viewed,
+        payload=payload,
+        organization_id=viewed.organization_id,
+        ruleset=ruleset,
+        geocode_resolution=_geocode_resolution_from_assessment(viewed),
+        coverage_resolution=_coverage_resolution_from_assessment(viewed),
+    )
+    return AssessmentWithDiagnosticsResponse(assessment=viewed, diagnostics=diagnostics)
 
 
 @app.get("/report/{assessment_id}/export", response_model=ReportExport, dependencies=[Depends(require_api_key)])
