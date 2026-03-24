@@ -104,7 +104,7 @@ The builder flags potential leakage when outcome-like tokens appear in:
 
 It also flags potential post-event timestamp issues when score timestamps appear later than event year.
 
-Flags are emitted per-row (`leakage_flags`) and aggregated in `join_quality_report.json`.
+Flags are emitted per-row (`leakage_flags`) and aggregated in join-quality artifacts.
 
 ## Output Location
 
@@ -114,13 +114,15 @@ Artifacts:
 
 - `evaluation_dataset.jsonl`
 - `evaluation_dataset.csv`
+- `join_quality_metrics.json`
+- `join_quality_report.md`
 - `manifest.json`
-- `join_quality_report.json`
+- `join_quality_report.json` (backward-compatible alias of `join_quality_metrics.json`)
 - `summary.md`
 
 ## Quality Diagnostics
 
-`join_quality_report.json` includes:
+`join_quality_metrics.json` (and alias `join_quality_report.json`) includes:
 
 - total outcomes loaded
 - outcomes loaded by source file path
@@ -135,8 +137,12 @@ Artifacts:
 - join confidence distance stats by tier
 - join confidence examples by tier
 - average/median join distance
+- min/max join distance
 - distance histogram
 - distance outlier threshold + examples
+- join-quality warnings
+  - no high-confidence matches
+  - high average join distance
 - coordinate normalization summary
 - duplicate-prevention counts
 - low-confidence join count
@@ -148,6 +154,13 @@ Artifacts:
 - excluded rows and reasons
 - leakage warnings
 - score-backfill diagnostics (attempted/backfilled/remaining-missing)
+
+`join_quality_report.md` is a concise operator-facing summary with:
+- total outcomes, matched rows, and match rate
+- counts by confidence tier
+- distance min/mean/max/median plus histogram
+- sample high-confidence and low-confidence joins
+- clear warning section for weak matching patterns
 
 ## Graceful Degradation
 

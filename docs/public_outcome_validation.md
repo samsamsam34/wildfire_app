@@ -140,7 +140,15 @@ Sliced metrics include:
 Subset metrics are also reported for:
 - full usable dataset
 - high-confidence subset
+- medium-confidence subset
 - high-evidence subset
+
+Validation output also includes an explicit confidence-tier comparison block:
+- `confidence_tier_performance.tiers.all_data`
+- `confidence_tier_performance.tiers.high_confidence`
+- `confidence_tier_performance.tiers.medium_confidence`
+- `confidence_tier_performance.deltas_vs_all_data` (AUC/Brier deltas)
+- `confidence_tier_performance.warnings` (for undersized high/medium slices)
 
 Error-analysis review sets include:
 - false lows
