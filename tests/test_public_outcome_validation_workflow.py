@@ -135,6 +135,9 @@ def test_evaluate_public_outcome_dataset_reports_required_metrics(tmp_path: Path
     assert "minimum_viable_metrics" in report
     assert report["minimum_viable_metrics"]["available"] is True
     assert "data_sufficiency_flags" in report
+    assert "data_sufficiency_indicator" in report
+    assert report["data_sufficiency_indicator"]["total_dataset"]["tier"] == "insufficient"
+    assert report["data_sufficiency_indicator"]["high_confidence_subset"]["tier"] == "insufficient"
     assert "narrative_summary" in report
     assert "proxy_validation" in report
     assert "synthetic_validation" in report
@@ -311,6 +314,8 @@ def test_evaluate_public_outcome_dataset_allows_small_usable_set_when_configured
     assert report["minimum_viable_metrics"]["available"] is True
     assert report["minimum_viable_metrics"]["simple_accuracy_at_threshold"]["accuracy"] in {0.0, 1.0}
     assert report["data_sufficiency_flags"]["flags"]["small_sample_size"] is True
+    assert report["data_sufficiency_indicator"]["total_dataset"]["tier"] == "insufficient"
+    assert report["data_sufficiency_indicator"]["high_confidence_subset"]["tier"] == "insufficient"
     assert report["metric_stability"]["auc_stable"] is False
     assert "Insufficient data for stable AUC/PR-AUC" in " ".join(report["narrative_summary"]["bullets"])
     assert "Dataset too small for calibration trust" in " ".join(report["narrative_summary"]["bullets"])
@@ -381,6 +386,8 @@ def test_orchestration_writes_bundle_for_insufficient_dataset(tmp_path: Path) ->
     assert metrics["row_count_labeled"] == 0
     assert metrics["minimum_viable_metrics"]["available"] is False
     assert metrics["data_sufficiency_flags"]["flags"]["small_sample_size"] is True
+    assert metrics["data_sufficiency_indicator"]["total_dataset"]["tier"] == "insufficient"
+    assert metrics["data_sufficiency_indicator"]["high_confidence_subset"]["tier"] == "insufficient"
     assert "no usable labeled rows" in str((metrics.get("narrative_summary") or {}).get("headline", "")).lower()
     assert metrics["proxy_validation"]["available"] is False
     assert metrics["synthetic_validation"]["available"] is False

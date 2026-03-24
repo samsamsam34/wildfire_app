@@ -23,6 +23,7 @@ Model Health view highlights:
 - benchmark alignment summaries (signals, correlation/agreement, disagreement counts) with explicit caveats
 - run comparison panel for latest-vs-previous or explicit run-vs-run drift checks
 - public-outcome governance panel with latest validation/calibration summaries and before/after deltas
+- validation data-sufficiency tiers (total + high-confidence subset) so reliability is visible at a glance
 
 ## Route
 

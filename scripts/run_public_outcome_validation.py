@@ -253,6 +253,11 @@ def _build_summary_markdown(
     narrative = report.get("narrative_summary") if isinstance(report.get("narrative_summary"), dict) else {}
     minimum_viable = report.get("minimum_viable_metrics") if isinstance(report.get("minimum_viable_metrics"), dict) else {}
     data_suff = report.get("data_sufficiency_flags") if isinstance(report.get("data_sufficiency_flags"), dict) else {}
+    data_suff_indicator = (
+        report.get("data_sufficiency_indicator")
+        if isinstance(report.get("data_sufficiency_indicator"), dict)
+        else {}
+    )
     slice_metrics = report.get("slice_metrics") if isinstance(report.get("slice_metrics"), dict) else {}
     proxy_validation = report.get("proxy_validation") if isinstance(report.get("proxy_validation"), dict) else {}
     synthetic_validation = report.get("synthetic_validation") if isinstance(report.get("synthetic_validation"), dict) else {}
@@ -330,6 +335,31 @@ def _build_summary_markdown(
         lines.append(f"- Class imbalance: `{flags.get('class_imbalance')}`")
         lines.append(f"- Low join-confidence prevalent: `{flags.get('low_join_confidence_prevalent')}`")
         lines.append(f"- Fallback-heavy prevalent: `{flags.get('fallback_heavy_prevalent')}`")
+        lines.append("")
+    if data_suff_indicator:
+        total = (
+            data_suff_indicator.get("total_dataset")
+            if isinstance(data_suff_indicator.get("total_dataset"), dict)
+            else {}
+        )
+        high_conf = (
+            data_suff_indicator.get("high_confidence_subset")
+            if isinstance(data_suff_indicator.get("high_confidence_subset"), dict)
+            else {}
+        )
+        lines.append("### Data Sufficiency Indicator")
+        lines.append(
+            f"- Total dataset sufficiency: `{total.get('tier')}` "
+            f"(n={total.get('sample_size')})"
+        )
+        lines.append(
+            f"- High-confidence subset sufficiency: `{high_conf.get('tier')}` "
+            f"(n={high_conf.get('sample_size')})"
+        )
+        if total.get("explanation"):
+            lines.append(f"- Total explanation: {total.get('explanation')}")
+        if high_conf.get("explanation"):
+            lines.append(f"- High-confidence explanation: {high_conf.get('explanation')}")
         lines.append("")
     if metric_stability:
         lines.append("### Metric Stability")
@@ -483,6 +513,9 @@ def _insufficient_data_report(
     error: str,
     dataset_flow: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    insuff_threshold = 20
+    limited_threshold = 100
+    strong_threshold = 500
     total_rows = _count_rows_in_dataset(dataset_path)
     flow = dataset_flow if isinstance(dataset_flow, dict) else {}
     missing_required = flow.get("missing_required_fields") if isinstance(flow, dict) else {}
@@ -550,6 +583,30 @@ def _insufficient_data_report(
             "fallback_heavy_fraction": None,
             "high_confidence_count": 0,
             "high_evidence_count": 0,
+        },
+        "data_sufficiency_indicator": {
+            "thresholds": {
+                "insufficient_max_exclusive": insuff_threshold,
+                "limited_max_exclusive": limited_threshold,
+                "moderate_max_inclusive": strong_threshold,
+                "strong_min_exclusive": strong_threshold,
+            },
+            "total_dataset": {
+                "sample_size": 0,
+                "tier": "insufficient",
+                "explanation": (
+                    f"Sample size 0 is below {insuff_threshold}; "
+                    "discrimination/calibration metrics are highly unstable."
+                ),
+            },
+            "high_confidence_subset": {
+                "sample_size": 0,
+                "tier": "insufficient",
+                "explanation": (
+                    f"Sample size 0 is below {insuff_threshold}; "
+                    "high-confidence subset metrics are unavailable."
+                ),
+            },
         },
         "narrative_summary": {
             "headline": "Directional validation is unavailable because no usable labeled rows were found.",

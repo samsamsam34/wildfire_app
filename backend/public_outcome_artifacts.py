@@ -32,6 +32,33 @@ def _safe_float(value: Any) -> float | None:
         return None
 
 
+def _sufficiency_from_count(sample_size: int) -> dict[str, Any]:
+    n = max(0, int(sample_size))
+    if n < 20:
+        return {
+            "sample_size": n,
+            "tier": "insufficient",
+            "explanation": f"Sample size {n} is below 20; reliability is low.",
+        }
+    if n < 100:
+        return {
+            "sample_size": n,
+            "tier": "limited",
+            "explanation": f"Sample size {n} is between 20 and 99; interpret with caution.",
+        }
+    if n <= 500:
+        return {
+            "sample_size": n,
+            "tier": "moderate",
+            "explanation": f"Sample size {n} is between 100 and 500; reliability is moderate.",
+        }
+    return {
+        "sample_size": n,
+        "tier": "strong",
+        "explanation": f"Sample size {n} exceeds 500; reliability is comparatively strong.",
+    }
+
+
 def _load_run_payload(
     *,
     root: Path,
@@ -55,11 +82,47 @@ def _validation_summary(manifest: dict[str, Any], report: dict[str, Any]) -> dic
     cal = report.get("calibration_metrics") if isinstance(report.get("calibration_metrics"), dict) else {}
     wildfire_cal = cal.get("wildfire_risk_score") if isinstance(cal.get("wildfire_risk_score"), dict) else {}
     review = report.get("false_review_sets") if isinstance(report.get("false_review_sets"), dict) else {}
+    sufficiency = (
+        report.get("data_sufficiency_indicator")
+        if isinstance(report.get("data_sufficiency_indicator"), dict)
+        else {}
+    )
+    subset = report.get("subset_metrics") if isinstance(report.get("subset_metrics"), dict) else {}
+    slice_metrics = report.get("slice_metrics") if isinstance(report.get("slice_metrics"), dict) else {}
+    by_confidence = (
+        slice_metrics.get("by_confidence_tier")
+        if isinstance(slice_metrics.get("by_confidence_tier"), dict)
+        else {}
+    )
+    high_conf_subset = (
+        subset.get("high_confidence_subset")
+        if isinstance(subset.get("high_confidence_subset"), dict)
+        else {}
+    )
+    total_count = int(sample.get("row_count_usable") or 0)
+    high_conf_count = int(high_conf_subset.get("count") or 0)
+    if high_conf_count <= 0:
+        high_conf_bucket = (
+            by_confidence.get("high")
+            if isinstance(by_confidence.get("high"), dict)
+            else {}
+        )
+        high_conf_count = int(high_conf_bucket.get("count") or 0)
+    total_sufficiency = (
+        sufficiency.get("total_dataset")
+        if isinstance(sufficiency.get("total_dataset"), dict)
+        else _sufficiency_from_count(total_count)
+    )
+    high_conf_sufficiency = (
+        sufficiency.get("high_confidence_subset")
+        if isinstance(sufficiency.get("high_confidence_subset"), dict)
+        else _sufficiency_from_count(high_conf_count)
+    )
     return {
         "available": True,
         "run_id": manifest.get("run_id"),
         "generated_at": manifest.get("generated_at"),
-        "sample_count": int(sample.get("row_count_usable") or 0),
+        "sample_count": total_count,
         "prevalence": _safe_float(sample.get("positive_rate")),
         "roc_auc": _safe_float(discr.get("wildfire_risk_score_auc")),
         "pr_auc": _safe_float(discr.get("wildfire_risk_score_pr_auc")),
@@ -67,6 +130,10 @@ def _validation_summary(manifest: dict[str, Any], report: dict[str, Any]) -> dic
         "calibration_error": _safe_float(wildfire_cal.get("expected_calibration_error")),
         "false_low_count": int(review.get("false_low_count") or 0),
         "false_high_count": int(review.get("false_high_count") or 0),
+        "data_sufficiency": {
+            "total_dataset": total_sufficiency,
+            "high_confidence_subset": high_conf_sufficiency,
+        },
         "confidence_tier_slice_count": len(
             ((report.get("slice_metrics") or {}).get("by_confidence_tier") or {})
             if isinstance(report.get("slice_metrics"), dict)

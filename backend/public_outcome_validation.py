@@ -12,6 +12,9 @@ from typing import Any
 DEFAULT_THRESHOLDS = (30.0, 40.0, 50.0, 60.0, 70.0, 80.0)
 SMALL_SAMPLE_WARNING_N = 25
 STABLE_AUC_MIN_CLASS_COUNT = 10
+DATA_SUFFICIENCY_LIMITED_MIN = 20
+DATA_SUFFICIENCY_MODERATE_MIN = 100
+DATA_SUFFICIENCY_STRONG_MIN = 500
 LEAKAGE_TOKENS = (
     "outcome",
     "damage",
@@ -81,6 +84,45 @@ def _stddev(values: list[float]) -> float | None:
         return 0.0 if values else None
     mu = _mean(values) or 0.0
     return math.sqrt(sum((v - mu) ** 2 for v in values) / float(len(values)))
+
+
+def _data_sufficiency_indicator(sample_size: int) -> dict[str, Any]:
+    n = max(0, int(sample_size))
+    if n < DATA_SUFFICIENCY_LIMITED_MIN:
+        return {
+            "sample_size": n,
+            "tier": "insufficient",
+            "explanation": (
+                f"Sample size {n} is below {DATA_SUFFICIENCY_LIMITED_MIN}; "
+                "discrimination/calibration metrics are highly unstable."
+            ),
+        }
+    if n < DATA_SUFFICIENCY_MODERATE_MIN:
+        return {
+            "sample_size": n,
+            "tier": "limited",
+            "explanation": (
+                f"Sample size {n} is between {DATA_SUFFICIENCY_LIMITED_MIN} and {DATA_SUFFICIENCY_MODERATE_MIN - 1}; "
+                "directional signals may exist but reliability is limited."
+            ),
+        }
+    if n <= DATA_SUFFICIENCY_STRONG_MIN:
+        return {
+            "sample_size": n,
+            "tier": "moderate",
+            "explanation": (
+                f"Sample size {n} is between {DATA_SUFFICIENCY_MODERATE_MIN} and {DATA_SUFFICIENCY_STRONG_MIN}; "
+                "metrics are materially more reliable but still sensitive to slice effects."
+            ),
+        }
+    return {
+        "sample_size": n,
+        "tier": "strong",
+        "explanation": (
+            f"Sample size {n} exceeds {DATA_SUFFICIENCY_STRONG_MIN}; "
+            "metrics are comparatively robust for trend tracking."
+        ),
+    }
 
 
 def _rank(values: list[float]) -> list[float]:
@@ -1724,6 +1766,16 @@ def evaluate_public_outcome_dataset_rows(
         high_confidence_count=len(high_confidence_rows),
         high_evidence_count=len(high_evidence_rows),
     )
+    data_sufficiency_indicator = {
+        "thresholds": {
+            "insufficient_max_exclusive": DATA_SUFFICIENCY_LIMITED_MIN,
+            "limited_max_exclusive": DATA_SUFFICIENCY_MODERATE_MIN,
+            "moderate_max_inclusive": DATA_SUFFICIENCY_STRONG_MIN,
+            "strong_min_exclusive": DATA_SUFFICIENCY_STRONG_MIN,
+        },
+        "total_dataset": _data_sufficiency_indicator(len(usable_rows)),
+        "high_confidence_subset": _data_sufficiency_indicator(len(high_confidence_rows)),
+    }
 
     directional_predictive_value = bool(raw_auc is not None and raw_auc >= 0.6)
     calibration_recommendation = (
@@ -1864,6 +1916,7 @@ def evaluate_public_outcome_dataset_rows(
         },
         "minimum_viable_metrics": minimum_viable_metrics,
         "data_sufficiency_flags": data_sufficiency_flags,
+        "data_sufficiency_indicator": data_sufficiency_indicator,
         "fallback_diagnostics": fallback_stats,
         "factor_contribution_summary_by_confusion_class": _factor_summary_by_confusion_class(usable_rows),
         "false_review_sets": review_sets,

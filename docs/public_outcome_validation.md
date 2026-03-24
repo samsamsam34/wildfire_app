@@ -106,6 +106,18 @@ Minimum viable diagnostics are emitted for usable datasets (including small samp
 - adverse outcome rate by score decile/bucket (when computable)
 - narrative summary and data sufficiency flags
 
+Validation outputs now include a explicit sufficiency indicator object:
+- `data_sufficiency_indicator.total_dataset`
+- `data_sufficiency_indicator.high_confidence_subset`
+
+Sufficiency tiers:
+- `insufficient`: `< 20` samples
+- `limited`: `20–99` samples
+- `moderate`: `100–500` samples
+- `strong`: `> 500` samples
+
+Each tier includes a short explanation string so operators can immediately judge reliability.
+
 Supplemental (non-ground-truth) streams are also emitted:
 - `synthetic_validation`: deterministic stress-scenario monotonic checks
 - `proxy_validation`: weak-label alignment against proxy wildfire signals (e.g., burn/hazard/distance context)

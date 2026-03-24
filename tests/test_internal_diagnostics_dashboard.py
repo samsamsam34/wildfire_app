@@ -337,6 +337,9 @@ def test_internal_dashboard_public_outcome_governance_endpoint(monkeypatch, tmp_
     assert payload["available"] is True
     assert payload["validation"]["latest_summary"]["run_id"] == "20260319T000000Z"
     assert payload["calibration"]["latest_summary"]["run_id"] == "20260319T000000Z"
+    suff = (payload["validation"]["latest_summary"] or {}).get("data_sufficiency") or {}
+    assert ((suff.get("total_dataset") or {}).get("tier")) == "limited"
+    assert ((suff.get("high_confidence_subset") or {}).get("tier")) == "insufficient"
     assert payload["validation"]["comparison_to_previous"]["available"] is True
     assert payload["calibration"]["comparison_to_previous"]["available"] is True
 

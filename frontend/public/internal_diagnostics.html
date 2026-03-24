@@ -868,6 +868,11 @@
             `Validation run ${validation.run_id || "N/A"} | Calibration run ${calibration.run_id || "N/A"}`
           );
 
+          const validationSuff = ((validation.data_sufficiency || {}).total_dataset) || {};
+          const highConfSuff = ((validation.data_sufficiency || {}).high_confidence_subset) || {};
+          const suffTier = String(validationSuff.tier || "unknown").toLowerCase();
+          const suffClass = suffTier === "strong" ? "good" : (suffTier === "moderate" ? "warn" : "bad");
+
           const cards = [
             {
               title: "Validation ROC AUC",
@@ -880,6 +885,12 @@
               value: validation.brier_score != null ? Number(validation.brier_score).toFixed(4) : "N/A",
               className: (validation.brier_score != null && Number(validation.brier_score) <= 0.20) ? "good" : "warn",
               detail: `ECE=${validation.calibration_error != null ? Number(validation.calibration_error).toFixed(4) : "N/A"} | false lows=${validation.false_low_count ?? 0}`,
+            },
+            {
+              title: "Validation Data Sufficiency",
+              value: validationSuff.tier || "unknown",
+              className: suffClass,
+              detail: `total n=${validationSuff.sample_size ?? 0} | high-confidence n=${highConfSuff.sample_size ?? 0}`,
             },
             {
               title: "Calibration Method",
@@ -910,6 +921,12 @@
             });
           } else {
             validationNotes.push(validationCompare.message || "No previous validation run available for comparison.");
+          }
+          if (validationSuff.explanation) {
+            validationNotes.push(`Total sufficiency: ${validationSuff.explanation}`);
+          }
+          if (highConfSuff.explanation) {
+            validationNotes.push(`High-confidence sufficiency: ${highConfSuff.explanation}`);
           }
           renderNotes("publicOutcomeValidationCompare", validationNotes);
 
