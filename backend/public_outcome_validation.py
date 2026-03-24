@@ -273,6 +273,28 @@ def _extract_score(row: dict[str, Any], key: str) -> float | None:
     return _safe_float(row.get(key))
 
 
+def _derive_target_from_label(label: str) -> int | None:
+    norm = _normalize_label(label)
+    if norm in {"major_damage", "destroyed"}:
+        return 1
+    if norm in {"minor_damage", "no_damage", "no_known_damage"}:
+        return 0
+    return None
+
+
+def _derive_surrogate_wildfire_score(row: dict[str, Any]) -> float | None:
+    site = _extract_score(row, "site_hazard_score")
+    vuln = _extract_score(row, "home_ignition_vulnerability_score")
+    if site is None and vuln is None:
+        return None
+    if site is not None and vuln is not None:
+        # Prefer a blended surrogate grounded in the two strongest available components.
+        value = (0.55 * float(site)) + (0.45 * float(vuln))
+    else:
+        value = float(site if site is not None else vuln)
+    return max(0.0, min(100.0, value))
+
+
 def _extract_confidence_tier(row: dict[str, Any]) -> str:
     direct = str(row.get("confidence_tier") or "").strip().lower()
     if direct:
@@ -1291,31 +1313,30 @@ def _false_review_sets(
 
 def _prepare_rows(
     rows: list[dict[str, Any]],
+    *,
+    allow_label_derived_target: bool = True,
+    allow_surrogate_wildfire_score: bool = True,
+    min_join_confidence_score_for_metrics: float | None = None,
+    retain_unusable_rows: bool = True,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     prepared: list[dict[str, Any]] = []
     missing_required = Counter()
     invalid_examples: list[dict[str, Any]] = []
+    exclusion_reason_counts: Counter[str] = Counter()
+    flag_counts: Counter[str] = Counter()
 
     for row in rows:
-        target_int = _safe_int(row.get("structure_loss_or_major_damage"))
-        if target_int not in {0, 1}:
-            missing_required["structure_loss_or_major_damage"] += 1
-            if len(invalid_examples) < 12:
-                invalid_examples.append(
-                    {"record_id": row.get("record_id"), "reason": "missing_or_invalid_structure_loss_or_major_damage"}
-                )
-            continue
-        wildfire_score = _extract_score(row, "wildfire_risk_score")
-        if wildfire_score is None:
-            missing_required["scores.wildfire_risk_score"] += 1
-            if len(invalid_examples) < 12:
-                invalid_examples.append({"record_id": row.get("record_id"), "reason": "missing_scores.wildfire_risk_score"})
-            continue
-
         label = _normalize_label(row.get("outcome_label"))
-        outcome_rank = _safe_int(row.get("outcome_rank"))
-        if outcome_rank is None:
-            outcome_rank = OUTCOME_RANKS.get(label, 0)
+        target_int = _safe_int(row.get("structure_loss_or_major_damage"))
+        if target_int not in {0, 1} and allow_label_derived_target:
+            target_int = _derive_target_from_label(label)
+
+        wildfire_score = _extract_score(row, "wildfire_risk_score")
+        wildfire_score_source = "direct"
+        if wildfire_score is None and allow_surrogate_wildfire_score:
+            wildfire_score = _derive_surrogate_wildfire_score(row)
+            if wildfire_score is not None:
+                wildfire_score_source = "surrogate_from_site_and_vulnerability"
 
         fallback_flags = _extract_fallback_flags(row)
         evidence_tier = _extract_evidence_tier(row)
@@ -1326,12 +1347,70 @@ def _prepare_rows(
             evidence_tier=evidence_tier,
             fallback_flags=fallback_flags,
         )
+
+        exclusion_reasons: list[str] = []
+        if target_int not in {0, 1}:
+            missing_required["structure_loss_or_major_damage"] += 1
+            exclusion_reasons.append("missing_or_invalid_structure_loss_or_major_damage")
+        if wildfire_score is None:
+            missing_required["scores.wildfire_risk_score"] += 1
+            exclusion_reasons.append("missing_scores.wildfire_risk_score")
+        if (
+            min_join_confidence_score_for_metrics is not None
+            and join_score is not None
+            and float(join_score) < float(min_join_confidence_score_for_metrics)
+        ):
+            missing_required["join_confidence_below_min"] += 1
+            exclusion_reasons.append("join_confidence_below_min")
+        if (
+            min_join_confidence_score_for_metrics is not None
+            and join_score is None
+        ):
+            missing_required["join_confidence_missing"] += 1
+            exclusion_reasons.append("join_confidence_missing")
+
+        if exclusion_reasons:
+            for reason in exclusion_reasons:
+                exclusion_reason_counts[reason] += 1
+            if len(invalid_examples) < 24:
+                invalid_examples.append(
+                    {
+                        "record_id": row.get("record_id"),
+                        "reasons": exclusion_reasons,
+                    }
+                )
+
+        outcome_rank = _safe_int(row.get("outcome_rank"))
+        if outcome_rank is None:
+            outcome_rank = OUTCOME_RANKS.get(label, 0)
+
+        low_confidence_join = bool(
+            join_tier == "low"
+            or "low_confidence_join" in (row.get("caveat_flags") or [])
+            or (
+                join_score is not None
+                and min_join_confidence_score_for_metrics is not None
+                and float(join_score) < float(min_join_confidence_score_for_metrics)
+            )
+        )
+        missing_features = bool(
+            fallback_flags["missing_factor_count"] > 0
+            or fallback_flags["coverage_failed_count"] > 0
+            or fallback_flags["coverage_fallback_count"] > 0
+            or wildfire_score_source != "direct"
+        )
+        fallback_heavy = evidence_group == "fallback_heavy"
+
         prepared_row = dict(row)
         prepared_row["outcome_label"] = label
-        prepared_row["outcome_rank"] = int(outcome_rank)
-        prepared_row["structure_loss_or_major_damage"] = int(target_int)
-        prepared_row["wildfire_risk_score"] = float(wildfire_score)
-        prepared_row["wildfire_probability_proxy"] = max(0.0, min(1.0, float(wildfire_score) / 100.0))
+        prepared_row["outcome_rank"] = int(outcome_rank or 0)
+        prepared_row["structure_loss_or_major_damage"] = (int(target_int) if target_int in {0, 1} else None)
+        prepared_row["wildfire_risk_score"] = (float(wildfire_score) if wildfire_score is not None else None)
+        prepared_row["wildfire_probability_proxy"] = (
+            max(0.0, min(1.0, float(wildfire_score) / 100.0))
+            if wildfire_score is not None
+            else None
+        )
         prepared_row["calibrated_damage_likelihood"] = _extract_score(row, "calibrated_damage_likelihood")
         prepared_row["confidence_tier"] = confidence_tier
         prepared_row["evidence_quality_tier"] = evidence_tier
@@ -1353,11 +1432,33 @@ def _prepare_rows(
             existing_row_tier=str(row.get("row_confidence_tier") or ""),
         )
         prepared_row["fallback_status"] = "fallback_heavy" if evidence_group == "fallback_heavy" else "not_fallback_heavy"
-        prepared.append(prepared_row)
+        prepared_row["low_confidence_join"] = low_confidence_join
+        prepared_row["missing_features"] = missing_features
+        prepared_row["fallback_heavy"] = fallback_heavy
+        prepared_row["wildfire_score_source"] = wildfire_score_source
+        prepared_row["row_usable_for_metrics"] = len(exclusion_reasons) == 0
+        prepared_row["exclusion_reasons"] = exclusion_reasons
+
+        if low_confidence_join:
+            flag_counts["low_confidence_join"] += 1
+        if missing_features:
+            flag_counts["missing_features"] += 1
+        if fallback_heavy:
+            flag_counts["fallback_heavy"] += 1
+        if not prepared_row["row_usable_for_metrics"]:
+            flag_counts["row_unusable_for_metrics"] += 1
+
+        if prepared_row["row_usable_for_metrics"] or retain_unusable_rows:
+            prepared.append(prepared_row)
 
     return prepared, {
         "missing_required_fields": dict(missing_required),
         "invalid_row_examples": invalid_examples,
+        "exclusion_reason_counts": dict(exclusion_reason_counts),
+        "row_flag_counts": dict(flag_counts),
+        "retained_row_count": len(prepared),
+        "usable_row_count": sum(1 for row in prepared if bool(row.get("row_usable_for_metrics"))),
+        "unusable_row_count": sum(1 for row in prepared if not bool(row.get("row_usable_for_metrics"))),
     }
 
 
@@ -1370,21 +1471,36 @@ def evaluate_public_outcome_dataset_rows(
     false_low_max_score: float = 40.0,
     false_high_min_score: float = 70.0,
     min_labeled_rows: int = 1,
+    allow_label_derived_target: bool = True,
+    allow_surrogate_wildfire_score: bool = True,
+    min_join_confidence_score_for_metrics: float | None = None,
+    retain_unusable_rows: bool = True,
     generated_at: str | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    prepared_rows, validation = _prepare_rows(rows)
-    if len(prepared_rows) < max(1, int(min_labeled_rows)):
+    prepared_rows, validation = _prepare_rows(
+        rows,
+        allow_label_derived_target=bool(allow_label_derived_target),
+        allow_surrogate_wildfire_score=bool(allow_surrogate_wildfire_score),
+        min_join_confidence_score_for_metrics=(
+            float(min_join_confidence_score_for_metrics)
+            if min_join_confidence_score_for_metrics is not None
+            else None
+        ),
+        retain_unusable_rows=bool(retain_unusable_rows),
+    )
+    usable_rows = [row for row in prepared_rows if bool(row.get("row_usable_for_metrics"))]
+    if len(usable_rows) < max(1, int(min_labeled_rows)):
         missing = validation.get("missing_required_fields") or {}
         raise ValueError(
             "Not enough usable labeled rows for evaluation. "
-            f"usable_rows={len(prepared_rows)} min_labeled_rows={max(1, int(min_labeled_rows))} "
+            f"usable_rows={len(usable_rows)} min_labeled_rows={max(1, int(min_labeled_rows))} "
             f"missing_required_counts={missing}"
         )
 
-    y_true = [int(row["structure_loss_or_major_damage"]) for row in prepared_rows]
-    raw_probs = [float(row["wildfire_probability_proxy"]) for row in prepared_rows]
-    raw_scores = [float(row["wildfire_risk_score"]) for row in prepared_rows]
-    outcome_ranks = [float(row["outcome_rank"]) for row in prepared_rows]
+    y_true = [int(row["structure_loss_or_major_damage"]) for row in usable_rows]
+    raw_probs = [float(row["wildfire_probability_proxy"]) for row in usable_rows]
+    raw_scores = [float(row["wildfire_risk_score"]) for row in usable_rows]
+    outcome_ranks = [float(row["outcome_rank"]) for row in usable_rows]
     positive_rate = _mean([float(v) for v in y_true])
 
     thresholds_use = [float(v) for v in (thresholds or list(DEFAULT_THRESHOLDS))]
@@ -1401,7 +1517,7 @@ def evaluate_public_outcome_dataset_rows(
     default_preds = [1 if score >= default_threshold else 0 for score in raw_scores]
     default_conf = _confusion(y_true, default_preds)
 
-    for row, pred, truth in zip(prepared_rows, default_preds, y_true):
+    for row, pred, truth in zip(usable_rows, default_preds, y_true):
         if truth == 1 and pred == 1:
             row["_confusion_class"] = "tp"
         elif truth == 0 and pred == 1:
@@ -1413,7 +1529,7 @@ def evaluate_public_outcome_dataset_rows(
 
     calibrated_pairs = [
         (int(row["structure_loss_or_major_damage"]), float(row["calibrated_damage_likelihood"]))
-        for row in prepared_rows
+        for row in usable_rows
         if row.get("calibrated_damage_likelihood") is not None
     ]
     calibrated_y = [pair[0] for pair in calibrated_pairs]
@@ -1434,7 +1550,7 @@ def evaluate_public_outcome_dataset_rows(
     region_groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
     join_tier_groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
     validation_tier_groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    for row in prepared_rows:
+    for row in usable_rows:
         event_groups[str(row.get("event_id") or "unknown")].append(row)
         region_groups[str(row.get("region_id") or "unknown")].append(row)
         join_tier_groups[str(row.get("join_confidence_tier") or "unknown")].append(row)
@@ -1468,53 +1584,53 @@ def evaluate_public_outcome_dataset_rows(
         for key, bucket in join_tier_groups.items()
         if str(key).strip().lower() == "low"
     )
-    low_join_fraction = (low_join_count / float(len(prepared_rows))) if prepared_rows else 0.0
+    low_join_fraction = (low_join_count / float(len(usable_rows))) if usable_rows else 0.0
 
-    fallback_heavy_count = sum(1 for row in prepared_rows if str(row.get("evidence_group")) == "fallback_heavy")
-    fallback_heavy_fraction = fallback_heavy_count / float(len(prepared_rows))
+    fallback_heavy_count = sum(1 for row in usable_rows if str(row.get("evidence_group")) == "fallback_heavy")
+    fallback_heavy_fraction = (fallback_heavy_count / float(len(usable_rows))) if usable_rows else 0.0
     fallback_stats = {
         "rows_with_any_fallback_flag": sum(
             1
-            for row in prepared_rows
+            for row in usable_rows
             if int((row.get("fallback_default_flags") or {}).get("fallback_factor_count") or 0) > 0
             or int((row.get("fallback_default_flags") or {}).get("coverage_fallback_count") or 0) > 0
         ),
         "mean_fallback_factor_count": _mean(
-            [float((row.get("fallback_default_flags") or {}).get("fallback_factor_count") or 0) for row in prepared_rows]
+            [float((row.get("fallback_default_flags") or {}).get("fallback_factor_count") or 0) for row in usable_rows]
         ),
         "mean_missing_factor_count": _mean(
-            [float((row.get("fallback_default_flags") or {}).get("missing_factor_count") or 0) for row in prepared_rows]
+            [float((row.get("fallback_default_flags") or {}).get("missing_factor_count") or 0) for row in usable_rows]
         ),
         "fallback_heavy_count": fallback_heavy_count,
         "fallback_heavy_fraction": fallback_heavy_fraction,
     }
 
     raw_auc = _roc_auc(y_true, raw_probs)
-    leak_risks = _detect_data_leakage_risks(prepared_rows, raw_auc)
+    leak_risks = _detect_data_leakage_risks(usable_rows, raw_auc)
     guardrail_warnings = _build_guardrail_warnings(
-        row_count=len(prepared_rows),
+        row_count=len(usable_rows),
         positive_rate=positive_rate,
         fallback_heavy_fraction=fallback_heavy_fraction,
         leak_warnings=list(leak_risks.get("warnings") or []),
     )
     review_sets = _false_review_sets(
-        rows=prepared_rows,
+        rows=usable_rows,
         false_low_max_score=float(false_low_max_score),
         false_high_min_score=float(false_high_min_score),
     )
-    high_confidence_rows = [row for row in prepared_rows if str(row.get("validation_confidence_tier")) == "high-confidence"]
-    high_evidence_rows = [row for row in prepared_rows if str(row.get("evidence_group")) == "high_evidence"]
+    high_confidence_rows = [row for row in usable_rows if str(row.get("validation_confidence_tier")) == "high-confidence"]
+    high_evidence_rows = [row for row in usable_rows if str(row.get("evidence_group")) == "high_evidence"]
     if not high_confidence_rows:
         guardrail_warnings.append("No high-confidence rows in this run; prioritize stronger join/feature coverage before calibration decisions.")
     if not high_evidence_rows:
         guardrail_warnings.append("No high-evidence rows in this run; results are dominated by inferred/fallback-heavy evidence.")
     minimum_viable_metrics = _compute_minimum_viable_metrics(
-        prepared_rows=prepared_rows,
+        prepared_rows=usable_rows,
         default_threshold=default_threshold,
         default_confusion=default_conf,
     )
     data_sufficiency_flags = _build_data_sufficiency_flags(
-        prepared_rows=prepared_rows,
+        prepared_rows=usable_rows,
         positive_rate=positive_rate,
         low_join_fraction=low_join_fraction,
         fallback_heavy_fraction=fallback_heavy_fraction,
@@ -1529,17 +1645,19 @@ def evaluate_public_outcome_dataset_rows(
         and raw_ece is not None
         and raw_ece <= 0.12
         and fallback_heavy_fraction < 0.5
-        and len(prepared_rows) >= 100
+        and len(usable_rows) >= 100
         else "not_recommended_yet"
     )
 
     report = {
         "schema_version": "1.1.0",
         "generated_at": generated_at or _utc_now_iso(),
-        "row_count_labeled": len(prepared_rows),
+        "row_count_labeled": len(usable_rows),
         "sample_counts": {
             "row_count_total": len(rows),
-            "row_count_usable": len(prepared_rows),
+            "row_count_retained": len(prepared_rows),
+            "row_count_usable": len(usable_rows),
+            "row_count_unusable": max(0, len(prepared_rows) - len(usable_rows)),
             "positive_count": int(sum(y_true)),
             "negative_count": int(len(y_true) - sum(y_true)),
             "positive_rate": positive_rate,
@@ -1550,13 +1668,23 @@ def evaluate_public_outcome_dataset_rows(
             "by_join_confidence_tier": by_join_confidence_tier,
             "by_validation_confidence_tier": by_validation_confidence_tier,
             "validation_exclusions": validation,
+            "filter_config": {
+                "allow_label_derived_target": bool(allow_label_derived_target),
+                "allow_surrogate_wildfire_score": bool(allow_surrogate_wildfire_score),
+                "min_join_confidence_score_for_metrics": (
+                    float(min_join_confidence_score_for_metrics)
+                    if min_join_confidence_score_for_metrics is not None
+                    else None
+                ),
+                "retain_unusable_rows": bool(retain_unusable_rows),
+            },
         },
         "discrimination_metrics": {
             "wildfire_risk_score_auc": raw_auc,
             "wildfire_risk_score_pr_auc": _pr_auc(y_true, raw_probs),
             "site_hazard_score_auc": _roc_auc(
                 y_true,
-                [max(0.0, min(1.0, (_extract_score(row, "site_hazard_score") or 0.0) / 100.0)) for row in prepared_rows],
+                [max(0.0, min(1.0, (_extract_score(row, "site_hazard_score") or 0.0) / 100.0)) for row in usable_rows],
             ),
             "home_ignition_vulnerability_score_auc": _roc_auc(
                 y_true,
@@ -1565,7 +1693,7 @@ def evaluate_public_outcome_dataset_rows(
                         0.0,
                         min(1.0, (_extract_score(row, "home_ignition_vulnerability_score") or 0.0) / 100.0),
                     )
-                    for row in prepared_rows
+                    for row in usable_rows
                 ],
             ),
             "calibrated_damage_likelihood_auc": (
@@ -1585,12 +1713,12 @@ def evaluate_public_outcome_dataset_rows(
             ),
         },
         "score_distributions_by_outcome": {
-            "wildfire_risk_score": _distribution_by_outcome(prepared_rows, "wildfire_risk_score"),
-            "site_hazard_score": _distribution_by_outcome(prepared_rows, "site_hazard_score"),
+            "wildfire_risk_score": _distribution_by_outcome(usable_rows, "wildfire_risk_score"),
+            "site_hazard_score": _distribution_by_outcome(usable_rows, "site_hazard_score"),
             "home_ignition_vulnerability_score": _distribution_by_outcome(
-                prepared_rows, "home_ignition_vulnerability_score"
+                usable_rows, "home_ignition_vulnerability_score"
             ),
-            "insurance_readiness_score": _distribution_by_outcome(prepared_rows, "insurance_readiness_score"),
+            "insurance_readiness_score": _distribution_by_outcome(usable_rows, "insurance_readiness_score"),
         },
         "calibration_metrics": {
             "wildfire_risk_score": {
@@ -1606,45 +1734,45 @@ def evaluate_public_outcome_dataset_rows(
         "calibration_table_wildfire_risk_score": raw_bins,
         "slice_metrics": {
             "by_confidence_tier": _slice_metrics(
-                prepared_rows,
+                usable_rows,
                 slice_key="confidence_tier",
                 min_slice_size=min_slice_size,
             ),
             "by_evidence_quality_tier": _slice_metrics(
-                prepared_rows,
+                usable_rows,
                 slice_key="evidence_quality_tier",
                 min_slice_size=min_slice_size,
             ),
             "by_evidence_group": _slice_metrics(
-                prepared_rows,
+                usable_rows,
                 slice_key="evidence_group",
                 min_slice_size=min_slice_size,
             ),
             "by_join_confidence_tier": _slice_metrics(
-                prepared_rows,
+                usable_rows,
                 slice_key="join_confidence_tier",
                 min_slice_size=min_slice_size,
             ),
             "by_validation_confidence_tier": _slice_metrics(
-                prepared_rows,
+                usable_rows,
                 slice_key="validation_confidence_tier",
                 min_slice_size=min_slice_size,
             ),
             "by_fallback_status": _slice_metrics(
-                prepared_rows,
+                usable_rows,
                 slice_key="fallback_status",
                 min_slice_size=min_slice_size,
             ),
         },
         "subset_metrics": {
-            "full_dataset": _compute_subset_metrics(prepared_rows),
+            "full_dataset": _compute_subset_metrics(usable_rows),
             "high_confidence_subset": _compute_subset_metrics(high_confidence_rows),
             "high_evidence_subset": _compute_subset_metrics(high_evidence_rows),
         },
         "minimum_viable_metrics": minimum_viable_metrics,
         "data_sufficiency_flags": data_sufficiency_flags,
         "fallback_diagnostics": fallback_stats,
-        "factor_contribution_summary_by_confusion_class": _factor_summary_by_confusion_class(prepared_rows),
+        "factor_contribution_summary_by_confusion_class": _factor_summary_by_confusion_class(usable_rows),
         "false_review_sets": review_sets,
         "data_leakage_risks": leak_risks,
         "guardrails": {
@@ -1662,14 +1790,14 @@ def evaluate_public_outcome_dataset_rows(
         data_sufficiency=data_sufficiency_flags,
         by_evidence_group=(report.get("slice_metrics") or {}).get("by_evidence_group") if isinstance(report.get("slice_metrics"), dict) else {},
     )
-    proxy_validation = _compute_proxy_validation(prepared_rows)
+    proxy_validation = _compute_proxy_validation(usable_rows)
     synthetic_validation = _run_synthetic_stress_validation()
     report["proxy_validation"] = proxy_validation
     report["synthetic_validation"] = synthetic_validation
     report["validation_streams"] = {
         "real_outcome_validation": {
             "available": True,
-            "row_count_labeled": len(prepared_rows),
+            "row_count_labeled": len(usable_rows),
             "caveat": "Real-outcome validation uses public observed outcomes and remains directional rather than claims-grade truth.",
         },
         "proxy_validation": {
@@ -1693,6 +1821,10 @@ def evaluate_public_outcome_dataset_file(
     false_low_max_score: float = 40.0,
     false_high_min_score: float = 70.0,
     min_labeled_rows: int = 1,
+    allow_label_derived_target: bool = True,
+    allow_surrogate_wildfire_score: bool = True,
+    min_join_confidence_score_for_metrics: float | None = None,
+    retain_unusable_rows: bool = True,
     generated_at: str | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     clean_rows, dataset_format = _load_rows_from_dataset_file(dataset_path)
@@ -1704,6 +1836,10 @@ def evaluate_public_outcome_dataset_file(
         false_low_max_score=false_low_max_score,
         false_high_min_score=false_high_min_score,
         min_labeled_rows=min_labeled_rows,
+        allow_label_derived_target=allow_label_derived_target,
+        allow_surrogate_wildfire_score=allow_surrogate_wildfire_score,
+        min_join_confidence_score_for_metrics=min_join_confidence_score_for_metrics,
+        retain_unusable_rows=retain_unusable_rows,
         generated_at=generated_at,
     )
     report["dataset_path"] = str(dataset_path)
@@ -1718,17 +1854,30 @@ def evaluate_public_outcome_dataset_file(
 def trace_public_outcome_dataset_flow(
     *,
     dataset_path: Path,
+    allow_label_derived_target: bool = True,
+    allow_surrogate_wildfire_score: bool = True,
+    min_join_confidence_score_for_metrics: float | None = None,
+    retain_unusable_rows: bool = True,
 ) -> dict[str, Any]:
     rows, dataset_format = _load_rows_from_dataset_file(dataset_path)
-    prepared_rows, validation = _prepare_rows(rows)
+    prepared_rows, validation = _prepare_rows(
+        rows,
+        allow_label_derived_target=allow_label_derived_target,
+        allow_surrogate_wildfire_score=allow_surrogate_wildfire_score,
+        min_join_confidence_score_for_metrics=min_join_confidence_score_for_metrics,
+        retain_unusable_rows=retain_unusable_rows,
+    )
+    usable_rows = [row for row in prepared_rows if bool(row.get("row_usable_for_metrics"))]
     missing = validation.get("missing_required_fields") if isinstance(validation, dict) else {}
     invalid = validation.get("invalid_row_examples") if isinstance(validation, dict) else []
     return {
         "dataset_path": str(dataset_path),
         "dataset_format": dataset_format,
         "loaded_rows": len(rows),
-        "prepared_rows": len(prepared_rows),
+        "prepared_rows": len(usable_rows),
+        "retained_rows": len(prepared_rows),
         "dropped_rows": max(0, len(rows) - len(prepared_rows)),
+        "unusable_rows": max(0, len(prepared_rows) - len(usable_rows)),
         "missing_required_fields": (missing if isinstance(missing, dict) else {}),
         "invalid_row_examples": (invalid if isinstance(invalid, list) else []),
     }
@@ -1755,6 +1904,12 @@ def write_evaluation_rows_csv(*, rows: list[dict[str, Any]], output_csv: Path) -
                 "join_confidence_score",
                 "validation_confidence_tier",
                 "join_method",
+                "row_usable_for_metrics",
+                "low_confidence_join",
+                "missing_features",
+                "fallback_heavy",
+                "wildfire_score_source",
+                "exclusion_reasons",
                 "confusion_class_default_threshold_70",
                 "fallback_factor_count",
                 "missing_factor_count",
@@ -1784,6 +1939,12 @@ def write_evaluation_rows_csv(*, rows: list[dict[str, Any]], output_csv: Path) -
                     "join_confidence_score": row.get("join_confidence_score"),
                     "validation_confidence_tier": row.get("validation_confidence_tier"),
                     "join_method": row.get("join_method"),
+                    "row_usable_for_metrics": row.get("row_usable_for_metrics"),
+                    "low_confidence_join": row.get("low_confidence_join"),
+                    "missing_features": row.get("missing_features"),
+                    "fallback_heavy": row.get("fallback_heavy"),
+                    "wildfire_score_source": row.get("wildfire_score_source"),
+                    "exclusion_reasons": ";".join(str(token) for token in (row.get("exclusion_reasons") or [])),
                     "confusion_class_default_threshold_70": row.get("_confusion_class"),
                     "fallback_factor_count": flags.get("fallback_factor_count"),
                     "missing_factor_count": flags.get("missing_factor_count"),

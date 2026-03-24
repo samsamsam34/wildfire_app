@@ -390,3 +390,103 @@ def test_proxy_validation_stream_available_when_proxy_features_present(tmp_path:
         assert "passed" in extreme
         assert "high_risk_score" in extreme
         assert "low_risk_score" in extreme
+
+
+def test_validation_retains_unusable_rows_with_flags(tmp_path: Path) -> None:
+    dataset_path = tmp_path / "mixed_rows.jsonl"
+    dataset_path.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "event": {"event_id": "evt-a"},
+                        "feature": {"record_id": "ok-1"},
+                        "outcome": {
+                            "damage_label": "destroyed",
+                            "damage_severity_class": "destroyed",
+                            "structure_loss_or_major_damage": 1,
+                        },
+                        "scores": {"wildfire_risk_score": 82.0},
+                        "join_metadata": {"join_confidence_tier": "high", "join_confidence_score": 0.95},
+                    }
+                ),
+                json.dumps(
+                    {
+                        "event": {"event_id": "evt-a"},
+                        "feature": {"record_id": "bad-1"},
+                        "outcome": {
+                            "damage_label": "unknown",
+                            "damage_severity_class": "unknown",
+                            "structure_loss_or_major_damage": None,
+                        },
+                        "scores": {"wildfire_risk_score": None},
+                        "join_metadata": {"join_confidence_tier": "low", "join_confidence_score": 0.35},
+                    }
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    report, rows = evaluate_public_outcome_dataset_file(
+        dataset_path=dataset_path,
+        min_labeled_rows=1,
+        retain_unusable_rows=True,
+    )
+    assert report["sample_counts"]["row_count_retained"] == 2
+    assert report["sample_counts"]["row_count_usable"] == 1
+    assert report["sample_counts"]["row_count_unusable"] == 1
+    assert len(rows) == 2
+    flagged = [row for row in rows if row.get("record_id") == "bad-1"][0]
+    assert flagged["row_usable_for_metrics"] is False
+    assert "missing_or_invalid_structure_loss_or_major_damage" in (flagged.get("exclusion_reasons") or [])
+    assert "missing_scores.wildfire_risk_score" in (flagged.get("exclusion_reasons") or [])
+
+
+def test_min_join_confidence_filter_is_configurable_and_tags_rows(tmp_path: Path) -> None:
+    dataset_path = tmp_path / "join_filter_rows.jsonl"
+    dataset_path.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "event": {"event_id": "evt-a"},
+                        "feature": {"record_id": "high-join"},
+                        "outcome": {
+                            "damage_label": "major_damage",
+                            "damage_severity_class": "major",
+                            "structure_loss_or_major_damage": 1,
+                        },
+                        "scores": {"wildfire_risk_score": 75.0},
+                        "join_metadata": {"join_confidence_tier": "high", "join_confidence_score": 0.91},
+                    }
+                ),
+                json.dumps(
+                    {
+                        "event": {"event_id": "evt-a"},
+                        "feature": {"record_id": "low-join"},
+                        "outcome": {
+                            "damage_label": "no_damage",
+                            "damage_severity_class": "none",
+                            "structure_loss_or_major_damage": 0,
+                        },
+                        "scores": {"wildfire_risk_score": 35.0},
+                        "join_metadata": {"join_confidence_tier": "low", "join_confidence_score": 0.42},
+                    }
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    report, rows = evaluate_public_outcome_dataset_file(
+        dataset_path=dataset_path,
+        min_labeled_rows=1,
+        min_join_confidence_score_for_metrics=0.7,
+        retain_unusable_rows=True,
+    )
+    assert report["sample_counts"]["row_count_retained"] == 2
+    assert report["sample_counts"]["row_count_usable"] == 1
+    low_join = [row for row in rows if row.get("record_id") == "low-join"][0]
+    assert low_join["row_usable_for_metrics"] is False
+    assert "join_confidence_below_min" in (low_join.get("exclusion_reasons") or [])

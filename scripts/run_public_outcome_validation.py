@@ -264,7 +264,9 @@ def _build_summary_markdown(
         f"- Run ID: `{run_id}`",
         f"- Generated at: `{generated_at}`",
         f"- Input labeled dataset: `{dataset_path}`",
+        f"- Retained rows: `{sample_counts.get('row_count_retained')}`",
         f"- Usable labeled rows: `{sample_counts.get('row_count_usable')}`",
+        f"- Unusable retained rows: `{sample_counts.get('row_count_unusable')}`",
         f"- Outcome prevalence (adverse): `{_format_float(sample_counts.get('positive_rate'))}`",
         f"- Narrative headline: `{str(narrative.get('headline') or 'n/a')}`",
         "",
@@ -460,7 +462,9 @@ def _insufficient_data_report(
         "row_count_labeled": 0,
         "sample_counts": {
             "row_count_total": total_rows,
+            "row_count_retained": int(flow.get("retained_rows") or 0),
             "row_count_usable": 0,
+            "row_count_unusable": int(flow.get("unusable_rows") or 0),
             "positive_count": 0,
             "negative_count": 0,
             "positive_rate": None,
@@ -568,6 +572,8 @@ def _insufficient_data_report(
         "pipeline_stage_counts": {
             "loaded_rows": int(flow.get("loaded_rows") or total_rows),
             "prepared_rows": int(flow.get("prepared_rows") or 0),
+            "retained_rows": int(flow.get("retained_rows") or 0),
+            "unusable_rows": int(flow.get("unusable_rows") or 0),
             "dropped_rows": int(flow.get("dropped_rows") or max(0, total_rows)),
         },
     }
@@ -586,6 +592,10 @@ def run_public_outcome_validation(
     false_low_max_score: float = 40.0,
     false_high_min_score: float = 70.0,
     min_labeled_rows: int = 1,
+    allow_label_derived_target: bool = True,
+    allow_surrogate_wildfire_score: bool = True,
+    min_join_confidence_score_for_metrics: float | None = None,
+    retain_unusable_rows: bool = True,
     baseline_run_id: str | None = None,
     overwrite: bool = False,
 ) -> dict[str, Any]:
@@ -601,7 +611,13 @@ def run_public_outcome_validation(
         dataset_root=evaluation_dataset_root.expanduser(),
         dataset_run_id=evaluation_dataset_run_id,
     )
-    dataset_flow = trace_public_outcome_dataset_flow(dataset_path=dataset_path)
+    dataset_flow = trace_public_outcome_dataset_flow(
+        dataset_path=dataset_path,
+        allow_label_derived_target=allow_label_derived_target,
+        allow_surrogate_wildfire_score=allow_surrogate_wildfire_score,
+        min_join_confidence_score_for_metrics=min_join_confidence_score_for_metrics,
+        retain_unusable_rows=retain_unusable_rows,
+    )
     join_stage_counts = _dataset_join_stage_counts(dataset_path)
     if join_stage_counts:
         print(
@@ -625,7 +641,9 @@ def run_public_outcome_validation(
         f"from {dataset_flow.get('dataset_path')}"
     )
     print(
-        f"[public-validation] Prepared {dataset_flow.get('prepared_rows')} usable rows "
+        f"[public-validation] Prepared usable={dataset_flow.get('prepared_rows')} "
+        f"retained={dataset_flow.get('retained_rows')} "
+        f"unusable={dataset_flow.get('unusable_rows')} "
         f"(dropped {dataset_flow.get('dropped_rows')})"
     )
     missing_map = dataset_flow.get("missing_required_fields")
@@ -648,6 +666,14 @@ def run_public_outcome_validation(
             false_low_max_score=float(false_low_max_score),
             false_high_min_score=float(false_high_min_score),
             min_labeled_rows=max(1, int(min_labeled_rows)),
+            allow_label_derived_target=bool(allow_label_derived_target),
+            allow_surrogate_wildfire_score=bool(allow_surrogate_wildfire_score),
+            min_join_confidence_score_for_metrics=(
+                float(min_join_confidence_score_for_metrics)
+                if min_join_confidence_score_for_metrics is not None
+                else None
+            ),
+            retain_unusable_rows=bool(retain_unusable_rows),
             generated_at=generated_at,
         )
         report["pipeline_stage_counts"] = {
@@ -657,6 +683,8 @@ def run_public_outcome_validation(
             "join_excluded_rows": int(join_stage_counts.get("excluded_rows") or 0),
             "loaded_rows": int(dataset_flow.get("loaded_rows") or 0),
             "prepared_rows": int(dataset_flow.get("prepared_rows") or 0),
+            "retained_rows": int(dataset_flow.get("retained_rows") or 0),
+            "unusable_rows": int(dataset_flow.get("unusable_rows") or 0),
             "dropped_rows": int(dataset_flow.get("dropped_rows") or 0),
         }
         subset_metrics = report.get("subset_metrics") if isinstance(report.get("subset_metrics"), dict) else {}
@@ -797,6 +825,14 @@ def run_public_outcome_validation(
             "false_low_max_score": float(false_low_max_score),
             "false_high_min_score": float(false_high_min_score),
             "min_labeled_rows": int(max(1, int(min_labeled_rows))),
+            "allow_label_derived_target": bool(allow_label_derived_target),
+            "allow_surrogate_wildfire_score": bool(allow_surrogate_wildfire_score),
+            "min_join_confidence_score_for_metrics": (
+                float(min_join_confidence_score_for_metrics)
+                if min_join_confidence_score_for_metrics is not None
+                else None
+            ),
+            "retain_unusable_rows": bool(retain_unusable_rows),
             "baseline_run_id_requested": baseline_run_id,
         },
         "versions": {
@@ -821,6 +857,14 @@ def run_public_outcome_validation(
                 "false_low_max_score": float(false_low_max_score),
                 "false_high_min_score": float(false_high_min_score),
                 "min_labeled_rows": int(max(1, int(min_labeled_rows))),
+                "allow_label_derived_target": bool(allow_label_derived_target),
+                "allow_surrogate_wildfire_score": bool(allow_surrogate_wildfire_score),
+                "min_join_confidence_score_for_metrics": (
+                    float(min_join_confidence_score_for_metrics)
+                    if min_join_confidence_score_for_metrics is not None
+                    else None
+                ),
+                "retain_unusable_rows": bool(retain_unusable_rows),
                 "baseline_run_id": selected_baseline_run,
             },
         },
@@ -911,6 +955,36 @@ def main() -> int:
         default=1,
         help="Minimum usable labeled rows required before evaluation raises insufficient-data.",
     )
+    parser.add_argument(
+        "--allow-label-derived-target",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Allow deriving adverse-outcome target from outcome label when binary target is missing.",
+    )
+    parser.add_argument(
+        "--allow-surrogate-wildfire-score",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Allow surrogate wildfire-risk score from available hazard/vulnerability components when "
+            "wildfire_risk_score is missing."
+        ),
+    )
+    parser.add_argument(
+        "--min-join-confidence-score-for-metrics",
+        type=float,
+        default=None,
+        help=(
+            "Optional minimum join-confidence score required for a row to be usable in metrics. "
+            "Rows below threshold are retained and flagged, not dropped from artifacts."
+        ),
+    )
+    parser.add_argument(
+        "--retain-unusable-rows",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Retain rows that are unusable for metrics in exported evaluation rows with exclusion flags.",
+    )
     parser.add_argument("--false-low-max-score", type=float, default=40.0)
     parser.add_argument("--false-high-min-score", type=float, default=70.0)
     parser.add_argument(
@@ -934,6 +1008,14 @@ def main() -> int:
         false_low_max_score=float(args.false_low_max_score),
         false_high_min_score=float(args.false_high_min_score),
         min_labeled_rows=max(1, int(args.min_labeled_rows)),
+        allow_label_derived_target=bool(args.allow_label_derived_target),
+        allow_surrogate_wildfire_score=bool(args.allow_surrogate_wildfire_score),
+        min_join_confidence_score_for_metrics=(
+            float(args.min_join_confidence_score_for_metrics)
+            if args.min_join_confidence_score_for_metrics is not None
+            else None
+        ),
+        retain_unusable_rows=bool(args.retain_unusable_rows),
         baseline_run_id=(args.baseline_run_id or None),
         overwrite=bool(args.overwrite),
     )

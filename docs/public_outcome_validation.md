@@ -36,6 +36,17 @@ python scripts/run_public_outcome_validation.py \
   --min-labeled-rows 1
 ```
 
+Filtering strictness is configurable and defaults to row-retention with tagging:
+
+```bash
+python scripts/run_public_outcome_validation.py \
+  --evaluation-dataset-run-id <run_id> \
+  --min-join-confidence-score-for-metrics 0.7 \
+  --allow-label-derived-target \
+  --allow-surrogate-wildfire-score \
+  --retain-unusable-rows
+```
+
 Compare explicitly against a baseline validation run:
 
 ```bash
@@ -134,11 +145,18 @@ The workflow warns when:
 If the sample is small, the report still computes available metrics and avoids overstating precision.
 The runner also logs stage counts:
 - loaded dataset rows
-- prepared/usable rows
+- retained rows
+- usable rows
+- unusable rows retained with exclusion flags
 - dropped rows with missing required fields
 - join-stage counts when `join_quality_report.json` is available.
 
-Rows are retained as long as core label + wildfire score are present; lower-confidence joins/evidence are tagged and sliced rather than silently dropped.
+Rows below metric usability thresholds are retained (unless `--no-retain-unusable-rows` is set) with explicit flags:
+- `low_confidence_join`
+- `missing_features`
+- `fallback_heavy`
+- `row_usable_for_metrics`
+- `exclusion_reasons`
 
 ## Run-to-run Governance
 
