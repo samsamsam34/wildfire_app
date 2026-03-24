@@ -1,0 +1,22 @@
+{
+  "sources": [
+    {
+      "path": "benchmark/event_backtest_sample_v1.json",
+      "source_name": "public_proxy_fixture_sample_pack",
+      "default_state": "CA",
+      "enabled": true
+    },
+    {
+      "path": "benchmark/public_outcomes/sources/public_damage_fixture_event_x.csv",
+      "source_name": "public_fixture_event_x",
+      "default_state": "CA",
+      "enabled": true
+    },
+    {
+      "path": "benchmark/public_outcomes/sources/public_damage_fixture_event_y.csv",
+      "source_name": "public_fixture_event_y",
+      "default_state": "CA",
+      "enabled": true
+    }
+  ]
+}

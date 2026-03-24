@@ -14,6 +14,15 @@ python scripts/ingest_public_outcomes.py \
   --source-name source_b
 ```
 
+Directory and manifest discovery are also supported:
+
+```bash
+python scripts/ingest_public_outcomes.py \
+  --input-dir benchmark/public_outcomes/sources \
+  --input-glob "**/*" \
+  --source-manifest config/public_outcome_sources.json
+```
+
 Optional deterministic run id:
 
 ```bash
@@ -22,6 +31,9 @@ python scripts/ingest_public_outcomes.py \
   --run-id fixed_public_outcomes_run \
   --overwrite
 ```
+
+If no `--input`, `--input-dir`, or `--source-manifest` arguments are provided, the script
+automatically loads `config/public_outcome_sources.json` when present.
 
 ## Output Location
 
@@ -72,6 +84,9 @@ Derived severity and binary target are retained together so downstream tools can
 
 - counts by source
 - counts by event
+- event count
+- records per event
+- total dataset size
 - counts by label/severity
 - dedupe count/rate
 - invalid coordinate drops
@@ -79,6 +94,21 @@ Derived severity and binary target are retained together so downstream tools can
 - unknown label rate
 - match-confidence distribution
 - included vs excluded source list
+- configured source count, included/excluded source counts, ignored duplicate source paths
+
+## Source Manifests
+
+`--source-manifest` accepts either:
+
+- a JSON array of source objects
+- an object with `sources: []`
+
+Each source object supports:
+
+- `path` (required)
+- `source_name` (optional)
+- `default_state` (optional)
+- `enabled` (optional, default true)
 
 ## Graceful Degradation
 

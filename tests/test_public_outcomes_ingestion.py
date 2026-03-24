@@ -5,6 +5,8 @@ from pathlib import Path
 
 from scripts.ingest_public_outcomes import (
     OutcomeSourceSpec,
+    _discover_input_files,
+    _load_source_specs_from_manifest,
     run_public_outcomes_ingestion,
 )
 
@@ -134,3 +136,115 @@ def test_deterministic_output_with_fixed_run_id_and_missing_source_graceful(tmp_
     manifest = json.loads(manifest_1)
     excluded = (manifest.get("summary") or {}).get("excluded_sources") or []
     assert excluded and excluded[0]["status"] == "not_found"
+
+
+def test_directory_discovery_and_coverage_counts(tmp_path: Path) -> None:
+    src_dir = tmp_path / "sources"
+    src_dir.mkdir(parents=True, exist_ok=True)
+    src_a = src_dir / "event_a.csv"
+    src_b = src_dir / "event_b.csv"
+    _write_source_csv(
+        src_a,
+        [
+            "1,evt-a,Event A,2021-08-01,100 Main St,Town,CA,90001,39.1001,-120.1001,Destroyed,0.95",
+            "2,evt-a,Event A,2021-08-01,101 Main St,Town,CA,90001,39.1002,-120.1002,No Damage,0.70",
+        ],
+    )
+    _write_source_csv(
+        src_b,
+        [
+            "3,evt-b,Event B,2022-09-04,200 Oak St,Town,CA,90002,38.2001,-121.2001,Major Damage,0.88",
+        ],
+    )
+    discovered = _discover_input_files(input_dirs=[str(src_dir)], input_glob="**/*")
+    assert {path.name for path in discovered} == {"event_a.csv", "event_b.csv"}
+
+    result = run_public_outcomes_ingestion(
+        sources=[OutcomeSourceSpec(path=path) for path in discovered],
+        output_root=tmp_path / "out",
+        run_id="discovery_run",
+        overwrite=True,
+    )
+    manifest = json.loads((Path(result["run_dir"]) / "manifest.json").read_text(encoding="utf-8"))
+    summary = manifest.get("summary") or {}
+    assert summary.get("event_count") == 2
+    assert summary.get("total_dataset_size") == 3
+    assert (summary.get("records_per_event") or {}).get("evt-a") == 2
+    assert (summary.get("records_per_event") or {}).get("evt-b") == 1
+    assert summary.get("configured_source_count") == 2
+    assert summary.get("included_source_count") == 2
+
+
+def test_source_manifest_expands_multiple_sources(tmp_path: Path) -> None:
+    src_a = tmp_path / "event_a.csv"
+    src_b = tmp_path / "event_b.csv"
+    _write_source_csv(
+        src_a,
+        [
+            "1,evt-a,Event A,2021-08-01,100 Main St,Town,CA,90001,39.1001,-120.1001,Destroyed,0.95",
+        ],
+    )
+    _write_source_csv(
+        src_b,
+        [
+            "3,evt-b,Event B,2022-09-04,200 Oak St,Town,CA,90002,38.2001,-121.2001,Major Damage,0.88",
+        ],
+    )
+    manifest_path = tmp_path / "sources_manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "sources": [
+                    {"path": str(src_a), "source_name": "a_feed"},
+                    {"path": str(src_b), "source_name": "b_feed", "enabled": True},
+                    {"path": str(tmp_path / "disabled.csv"), "enabled": False},
+                ]
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    specs = _load_source_specs_from_manifest(manifest_path, default_state="CA")
+    assert len(specs) == 2
+    assert {spec.source_name for spec in specs} == {"a_feed", "b_feed"}
+
+    result = run_public_outcomes_ingestion(
+        sources=specs,
+        output_root=tmp_path / "out",
+        run_id="manifest_run",
+        overwrite=True,
+    )
+    manifest = json.loads((Path(result["run_dir"]) / "manifest.json").read_text(encoding="utf-8"))
+    summary = manifest.get("summary") or {}
+    assert summary.get("configured_source_count") == 2
+    assert summary.get("included_source_count") == 2
+    assert summary.get("event_count") == 2
+
+
+def test_deduplication_does_not_collapse_distinct_addresses_same_coordinate(tmp_path: Path) -> None:
+    src_a = tmp_path / "source_a.csv"
+    src_b = tmp_path / "source_b.csv"
+    _write_source_csv(
+        src_a,
+        [
+            "1,evt-a,Event A,2021-08-01,100 Main St,Town,CA,90001,39.100100,-120.100100,Destroyed,0.95",
+        ],
+    )
+    _write_source_csv(
+        src_b,
+        [
+            "2,evt-a,Event A,2021-08-01,200 Main St,Town,CA,90001,39.100100,-120.100100,Major Damage,0.90",
+        ],
+    )
+    result = run_public_outcomes_ingestion(
+        sources=[
+            OutcomeSourceSpec(path=src_a, source_name="fixture_a"),
+            OutcomeSourceSpec(path=src_b, source_name="fixture_b"),
+        ],
+        output_root=tmp_path / "out",
+        run_id="non_collapse_run",
+        overwrite=True,
+    )
+    payload = json.loads((Path(result["run_dir"]) / "normalized_outcomes.json").read_text(encoding="utf-8"))
+    rows = payload.get("records") or []
+    assert len(rows) == 2

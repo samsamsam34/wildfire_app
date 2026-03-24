@@ -21,6 +21,7 @@ Multiple inputs are supported:
 - repeat `--feature-artifact` to aggregate multiple scored feature artifacts.
 - optionally use discovery flags:
   - `--outcomes-root benchmark/public_outcomes/normalized --outcomes-run-id <run_id>` (repeat run ids)
+  - `--outcomes-root benchmark/public_outcomes/normalized --outcomes-root-mode all` (use all normalized runs)
   - `--feature-artifact-dir <dir> --feature-artifact-glob "*.json"`
 
 If feature artifacts do not already contain model score fields, the builder can auto-backfill

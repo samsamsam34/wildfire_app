@@ -1,0 +1,7 @@
+record_id,event_id,incident_name,inspection_date,address,city,state,zip,latitude,longitude,damage_state,label_confidence
+x001,evt-x,Event X,2020-09-10,10 Cedar Ln,Town,CA,90011,37.71010,-119.51010,Destroyed,0.94
+x002,evt-x,Event X,2020-09-10,12 Cedar Ln,Town,CA,90011,37.71025,-119.51025,Major Damage,0.89
+x003,evt-x,Event X,2020-09-10,14 Cedar Ln,Town,CA,90011,37.71040,-119.51040,Major Damage,0.82
+x004,evt-x,Event X,2020-09-10,16 Cedar Ln,Town,CA,90011,37.71055,-119.51055,Minor Damage,0.75
+x005,evt-x,Event X,2020-09-10,18 Cedar Ln,Town,CA,90011,37.71070,-119.51070,No Damage,0.78
+x006,evt-x,Event X,2020-09-10,20 Cedar Ln,Town,CA,90011,37.71085,-119.51085,No Damage,0.66

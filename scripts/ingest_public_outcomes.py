@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import re
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -20,6 +21,8 @@ if str(SCRIPTS_DIR) not in sys.path:
 from ingest_public_structure_damage import normalize_public_damage_rows
 
 SCHEMA_VERSION = "1.0.0"
+SUPPORTED_INPUT_SUFFIXES = {".csv", ".json", ".geojson"}
+DEFAULT_SOURCE_MANIFEST_PATH = Path("config/public_outcome_sources.json")
 
 
 @dataclass(frozen=True)
@@ -108,20 +111,34 @@ def _record_quality_score(row: dict[str, Any]) -> tuple[int, float, int]:
     return (has_binary, label_confidence, has_address)
 
 
+def _normalize_key_text(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    text = re.sub(r"[^a-z0-9]+", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
 def _dedupe_key(row: dict[str, Any]) -> str:
     source_name = str(row.get("source_name") or "").strip()
     source_record_id = str(row.get("source_record_id") or "").strip()
     record_id = str(row.get("record_id") or "").strip()
     event_key = _event_name_key(row)
+    damage_label = str(row.get("damage_label") or "").strip().lower()
+    address_norm = _normalize_key_text(row.get("address_text"))
     lat = _safe_float(row.get("latitude"))
     lon = _safe_float(row.get("longitude"))
-    coord = f"{round(lat, 5):.5f},{round(lon, 5):.5f}" if lat is not None and lon is not None else ""
-    if event_key != "unknown_event" and coord:
-        return f"event_coord:{event_key}|{coord}"
+    coord = f"{round(lat, 6):.6f},{round(lon, 6):.6f}" if lat is not None and lon is not None else ""
+    if event_key != "unknown_event" and coord and address_norm:
+        return f"event_coord_addr:{event_key}|{coord}|{address_norm}"
+    if event_key != "unknown_event" and coord and damage_label:
+        return f"event_coord_label:{event_key}|{coord}|{damage_label}"
     if source_name and source_record_id:
         return f"src:{source_name}|{source_record_id}"
     if source_name and record_id:
         return f"record:{source_name}|{record_id}"
+    if event_key != "unknown_event" and source_record_id:
+        return f"event_src:{event_key}|{source_record_id}"
+    if event_key != "unknown_event" and record_id:
+        return f"event_record:{event_key}|{record_id}"
     return f"fallback:{source_name}|{record_id}|{coord}"
 
 
@@ -171,6 +188,8 @@ def _summarize_records(
     raw_record_count: int,
     deduped_records: list[dict[str, Any]],
     deduplicated_count: int,
+    configured_source_count: int,
+    ignored_duplicate_source_paths: list[str],
     included_sources: list[dict[str, Any]],
     excluded_sources: list[dict[str, Any]],
     dropped_invalid_coordinate_count: int,
@@ -203,9 +222,17 @@ def _summarize_records(
             unknown_label_count += 1
 
     final_count = len(deduped_records)
+    event_count = len(by_event)
     return {
+        "configured_source_count": int(configured_source_count),
+        "included_source_count": len(included_sources),
+        "excluded_source_count": len(excluded_sources),
+        "ignored_duplicate_source_count": len(ignored_duplicate_source_paths),
+        "ignored_duplicate_source_paths": sorted(ignored_duplicate_source_paths),
         "raw_record_count": raw_record_count,
         "final_record_count": final_count,
+        "total_dataset_size": final_count,
+        "event_count": event_count,
         "deduplicated_record_count": deduplicated_count,
         "deduplication_rate": round(deduplicated_count / float(raw_record_count), 4) if raw_record_count else 0.0,
         "dropped_invalid_coordinate_count": dropped_invalid_coordinate_count,
@@ -216,6 +243,7 @@ def _summarize_records(
         "match_confidence_distribution": dict(sorted(match_confidence_dist.items())),
         "count_by_source": dict(sorted(by_source.items())),
         "count_by_event": dict(sorted(by_event.items())),
+        "records_per_event": dict(sorted(by_event.items())),
         "count_by_damage_label": dict(sorted(by_label.items())),
         "count_by_damage_severity_class": dict(sorted(by_severity.items())),
         "count_by_adverse_outcome_label": dict(sorted(by_adverse.items())),
@@ -239,10 +267,16 @@ def _build_markdown_report(
         f"- Run ID: `{run_id}`",
         f"- Generated at: `{generated_at}`",
         f"- Final normalized records: `{summary.get('final_record_count')}`",
+        f"- Total dataset size: `{summary.get('total_dataset_size')}`",
+        f"- Event count: `{summary.get('event_count')}`",
         f"- Raw records before dedupe: `{summary.get('raw_record_count')}`",
         f"- Deduplicated records removed: `{summary.get('deduplicated_record_count')}`",
         f"- Unknown label rate: `{summary.get('unknown_label_rate')}`",
         f"- Missing address rate: `{summary.get('missing_address_rate')}`",
+        f"- Configured sources: `{summary.get('configured_source_count')}`",
+        f"- Included sources: `{summary.get('included_source_count')}`",
+        f"- Excluded sources: `{summary.get('excluded_source_count')}`",
+        f"- Ignored duplicate paths: `{summary.get('ignored_duplicate_source_count')}`",
         "",
         "## Included Sources",
     ]
@@ -276,6 +310,7 @@ def _build_markdown_report(
             f"- Damage label counts: `{summary.get('count_by_damage_label')}`",
             f"- Severity class counts: `{summary.get('count_by_damage_severity_class')}`",
             f"- Adverse outcome counts: `{summary.get('count_by_adverse_outcome_label')}`",
+            f"- Records per event: `{summary.get('records_per_event')}`",
             "",
             "## Confidence and Quality",
             f"- Match confidence distribution: `{summary.get('match_confidence_distribution')}`",
@@ -350,7 +385,18 @@ def run_public_outcomes_ingestion(
     raw_records: list[dict[str, Any]] = []
     dropped_invalid_coordinates_total = 0
 
+    deduped_specs: list[OutcomeSourceSpec] = []
+    seen_paths: set[str] = set()
+    ignored_duplicate_source_paths: list[str] = []
     for spec in sources:
+        key = str(spec.path.expanduser().resolve())
+        if key in seen_paths:
+            ignored_duplicate_source_paths.append(str(spec.path))
+            continue
+        seen_paths.add(key)
+        deduped_specs.append(spec)
+
+    for spec in deduped_specs:
         if not spec.path.exists():
             excluded_sources.append(_source_status(spec, status="not_found", reason="input_path_not_found"))
             continue
@@ -411,6 +457,8 @@ def run_public_outcomes_ingestion(
         raw_record_count=len(raw_records),
         deduped_records=deduped_records,
         deduplicated_count=deduplicated_count,
+        configured_source_count=len(deduped_specs),
+        ignored_duplicate_source_paths=ignored_duplicate_source_paths,
         included_sources=included_sources,
         excluded_sources=excluded_sources,
         dropped_invalid_coordinate_count=dropped_invalid_coordinates_total,
@@ -481,6 +529,48 @@ def _build_source_specs(inputs: list[str], source_names: list[str], default_stat
     return specs
 
 
+def _load_source_specs_from_manifest(path: Path, default_state: str) -> list[OutcomeSourceSpec]:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    rows = payload.get("sources") if isinstance(payload, dict) else payload
+    if not isinstance(rows, list):
+        raise ValueError(f"Source manifest must be a list or object with 'sources': {path}")
+    specs: list[OutcomeSourceSpec] = []
+    for idx, row in enumerate(rows, start=1):
+        if not isinstance(row, dict):
+            continue
+        if row.get("enabled") is False:
+            continue
+        source_path = row.get("path")
+        if not source_path:
+            continue
+        state = str(row.get("default_state") or default_state)
+        specs.append(
+            OutcomeSourceSpec(
+                path=Path(str(source_path)).expanduser(),
+                source_name=(str(row.get("source_name")) if row.get("source_name") else None),
+                default_state=state,
+            )
+        )
+    return specs
+
+
+def _discover_input_files(
+    *,
+    input_dirs: list[str],
+    input_glob: str,
+) -> list[Path]:
+    paths: list[Path] = []
+    pattern = str(input_glob or "**/*")
+    for token in input_dirs:
+        root = Path(str(token)).expanduser()
+        if not root.exists() or not root.is_dir():
+            continue
+        for candidate in sorted(root.glob(pattern)):
+            if candidate.is_file() and candidate.suffix.lower() in SUPPORTED_INPUT_SUFFIXES:
+                paths.append(candidate)
+    return paths
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=(
@@ -493,6 +583,29 @@ def main() -> int:
         action="append",
         default=[],
         help="Input CSV/JSON/GeoJSON path. May be supplied multiple times.",
+    )
+    parser.add_argument(
+        "--input-dir",
+        action="append",
+        default=[],
+        help=(
+            "Directory containing input outcome files. All files matching --input-glob "
+            "with .csv/.json/.geojson suffixes are discovered."
+        ),
+    )
+    parser.add_argument(
+        "--input-glob",
+        default="**/*",
+        help="Glob pattern used with each --input-dir (default: **/*).",
+    )
+    parser.add_argument(
+        "--source-manifest",
+        action="append",
+        default=[],
+        help=(
+            "Optional JSON manifest path containing source rows: "
+            "{'sources':[{'path':'...','source_name':'...','default_state':'...','enabled':true}]}"
+        ),
     )
     parser.add_argument(
         "--source-name",
@@ -519,6 +632,32 @@ def main() -> int:
         source_names=[str(row) for row in (args.source_name or [])],
         default_state=str(args.default_state),
     )
+    discovered_paths = _discover_input_files(
+        input_dirs=[str(row) for row in (args.input_dir or []) if str(row).strip()],
+        input_glob=str(args.input_glob or "**/*"),
+    )
+    if discovered_paths:
+        specs.extend(
+            _build_source_specs(
+                inputs=[str(path) for path in discovered_paths],
+                source_names=[],
+                default_state=str(args.default_state),
+            )
+        )
+    for token in [str(row) for row in (args.source_manifest or []) if str(row).strip()]:
+        specs.extend(
+            _load_source_specs_from_manifest(
+                Path(token).expanduser(),
+                default_state=str(args.default_state),
+            )
+        )
+    if not specs and DEFAULT_SOURCE_MANIFEST_PATH.exists():
+        specs.extend(
+            _load_source_specs_from_manifest(
+                DEFAULT_SOURCE_MANIFEST_PATH,
+                default_state=str(args.default_state),
+            )
+        )
     result = run_public_outcomes_ingestion(
         sources=specs,
         output_root=Path(args.output_root).expanduser(),

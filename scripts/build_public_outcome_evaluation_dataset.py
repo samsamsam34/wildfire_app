@@ -660,6 +660,19 @@ def _resolve_latest_normalized_outcomes(root: Path) -> list[Path]:
     return []
 
 
+def _resolve_all_normalized_outcomes(root: Path) -> list[Path]:
+    resolved_root = Path(root).expanduser()
+    if not resolved_root.exists():
+        return []
+    out: list[Path] = []
+    run_dirs = sorted([path for path in resolved_root.iterdir() if path.is_dir()], key=lambda path: path.name)
+    for run_dir in run_dirs:
+        candidate = run_dir / "normalized_outcomes.json"
+        if candidate.exists():
+            out.append(candidate)
+    return out
+
+
 def _resolve_normalized_outcomes_from_run_ids(root: Path, run_ids: list[str]) -> list[Path]:
     resolved_root = Path(root).expanduser()
     resolved: list[Path] = []
@@ -1339,7 +1352,16 @@ def main() -> int:
         default="",
         help=(
             "Optional root with normalized outcome runs (benchmark/public_outcomes/normalized). "
-            "If --outcomes is omitted, latest normalized_outcomes.json is used."
+            "If --outcomes is omitted, normalized outcomes are resolved from this root."
+        ),
+    )
+    parser.add_argument(
+        "--outcomes-root-mode",
+        choices=("all", "latest"),
+        default="all",
+        help=(
+            "When --outcomes-root is provided without explicit --outcomes-run-id, choose whether to "
+            "use all normalized_outcomes.json runs or only the latest run (default: all)."
         ),
     )
     parser.add_argument(
@@ -1447,7 +1469,10 @@ def main() -> int:
         if run_ids:
             resolved_from_root = _resolve_normalized_outcomes_from_run_ids(outcomes_root, run_ids)
         else:
-            resolved_from_root = _resolve_latest_normalized_outcomes(outcomes_root)
+            if str(args.outcomes_root_mode) == "latest":
+                resolved_from_root = _resolve_latest_normalized_outcomes(outcomes_root)
+            else:
+                resolved_from_root = _resolve_all_normalized_outcomes(outcomes_root)
     outcomes_paths = sorted({path for path in (explicit_outcomes + resolved_from_root)})
     if not outcomes_paths:
         raise ValueError("At least one outcomes source is required (--outcomes or --outcomes-root).")

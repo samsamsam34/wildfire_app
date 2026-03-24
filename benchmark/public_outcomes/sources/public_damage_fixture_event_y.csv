@@ -1,0 +1,7 @@
+record_id,event_id,incident_name,inspection_date,address,city,state,zip,latitude,longitude,damage_state,label_confidence
+y001,evt-y,Event Y,2022-08-17,1 Juniper Ave,Town,CA,90012,38.12010,-120.22010,Destroyed,0.96
+y002,evt-y,Event Y,2022-08-17,3 Juniper Ave,Town,CA,90012,38.12025,-120.22025,Major Damage,0.88
+y003,evt-y,Event Y,2022-08-17,5 Juniper Ave,Town,CA,90012,38.12040,-120.22040,Minor Damage,0.71
+y004,evt-y,Event Y,2022-08-17,7 Juniper Ave,Town,CA,90012,38.12055,-120.22055,No Damage,0.73
+y005,evt-y,Event Y,2022-08-17,9 Juniper Ave,Town,CA,90012,38.12070,-120.22070,Major Damage,0.83
+y006,evt-y,Event Y,2022-08-17,11 Juniper Ave,Town,CA,90012,38.12085,-120.22085,No Damage,0.69

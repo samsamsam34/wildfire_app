@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 from scripts.build_public_outcome_evaluation_dataset import (
+    _resolve_all_normalized_outcomes,
     build_public_outcome_evaluation_dataset,
 )
 
@@ -444,3 +445,18 @@ def test_builder_uses_global_address_overlap_fallback_when_coordinates_missing(t
     assert join_meta["join_method"] == "approx_global_address_token_overlap"
     assert join_meta["match_tier"] == "fallback"
     assert join_meta["join_confidence_tier"] in {"low", "moderate"}
+
+
+def test_resolve_all_normalized_outcomes_returns_all_runs(tmp_path: Path) -> None:
+    run_a = tmp_path / "run_a"
+    run_b = tmp_path / "run_b"
+    run_c = tmp_path / "run_c"
+    run_a.mkdir(parents=True, exist_ok=True)
+    run_b.mkdir(parents=True, exist_ok=True)
+    run_c.mkdir(parents=True, exist_ok=True)
+    (run_a / "normalized_outcomes.json").write_text(json.dumps({"records": []}), encoding="utf-8")
+    (run_b / "normalized_outcomes.json").write_text(json.dumps({"records": []}), encoding="utf-8")
+    # run_c intentionally missing normalized_outcomes.json
+
+    resolved = _resolve_all_normalized_outcomes(tmp_path)
+    assert [path.parent.name for path in resolved] == ["run_a", "run_b"]
