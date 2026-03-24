@@ -538,6 +538,63 @@ def _compute_subset_metrics(rows: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _build_confidence_tier_performance(
+    *,
+    all_rows: list[dict[str, Any]],
+    high_confidence_rows: list[dict[str, Any]],
+    medium_confidence_rows: list[dict[str, Any]],
+    min_slice_size: int,
+) -> dict[str, Any]:
+    min_n = max(1, int(min_slice_size))
+    tiers = {
+        "all_data": _compute_subset_metrics(all_rows),
+        "high_confidence": _compute_subset_metrics(high_confidence_rows),
+        "medium_confidence": _compute_subset_metrics(medium_confidence_rows),
+    }
+    for detail in tiers.values():
+        if isinstance(detail, dict):
+            detail["small_sample_warning"] = int(detail.get("count") or 0) < min_n
+
+    all_auc = _safe_float((tiers.get("all_data") or {}).get("wildfire_risk_score_auc"))
+    all_brier = _safe_float((tiers.get("all_data") or {}).get("wildfire_risk_score_brier"))
+    high_auc = _safe_float((tiers.get("high_confidence") or {}).get("wildfire_risk_score_auc"))
+    high_brier = _safe_float((tiers.get("high_confidence") or {}).get("wildfire_risk_score_brier"))
+    med_auc = _safe_float((tiers.get("medium_confidence") or {}).get("wildfire_risk_score_auc"))
+    med_brier = _safe_float((tiers.get("medium_confidence") or {}).get("wildfire_risk_score_brier"))
+
+    warnings: list[str] = []
+    high_n = int((tiers.get("high_confidence") or {}).get("count") or 0)
+    med_n = int((tiers.get("medium_confidence") or {}).get("count") or 0)
+    if high_n < min_n:
+        warnings.append(
+            f"High-confidence slice is too small for stable interpretation (n={high_n} < {min_n})."
+        )
+    if med_n < min_n:
+        warnings.append(
+            f"Medium-confidence slice is too small for stable interpretation (n={med_n} < {min_n})."
+        )
+
+    return {
+        "min_slice_size": min_n,
+        "tiers": tiers,
+        "deltas_vs_all_data": {
+            "high_confidence_auc_delta": (
+                (high_auc - all_auc) if high_auc is not None and all_auc is not None else None
+            ),
+            "high_confidence_brier_delta": (
+                (high_brier - all_brier) if high_brier is not None and all_brier is not None else None
+            ),
+            "medium_confidence_auc_delta": (
+                (med_auc - all_auc) if med_auc is not None and all_auc is not None else None
+            ),
+            "medium_confidence_brier_delta": (
+                (med_brier - all_brier) if med_brier is not None and all_brier is not None else None
+            ),
+        },
+        "warnings": warnings,
+    }
+
+
 def _top_factor_contributions(row: dict[str, Any], limit: int = 5) -> list[dict[str, Any]]:
     factors = row.get("factor_contribution_breakdown")
     if not isinstance(factors, dict):
@@ -1747,12 +1804,21 @@ def evaluate_public_outcome_dataset_rows(
         false_high_min_score=float(false_high_min_score),
     )
     high_confidence_rows = [row for row in usable_rows if str(row.get("validation_confidence_tier")) == "high-confidence"]
+    medium_confidence_rows = [row for row in usable_rows if str(row.get("validation_confidence_tier")) == "medium-confidence"]
     high_evidence_rows = [row for row in usable_rows if str(row.get("evidence_group")) == "high_evidence"]
+    confidence_tier_performance = _build_confidence_tier_performance(
+        all_rows=usable_rows,
+        high_confidence_rows=high_confidence_rows,
+        medium_confidence_rows=medium_confidence_rows,
+        min_slice_size=min_slice_size,
+    )
     if not high_confidence_rows:
         guardrail_warnings.append("No high-confidence rows in this run; prioritize stronger join/feature coverage before calibration decisions.")
     if not high_evidence_rows:
         guardrail_warnings.append("No high-evidence rows in this run; results are dominated by inferred/fallback-heavy evidence.")
+    guardrail_warnings.extend(list(confidence_tier_performance.get("warnings") or []))
     guardrail_warnings.extend(list(metric_stability.get("warnings") or []))
+    guardrail_warnings = sorted(set(str(item) for item in guardrail_warnings if str(item).strip()))
     minimum_viable_metrics = _compute_minimum_viable_metrics(
         prepared_rows=usable_rows,
         default_threshold=default_threshold,
@@ -1912,8 +1978,10 @@ def evaluate_public_outcome_dataset_rows(
         "subset_metrics": {
             "full_dataset": _compute_subset_metrics(usable_rows),
             "high_confidence_subset": _compute_subset_metrics(high_confidence_rows),
+            "medium_confidence_subset": _compute_subset_metrics(medium_confidence_rows),
             "high_evidence_subset": _compute_subset_metrics(high_evidence_rows),
         },
+        "confidence_tier_performance": confidence_tier_performance,
         "minimum_viable_metrics": minimum_viable_metrics,
         "data_sufficiency_flags": data_sufficiency_flags,
         "data_sufficiency_indicator": data_sufficiency_indicator,

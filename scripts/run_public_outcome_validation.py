@@ -262,6 +262,11 @@ def _build_summary_markdown(
     proxy_validation = report.get("proxy_validation") if isinstance(report.get("proxy_validation"), dict) else {}
     synthetic_validation = report.get("synthetic_validation") if isinstance(report.get("synthetic_validation"), dict) else {}
     subset_metrics = report.get("subset_metrics") if isinstance(report.get("subset_metrics"), dict) else {}
+    confidence_tier_performance = (
+        report.get("confidence_tier_performance")
+        if isinstance(report.get("confidence_tier_performance"), dict)
+        else {}
+    )
     review_sets = report.get("false_review_sets") if isinstance(report.get("false_review_sets"), dict) else {}
     calibration_metrics = report.get("calibration_metrics") if isinstance(report.get("calibration_metrics"), dict) else {}
     wildfire_calibration = (
@@ -466,7 +471,7 @@ def _build_summary_markdown(
     if subset_metrics:
         lines.append("")
         lines.append("### Subset Evaluation")
-        for name in ("full_dataset", "high_confidence_subset", "high_evidence_subset"):
+        for name in ("full_dataset", "high_confidence_subset", "medium_confidence_subset", "high_evidence_subset"):
             detail = subset_metrics.get(name) if isinstance(subset_metrics.get(name), dict) else {}
             lines.append(
                 f"- `{name}`: n={detail.get('count')}, "
@@ -474,6 +479,34 @@ def _build_summary_markdown(
                 f"pr_auc={_format_float(detail.get('wildfire_risk_score_pr_auc'))}, "
                 f"brier={_format_float(detail.get('wildfire_risk_score_brier'))}"
             )
+    if confidence_tier_performance:
+        tier_rows = confidence_tier_performance.get("tiers") if isinstance(confidence_tier_performance.get("tiers"), dict) else {}
+        deltas = confidence_tier_performance.get("deltas_vs_all_data") if isinstance(confidence_tier_performance.get("deltas_vs_all_data"), dict) else {}
+        warnings_by_tier = (
+            confidence_tier_performance.get("warnings")
+            if isinstance(confidence_tier_performance.get("warnings"), list)
+            else []
+        )
+        lines.append("")
+        lines.append("### Confidence-Tier Performance (All vs High vs Medium)")
+        for name in ("all_data", "high_confidence", "medium_confidence"):
+            detail = tier_rows.get(name) if isinstance(tier_rows.get(name), dict) else {}
+            lines.append(
+                f"- `{name}`: n={detail.get('count')}, "
+                f"auc={_format_float(detail.get('wildfire_risk_score_auc'))}, "
+                f"brier={_format_float(detail.get('wildfire_risk_score_brier'))}, "
+                f"small_sample_warning={detail.get('small_sample_warning')}"
+            )
+        lines.append(
+            "- Delta vs all_data: "
+            f"high_auc={_format_float(deltas.get('high_confidence_auc_delta'))}, "
+            f"high_brier={_format_float(deltas.get('high_confidence_brier_delta'))}, "
+            f"medium_auc={_format_float(deltas.get('medium_confidence_auc_delta'))}, "
+            f"medium_brier={_format_float(deltas.get('medium_confidence_brier_delta'))}"
+        )
+        if warnings_by_tier:
+            for warning in warnings_by_tier:
+                lines.append(f"- Tier warning: {warning}")
 
     lines.extend(
         [
@@ -557,6 +590,75 @@ def _insufficient_data_report(
             "by_evidence_group": {},
             "by_join_confidence_tier": {},
             "by_validation_confidence_tier": {},
+        },
+        "subset_metrics": {
+            "full_dataset": {
+                "count": 0,
+                "positive_rate": None,
+                "wildfire_risk_score_auc": None,
+                "wildfire_risk_score_pr_auc": None,
+                "wildfire_risk_score_brier": None,
+            },
+            "high_confidence_subset": {
+                "count": 0,
+                "positive_rate": None,
+                "wildfire_risk_score_auc": None,
+                "wildfire_risk_score_pr_auc": None,
+                "wildfire_risk_score_brier": None,
+            },
+            "medium_confidence_subset": {
+                "count": 0,
+                "positive_rate": None,
+                "wildfire_risk_score_auc": None,
+                "wildfire_risk_score_pr_auc": None,
+                "wildfire_risk_score_brier": None,
+            },
+            "high_evidence_subset": {
+                "count": 0,
+                "positive_rate": None,
+                "wildfire_risk_score_auc": None,
+                "wildfire_risk_score_pr_auc": None,
+                "wildfire_risk_score_brier": None,
+            },
+        },
+        "confidence_tier_performance": {
+            "min_slice_size": 20,
+            "tiers": {
+                "all_data": {
+                    "count": 0,
+                    "positive_rate": None,
+                    "wildfire_risk_score_auc": None,
+                    "wildfire_risk_score_pr_auc": None,
+                    "wildfire_risk_score_brier": None,
+                    "small_sample_warning": True,
+                },
+                "high_confidence": {
+                    "count": 0,
+                    "positive_rate": None,
+                    "wildfire_risk_score_auc": None,
+                    "wildfire_risk_score_pr_auc": None,
+                    "wildfire_risk_score_brier": None,
+                    "small_sample_warning": True,
+                },
+                "medium_confidence": {
+                    "count": 0,
+                    "positive_rate": None,
+                    "wildfire_risk_score_auc": None,
+                    "wildfire_risk_score_pr_auc": None,
+                    "wildfire_risk_score_brier": None,
+                    "small_sample_warning": True,
+                },
+            },
+            "deltas_vs_all_data": {
+                "high_confidence_auc_delta": None,
+                "high_confidence_brier_delta": None,
+                "medium_confidence_auc_delta": None,
+                "medium_confidence_brier_delta": None,
+            },
+            "warnings": [
+                "High-confidence slice is too small for stable interpretation (n=0 < 20).",
+                "Medium-confidence slice is too small for stable interpretation (n=0 < 20).",
+            ],
         },
         "minimum_viable_metrics": {
             "available": False,
@@ -783,6 +885,7 @@ def run_public_outcome_validation(
                 "[public-validation] Subsets: "
                 f"full={((subset_metrics.get('full_dataset') or {}).get('count'))} "
                 f"high_confidence={((subset_metrics.get('high_confidence_subset') or {}).get('count'))} "
+                f"medium_confidence={((subset_metrics.get('medium_confidence_subset') or {}).get('count'))} "
                 f"high_evidence={((subset_metrics.get('high_evidence_subset') or {}).get('count'))}"
             )
     except ValueError as exc:

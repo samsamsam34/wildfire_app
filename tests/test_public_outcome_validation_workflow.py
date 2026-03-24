@@ -132,6 +132,14 @@ def test_evaluate_public_outcome_dataset_reports_required_metrics(tmp_path: Path
     assert "by_validation_confidence_tier" in (report["slice_metrics"] or {})
     assert "subset_metrics" in report
     assert report["subset_metrics"]["full_dataset"]["count"] == report["row_count_labeled"]
+    assert "medium_confidence_subset" in report["subset_metrics"]
+    assert "confidence_tier_performance" in report
+    tier_perf = report["confidence_tier_performance"]
+    assert "tiers" in tier_perf
+    assert "all_data" in tier_perf["tiers"]
+    assert "high_confidence" in tier_perf["tiers"]
+    assert "medium_confidence" in tier_perf["tiers"]
+    assert "deltas_vs_all_data" in tier_perf
     assert "minimum_viable_metrics" in report
     assert report["minimum_viable_metrics"]["available"] is True
     assert "data_sufficiency_flags" in report
@@ -264,7 +272,12 @@ def test_evaluation_jsonl_dataset_supports_join_confidence_slices(tmp_path: Path
     assert "moderate" in (report["slice_metrics"]["by_join_confidence_tier"] or {})
     assert "low" in (report["slice_metrics"]["by_join_confidence_tier"] or {})
     assert "subset_metrics" in report
+    assert "medium_confidence_subset" in report["subset_metrics"]
     assert report["subset_metrics"]["high_evidence_subset"]["count"] >= 1
+    tier_perf = report.get("confidence_tier_performance") or {}
+    assert "tiers" in tier_perf
+    assert (tier_perf.get("tiers") or {}).get("high_confidence", {}).get("count") >= 1
+    assert (tier_perf.get("tiers") or {}).get("medium_confidence", {}).get("count") >= 1
     assert "proxy_validation" in report
     assert "synthetic_validation" in report
     assert report["discrimination_metrics"]["wildfire_risk_score_pr_auc"] is not None
@@ -358,6 +371,8 @@ def test_small_sample_metrics_are_marked_unstable_even_with_perfect_auc(tmp_path
     assert report["discrimination_metrics"]["wildfire_discrimination_stability"] == "unstable_small_sample"
     warnings = report["metric_stability"]["warnings"]
     assert any("Insufficient data for stable AUC/PR-AUC interpretation" in warning for warning in warnings)
+    guardrail_warnings = (report.get("guardrails") or {}).get("warnings") or []
+    assert any("High-confidence slice is too small for stable interpretation" in warning for warning in guardrail_warnings)
     ci = report["discrimination_metrics"]["wildfire_risk_score_auc_confidence_interval_95"]
     assert isinstance(ci, dict)
     assert "low" in ci and "high" in ci
