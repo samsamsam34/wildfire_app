@@ -91,9 +91,11 @@ Where label/sample coverage allows:
 - sample counts and prevalence
 - ROC AUC
 - PR AUC
+- ROC/PR AUC 95% bootstrap confidence intervals
 - precision/recall/F1 at configured thresholds
 - confusion summaries
 - Brier score
+- Brier 95% bootstrap confidence interval
 - calibration-by-bin and ECE
 - rank correlation (Spearman)
 
@@ -143,6 +145,11 @@ The workflow warns when:
 - leakage-like patterns are detected
 
 If the sample is small, the report still computes available metrics and avoids overstating precision.
+Small-sample runs include explicit stability metadata:
+- `metric_stability.auc_stable=false` when discrimination metrics are not statistically stable for interpretation
+- `discrimination_metrics.wildfire_discrimination_stability=unstable_small_sample`
+- threshold constants used for warnings (`small_sample_threshold`, `stable_auc_min_class_count`)
+
 The runner also logs stage counts:
 - loaded dataset rows
 - retained rows

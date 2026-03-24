@@ -3,12 +3,15 @@ from __future__ import annotations
 import csv
 import json
 import math
+import random
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 DEFAULT_THRESHOLDS = (30.0, 40.0, 50.0, 60.0, 70.0, 80.0)
+SMALL_SAMPLE_WARNING_N = 25
+STABLE_AUC_MIN_CLASS_COUNT = 10
 LEAKAGE_TOKENS = (
     "outcome",
     "damage",
@@ -249,6 +252,80 @@ def _calibration_table(
             }
         )
     return table, ece_total
+
+
+def _bootstrap_metric_ci(
+    *,
+    y_true: list[int],
+    y_score: list[float],
+    metric: str,
+    iterations: int = 400,
+    seed: int = 17,
+) -> dict[str, float | None]:
+    if len(y_true) != len(y_score) or len(y_true) < 4:
+        return {"low": None, "high": None}
+    n = len(y_true)
+    rng = random.Random(seed)
+    values: list[float] = []
+    for _ in range(max(50, int(iterations))):
+        idx = [rng.randrange(n) for _ in range(n)]
+        y_samp = [int(y_true[i]) for i in idx]
+        s_samp = [float(y_score[i]) for i in idx]
+        if metric == "auc":
+            value = _roc_auc(y_samp, s_samp)
+        elif metric == "pr_auc":
+            value = _pr_auc(y_samp, s_samp)
+        elif metric == "brier":
+            value = _brier(y_samp, s_samp)
+        else:
+            value = None
+        if isinstance(value, (int, float)):
+            values.append(float(value))
+    if not values:
+        return {"low": None, "high": None}
+    values.sort()
+    low_idx = max(0, min(len(values) - 1, int(0.025 * (len(values) - 1))))
+    high_idx = max(0, min(len(values) - 1, int(0.975 * (len(values) - 1))))
+    return {"low": values[low_idx], "high": values[high_idx]}
+
+
+def _build_metric_stability(
+    *,
+    y_true: list[int],
+    raw_auc: float | None,
+) -> dict[str, Any]:
+    n = len(y_true)
+    positives = sum(int(v) for v in y_true)
+    negatives = n - positives
+    warnings: list[str] = []
+    unstable_metrics: list[str] = []
+    auc_stable = bool(
+        raw_auc is not None
+        and n >= SMALL_SAMPLE_WARNING_N
+        and positives >= STABLE_AUC_MIN_CLASS_COUNT
+        and negatives >= STABLE_AUC_MIN_CLASS_COUNT
+    )
+    if n < SMALL_SAMPLE_WARNING_N:
+        warnings.append(
+            f"Insufficient data for stable AUC/PR-AUC interpretation (n={n} < {SMALL_SAMPLE_WARNING_N})."
+        )
+        unstable_metrics.extend(["wildfire_risk_score_auc", "wildfire_risk_score_pr_auc"])
+    if positives < STABLE_AUC_MIN_CLASS_COUNT or negatives < STABLE_AUC_MIN_CLASS_COUNT:
+        warnings.append(
+            "Class counts are too small for stable discrimination estimates "
+            f"(positives={positives}, negatives={negatives})."
+        )
+        unstable_metrics.extend(["wildfire_risk_score_auc", "wildfire_risk_score_pr_auc"])
+    return {
+        "sample_size": n,
+        "positive_count": positives,
+        "negative_count": negatives,
+        "small_sample_threshold": SMALL_SAMPLE_WARNING_N,
+        "stable_auc_min_class_count": STABLE_AUC_MIN_CLASS_COUNT,
+        "auc_stable": auc_stable,
+        "unstable_metrics": sorted(set(unstable_metrics)),
+        "warnings": warnings,
+    }
 
 
 def _normalize_label(value: Any) -> str:
@@ -891,9 +968,13 @@ def _build_narrative_summary(
     rank_hit_rate: float | None,
     data_sufficiency: dict[str, Any],
     by_evidence_group: dict[str, Any],
+    metric_stability: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     flags = (data_sufficiency.get("flags") or {}) if isinstance(data_sufficiency, dict) else {}
+    stability = metric_stability if isinstance(metric_stability, dict) else {}
     lines: list[str] = []
+    if not bool(stability.get("auc_stable", True)):
+        lines.append("Insufficient data for stable AUC/PR-AUC; treat discrimination values as unstable.")
     if isinstance(raw_auc, float):
         if raw_auc >= 0.7:
             lines.append("Model shows directional discrimination in this sample.")
@@ -903,14 +984,14 @@ def _build_narrative_summary(
             lines.append("Directional discrimination appears weak in this sample.")
     elif isinstance(rank_hit_rate, float):
         if rank_hit_rate >= 0.6:
-            lines.append("Pairwise rank ordering suggests directional signal despite limited sample size.")
+            lines.append("Directional separation observed in rank ordering despite limited sample size.")
         else:
             lines.append("Pairwise rank ordering is weak; directional signal is limited in this sample.")
     else:
         lines.append("Directional discrimination cannot be established from this sample.")
 
     if bool(flags.get("small_sample_size")):
-        lines.append("Insufficient data for stable calibration conclusions; treat metrics as provisional.")
+        lines.append("Dataset too small for calibration trust; treat calibration/error estimates as provisional.")
     if bool(flags.get("class_imbalance")):
         lines.append("Class imbalance is present and may distort threshold-based metrics.")
     if bool(flags.get("low_join_confidence_prevalent")):
@@ -1606,6 +1687,11 @@ def evaluate_public_outcome_dataset_rows(
     }
 
     raw_auc = _roc_auc(y_true, raw_probs)
+    raw_pr_auc = _pr_auc(y_true, raw_probs)
+    auc_ci = _bootstrap_metric_ci(y_true=y_true, y_score=raw_probs, metric="auc")
+    pr_auc_ci = _bootstrap_metric_ci(y_true=y_true, y_score=raw_probs, metric="pr_auc")
+    brier_ci = _bootstrap_metric_ci(y_true=y_true, y_score=raw_probs, metric="brier")
+    metric_stability = _build_metric_stability(y_true=y_true, raw_auc=raw_auc)
     leak_risks = _detect_data_leakage_risks(usable_rows, raw_auc)
     guardrail_warnings = _build_guardrail_warnings(
         row_count=len(usable_rows),
@@ -1624,6 +1710,7 @@ def evaluate_public_outcome_dataset_rows(
         guardrail_warnings.append("No high-confidence rows in this run; prioritize stronger join/feature coverage before calibration decisions.")
     if not high_evidence_rows:
         guardrail_warnings.append("No high-evidence rows in this run; results are dominated by inferred/fallback-heavy evidence.")
+    guardrail_warnings.extend(list(metric_stability.get("warnings") or []))
     minimum_viable_metrics = _compute_minimum_viable_metrics(
         prepared_rows=usable_rows,
         default_threshold=default_threshold,
@@ -1681,7 +1768,12 @@ def evaluate_public_outcome_dataset_rows(
         },
         "discrimination_metrics": {
             "wildfire_risk_score_auc": raw_auc,
-            "wildfire_risk_score_pr_auc": _pr_auc(y_true, raw_probs),
+            "wildfire_risk_score_pr_auc": raw_pr_auc,
+            "wildfire_risk_score_auc_confidence_interval_95": auc_ci,
+            "wildfire_risk_score_pr_auc_confidence_interval_95": pr_auc_ci,
+            "wildfire_discrimination_stability": (
+                "stable" if bool(metric_stability.get("auc_stable")) else "unstable_small_sample"
+            ),
             "site_hazard_score_auc": _roc_auc(
                 y_true,
                 [max(0.0, min(1.0, (_extract_score(row, "site_hazard_score") or 0.0) / 100.0)) for row in usable_rows],
@@ -1708,6 +1800,7 @@ def evaluate_public_outcome_dataset_rows(
         },
         "brier_scores": {
             "wildfire_probability_proxy": _brier(y_true, raw_probs),
+            "wildfire_probability_proxy_confidence_interval_95": brier_ci,
             "calibrated_damage_likelihood": (
                 _brier(calibrated_y, calibrated_probs) if calibrated_y and calibrated_probs else None
             ),
@@ -1781,6 +1874,7 @@ def evaluate_public_outcome_dataset_rows(
             "fallback_heavy_warning": fallback_heavy_fraction >= 0.5,
             "leakage_warning": bool(leak_risks.get("warnings")),
         },
+        "metric_stability": metric_stability,
         "directional_predictive_value": directional_predictive_value,
         "calibration_artifact_recommendation": calibration_recommendation,
     }
@@ -1789,6 +1883,7 @@ def evaluate_public_outcome_dataset_rows(
         rank_hit_rate=((minimum_viable_metrics.get("rank_ordering") or {}).get("hit_rate") if isinstance(minimum_viable_metrics, dict) else None),
         data_sufficiency=data_sufficiency_flags,
         by_evidence_group=(report.get("slice_metrics") or {}).get("by_evidence_group") if isinstance(report.get("slice_metrics"), dict) else {},
+        metric_stability=metric_stability,
     )
     proxy_validation = _compute_proxy_validation(usable_rows)
     synthetic_validation = _run_synthetic_stress_validation()

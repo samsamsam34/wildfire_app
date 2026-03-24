@@ -227,6 +227,16 @@ def _format_float(value: Any) -> str:
     return f"{float(value):.4f}"
 
 
+def _format_ci(value: Any) -> str:
+    if not isinstance(value, dict):
+        return "n/a"
+    low = value.get("low")
+    high = value.get("high")
+    if not isinstance(low, (int, float)) or not isinstance(high, (int, float)):
+        return "n/a"
+    return f"[{float(low):.4f}, {float(high):.4f}]"
+
+
 def _build_summary_markdown(
     *,
     run_id: str,
@@ -239,6 +249,7 @@ def _build_summary_markdown(
     brier = report.get("brier_scores") if isinstance(report.get("brier_scores"), dict) else {}
     default_threshold = report.get("default_threshold_70") if isinstance(report.get("default_threshold_70"), dict) else {}
     guardrails = report.get("guardrails") if isinstance(report.get("guardrails"), dict) else {}
+    metric_stability = report.get("metric_stability") if isinstance(report.get("metric_stability"), dict) else {}
     narrative = report.get("narrative_summary") if isinstance(report.get("narrative_summary"), dict) else {}
     minimum_viable = report.get("minimum_viable_metrics") if isinstance(report.get("minimum_viable_metrics"), dict) else {}
     data_suff = report.get("data_sufficiency_flags") if isinstance(report.get("data_sufficiency_flags"), dict) else {}
@@ -272,11 +283,15 @@ def _build_summary_markdown(
         "",
         "## Discrimination",
         f"- ROC AUC (wildfire risk): `{_format_float(discrimination.get('wildfire_risk_score_auc'))}`",
+        f"- ROC AUC 95% CI: `{_format_ci(discrimination.get('wildfire_risk_score_auc_confidence_interval_95'))}`",
         f"- PR AUC (wildfire risk): `{_format_float(discrimination.get('wildfire_risk_score_pr_auc'))}`",
+        f"- PR AUC 95% CI: `{_format_ci(discrimination.get('wildfire_risk_score_pr_auc_confidence_interval_95'))}`",
         f"- Spearman rank correlation: `{_format_float(discrimination.get('wildfire_vs_outcome_rank_spearman'))}`",
+        f"- Discrimination stability: `{discrimination.get('wildfire_discrimination_stability')}`",
         "",
         "## Calibration",
         f"- Brier score (raw wildfire probability proxy): `{_format_float(brier.get('wildfire_probability_proxy'))}`",
+        f"- Brier score 95% CI: `{_format_ci(brier.get('wildfire_probability_proxy_confidence_interval_95'))}`",
         f"- ECE (raw wildfire risk): `{_format_float(wildfire_calibration.get('expected_calibration_error'))}`",
         "",
         "## Default Threshold (70)",
@@ -311,9 +326,27 @@ def _build_summary_markdown(
         flags = data_suff.get("flags") if isinstance(data_suff.get("flags"), dict) else {}
         lines.append("### Data Sufficiency Flags")
         lines.append(f"- Small sample size: `{flags.get('small_sample_size')}`")
+        lines.append(f"- Very small sample size: `{flags.get('very_small_sample_size')}`")
         lines.append(f"- Class imbalance: `{flags.get('class_imbalance')}`")
         lines.append(f"- Low join-confidence prevalent: `{flags.get('low_join_confidence_prevalent')}`")
         lines.append(f"- Fallback-heavy prevalent: `{flags.get('fallback_heavy_prevalent')}`")
+        lines.append("")
+    if metric_stability:
+        lines.append("### Metric Stability")
+        lines.append(f"- AUC stable for interpretation: `{metric_stability.get('auc_stable')}`")
+        lines.append(
+            f"- Sample size / positives / negatives: "
+            f"`{metric_stability.get('sample_size')} / {metric_stability.get('positive_count')} / {metric_stability.get('negative_count')}`"
+        )
+        instability_warnings = (
+            metric_stability.get("warnings")
+            if isinstance(metric_stability.get("warnings"), list)
+            else []
+        )
+        if instability_warnings:
+            lines.append("- Instability warnings:")
+            for warning in instability_warnings:
+                lines.append(f"  - {warning}")
         lines.append("")
 
     lines.append("## Supplemental Validation (Non-Ground-Truth)")

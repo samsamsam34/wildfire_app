@@ -119,7 +119,11 @@ def test_evaluate_public_outcome_dataset_reports_required_metrics(tmp_path: Path
     assert "by_region" in (report["sample_counts"] or {})
     assert report["discrimination_metrics"]["wildfire_risk_score_auc"] is not None
     assert report["discrimination_metrics"]["wildfire_risk_score_pr_auc"] is not None
+    assert "wildfire_risk_score_auc_confidence_interval_95" in (report.get("discrimination_metrics") or {})
+    assert "wildfire_risk_score_pr_auc_confidence_interval_95" in (report.get("discrimination_metrics") or {})
+    assert "wildfire_discrimination_stability" in (report.get("discrimination_metrics") or {})
     assert report["brier_scores"]["wildfire_probability_proxy"] is not None
+    assert "wildfire_probability_proxy_confidence_interval_95" in (report.get("brier_scores") or {})
     assert "40" in report["threshold_metrics_wildfire_risk_score"]
     assert "70" in report["threshold_metrics_wildfire_risk_score"]
     assert report["calibration_metrics"]["wildfire_risk_score"]["bins"]
@@ -136,6 +140,7 @@ def test_evaluate_public_outcome_dataset_reports_required_metrics(tmp_path: Path
     assert "synthetic_validation" in report
     assert "validation_streams" in report
     assert "false_review_sets" in report
+    assert "metric_stability" in report
     assert isinstance(rows, list) and rows
 
 
@@ -306,8 +311,51 @@ def test_evaluate_public_outcome_dataset_allows_small_usable_set_when_configured
     assert report["minimum_viable_metrics"]["available"] is True
     assert report["minimum_viable_metrics"]["simple_accuracy_at_threshold"]["accuracy"] in {0.0, 1.0}
     assert report["data_sufficiency_flags"]["flags"]["small_sample_size"] is True
-    assert "Insufficient data for stable calibration conclusions" in " ".join(report["narrative_summary"]["bullets"])
+    assert report["metric_stability"]["auc_stable"] is False
+    assert "Insufficient data for stable AUC/PR-AUC" in " ".join(report["narrative_summary"]["bullets"])
+    assert "Dataset too small for calibration trust" in " ".join(report["narrative_summary"]["bullets"])
     assert len(rows) == 1
+
+
+def test_small_sample_metrics_are_marked_unstable_even_with_perfect_auc(tmp_path: Path) -> None:
+    dataset_path = tmp_path / "tiny_perfect_auc.jsonl"
+    rows = [
+        {
+            "event": {"event_id": "evt-small"},
+            "feature": {"record_id": "a1"},
+            "outcome": {"damage_label": "destroyed", "damage_severity_class": "destroyed", "structure_loss_or_major_damage": 1},
+            "scores": {"wildfire_risk_score": 95.0},
+        },
+        {
+            "event": {"event_id": "evt-small"},
+            "feature": {"record_id": "a2"},
+            "outcome": {"damage_label": "major_damage", "damage_severity_class": "major", "structure_loss_or_major_damage": 1},
+            "scores": {"wildfire_risk_score": 90.0},
+        },
+        {
+            "event": {"event_id": "evt-small"},
+            "feature": {"record_id": "b1"},
+            "outcome": {"damage_label": "no_damage", "damage_severity_class": "none", "structure_loss_or_major_damage": 0},
+            "scores": {"wildfire_risk_score": 25.0},
+        },
+        {
+            "event": {"event_id": "evt-small"},
+            "feature": {"record_id": "b2"},
+            "outcome": {"damage_label": "no_damage", "damage_severity_class": "none", "structure_loss_or_major_damage": 0},
+            "scores": {"wildfire_risk_score": 20.0},
+        },
+    ]
+    dataset_path.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
+    report, _ = evaluate_public_outcome_dataset_file(dataset_path=dataset_path, min_labeled_rows=1)
+    assert report["row_count_labeled"] == 4
+    assert report["discrimination_metrics"]["wildfire_risk_score_auc"] == 1.0
+    assert report["metric_stability"]["auc_stable"] is False
+    assert report["discrimination_metrics"]["wildfire_discrimination_stability"] == "unstable_small_sample"
+    warnings = report["metric_stability"]["warnings"]
+    assert any("Insufficient data for stable AUC/PR-AUC interpretation" in warning for warning in warnings)
+    ci = report["discrimination_metrics"]["wildfire_risk_score_auc_confidence_interval_95"]
+    assert isinstance(ci, dict)
+    assert "low" in ci and "high" in ci
 
 
 def test_orchestration_writes_bundle_for_insufficient_dataset(tmp_path: Path) -> None:
