@@ -148,6 +148,25 @@ def _precision_recall(conf: dict[str, int]) -> dict[str, float | None]:
     return {"precision": precision, "recall": recall, "f1": f1}
 
 
+def _wilson_interval(successes: int, total: int, z: float = 1.96) -> dict[str, float | None]:
+    n = int(total)
+    k = int(successes)
+    if n <= 0:
+        return {"low": None, "high": None}
+    phat = k / float(n)
+    denom = 1.0 + (z * z) / n
+    center = (phat + (z * z) / (2.0 * n)) / denom
+    margin = (
+        z
+        * math.sqrt((phat * (1.0 - phat) / n) + ((z * z) / (4.0 * n * n)))
+        / denom
+    )
+    return {
+        "low": max(0.0, center - margin),
+        "high": min(1.0, center + margin),
+    }
+
+
 def _pr_auc(y_true: list[int], y_score: list[float]) -> float | None:
     if len(y_true) != len(y_score) or len(y_true) < 3:
         return None
@@ -273,7 +292,6 @@ def _extract_join_confidence_tier(row: dict[str, Any]) -> str:
     if direct:
         return direct
     join_meta = row.get("join_metadata") if isinstance(row.get("join_metadata"), dict) else {}
-    evaluation = row.get("evaluation") if isinstance(row.get("evaluation"), dict) else {}
     tier = str(join_meta.get("join_confidence_tier") or "").strip().lower()
     return tier or "unknown"
 
@@ -667,6 +685,217 @@ def _build_guardrail_warnings(
     return warnings
 
 
+def _pairwise_directional_hit_rate(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    positives = [row for row in rows if int(row.get("structure_loss_or_major_damage") or 0) == 1]
+    negatives = [row for row in rows if int(row.get("structure_loss_or_major_damage") or 0) == 0]
+    total_pairs = len(positives) * len(negatives)
+    if total_pairs <= 0:
+        return {
+            "available": False,
+            "pair_count": total_pairs,
+            "hit_rate": None,
+            "ties_fraction": None,
+        }
+    wins = 0.0
+    ties = 0
+    for pos in positives:
+        pos_score = float(pos.get("wildfire_risk_score") or 0.0)
+        for neg in negatives:
+            neg_score = float(neg.get("wildfire_risk_score") or 0.0)
+            if pos_score > neg_score:
+                wins += 1.0
+            elif pos_score == neg_score:
+                wins += 0.5
+                ties += 1
+    hit_rate = wins / float(total_pairs)
+    return {
+        "available": True,
+        "pair_count": total_pairs,
+        "hit_rate": hit_rate,
+        "ties_fraction": ties / float(total_pairs),
+        "confidence_interval_95": _wilson_interval(int(round(wins)), total_pairs),
+    }
+
+
+def _adverse_rate_by_score_bins(rows: list[dict[str, Any]], max_bins: int = 10) -> dict[str, Any]:
+    if not rows:
+        return {"available": False, "bins": []}
+    scored = sorted(rows, key=lambda row: float(row.get("wildfire_risk_score") or 0.0), reverse=True)
+    n = len(scored)
+    bin_count = max(1, min(int(max_bins), n))
+    bins: list[dict[str, Any]] = []
+    for idx in range(bin_count):
+        start = int((idx / bin_count) * n)
+        end = int(((idx + 1) / bin_count) * n)
+        if end <= start:
+            continue
+        bucket = scored[start:end]
+        labels = [int(row.get("structure_loss_or_major_damage") or 0) for row in bucket]
+        positives = sum(labels)
+        adverse_rate = positives / float(len(bucket))
+        score_values = [float(row.get("wildfire_risk_score") or 0.0) for row in bucket]
+        bins.append(
+            {
+                "bucket_rank": idx + 1,
+                "bucket_label": f"top_{int(round(((idx + 1) / bin_count) * 100))}pct_cumulative",
+                "count": len(bucket),
+                "score_min": min(score_values),
+                "score_max": max(score_values),
+                "adverse_rate": adverse_rate,
+                "confidence_interval_95": _wilson_interval(positives, len(bucket)),
+            }
+        )
+    return {"available": True, "bin_count": len(bins), "bins": bins}
+
+
+def _compute_minimum_viable_metrics(
+    *,
+    prepared_rows: list[dict[str, Any]],
+    default_threshold: float,
+    default_confusion: dict[str, int],
+) -> dict[str, Any]:
+    n = len(prepared_rows)
+    if n <= 0:
+        return {
+            "available": False,
+            "rank_ordering": {"available": False},
+            "simple_accuracy_at_threshold": {"available": False},
+            "top_risk_bucket_hit_rate": {"available": False},
+            "adverse_rate_by_score_decile": {"available": False, "bins": []},
+        }
+    labels = [int(row.get("structure_loss_or_major_damage") or 0) for row in prepared_rows]
+    positives = sum(labels)
+    negatives = n - positives
+    scores = [float(row.get("wildfire_risk_score") or 0.0) for row in prepared_rows]
+    preds = [1 if score >= float(default_threshold) else 0 for score in scores]
+    correct = sum(1 for pred, truth in zip(preds, labels) if pred == truth)
+
+    scored = sorted(prepared_rows, key=lambda row: float(row.get("wildfire_risk_score") or 0.0), reverse=True)
+    bucket_size = max(1, int(math.ceil(0.2 * n)))
+    top_bucket = scored[:bucket_size]
+    top_labels = [int(row.get("structure_loss_or_major_damage") or 0) for row in top_bucket]
+    top_positives = sum(top_labels)
+    baseline_rate = positives / float(n) if n > 0 else None
+    top_rate = top_positives / float(bucket_size) if bucket_size > 0 else None
+    lift = (top_rate / baseline_rate) if (top_rate is not None and baseline_rate not in (None, 0.0)) else None
+
+    return {
+        "available": True,
+        "sample_size": n,
+        "class_balance": {
+            "positive_count": positives,
+            "negative_count": negatives,
+            "positive_rate": baseline_rate,
+            "positive_rate_confidence_interval_95": _wilson_interval(positives, n),
+        },
+        "rank_ordering": _pairwise_directional_hit_rate(prepared_rows),
+        "simple_accuracy_at_threshold": {
+            "available": True,
+            "threshold": float(default_threshold),
+            "accuracy": correct / float(n),
+            "correct_count": correct,
+            "count": n,
+            "confusion_matrix": default_confusion,
+            "confidence_interval_95": _wilson_interval(correct, n),
+        },
+        "top_risk_bucket_hit_rate": {
+            "available": True,
+            "bucket_definition": "top_20_percent_by_wildfire_risk_score",
+            "bucket_count": bucket_size,
+            "adverse_count": top_positives,
+            "adverse_rate": top_rate,
+            "adverse_rate_confidence_interval_95": _wilson_interval(top_positives, bucket_size),
+            "baseline_adverse_rate": baseline_rate,
+            "lift_vs_baseline": lift,
+        },
+        "adverse_rate_by_score_decile": _adverse_rate_by_score_bins(prepared_rows, max_bins=10),
+    }
+
+
+def _build_data_sufficiency_flags(
+    *,
+    prepared_rows: list[dict[str, Any]],
+    positive_rate: float | None,
+    low_join_fraction: float,
+    fallback_heavy_fraction: float,
+    high_confidence_count: int,
+    high_evidence_count: int,
+) -> dict[str, Any]:
+    n = len(prepared_rows)
+    positives = sum(int(row.get("structure_loss_or_major_damage") or 0) for row in prepared_rows)
+    flags = {
+        "small_sample_size": n < 25,
+        "very_small_sample_size": n < 10,
+        "class_imbalance": bool(positive_rate is not None and (positive_rate < 0.1 or positive_rate > 0.9)),
+        "low_join_confidence_prevalent": low_join_fraction >= 0.4,
+        "fallback_heavy_prevalent": fallback_heavy_fraction >= 0.5,
+        "no_high_confidence_rows": high_confidence_count == 0,
+        "no_high_evidence_rows": high_evidence_count == 0,
+    }
+    return {
+        "flags": flags,
+        "sample_size": n,
+        "positive_count": positives,
+        "negative_count": max(0, n - positives),
+        "positive_rate": positive_rate,
+        "low_join_confidence_fraction": low_join_fraction,
+        "fallback_heavy_fraction": fallback_heavy_fraction,
+        "high_confidence_count": high_confidence_count,
+        "high_evidence_count": high_evidence_count,
+    }
+
+
+def _build_narrative_summary(
+    *,
+    raw_auc: float | None,
+    rank_hit_rate: float | None,
+    data_sufficiency: dict[str, Any],
+    by_evidence_group: dict[str, Any],
+) -> dict[str, Any]:
+    flags = (data_sufficiency.get("flags") or {}) if isinstance(data_sufficiency, dict) else {}
+    lines: list[str] = []
+    if isinstance(raw_auc, float):
+        if raw_auc >= 0.7:
+            lines.append("Model shows directional discrimination in this sample.")
+        elif raw_auc >= 0.6:
+            lines.append("Model shows weak-to-moderate directional discrimination in this sample.")
+        else:
+            lines.append("Directional discrimination appears weak in this sample.")
+    elif isinstance(rank_hit_rate, float):
+        if rank_hit_rate >= 0.6:
+            lines.append("Pairwise rank ordering suggests directional signal despite limited sample size.")
+        else:
+            lines.append("Pairwise rank ordering is weak; directional signal is limited in this sample.")
+    else:
+        lines.append("Directional discrimination cannot be established from this sample.")
+
+    if bool(flags.get("small_sample_size")):
+        lines.append("Insufficient data for stable calibration conclusions; treat metrics as provisional.")
+    if bool(flags.get("class_imbalance")):
+        lines.append("Class imbalance is present and may distort threshold-based metrics.")
+    if bool(flags.get("low_join_confidence_prevalent")):
+        lines.append("A substantial share of rows rely on low-confidence joins.")
+    if bool(flags.get("fallback_heavy_prevalent")):
+        lines.append("Fallback-heavy evidence is common and reduces reliability.")
+
+    evidence_text = None
+    if isinstance(by_evidence_group, dict):
+        high = by_evidence_group.get("high_evidence") if isinstance(by_evidence_group.get("high_evidence"), dict) else {}
+        low = by_evidence_group.get("fallback_heavy") if isinstance(by_evidence_group.get("fallback_heavy"), dict) else {}
+        high_auc = high.get("wildfire_risk_score_auc")
+        low_auc = low.get("wildfire_risk_score_auc")
+        if isinstance(high_auc, (int, float)) and isinstance(low_auc, (int, float)):
+            if float(high_auc) > float(low_auc):
+                evidence_text = "Performance is stronger on higher-evidence rows than fallback-heavy rows."
+            elif float(high_auc) < float(low_auc):
+                evidence_text = "Fallback-heavy rows currently score better than high-evidence rows; verify sample composition."
+    if evidence_text:
+        lines.append(evidence_text)
+
+    headline = lines[0] if lines else "Directional validation summary unavailable."
+    return {"headline": headline, "bullets": lines}
+
+
 def _false_review_sets(
     *,
     rows: list[dict[str, Any]],
@@ -910,6 +1139,12 @@ def evaluate_public_outcome_dataset_rows(
             "count": len(bucket),
             "positive_rate": _mean([float(row["structure_loss_or_major_damage"]) for row in bucket]),
         }
+    low_join_count = sum(
+        len(bucket)
+        for key, bucket in join_tier_groups.items()
+        if str(key).strip().lower() == "low"
+    )
+    low_join_fraction = (low_join_count / float(len(prepared_rows))) if prepared_rows else 0.0
 
     fallback_heavy_count = sum(1 for row in prepared_rows if str(row.get("evidence_group")) == "fallback_heavy")
     fallback_heavy_fraction = fallback_heavy_count / float(len(prepared_rows))
@@ -949,6 +1184,19 @@ def evaluate_public_outcome_dataset_rows(
         guardrail_warnings.append("No high-confidence rows in this run; prioritize stronger join/feature coverage before calibration decisions.")
     if not high_evidence_rows:
         guardrail_warnings.append("No high-evidence rows in this run; results are dominated by inferred/fallback-heavy evidence.")
+    minimum_viable_metrics = _compute_minimum_viable_metrics(
+        prepared_rows=prepared_rows,
+        default_threshold=default_threshold,
+        default_confusion=default_conf,
+    )
+    data_sufficiency_flags = _build_data_sufficiency_flags(
+        prepared_rows=prepared_rows,
+        positive_rate=positive_rate,
+        low_join_fraction=low_join_fraction,
+        fallback_heavy_fraction=fallback_heavy_fraction,
+        high_confidence_count=len(high_confidence_rows),
+        high_evidence_count=len(high_evidence_rows),
+    )
 
     directional_predictive_value = bool(raw_auc is not None and raw_auc >= 0.6)
     calibration_recommendation = (
@@ -1069,6 +1317,8 @@ def evaluate_public_outcome_dataset_rows(
             "high_confidence_subset": _compute_subset_metrics(high_confidence_rows),
             "high_evidence_subset": _compute_subset_metrics(high_evidence_rows),
         },
+        "minimum_viable_metrics": minimum_viable_metrics,
+        "data_sufficiency_flags": data_sufficiency_flags,
         "fallback_diagnostics": fallback_stats,
         "factor_contribution_summary_by_confusion_class": _factor_summary_by_confusion_class(prepared_rows),
         "false_review_sets": review_sets,
@@ -1082,6 +1332,12 @@ def evaluate_public_outcome_dataset_rows(
         "directional_predictive_value": directional_predictive_value,
         "calibration_artifact_recommendation": calibration_recommendation,
     }
+    report["narrative_summary"] = _build_narrative_summary(
+        raw_auc=raw_auc,
+        rank_hit_rate=((minimum_viable_metrics.get("rank_ordering") or {}).get("hit_rate") if isinstance(minimum_viable_metrics, dict) else None),
+        data_sufficiency=data_sufficiency_flags,
+        by_evidence_group=(report.get("slice_metrics") or {}).get("by_evidence_group") if isinstance(report.get("slice_metrics"), dict) else {},
+    )
     return report, prepared_rows
 
 

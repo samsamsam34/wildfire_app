@@ -128,6 +128,10 @@ def test_evaluate_public_outcome_dataset_reports_required_metrics(tmp_path: Path
     assert "by_validation_confidence_tier" in (report["slice_metrics"] or {})
     assert "subset_metrics" in report
     assert report["subset_metrics"]["full_dataset"]["count"] == report["row_count_labeled"]
+    assert "minimum_viable_metrics" in report
+    assert report["minimum_viable_metrics"]["available"] is True
+    assert "data_sufficiency_flags" in report
+    assert "narrative_summary" in report
     assert "false_review_sets" in report
     assert isinstance(rows, list) and rows
 
@@ -294,6 +298,10 @@ def test_evaluate_public_outcome_dataset_allows_small_usable_set_when_configured
     )
     assert report["row_count_labeled"] == 1
     assert report["sample_counts"]["row_count_usable"] == 1
+    assert report["minimum_viable_metrics"]["available"] is True
+    assert report["minimum_viable_metrics"]["simple_accuracy_at_threshold"]["accuracy"] in {0.0, 1.0}
+    assert report["data_sufficiency_flags"]["flags"]["small_sample_size"] is True
+    assert "Insufficient data for stable calibration conclusions" in " ".join(report["narrative_summary"]["bullets"])
     assert len(rows) == 1
 
 
@@ -318,4 +326,7 @@ def test_orchestration_writes_bundle_for_insufficient_dataset(tmp_path: Path) ->
     metrics = json.loads(Path(result["validation_metrics_path"]).read_text(encoding="utf-8"))
     assert metrics["status"] == "insufficient_data"
     assert metrics["row_count_labeled"] == 0
+    assert metrics["minimum_viable_metrics"]["available"] is False
+    assert metrics["data_sufficiency_flags"]["flags"]["small_sample_size"] is True
+    assert "no usable labeled rows" in str((metrics.get("narrative_summary") or {}).get("headline", "")).lower()
     assert "Insufficient usable labeled rows" in " ".join((metrics.get("guardrails") or {}).get("warnings") or [])

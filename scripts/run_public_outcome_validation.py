@@ -239,6 +239,9 @@ def _build_summary_markdown(
     brier = report.get("brier_scores") if isinstance(report.get("brier_scores"), dict) else {}
     default_threshold = report.get("default_threshold_70") if isinstance(report.get("default_threshold_70"), dict) else {}
     guardrails = report.get("guardrails") if isinstance(report.get("guardrails"), dict) else {}
+    narrative = report.get("narrative_summary") if isinstance(report.get("narrative_summary"), dict) else {}
+    minimum_viable = report.get("minimum_viable_metrics") if isinstance(report.get("minimum_viable_metrics"), dict) else {}
+    data_suff = report.get("data_sufficiency_flags") if isinstance(report.get("data_sufficiency_flags"), dict) else {}
     slice_metrics = report.get("slice_metrics") if isinstance(report.get("slice_metrics"), dict) else {}
     subset_metrics = report.get("subset_metrics") if isinstance(report.get("subset_metrics"), dict) else {}
     review_sets = report.get("false_review_sets") if isinstance(report.get("false_review_sets"), dict) else {}
@@ -261,6 +264,7 @@ def _build_summary_markdown(
         f"- Input labeled dataset: `{dataset_path}`",
         f"- Usable labeled rows: `{sample_counts.get('row_count_usable')}`",
         f"- Outcome prevalence (adverse): `{_format_float(sample_counts.get('positive_rate'))}`",
+        f"- Narrative headline: `{str(narrative.get('headline') or 'n/a')}`",
         "",
         "## Discrimination",
         f"- ROC AUC (wildfire risk): `{_format_float(discrimination.get('wildfire_risk_score_auc'))}`",
@@ -278,6 +282,35 @@ def _build_summary_markdown(
         "",
         "## Sliced Analysis Highlights",
     ]
+
+    narrative_bullets = narrative.get("bullets") if isinstance(narrative.get("bullets"), list) else []
+    if narrative_bullets:
+        lines.append("### Narrative Summary")
+        for item in narrative_bullets[:8]:
+            lines.append(f"- {item}")
+        lines.append("")
+
+    if minimum_viable:
+        rank_order = minimum_viable.get("rank_ordering") if isinstance(minimum_viable.get("rank_ordering"), dict) else {}
+        acc = minimum_viable.get("simple_accuracy_at_threshold") if isinstance(minimum_viable.get("simple_accuracy_at_threshold"), dict) else {}
+        top_bucket = minimum_viable.get("top_risk_bucket_hit_rate") if isinstance(minimum_viable.get("top_risk_bucket_hit_rate"), dict) else {}
+        deciles = minimum_viable.get("adverse_rate_by_score_decile") if isinstance(minimum_viable.get("adverse_rate_by_score_decile"), dict) else {}
+        lines.append("### Minimum Viable Metrics")
+        lines.append(f"- Rank-order hit rate: `{_format_float(rank_order.get('hit_rate'))}`")
+        lines.append(f"- Accuracy@{acc.get('threshold')}: `{_format_float(acc.get('accuracy'))}`")
+        lines.append(f"- Top-risk bucket adverse rate: `{_format_float(top_bucket.get('adverse_rate'))}`")
+        lines.append(f"- Top-risk lift vs baseline: `{_format_float(top_bucket.get('lift_vs_baseline'))}`")
+        lines.append(f"- Score-decile bins available: `{deciles.get('bin_count')}`")
+        lines.append("")
+
+    if data_suff:
+        flags = data_suff.get("flags") if isinstance(data_suff.get("flags"), dict) else {}
+        lines.append("### Data Sufficiency Flags")
+        lines.append(f"- Small sample size: `{flags.get('small_sample_size')}`")
+        lines.append(f"- Class imbalance: `{flags.get('class_imbalance')}`")
+        lines.append(f"- Low join-confidence prevalent: `{flags.get('low_join_confidence_prevalent')}`")
+        lines.append(f"- Fallback-heavy prevalent: `{flags.get('fallback_heavy_prevalent')}`")
+        lines.append("")
 
     by_evidence = slice_metrics.get("by_evidence_group") if isinstance(slice_metrics.get("by_evidence_group"), dict) else {}
     by_confidence = slice_metrics.get("by_confidence_tier") if isinstance(slice_metrics.get("by_confidence_tier"), dict) else {}
@@ -411,6 +444,39 @@ def _insufficient_data_report(
             "by_evidence_group": {},
             "by_join_confidence_tier": {},
             "by_validation_confidence_tier": {},
+        },
+        "minimum_viable_metrics": {
+            "available": False,
+            "rank_ordering": {"available": False},
+            "simple_accuracy_at_threshold": {"available": False},
+            "top_risk_bucket_hit_rate": {"available": False},
+            "adverse_rate_by_score_decile": {"available": False, "bins": []},
+        },
+        "data_sufficiency_flags": {
+            "flags": {
+                "small_sample_size": True,
+                "very_small_sample_size": True,
+                "class_imbalance": False,
+                "low_join_confidence_prevalent": False,
+                "fallback_heavy_prevalent": False,
+                "no_high_confidence_rows": True,
+                "no_high_evidence_rows": True,
+            },
+            "sample_size": 0,
+            "positive_count": 0,
+            "negative_count": 0,
+            "positive_rate": None,
+            "low_join_confidence_fraction": None,
+            "fallback_heavy_fraction": None,
+            "high_confidence_count": 0,
+            "high_evidence_count": 0,
+        },
+        "narrative_summary": {
+            "headline": "Directional validation is unavailable because no usable labeled rows were found.",
+            "bullets": [
+                "Directional validation is unavailable because no usable labeled rows were found.",
+                "Insufficient data for stable calibration conclusions.",
+            ],
         },
         "false_review_sets": {
             "false_low_count": 0,

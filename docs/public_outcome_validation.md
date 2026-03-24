@@ -86,6 +86,13 @@ Where label/sample coverage allows:
 - calibration-by-bin and ECE
 - rank correlation (Spearman)
 
+Minimum viable diagnostics are emitted for usable datasets (including small samples):
+- pairwise rank-order hit rate
+- simple accuracy at default threshold
+- top-risk-bucket adverse hit rate and lift vs baseline
+- adverse outcome rate by score decile/bucket (when computable)
+- narrative summary and data sufficiency flags
+
 Sliced metrics include:
 - event
 - region (if available)
