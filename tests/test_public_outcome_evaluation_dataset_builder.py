@@ -186,6 +186,8 @@ def test_builder_joins_rows_and_reports_join_quality(tmp_path: Path) -> None:
     assert join_quality["total_outcomes_loaded"] == 3
     assert join_quality["total_feature_rows_loaded"] == 4
     assert join_quality["total_joined_records"] == 3
+    assert join_quality["outcomes_by_event_counts"]
+    assert join_quality["feature_rows_by_event_counts"]
     assert join_quality["join_method_counts"]
     assert join_quality["join_confidence_tier_counts"]
     assert join_quality["by_event_join_counts"]["evt-a"] == 2
@@ -194,6 +196,7 @@ def test_builder_joins_rows_and_reports_join_quality(tmp_path: Path) -> None:
     assert join_quality["by_label_join_counts"]["no_damage"] == 1
     assert join_quality["by_label_join_counts"]["major_damage"] == 1
     assert join_quality["row_confidence_tier_counts"]
+    assert "excluded_reason_counts" in join_quality
 
 
 def test_join_confidence_and_leakage_flags_are_exposed(tmp_path: Path) -> None:

@@ -36,6 +36,21 @@ python scripts/build_public_outcome_evaluation_dataset.py \
 
 Use `--no-auto-score-missing` to disable this behavior.
 
+Rapid coverage mode (recommended when validation sample size is too small):
+
+```bash
+python scripts/build_public_outcome_evaluation_dataset.py \
+  --rapid-max-coverage \
+  --outcomes-root benchmark/public_outcomes/normalized \
+  --run-id public_eval_ds_rapid_coverage
+```
+
+`--rapid-max-coverage` does all of the following:
+- uses all normalized outcomes runs under `--outcomes-root`
+- discovers all auto-scored feature artifacts under `--feature-artifact-search-root`
+- includes normalized outcomes as additional feature-artifact candidates
+- allows duplicate outcome matches (coverage-first mode) for larger dataset size
+
 ## Join Logic (priority order)
 
 1. `exact_parcel_event`
@@ -126,6 +141,9 @@ Artifacts:
 - duplicate-prevention counts
 - low-confidence join count
 - by-event join counts
+- outcomes-by-event counts
+- feature-rows-by-event counts
+- unmatched feature rows by event
 - by-label join counts
 - excluded rows and reasons
 - leakage warnings

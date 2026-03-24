@@ -1030,6 +1030,13 @@ def _resolve_feature_artifacts_from_dirs(directories: list[Path], artifact_glob:
     return resolved
 
 
+def _resolve_feature_artifacts_from_root(root: Path, artifact_glob: str) -> list[Path]:
+    resolved_root = Path(root).expanduser()
+    if not resolved_root.exists():
+        return []
+    return [path for path in sorted(resolved_root.glob(str(artifact_glob))) if path.is_file()]
+
+
 def _coalesce_float(*values: Any) -> float | None:
     for value in values:
         out = _safe_float(value)
@@ -1281,7 +1288,9 @@ def _build_markdown_summary(
         f"- Generated at: `{generated_at}`",
         f"- Outcomes loaded: `{quality.get('total_outcomes_loaded')}`",
         f"- Outcome source files: `{quality.get('outcomes_loaded_by_source_path')}`",
+        f"- Outcomes by event: `{quality.get('outcomes_by_event_counts')}`",
         f"- Feature rows loaded: `{quality.get('total_feature_rows_loaded')}`",
+        f"- Feature rows by event: `{quality.get('feature_rows_by_event_counts')}`",
         f"- Joined rows: `{quality.get('total_joined_records')}`",
         f"- Join rate: `{quality.get('join_rate')}`",
         f"- Match rate (%): `{quality.get('match_rate_percent')}`",
@@ -1307,7 +1316,9 @@ def _build_markdown_summary(
         "## Coverage",
         f"- By event joined counts: `{quality.get('by_event_join_counts')}`",
         f"- By label joined counts: `{quality.get('by_label_join_counts')}`",
+        f"- Unmatched feature rows by event: `{quality.get('unmatched_feature_rows_by_event_counts')}`",
         f"- Excluded rows: `{quality.get('excluded_row_count')}`",
+        f"- Excluded reason counts: `{quality.get('excluded_reason_counts')}`",
         "",
         "## Leakage Guardrails",
         f"- Leakage warning count: `{len(quality.get('leakage_warnings') or [])}`",
@@ -1365,9 +1376,23 @@ def build_public_outcome_evaluation_dataset(
     outcomes, outcomes_by_source = _load_outcomes_from_paths(configured_outcome_paths)
     if not outcomes:
         raise ValueError("No normalized outcome rows available.")
+    outcomes_by_event_counts: dict[str, int] = {}
+    outcomes_by_year_counts: dict[str, int] = {}
+    for outcome in outcomes:
+        event_key = str(outcome.event_id or "unknown_event")
+        outcomes_by_event_counts[event_key] = outcomes_by_event_counts.get(event_key, 0) + 1
+        year_key = str(outcome.event_year or "unknown")
+        outcomes_by_year_counts[year_key] = outcomes_by_year_counts.get(year_key, 0) + 1
     feature_rows, missing_feature_artifacts = _load_feature_records(feature_artifacts)
     if not feature_rows:
         raise ValueError("No feature rows were loaded from provided feature artifacts.")
+    feature_rows_by_event_counts: dict[str, int] = {}
+    feature_rows_by_year_counts: dict[str, int] = {}
+    for feature in feature_rows:
+        event_key = str(feature.event_id or "unknown_event")
+        feature_rows_by_event_counts[event_key] = feature_rows_by_event_counts.get(event_key, 0) + 1
+        year_key = str(feature.event_year or "unknown")
+        feature_rows_by_year_counts[year_key] = feature_rows_by_year_counts.get(year_key, 0) + 1
     score_backfill = _backfill_missing_feature_scores(
         feature_rows=feature_rows,
         run_dir=run_dir,
@@ -1402,6 +1427,7 @@ def build_public_outcome_evaluation_dataset(
     used_outcome_keys: set[str] = set()
     by_event_counts: dict[str, int] = {}
     by_label_counts: dict[str, int] = {}
+    unmatched_feature_rows_by_event_counts: dict[str, int] = {}
     low_confidence_join_count = 0
 
     for feature in sorted(feature_rows, key=lambda row: (row.artifact_path, row.event_id, row.record_id)):
@@ -1415,6 +1441,10 @@ def build_public_outcome_evaluation_dataset(
         )
         method = str(join_meta.get("join_method") or "unmatched")
         if matched is None:
+            unmatched_event_key = str(feature.event_id or "unknown_event")
+            unmatched_feature_rows_by_event_counts[unmatched_event_key] = (
+                unmatched_feature_rows_by_event_counts.get(unmatched_event_key, 0) + 1
+            )
             excluded_rows.append(
                 {
                     "feature_artifact_path": feature.artifact_path,
@@ -1683,13 +1713,21 @@ def build_public_outcome_evaluation_dataset(
     for row in joined_rows:
         tier = str(((row.get("evaluation") or {}).get("row_confidence_tier")) or "unknown")
         row_confidence_tiers[tier] = row_confidence_tiers.get(tier, 0) + 1
+    excluded_reason_counts: dict[str, int] = {}
+    for row in excluded_rows:
+        reason = str((row or {}).get("reason") or "unknown")
+        excluded_reason_counts[reason] = excluded_reason_counts.get(reason, 0) + 1
 
     join_quality = {
         "schema_version": SCHEMA_VERSION,
         "generated_at": generated_at,
         "total_outcomes_loaded": len(outcomes),
         "outcomes_loaded_by_source_path": dict(sorted(outcomes_by_source.items())),
+        "outcomes_by_event_counts": dict(sorted(outcomes_by_event_counts.items())),
+        "outcomes_by_year_counts": dict(sorted(outcomes_by_year_counts.items())),
         "total_feature_rows_loaded": len(feature_rows),
+        "feature_rows_by_event_counts": dict(sorted(feature_rows_by_event_counts.items())),
+        "feature_rows_by_year_counts": dict(sorted(feature_rows_by_year_counts.items())),
         "total_joined_records": len(joined_rows),
         "join_rate": join_rate,
         "match_rate_percent": round(join_rate * 100.0, 2),
@@ -1732,7 +1770,9 @@ def build_public_outcome_evaluation_dataset(
         },
         "by_event_join_counts": dict(sorted(by_event_counts.items())),
         "by_label_join_counts": dict(sorted(by_label_counts.items())),
+        "unmatched_feature_rows_by_event_counts": dict(sorted(unmatched_feature_rows_by_event_counts.items())),
         "excluded_row_count": len(excluded_rows),
+        "excluded_reason_counts": dict(sorted(excluded_reason_counts.items())),
         "excluded_rows": excluded_rows[:200],
         "leakage_warnings": sorted(set(leakage_warnings)),
         "score_backfill": score_backfill,
@@ -1866,6 +1906,20 @@ def main() -> int:
         help="Glob used for --feature-artifact-dir discovery (default: *.json).",
     )
     parser.add_argument(
+        "--feature-artifact-search-root",
+        default="benchmark/public_outcomes/evaluation_dataset",
+        help=(
+            "Root directory used by --rapid-max-coverage for recursive feature artifact discovery."
+        ),
+    )
+    parser.add_argument(
+        "--feature-artifact-search-glob",
+        default="**/_auto_scored_event_backtest/*.json",
+        help=(
+            "Recursive glob under --feature-artifact-search-root used by --rapid-max-coverage."
+        ),
+    )
+    parser.add_argument(
         "--output-root",
         default="benchmark/public_outcomes/evaluation_dataset",
         help="Root output directory for timestamped run bundles.",
@@ -1946,6 +2000,24 @@ def main() -> int:
             "scores before join (enabled by default)."
         ),
     )
+    parser.add_argument(
+        "--include-normalized-outcomes-as-feature-artifacts",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Include normalized outcomes JSON files as additional feature artifact inputs "
+            "(useful for rapid coverage expansion)."
+        ),
+    )
+    parser.add_argument(
+        "--rapid-max-coverage",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Rapidly maximize joined dataset coverage by aggregating all outcomes runs, "
+            "discovering all auto-scored feature artifacts, and allowing duplicate outcome matches."
+        ),
+    )
     parser.add_argument("--overwrite", action="store_true", help="Overwrite existing run directory.")
     args = parser.parse_args()
 
@@ -1955,23 +2027,40 @@ def main() -> int:
         artifact_glob=str(args.feature_artifact_glob or "*.json"),
     )
     feature_artifacts = sorted({path for path in (explicit_feature_artifacts + discovered_feature_artifacts)})
-    if not feature_artifacts:
-        raise ValueError("At least one feature artifact is required (--feature-artifact or --feature-artifact-dir).")
     explicit_outcomes = [Path(token).expanduser() for token in (args.outcomes or []) if str(token).strip()]
     outcomes_root = Path(args.outcomes_root).expanduser() if str(args.outcomes_root or "").strip() else None
+    if bool(args.rapid_max_coverage) and outcomes_root is None:
+        outcomes_root = Path("benchmark/public_outcomes/normalized").expanduser()
     resolved_from_root: list[Path] = []
     if not explicit_outcomes and outcomes_root is not None:
         run_ids = [str(token) for token in (args.outcomes_run_id or []) if str(token).strip()]
         if run_ids:
             resolved_from_root = _resolve_normalized_outcomes_from_run_ids(outcomes_root, run_ids)
         else:
-            if str(args.outcomes_root_mode) == "latest":
+            root_mode = "all" if bool(args.rapid_max_coverage) else str(args.outcomes_root_mode)
+            if root_mode == "latest":
                 resolved_from_root = _resolve_latest_normalized_outcomes(outcomes_root)
             else:
                 resolved_from_root = _resolve_all_normalized_outcomes(outcomes_root)
     outcomes_paths = sorted({path for path in (explicit_outcomes + resolved_from_root)})
     if not outcomes_paths:
         raise ValueError("At least one outcomes source is required (--outcomes or --outcomes-root).")
+    if bool(args.rapid_max_coverage):
+        discovered_recursive = _resolve_feature_artifacts_from_root(
+            Path(args.feature_artifact_search_root).expanduser(),
+            artifact_glob=str(args.feature_artifact_search_glob or "**/_auto_scored_event_backtest/*.json"),
+        )
+        feature_artifacts = sorted({*feature_artifacts, *discovered_recursive})
+        sample_backtest = Path("benchmark/event_backtest_sample_v1.json")
+        if sample_backtest.exists():
+            feature_artifacts = sorted({*feature_artifacts, sample_backtest.expanduser()})
+    if bool(args.include_normalized_outcomes_as_feature_artifacts) or bool(args.rapid_max_coverage):
+        feature_artifacts = sorted({*feature_artifacts, *outcomes_paths})
+    if not feature_artifacts:
+        raise ValueError(
+            "At least one feature artifact is required (--feature-artifact, --feature-artifact-dir, or --rapid-max-coverage)."
+        )
+    allow_duplicate_outcome_matches = bool(args.allow_duplicate_outcome_matches or args.rapid_max_coverage)
     result = build_public_outcome_evaluation_dataset(
         outcomes_paths=outcomes_paths,
         feature_artifacts=feature_artifacts,
@@ -1986,7 +2075,7 @@ def main() -> int:
         global_max_distance_m=float(args.global_max_distance_m),
         event_year_tolerance_years=int(args.event_year_tolerance_years),
         enable_global_nearest_fallback=bool(args.enable_global_nearest_fallback),
-        allow_duplicate_outcome_matches=bool(args.allow_duplicate_outcome_matches),
+        allow_duplicate_outcome_matches=allow_duplicate_outcome_matches,
         address_token_overlap_min=float(args.address_token_overlap_min),
         auto_score_missing=bool(args.auto_score_missing),
         overwrite=bool(args.overwrite),
@@ -2004,6 +2093,9 @@ def main() -> int:
     print(
         "[public-eval-ds] Coverage: "
         f"by_event={join_report.get('by_event_join_counts')} "
+        f"outcomes_by_event={join_report.get('outcomes_by_event_counts')} "
+        f"feature_rows_by_event={join_report.get('feature_rows_by_event_counts')} "
+        f"unmatched_by_event={join_report.get('unmatched_feature_rows_by_event_counts')} "
         f"by_label={join_report.get('by_label_join_counts')} "
         f"join_tiers={join_report.get('join_confidence_tier_counts')} "
         f"row_confidence_tiers={join_report.get('row_confidence_tier_counts')} "
