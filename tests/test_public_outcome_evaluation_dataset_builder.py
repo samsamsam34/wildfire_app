@@ -221,6 +221,7 @@ def test_join_confidence_and_leakage_flags_are_exposed(tmp_path: Path) -> None:
     # second row includes leakage token in raw feature vector key.
     leaked = [row for row in rows if row["feature"]["record_id"] == "f2"][0]
     assert "potential_outcome_leakage_token_in_raw_feature_vector" in leaked["leakage_flags"]
+    assert (leaked.get("evaluation") or {}).get("row_confidence_tier") == "high-confidence"
 
 
 def test_deterministic_with_fixed_run_id(tmp_path: Path) -> None:
@@ -401,6 +402,81 @@ def test_builder_assigns_extended_geospatial_match_tier(tmp_path: Path) -> None:
     join_quality = json.loads(Path(result["join_quality_report_path"]).read_text(encoding="utf-8"))
     assert join_quality["match_tier_counts"]
     assert join_quality["match_rate_percent"] == 100.0
+
+
+def test_builder_applies_distance_based_join_confidence_tiers(tmp_path: Path) -> None:
+    outcomes = tmp_path / "normalized_outcomes.json"
+    features = tmp_path / "feature_artifact_distance_tiers.json"
+    _write_outcomes(outcomes)
+    features.write_text(
+        json.dumps(
+            {
+                "records": [
+                    {
+                        "event_id": "evt-a",
+                        "event_name": "Event A",
+                        "event_date": "2021-08-01",
+                        "record_id": "dist-high",
+                        "source_record_id": "UNKNOWN-H",
+                        "latitude": 39.10023,
+                        "longitude": -120.1001,
+                        "address_text": "Unknown A",
+                        "scores": {"wildfire_risk_score": 70.0},
+                    },
+                    {
+                        "event_id": "evt-a",
+                        "event_name": "Event A",
+                        "event_date": "2021-08-01",
+                        "record_id": "dist-moderate",
+                        "source_record_id": "UNKNOWN-M",
+                        "latitude": 39.10082,
+                        "longitude": -120.1001,
+                        "address_text": "Unknown B",
+                        "scores": {"wildfire_risk_score": 55.0},
+                    },
+                    {
+                        "event_id": "evt-a",
+                        "event_name": "Event A",
+                        "event_date": "2021-08-01",
+                        "record_id": "dist-low",
+                        "source_record_id": "UNKNOWN-L",
+                        "latitude": 39.1022,
+                        "longitude": -120.1001,
+                        "address_text": "Unknown C",
+                        "scores": {"wildfire_risk_score": 42.0},
+                    },
+                ]
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    result = build_public_outcome_evaluation_dataset(
+        outcomes_path=outcomes,
+        feature_artifacts=[features],
+        output_root=tmp_path / "out",
+        run_id="distance_tiers",
+        near_match_distance_m=30.0,
+        max_distance_m=220.0,
+        high_confidence_distance_m=20.0,
+        medium_confidence_distance_m=100.0,
+        overwrite=True,
+    )
+    rows = []
+    with (Path(result["run_dir"]) / "evaluation_dataset.jsonl").open("r", encoding="utf-8") as fh:
+        for line in fh:
+            rows.append(json.loads(line))
+    assert len(rows) == 3
+    by_record = {str((row.get("feature") or {}).get("record_id")): row for row in rows}
+    assert ((by_record["dist-high"].get("join_metadata") or {}).get("join_confidence_tier")) == "high"
+    assert ((by_record["dist-moderate"].get("join_metadata") or {}).get("join_confidence_tier")) == "moderate"
+    assert ((by_record["dist-low"].get("join_metadata") or {}).get("join_confidence_tier")) == "low"
+
+    join_quality = json.loads(Path(result["join_quality_report_path"]).read_text(encoding="utf-8"))
+    assert "join_confidence_tier_distance_stats" in join_quality
+    assert "join_confidence_tier_examples" in join_quality
+    assert (join_quality.get("join_confidence_tier_counts") or {}).get("high", 0) >= 1
 
 
 def test_builder_uses_global_address_overlap_fallback_when_coordinates_missing(tmp_path: Path) -> None:

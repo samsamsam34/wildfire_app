@@ -57,8 +57,20 @@ Each joined row includes:
 - `join_confidence_tier`
 - `match_tier` (`exact` / `near` / `extended` / `fallback`)
 - `join_distance_m`
+- distance-tier thresholds used for classification:
+  - `high`: `< 20m` (configurable via `--high-confidence-distance-m`)
+  - `moderate`: `20–100m` (configurable via `--medium-confidence-distance-m`)
+  - `low`: `> 100m` (or fallback methods capped to lower tiers)
 - `event_year_consistent`
 - `evaluation.row_confidence_tier` (`high-confidence` / `medium-confidence` / `low-confidence`)
+
+Coordinate handling:
+- incoming coordinates are normalized to WGS84 latitude/longitude with fixed precision
+- invalid/out-of-range coordinates are treated as missing rather than silently used
+
+Confidence-distance controls:
+- `--high-confidence-distance-m` (default `20`)
+- `--medium-confidence-distance-m` (default `100`)
 
 ## Leakage Guardrails
 
@@ -98,6 +110,8 @@ Artifacts:
 - match tier counts
 - row confidence tier counts
 - join confidence score stats (min/mean/max)
+- join confidence distance stats by tier
+- join confidence examples by tier
 - average/median join distance
 - low-confidence join count
 - by-event join counts
