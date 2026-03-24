@@ -97,6 +97,10 @@ Supplemental (non-ground-truth) streams are also emitted:
 - `synthetic_validation`: deterministic stress-scenario monotonic checks
 - `proxy_validation`: weak-label alignment against proxy wildfire signals (e.g., burn/hazard/distance context)
 
+`synthetic_validation` now includes an explicit extreme-scenario ranking check:
+- extreme high-risk synthetic scenario should score materially above extreme low-risk synthetic scenario
+- this is a behavioral sanity check, not empirical accuracy evidence
+
 These streams are explicitly separated from real-outcome validation and should be treated as behavioral diagnostics, not ground-truth accuracy evidence.
 
 Sliced metrics include:

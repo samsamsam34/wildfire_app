@@ -1123,21 +1123,93 @@ def _compute_proxy_validation(rows: list[dict[str, Any]]) -> dict[str, Any]:
 def _run_synthetic_stress_validation() -> dict[str, Any]:
     try:
         from backend.model_tuning import run_monotonic_guardrails
+        from backend.model_tuning import _build_guardrail_context  # type: ignore
+        from backend.models import PropertyAttributes
+        from backend.risk_engine import RiskEngine
         from backend.scoring_config import load_scoring_config
 
-        guardrails = run_monotonic_guardrails(load_scoring_config())
+        config = load_scoring_config()
+        guardrails = run_monotonic_guardrails(config)
         checks = guardrails.get("checks") if isinstance(guardrails.get("checks"), list) else []
         passed = [row for row in checks if isinstance(row, dict) and bool(row.get("passed"))]
         failed = [row for row in checks if isinstance(row, dict) and not bool(row.get("passed"))]
+
+        engine = RiskEngine(config)
+        low_context = _build_guardrail_context(
+            burn_probability=15.0,
+            hazard=18.0,
+            fuel=20.0,
+            canopy=18.0,
+            slope=8.0,
+            wildland_distance=88.0,
+            historic_fire=12.0,
+            ring_0_5=10.0,
+            ring_5_30=14.0,
+            ring_30_100=18.0,
+        )
+        high_context = _build_guardrail_context(
+            burn_probability=92.0,
+            hazard=94.0,
+            fuel=88.0,
+            canopy=86.0,
+            slope=52.0,
+            wildland_distance=18.0,
+            historic_fire=84.0,
+            ring_0_5=90.0,
+            ring_5_30=86.0,
+            ring_30_100=82.0,
+        )
+        low_attrs = PropertyAttributes(
+            roof_type="class a",
+            vent_type="ember-resistant",
+            defensible_space_ft=70.0,
+            construction_year=2018,
+        )
+        high_attrs = PropertyAttributes(
+            roof_type="wood",
+            vent_type="standard",
+            defensible_space_ft=3.0,
+            construction_year=1975,
+        )
+        low_risk = engine.score(low_attrs, 46.0, -114.0, low_context)
+        high_risk = engine.score(high_attrs, 46.0, -114.0, high_context)
+        low_total = engine.compute_blended_wildfire_score(
+            engine.compute_site_hazard_score(low_risk),
+            engine.compute_home_ignition_vulnerability_score(low_risk),
+        )
+        high_total = engine.compute_blended_wildfire_score(
+            engine.compute_site_hazard_score(high_risk),
+            engine.compute_home_ignition_vulnerability_score(high_risk),
+        )
+        minimum_expected_delta = 10.0
+        extreme_ranking_passed = bool(high_total >= (low_total + minimum_expected_delta))
+
         return {
             "available": True,
             "evaluation_basis": "synthetic_stress_scenarios",
             "caveat": "Synthetic stress validation checks directional behavior and is not real-outcome ground truth.",
-            "passed": bool(guardrails.get("passed")),
+            "passed": bool(guardrails.get("passed")) and extreme_ranking_passed,
             "check_count": len(checks),
             "pass_count": len(passed),
             "fail_count": len(failed),
             "checks": checks,
+            "extreme_scenario_ranking": {
+                "passed": extreme_ranking_passed,
+                "minimum_expected_delta": minimum_expected_delta,
+                "high_risk_score": round(float(high_total), 4),
+                "low_risk_score": round(float(low_total), 4),
+                "delta": round(float(high_total - low_total), 4),
+                "scenarios": {
+                    "high_risk": {
+                        "context": "high_burn_probability_high_hazard_low_wildland_distance_high_ring_vegetation",
+                        "attributes": "wood_roof_standard_vents_minimal_defensible_space",
+                    },
+                    "low_risk": {
+                        "context": "low_burn_probability_low_hazard_high_wildland_distance_low_ring_vegetation",
+                        "attributes": "class_a_roof_ember_resistant_vents_large_defensible_space",
+                    },
+                },
+            },
         }
     except Exception as exc:
         return {

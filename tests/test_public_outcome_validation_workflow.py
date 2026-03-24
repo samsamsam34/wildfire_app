@@ -385,3 +385,8 @@ def test_proxy_validation_stream_available_when_proxy_features_present(tmp_path:
     assert (proxy.get("alignment_metrics") or {}).get("auc_model_vs_proxy_high_low") is not None
     synthetic = report.get("synthetic_validation") or {}
     assert "available" in synthetic
+    if synthetic.get("available"):
+        extreme = synthetic.get("extreme_scenario_ranking") or {}
+        assert "passed" in extreme
+        assert "high_risk_score" in extreme
+        assert "low_risk_score" in extreme

@@ -316,6 +316,7 @@ def _build_summary_markdown(
 
     lines.append("## Supplemental Validation (Non-Ground-Truth)")
     if synthetic_validation:
+        extreme = synthetic_validation.get("extreme_scenario_ranking") if isinstance(synthetic_validation.get("extreme_scenario_ranking"), dict) else {}
         lines.append("### Synthetic Stress Validation")
         lines.append(f"- Available: `{synthetic_validation.get('available')}`")
         lines.append(f"- Passed: `{synthetic_validation.get('passed')}`")
@@ -323,6 +324,11 @@ def _build_summary_markdown(
             f"- Checks: `{synthetic_validation.get('check_count')}` "
             f"(pass={synthetic_validation.get('pass_count')}, fail={synthetic_validation.get('fail_count')})"
         )
+        if extreme:
+            lines.append(
+                f"- Extreme high-vs-low ranking: `passed={extreme.get('passed')}` "
+                f"(delta={_format_float(extreme.get('delta'))}, min_expected={_format_float(extreme.get('minimum_expected_delta'))})"
+            )
         lines.append(
             "- Caveat: `Synthetic stress scenarios test directional behavior only; they are not real-outcome truth.`"
         )
