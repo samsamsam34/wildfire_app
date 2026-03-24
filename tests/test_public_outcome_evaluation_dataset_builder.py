@@ -396,7 +396,11 @@ def test_builder_assigns_extended_geospatial_match_tier(tmp_path: Path) -> None:
             rows.append(json.loads(line))
     assert len(rows) == 1
     join_meta = rows[0]["join_metadata"]
-    assert join_meta["join_method"] in {"extended_event_coordinates", "nearest_event_name_coordinates_tolerant_year"}
+    assert join_meta["join_method"] in {
+        "buffered_event_coordinates",
+        "extended_event_coordinates",
+        "nearest_event_name_coordinates_tolerant_year",
+    }
     assert join_meta.get("match_tier") in {"extended", "near"}
 
     join_quality = json.loads(Path(result["join_quality_report_path"]).read_text(encoding="utf-8"))
@@ -461,6 +465,7 @@ def test_builder_applies_distance_based_join_confidence_tiers(tmp_path: Path) ->
         max_distance_m=220.0,
         high_confidence_distance_m=20.0,
         medium_confidence_distance_m=100.0,
+        allow_duplicate_outcome_matches=True,
         overwrite=True,
     )
     rows = []
@@ -476,7 +481,121 @@ def test_builder_applies_distance_based_join_confidence_tiers(tmp_path: Path) ->
     join_quality = json.loads(Path(result["join_quality_report_path"]).read_text(encoding="utf-8"))
     assert "join_confidence_tier_distance_stats" in join_quality
     assert "join_confidence_tier_examples" in join_quality
+    assert "match_distance_histogram_m" in join_quality
+    assert "distance_outlier_examples" in join_quality
     assert (join_quality.get("join_confidence_tier_counts") or {}).get("high", 0) >= 1
+
+
+def test_builder_prevents_duplicate_outcome_matches_by_default(tmp_path: Path) -> None:
+    outcomes = tmp_path / "normalized_outcomes.json"
+    features = tmp_path / "feature_artifact_duplicates.json"
+    _write_outcomes(outcomes)
+    features.write_text(
+        json.dumps(
+            {
+                "records": [
+                    {
+                        "event_id": "evt-a",
+                        "event_name": "Event A",
+                        "event_date": "2021-08-01",
+                        "record_id": "dup-1",
+                        "source_record_id": "SRC-001",
+                        "latitude": 39.1001,
+                        "longitude": -120.1001,
+                        "scores": {"wildfire_risk_score": 75.0},
+                    },
+                    {
+                        "event_id": "evt-a",
+                        "event_name": "Event A",
+                        "event_date": "2021-08-01",
+                        "record_id": "dup-2",
+                        "source_record_id": "SRC-001",
+                        "latitude": 39.1001,
+                        "longitude": -120.1001,
+                        "scores": {"wildfire_risk_score": 74.0},
+                    },
+                ]
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    result = build_public_outcome_evaluation_dataset(
+        outcomes_path=outcomes,
+        feature_artifacts=[features],
+        output_root=tmp_path / "out",
+        run_id="dedupe_default",
+        overwrite=True,
+    )
+    join_quality = json.loads(Path(result["join_quality_report_path"]).read_text(encoding="utf-8"))
+    assert join_quality["total_joined_records"] == 1
+    assert join_quality["duplicate_outcome_match_prevented_count"] >= 0
+    assert join_quality["allow_duplicate_outcome_matches"] is False
+
+
+def test_builder_converts_web_mercator_coordinates_to_wgs84(tmp_path: Path) -> None:
+    outcomes = tmp_path / "normalized_outcomes_mercator.json"
+    features = tmp_path / "feature_artifact_wgs84.json"
+    outcomes.write_text(
+        json.dumps(
+            {
+                "records": [
+                    {
+                        "record_id": "m1",
+                        "source_record_id": "M-001",
+                        "source_name": "public_source",
+                        "event_id": "evt-m",
+                        "event_name": "Event Mercator",
+                        "event_date": "2021-08-01",
+                        "x": -13369492.572,
+                        "y": 4747094.953,
+                        "address_text": "Mercator Point",
+                        "damage_label": "destroyed",
+                        "damage_severity_class": "destroyed",
+                        "structure_loss_or_major_damage": 1,
+                    }
+                ]
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    features.write_text(
+        json.dumps(
+            {
+                "records": [
+                    {
+                        "event_id": "evt-m",
+                        "event_name": "Event Mercator",
+                        "event_date": "2021-08-01",
+                        "record_id": "f-m-1",
+                        "source_record_id": "M-001",
+                        "latitude": 39.1001,
+                        "longitude": -120.1001,
+                        "scores": {"wildfire_risk_score": 88.0},
+                    }
+                ]
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    result = build_public_outcome_evaluation_dataset(
+        outcomes_path=outcomes,
+        feature_artifacts=[features],
+        output_root=tmp_path / "out",
+        run_id="mercator_conversion",
+        overwrite=True,
+    )
+    rows = []
+    with (Path(result["run_dir"]) / "evaluation_dataset.jsonl").open("r", encoding="utf-8") as fh:
+        for line in fh:
+            rows.append(json.loads(line))
+    assert len(rows) == 1
+    join_quality = json.loads(Path(result["join_quality_report_path"]).read_text(encoding="utf-8"))
+    coord_summary = join_quality.get("coordinate_normalization_summary") or {}
+    outcome_modes = coord_summary.get("matched_outcomes_by_mode") or {}
+    assert "web_mercator_xy" in outcome_modes
 
 
 def test_builder_uses_global_address_overlap_fallback_when_coordinates_missing(tmp_path: Path) -> None:

@@ -63,10 +63,12 @@ class JoinConfig:
     near_match_distance_m: float = 30.0
     max_distance_m: float = 120.0
     global_max_distance_m: float = 1000.0
+    buffer_match_radius_m: float = 80.0
     high_confidence_distance_m: float = 20.0
     medium_confidence_distance_m: float = 100.0
     event_year_tolerance_years: int = 1
     enable_global_nearest_fallback: bool = True
+    allow_duplicate_outcome_matches: bool = False
     address_token_overlap_min: float = 0.75
 
 
@@ -97,6 +99,59 @@ def _normalize_wgs84_coordinate(value: Any, *, kind: str) -> float | None:
     if coord < -limit or coord > limit:
         return None
     return round(float(coord), WGS84_COORD_DECIMALS)
+
+
+def _mercator_to_wgs84(*, x: float, y: float) -> tuple[float | None, float | None]:
+    max_extent = 20037508.342789244
+    if abs(x) > max_extent or abs(y) > max_extent:
+        return None, None
+    lon = (x / max_extent) * 180.0
+    lat = (y / max_extent) * 180.0
+    lat = (180.0 / math.pi) * (2.0 * math.atan(math.exp(lat * math.pi / 180.0)) - (math.pi / 2.0))
+    return _normalize_wgs84_coordinate(lat, kind="lat"), _normalize_wgs84_coordinate(lon, kind="lon")
+
+
+def _extract_normalized_point(row: dict[str, Any]) -> tuple[float | None, float | None, str]:
+    lat_raw = row.get("latitude")
+    lon_raw = row.get("longitude")
+    lat = _normalize_wgs84_coordinate(lat_raw, kind="lat")
+    lon = _normalize_wgs84_coordinate(lon_raw, kind="lon")
+    if lat is not None and lon is not None:
+        return lat, lon, "wgs84_latlon"
+
+    # Common alternative keys.
+    alt_lat = row.get("lat")
+    alt_lon = row.get("lon")
+    if alt_lon is None:
+        alt_lon = row.get("lng")
+    lat = _normalize_wgs84_coordinate(alt_lat, kind="lat")
+    lon = _normalize_wgs84_coordinate(alt_lon, kind="lon")
+    if lat is not None and lon is not None:
+        return lat, lon, "wgs84_alt_latlon"
+
+    # Try swapping if lat/lon appear reversed.
+    swapped_lat = _normalize_wgs84_coordinate(lon_raw, kind="lat")
+    swapped_lon = _normalize_wgs84_coordinate(lat_raw, kind="lon")
+    if swapped_lat is not None and swapped_lon is not None:
+        return swapped_lat, swapped_lon, "wgs84_swapped_latlon"
+
+    # Attempt Web Mercator conversion from longitude=x and latitude=y.
+    x = _safe_float(lon_raw)
+    y = _safe_float(lat_raw)
+    if x is not None and y is not None and (abs(x) > 180.0 or abs(y) > 90.0):
+        conv_lat, conv_lon = _mercator_to_wgs84(x=x, y=y)
+        if conv_lat is not None and conv_lon is not None:
+            return conv_lat, conv_lon, "web_mercator_from_latlon_fields"
+
+    # Attempt conversion from explicit x/y projected columns.
+    x = _safe_float(row.get("x"))
+    y = _safe_float(row.get("y"))
+    if x is not None and y is not None:
+        conv_lat, conv_lon = _mercator_to_wgs84(x=x, y=y)
+        if conv_lat is not None and conv_lon is not None:
+            return conv_lat, conv_lon, "web_mercator_xy"
+
+    return None, None, "missing_or_invalid_coordinates"
 
 
 def _safe_int(value: Any) -> int | None:
@@ -189,6 +244,8 @@ def _as_outcome_record(row: dict[str, Any]) -> OutcomeRecord:
     record_id = str(row.get("record_id") or "").strip()
     parcel_id = str(row.get("parcel_identifier") or row.get("parcel_id") or "").strip()
     address_norm = _normalize_address(row.get("address_text") or row.get("address") or "")
+    latitude, longitude, coord_mode = _extract_normalized_point(row)
+    row["_coordinate_normalization_mode"] = coord_mode
     return OutcomeRecord(
         payload=row,
         event_id=event_id,
@@ -198,8 +255,8 @@ def _as_outcome_record(row: dict[str, Any]) -> OutcomeRecord:
         record_id=record_id,
         parcel_id=parcel_id,
         address_norm=address_norm,
-        latitude=_normalize_wgs84_coordinate(row.get("latitude"), kind="lat"),
-        longitude=_normalize_wgs84_coordinate(row.get("longitude"), kind="lon"),
+        latitude=latitude,
+        longitude=longitude,
     )
 
 
@@ -212,6 +269,8 @@ def _as_feature_record(row: dict[str, Any], artifact_path: str) -> FeatureRecord
     record_id = str(row.get("record_id") or "").strip()
     parcel_id = str(row.get("parcel_identifier") or row.get("parcel_id") or "").strip()
     address_norm = _normalize_address(row.get("address_text") or row.get("address") or "")
+    latitude, longitude, coord_mode = _extract_normalized_point(row)
+    row["_coordinate_normalization_mode"] = coord_mode
     return FeatureRecord(
         payload=row,
         artifact_path=artifact_path,
@@ -222,8 +281,8 @@ def _as_feature_record(row: dict[str, Any], artifact_path: str) -> FeatureRecord
         record_id=record_id,
         parcel_id=parcel_id,
         address_norm=address_norm,
-        latitude=_normalize_wgs84_coordinate(row.get("latitude"), kind="lat"),
-        longitude=_normalize_wgs84_coordinate(row.get("longitude"), kind="lon"),
+        latitude=latitude,
+        longitude=longitude,
     )
 
 
@@ -269,6 +328,17 @@ def _event_year_consistent_with_tolerance(
     return abs(int(feature.event_year) - int(outcome.event_year)) <= max(0, int(tolerance_years))
 
 
+def _outcome_identity_key(row: OutcomeRecord) -> str:
+    source_name = str(row.payload.get("source_name") or "").strip()
+    if source_name and row.source_record_id:
+        return f"source::{source_name}::{row.source_record_id}"
+    if row.event_id and row.record_id:
+        return f"event_record::{row.event_id}::{row.record_id}"
+    if row.event_id and row.latitude is not None and row.longitude is not None:
+        return f"event_coord::{row.event_id}::{round(float(row.latitude), 5)}::{round(float(row.longitude), 5)}"
+    return f"fallback::{row.event_id}::{row.record_id}::{row.source_record_id}"
+
+
 def _join_confidence_for_distance(distance_m: float | None, max_distance_m: float) -> float:
     if distance_m is None:
         return 0.0
@@ -296,16 +366,79 @@ def _distance_match_tier(
     return "outside"
 
 
+def _spatial_cell_key(lat: float, lon: float, *, cell_size_deg: float = 0.01) -> tuple[int, int]:
+    return (int(math.floor(float(lat) / cell_size_deg)), int(math.floor(float(lon) / cell_size_deg)))
+
+
+def _build_spatial_index(rows: list[OutcomeRecord], *, cell_size_deg: float = 0.01) -> dict[tuple[int, int], list[OutcomeRecord]]:
+    index: dict[tuple[int, int], list[OutcomeRecord]] = {}
+    for row in rows:
+        if row.latitude is None or row.longitude is None:
+            continue
+        key = _spatial_cell_key(row.latitude, row.longitude, cell_size_deg=cell_size_deg)
+        index.setdefault(key, []).append(row)
+    return index
+
+
+def _spatial_candidates_within_radius(
+    *,
+    feature: FeatureRecord,
+    radius_m: float,
+    fallback_candidates: list[OutcomeRecord],
+    spatial_index: dict[tuple[int, int], list[OutcomeRecord]] | None = None,
+    cell_size_deg: float = 0.01,
+) -> list[OutcomeRecord]:
+    if not spatial_index or feature.latitude is None or feature.longitude is None or radius_m <= 0:
+        return fallback_candidates
+    lat = float(feature.latitude)
+    lon = float(feature.longitude)
+    lat_deg = float(radius_m) / 111_320.0
+    lon_scale = max(0.2, math.cos(math.radians(lat)))
+    lon_deg = float(radius_m) / (111_320.0 * lon_scale)
+    lat_steps = max(1, int(math.ceil(lat_deg / cell_size_deg)))
+    lon_steps = max(1, int(math.ceil(lon_deg / cell_size_deg)))
+    center_i, center_j = _spatial_cell_key(lat, lon, cell_size_deg=cell_size_deg)
+    out: list[OutcomeRecord] = []
+    seen: set[str] = set()
+    for di in range(-lat_steps, lat_steps + 1):
+        for dj in range(-lon_steps, lon_steps + 1):
+            cell_rows = spatial_index.get((center_i + di, center_j + dj), [])
+            for row in cell_rows:
+                row_key = _outcome_identity_key(row)
+                if row_key in seen:
+                    continue
+                seen.add(row_key)
+                out.append(row)
+    return out if out else fallback_candidates
+
+
+def _filter_unused_outcomes(
+    rows: list[OutcomeRecord],
+    *,
+    excluded_outcome_keys: set[str] | None,
+) -> list[OutcomeRecord]:
+    if not excluded_outcome_keys:
+        return rows
+    return [row for row in rows if _outcome_identity_key(row) not in excluded_outcome_keys]
+
+
 def _pick_nearest_within_radius(
     feature: FeatureRecord,
     candidates: list[OutcomeRecord],
     *,
     radius_m: float,
+    spatial_index: dict[tuple[int, int], list[OutcomeRecord]] | None = None,
 ) -> tuple[OutcomeRecord | None, float | None, int]:
     if radius_m <= 0:
         return None, None, 0
+    search_candidates = _spatial_candidates_within_radius(
+        feature=feature,
+        radius_m=radius_m,
+        fallback_candidates=candidates,
+        spatial_index=spatial_index,
+    )
     within: list[tuple[OutcomeRecord, float]] = []
-    for row in candidates:
+    for row in search_candidates:
         d = _haversine_m(feature.latitude, feature.longitude, row.latitude, row.longitude)
         if d is None:
             continue
@@ -319,6 +452,8 @@ def _pick_nearest_within_radius(
 
 
 def _pick_nearest(feature: FeatureRecord, candidates: list[OutcomeRecord]) -> tuple[OutcomeRecord | None, float | None]:
+    if not candidates:
+        return None, None
     best: OutcomeRecord | None = None
     best_distance: float | None = None
     for row in candidates:
@@ -443,6 +578,7 @@ def _build_indexes(outcomes: list[OutcomeRecord]) -> dict[str, Any]:
     by_event: dict[str, list[OutcomeRecord]] = {}
     by_event_name: dict[str, list[OutcomeRecord]] = {}
     by_event_name_year: dict[str, list[OutcomeRecord]] = {}
+    spatial_by_event: dict[str, dict[tuple[int, int], list[OutcomeRecord]]] = {}
     for row in outcomes:
         if row.source_record_id:
             by_source_record.setdefault(row.source_record_id, []).append(row)
@@ -458,6 +594,8 @@ def _build_indexes(outcomes: list[OutcomeRecord]) -> dict[str, Any]:
             by_event_name.setdefault(row.event_name_norm, []).append(row)
         if row.event_name_norm and row.event_year is not None:
             by_event_name_year.setdefault(f"{row.event_name_norm}|{row.event_year}", []).append(row)
+    for event_id, event_rows in by_event.items():
+        spatial_by_event[event_id] = _build_spatial_index(event_rows)
     return {
         "by_source_record": by_source_record,
         "by_event_record": by_event_record,
@@ -466,6 +604,8 @@ def _build_indexes(outcomes: list[OutcomeRecord]) -> dict[str, Any]:
         "by_event": by_event,
         "by_event_name": by_event_name,
         "by_event_name_year": by_event_name_year,
+        "spatial_by_event": spatial_by_event,
+        "spatial_all": _build_spatial_index(outcomes),
         "all": outcomes,
     }
 
@@ -475,13 +615,23 @@ def _choose_outcome(
     indexes: dict[str, Any],
     *,
     join_config: JoinConfig,
+    excluded_outcome_keys: set[str] | None = None,
 ) -> tuple[OutcomeRecord | None, dict[str, Any]]:
     join_config_near = max(float(join_config.exact_match_distance_m), float(join_config.near_match_distance_m))
     join_config_extended = max(join_config_near, float(join_config.max_distance_m))
+    event_spatial_index = (
+        indexes["spatial_by_event"].get(feature.event_id)
+        if feature.event_id and isinstance(indexes.get("spatial_by_event"), dict)
+        else None
+    )
+    global_spatial_index = indexes.get("spatial_all") if isinstance(indexes.get("spatial_all"), dict) else None
 
     # 1) Exact parcel + event.
     if feature.event_id and feature.parcel_id:
-        rows = indexes["by_parcel_event"].get(f"{feature.event_id}|{feature.parcel_id}", [])
+        rows = _filter_unused_outcomes(
+            indexes["by_parcel_event"].get(f"{feature.event_id}|{feature.parcel_id}", []),
+            excluded_outcome_keys=excluded_outcome_keys,
+        )
         if rows:
             return rows[0], {
                 "join_method": "exact_parcel_event",
@@ -493,7 +643,10 @@ def _choose_outcome(
 
     # 2) Exact source record id.
     if feature.source_record_id:
-        rows = indexes["by_source_record"].get(feature.source_record_id, [])
+        rows = _filter_unused_outcomes(
+            indexes["by_source_record"].get(feature.source_record_id, []),
+            excluded_outcome_keys=excluded_outcome_keys,
+        )
         if rows:
             chosen = rows[0]
             score = 0.97 if _event_year_consistent_with_tolerance(feature, chosen, join_config.event_year_tolerance_years) else 0.82
@@ -514,7 +667,10 @@ def _choose_outcome(
 
     # 3) Exact event+record id.
     if feature.event_id and feature.record_id:
-        rows = indexes["by_event_record"].get(f"{feature.event_id}|{feature.record_id}", [])
+        rows = _filter_unused_outcomes(
+            indexes["by_event_record"].get(f"{feature.event_id}|{feature.record_id}", []),
+            excluded_outcome_keys=excluded_outcome_keys,
+        )
         if rows:
             chosen = rows[0]
             return chosen, {
@@ -527,7 +683,10 @@ def _choose_outcome(
 
     # 4) Event+address.
     if feature.event_id and feature.address_norm:
-        rows = indexes["by_address_event"].get(f"{feature.event_id}|{feature.address_norm}", [])
+        rows = _filter_unused_outcomes(
+            indexes["by_address_event"].get(f"{feature.event_id}|{feature.address_norm}", []),
+            excluded_outcome_keys=excluded_outcome_keys,
+        )
         if rows:
             chosen = rows[0]
             return chosen, {
@@ -540,7 +699,10 @@ def _choose_outcome(
 
     # 5) Approximate event+address token overlap fallback.
     if feature.event_id and feature.address_norm:
-        candidates = indexes["by_event"].get(feature.event_id, [])
+        candidates = _filter_unused_outcomes(
+            indexes["by_event"].get(feature.event_id, []),
+            excluded_outcome_keys=excluded_outcome_keys,
+        )
         best: OutcomeRecord | None = None
         best_overlap = 0.0
         for row in candidates:
@@ -568,11 +730,15 @@ def _choose_outcome(
 
     # 6) Exact event coordinates within strict radius.
     if feature.event_id:
-        candidates = indexes["by_event"].get(feature.event_id, [])
+        candidates = _filter_unused_outcomes(
+            indexes["by_event"].get(feature.event_id, []),
+            excluded_outcome_keys=excluded_outcome_keys,
+        )
         chosen, distance_m, candidate_count = _pick_nearest_within_radius(
             feature,
             candidates,
             radius_m=float(join_config.exact_match_distance_m),
+            spatial_index=event_spatial_index,
         )
         if chosen is not None and distance_m is not None:
             return chosen, {
@@ -584,10 +750,60 @@ def _choose_outcome(
                 "radius_candidate_count": candidate_count,
             }
 
-    # 7) Nearest within event: near and extended tiers.
+    # 7) Buffered event coordinates.
     if feature.event_id:
-        candidates = indexes["by_event"].get(feature.event_id, [])
-        chosen, distance_m = _pick_nearest(feature, candidates)
+        candidates = _filter_unused_outcomes(
+            indexes["by_event"].get(feature.event_id, []),
+            excluded_outcome_keys=excluded_outcome_keys,
+        )
+        buffer_radius = min(float(join_config.buffer_match_radius_m), join_config_extended)
+        chosen, distance_m, candidate_count = _pick_nearest_within_radius(
+            feature,
+            candidates,
+            radius_m=buffer_radius,
+            spatial_index=event_spatial_index,
+        )
+        if (
+            chosen is not None
+            and distance_m is not None
+            and distance_m > float(join_config.exact_match_distance_m)
+        ):
+            score = max(0.68, _join_confidence_for_distance(distance_m, join_config.max_distance_m))
+            match_tier = _distance_match_tier(
+                distance_m=distance_m,
+                exact_match_distance_m=join_config.exact_match_distance_m,
+                near_match_distance_m=join_config_near,
+                extended_match_distance_m=join_config_extended,
+            )
+            return chosen, {
+                "join_method": "buffered_event_coordinates",
+                "join_confidence_score": round(score, 4),
+                "join_confidence_tier": _join_tier_from_score_and_distance(
+                    score=score,
+                    distance_m=distance_m,
+                    high_confidence_distance_m=join_config.high_confidence_distance_m,
+                    medium_confidence_distance_m=join_config.medium_confidence_distance_m,
+                    max_allowed_tier="high",
+                ),
+                "join_distance_m": round(distance_m, 2),
+                "match_tier": match_tier if match_tier != "outside" else "near",
+                "buffer_radius_m": round(buffer_radius, 2),
+                "buffer_candidate_count": candidate_count,
+            }
+
+    # 8) Nearest within event: near and extended tiers.
+    if feature.event_id:
+        candidates = _filter_unused_outcomes(
+            indexes["by_event"].get(feature.event_id, []),
+            excluded_outcome_keys=excluded_outcome_keys,
+        )
+        search_candidates = _spatial_candidates_within_radius(
+            feature=feature,
+            radius_m=join_config_extended,
+            fallback_candidates=candidates,
+            spatial_index=event_spatial_index,
+        )
+        chosen, distance_m = _pick_nearest(feature, search_candidates)
         if chosen is not None and distance_m is not None and distance_m <= join_config_extended:
             score = _join_confidence_for_distance(distance_m, join_config.max_distance_m)
             distance_tier = _distance_match_tier(
@@ -619,12 +835,15 @@ def _choose_outcome(
                 "match_tier": distance_tier,
             }
 
-    # 8) Nearest by event name/year within tolerance.
+    # 9) Nearest by event name/year within tolerance.
     if feature.event_name_norm and feature.event_year is not None:
         candidates = [
             row
             for row in indexes["by_event_name"].get(feature.event_name_norm, [])
-            if _event_year_consistent_with_tolerance(feature, row, join_config.event_year_tolerance_years)
+            if (
+                _event_year_consistent_with_tolerance(feature, row, join_config.event_year_tolerance_years)
+                and (not excluded_outcome_keys or _outcome_identity_key(row) not in excluded_outcome_keys)
+            )
         ]
         chosen, distance_m = _pick_nearest(feature, candidates)
         if chosen is not None and distance_m is not None and distance_m <= join_config_extended:
@@ -653,11 +872,11 @@ def _choose_outcome(
                 "match_tier": distance_tier if distance_tier != "outside" else "extended",
             }
 
-    # 9) Approximate global address overlap fallback.
+    # 10) Approximate global address overlap fallback.
     if feature.address_norm:
         best: OutcomeRecord | None = None
         best_overlap = 0.0
-        for row in indexes["all"]:
+        for row in _filter_unused_outcomes(indexes["all"], excluded_outcome_keys=excluded_outcome_keys):
             overlap = _token_overlap_ratio(feature.address_norm, row.address_norm)
             if overlap > best_overlap:
                 best_overlap = overlap
@@ -681,9 +900,16 @@ def _choose_outcome(
                 "match_tier": "fallback",
             }
 
-    # 10) Global nearest as low confidence fallback (optional).
+    # 11) Global nearest as low confidence fallback (optional).
     if join_config.enable_global_nearest_fallback:
-        chosen, distance_m = _pick_nearest(feature, indexes["all"])
+        candidates = _filter_unused_outcomes(indexes["all"], excluded_outcome_keys=excluded_outcome_keys)
+        search_candidates = _spatial_candidates_within_radius(
+            feature=feature,
+            radius_m=float(join_config.global_max_distance_m),
+            fallback_candidates=candidates,
+            spatial_index=global_spatial_index,
+        )
+        chosen, distance_m = _pick_nearest(feature, search_candidates)
         if chosen is not None and distance_m is not None and distance_m <= join_config.global_max_distance_m:
             score = max(0.30, _join_confidence_for_distance(distance_m, join_config.global_max_distance_m) - 0.20)
             return chosen, {
@@ -705,6 +931,11 @@ def _choose_outcome(
         "join_confidence_tier": "low",
         "join_distance_m": None,
         "match_tier": "none",
+        "unmatched_reason": (
+            "no_unused_outcome_match_within_constraints"
+            if excluded_outcome_keys
+            else "no_outcome_match_within_constraints"
+        ),
     }
 
 
@@ -715,14 +946,7 @@ def _load_outcomes(path: Path) -> list[OutcomeRecord]:
 
 
 def _outcome_dedupe_key(row: OutcomeRecord) -> str:
-    source_name = str(row.payload.get("source_name") or "").strip()
-    if source_name and row.source_record_id:
-        return f"source::{source_name}::{row.source_record_id}"
-    if row.event_id and row.record_id:
-        return f"event_record::{row.event_id}::{row.record_id}"
-    if row.event_id and row.latitude is not None and row.longitude is not None:
-        return f"event_coord::{row.event_id}::{round(float(row.latitude), 5)}::{round(float(row.longitude), 5)}"
-    return f"fallback::{row.event_id}::{row.record_id}::{row.source_record_id}"
+    return _outcome_identity_key(row)
 
 
 def _load_outcomes_from_paths(paths: list[Path]) -> tuple[list[OutcomeRecord], dict[str, int]]:
@@ -1071,7 +1295,13 @@ def _build_markdown_summary(
         f"- Join confidence distance stats by tier: `{quality.get('join_confidence_tier_distance_stats')}`",
         f"- Average join distance (m): `{quality.get('average_join_distance_m')}`",
         f"- Median join distance (m): `{quality.get('median_join_distance_m')}`",
+        f"- Distance percentiles (m): `{quality.get('distance_percentiles_m')}`",
+        f"- Match distance histogram (m): `{quality.get('match_distance_histogram_m')}`",
+        f"- Distance outlier threshold (m): `{quality.get('distance_outlier_threshold_m')}`",
+        f"- Distance outlier examples: `{quality.get('distance_outlier_examples')}`",
         f"- Low-confidence joins: `{quality.get('low_confidence_join_count')}`",
+        f"- Duplicate matches prevented: `{quality.get('duplicate_outcome_match_prevented_count')}`",
+        f"- Coordinate normalization summary: `{quality.get('coordinate_normalization_summary')}`",
         f"- Join tier examples: `{quality.get('join_confidence_tier_examples')}`",
         "",
         "## Coverage",
@@ -1109,10 +1339,12 @@ def build_public_outcome_evaluation_dataset(
     near_match_distance_m: float = 30.0,
     max_distance_m: float = 120.0,
     global_max_distance_m: float | None = 1000.0,
+    buffer_match_radius_m: float = 80.0,
     high_confidence_distance_m: float = 20.0,
     medium_confidence_distance_m: float = 100.0,
     event_year_tolerance_years: int = 1,
     enable_global_nearest_fallback: bool = True,
+    allow_duplicate_outcome_matches: bool = False,
     address_token_overlap_min: float = 0.75,
     auto_score_missing: bool = True,
     overwrite: bool = False,
@@ -1148,10 +1380,12 @@ def build_public_outcome_evaluation_dataset(
         near_match_distance_m=max(0.0, float(near_match_distance_m)),
         max_distance_m=float(max_distance_m),
         global_max_distance_m=float(global_max_distance_m if global_max_distance_m is not None else max_distance_m),
+        buffer_match_radius_m=max(0.0, float(buffer_match_radius_m)),
         high_confidence_distance_m=max(0.0, float(high_confidence_distance_m)),
         medium_confidence_distance_m=max(float(high_confidence_distance_m), float(medium_confidence_distance_m)),
         event_year_tolerance_years=max(0, int(event_year_tolerance_years)),
         enable_global_nearest_fallback=bool(enable_global_nearest_fallback),
+        allow_duplicate_outcome_matches=bool(allow_duplicate_outcome_matches),
         address_token_overlap_min=max(0.35, min(1.0, float(address_token_overlap_min))),
     )
     joined_rows: list[dict[str, Any]] = []
@@ -1162,12 +1396,23 @@ def build_public_outcome_evaluation_dataset(
     match_tier_counts: dict[str, int] = {}
     join_tier_distance_values: dict[str, list[float]] = {}
     join_tier_examples: dict[str, list[dict[str, Any]]] = {}
+    feature_coordinate_modes: dict[str, int] = {}
+    outcome_coordinate_modes: dict[str, int] = {}
+    duplicate_outcome_match_prevented_count = 0
+    used_outcome_keys: set[str] = set()
     by_event_counts: dict[str, int] = {}
     by_label_counts: dict[str, int] = {}
     low_confidence_join_count = 0
 
     for feature in sorted(feature_rows, key=lambda row: (row.artifact_path, row.event_id, row.record_id)):
-        matched, join_meta = _choose_outcome(feature, indexes, join_config=join_config)
+        feature_coord_mode = str(feature.payload.get("_coordinate_normalization_mode") or "unknown")
+        feature_coordinate_modes[feature_coord_mode] = feature_coordinate_modes.get(feature_coord_mode, 0) + 1
+        matched, join_meta = _choose_outcome(
+            feature,
+            indexes,
+            join_config=join_config,
+            excluded_outcome_keys=(used_outcome_keys if not join_config.allow_duplicate_outcome_matches else None),
+        )
         method = str(join_meta.get("join_method") or "unmatched")
         if matched is None:
             excluded_rows.append(
@@ -1175,10 +1420,27 @@ def build_public_outcome_evaluation_dataset(
                     "feature_artifact_path": feature.artifact_path,
                     "record_id": feature.record_id,
                     "event_id": feature.event_id,
-                    "reason": "no_outcome_match_within_constraints",
+                    "reason": str(join_meta.get("unmatched_reason") or "no_outcome_match_within_constraints"),
                 }
             )
             continue
+        matched_key = _outcome_identity_key(matched)
+        if not join_config.allow_duplicate_outcome_matches:
+            if matched_key in used_outcome_keys:
+                duplicate_outcome_match_prevented_count += 1
+                excluded_rows.append(
+                    {
+                        "feature_artifact_path": feature.artifact_path,
+                        "record_id": feature.record_id,
+                        "event_id": feature.event_id,
+                        "reason": "duplicate_outcome_match_prevented",
+                        "outcome_identity_key": matched_key,
+                    }
+                )
+                continue
+            used_outcome_keys.add(matched_key)
+        outcome_coord_mode = str(matched.payload.get("_coordinate_normalization_mode") or "unknown")
+        outcome_coordinate_modes[outcome_coord_mode] = outcome_coordinate_modes.get(outcome_coord_mode, 0) + 1
 
         join_method_counts[method] = join_method_counts.get(method, 0) + 1
         tier = str(join_meta.get("join_confidence_tier") or "low")
@@ -1252,6 +1514,7 @@ def build_public_outcome_evaluation_dataset(
                 "address_text": feature.payload.get("address_text"),
                 "latitude": feature.latitude,
                 "longitude": feature.longitude,
+                "coordinate_normalization_mode": feature.payload.get("_coordinate_normalization_mode"),
                 "parcel_identifier": feature.payload.get("parcel_identifier") or feature.payload.get("parcel_id"),
             },
             "outcome": {
@@ -1262,6 +1525,7 @@ def build_public_outcome_evaluation_dataset(
                 "address_text": matched.payload.get("address_text"),
                 "latitude": matched.latitude,
                 "longitude": matched.longitude,
+                "coordinate_normalization_mode": matched.payload.get("_coordinate_normalization_mode"),
                 "damage_label": matched.payload.get("damage_label"),
                 "damage_severity_class": severity,
                 "structure_loss_or_major_damage": binary,
@@ -1364,6 +1628,52 @@ def build_public_outcome_evaluation_dataset(
         if sorted_distances
         else None
     )
+    distance_histogram_bins = [10.0, 20.0, 50.0, 100.0, 250.0]
+    distance_histogram: dict[str, int] = {
+        "0_10m": 0,
+        "10_20m": 0,
+        "20_50m": 0,
+        "50_100m": 0,
+        "100_250m": 0,
+        "250m_plus": 0,
+    }
+    for distance in join_distances:
+        d = float(distance)
+        if d < distance_histogram_bins[0]:
+            distance_histogram["0_10m"] += 1
+        elif d < distance_histogram_bins[1]:
+            distance_histogram["10_20m"] += 1
+        elif d < distance_histogram_bins[2]:
+            distance_histogram["20_50m"] += 1
+        elif d < distance_histogram_bins[3]:
+            distance_histogram["50_100m"] += 1
+        elif d < distance_histogram_bins[4]:
+            distance_histogram["100_250m"] += 1
+        else:
+            distance_histogram["250m_plus"] += 1
+    p95_distance = None
+    if sorted_distances:
+        p95_idx = max(0, min(len(sorted_distances) - 1, int(math.ceil(0.95 * len(sorted_distances)) - 1)))
+        p95_distance = round(float(sorted_distances[p95_idx]), 3)
+    outlier_threshold = max(float(join_config.medium_confidence_distance_m), float(p95_distance or 0.0))
+    distance_outliers: list[dict[str, Any]] = []
+    for row in joined_rows:
+        join_meta = row.get("join_metadata") if isinstance(row.get("join_metadata"), dict) else {}
+        distance_m = _safe_float(join_meta.get("join_distance_m"))
+        if distance_m is None or distance_m < outlier_threshold:
+            continue
+        distance_outliers.append(
+            {
+                "feature_record_id": (row.get("feature") or {}).get("record_id"),
+                "event_id": (row.get("event") or {}).get("event_id"),
+                "join_method": join_meta.get("join_method"),
+                "join_confidence_tier": join_meta.get("join_confidence_tier"),
+                "join_distance_m": round(float(distance_m), 3),
+                "match_tier": join_meta.get("match_tier"),
+            }
+        )
+    distance_outliers.sort(key=lambda item: float(item.get("join_distance_m") or 0.0), reverse=True)
+    distance_outliers = distance_outliers[:20]
     confidence_scores = [
         _safe_float((row.get("join_metadata") or {}).get("join_confidence_score"))
         for row in joined_rows
@@ -1385,6 +1695,13 @@ def build_public_outcome_evaluation_dataset(
         "match_rate_percent": round(join_rate * 100.0, 2),
         "average_join_distance_m": mean_join_distance,
         "median_join_distance_m": (round(float(median_join_distance), 3) if median_join_distance is not None else None),
+        "distance_percentiles_m": {
+            "p50": (round(float(median_join_distance), 3) if median_join_distance is not None else None),
+            "p95": p95_distance,
+        },
+        "match_distance_histogram_m": distance_histogram,
+        "distance_outlier_threshold_m": round(outlier_threshold, 3),
+        "distance_outlier_examples": distance_outliers,
         "join_method_counts": dict(sorted(join_method_counts.items())),
         "join_confidence_tier_counts": dict(sorted(join_tier_counts.items())),
         "join_confidence_tier_distance_stats": {
@@ -1407,6 +1724,12 @@ def build_public_outcome_evaluation_dataset(
             "count": len(confidence_scores),
         },
         "low_confidence_join_count": low_confidence_join_count,
+        "duplicate_outcome_match_prevented_count": duplicate_outcome_match_prevented_count,
+        "allow_duplicate_outcome_matches": bool(join_config.allow_duplicate_outcome_matches),
+        "coordinate_normalization_summary": {
+            "feature_rows_by_mode": dict(sorted(feature_coordinate_modes.items())),
+            "matched_outcomes_by_mode": dict(sorted(outcome_coordinate_modes.items())),
+        },
         "by_event_join_counts": dict(sorted(by_event_counts.items())),
         "by_label_join_counts": dict(sorted(by_label_counts.items())),
         "excluded_row_count": len(excluded_rows),
@@ -1438,11 +1761,13 @@ def build_public_outcome_evaluation_dataset(
                 "max_distance_m": float(join_config.max_distance_m),
                 "exact_match_distance_m": float(join_config.exact_match_distance_m),
                 "near_match_distance_m": float(join_config.near_match_distance_m),
+                "buffer_match_radius_m": float(join_config.buffer_match_radius_m),
                 "high_confidence_distance_m": float(join_config.high_confidence_distance_m),
                 "medium_confidence_distance_m": float(join_config.medium_confidence_distance_m),
                 "global_max_distance_m": float(join_config.global_max_distance_m),
                 "event_year_tolerance_years": int(join_config.event_year_tolerance_years),
                 "enable_global_nearest_fallback": bool(join_config.enable_global_nearest_fallback),
+                "allow_duplicate_outcome_matches": bool(join_config.allow_duplicate_outcome_matches),
                 "address_token_overlap_min": float(join_config.address_token_overlap_min),
             },
             "auto_score_missing": bool(auto_score_missing),
@@ -1460,6 +1785,7 @@ def build_public_outcome_evaluation_dataset(
             "join_rate": join_rate,
             "excluded_rows": len(excluded_rows),
             "low_confidence_join_count": low_confidence_join_count,
+            "duplicate_outcome_match_prevented_count": duplicate_outcome_match_prevented_count,
             "leakage_warning_count": len(set(leakage_warnings)),
             "score_backfilled_records": int(score_backfill.get("backfilled_record_count") or 0),
             "remaining_missing_scores": int(score_backfill.get("remaining_missing_score_record_count") or 0),
@@ -1564,6 +1890,12 @@ def main() -> int:
         help="Extended nearest-neighbor join distance in meters for event-level geospatial joins.",
     )
     parser.add_argument(
+        "--buffer-match-radius-m",
+        type=float,
+        default=80.0,
+        help="Buffered event-level matching radius in meters used before extended nearest-neighbor fallback.",
+    )
+    parser.add_argument(
         "--high-confidence-distance-m",
         type=float,
         default=20.0,
@@ -1592,6 +1924,12 @@ def main() -> int:
         action=argparse.BooleanOptionalAction,
         default=True,
         help="Allow/disallow low-confidence global nearest-neighbor fallback joins.",
+    )
+    parser.add_argument(
+        "--allow-duplicate-outcome-matches",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Allow/disallow one-to-many outcome reuse across feature rows (default: disallow).",
     )
     parser.add_argument(
         "--address-token-overlap-min",
@@ -1642,11 +1980,13 @@ def main() -> int:
         exact_match_distance_m=float(args.exact_match_distance_m),
         near_match_distance_m=float(args.near_match_distance_m),
         max_distance_m=float(args.max_distance_m),
+        buffer_match_radius_m=float(args.buffer_match_radius_m),
         high_confidence_distance_m=float(args.high_confidence_distance_m),
         medium_confidence_distance_m=float(args.medium_confidence_distance_m),
         global_max_distance_m=float(args.global_max_distance_m),
         event_year_tolerance_years=int(args.event_year_tolerance_years),
         enable_global_nearest_fallback=bool(args.enable_global_nearest_fallback),
+        allow_duplicate_outcome_matches=bool(args.allow_duplicate_outcome_matches),
         address_token_overlap_min=float(args.address_token_overlap_min),
         auto_score_missing=bool(args.auto_score_missing),
         overwrite=bool(args.overwrite),
@@ -1673,7 +2013,18 @@ def main() -> int:
         "[public-eval-ds] Distance diagnostics: "
         f"avg_m={join_report.get('average_join_distance_m')} "
         f"median_m={join_report.get('median_join_distance_m')} "
-        f"tier_stats={join_report.get('join_confidence_tier_distance_stats')}"
+        f"tier_stats={join_report.get('join_confidence_tier_distance_stats')} "
+        f"histogram={join_report.get('match_distance_histogram_m')} "
+        f"outlier_threshold_m={join_report.get('distance_outlier_threshold_m')}"
+    )
+    print(
+        "[public-eval-ds] Coordinate normalization: "
+        f"{join_report.get('coordinate_normalization_summary')}"
+    )
+    print(
+        "[public-eval-ds] Duplicate prevention: "
+        f"allow_duplicates={join_report.get('allow_duplicate_outcome_matches')} "
+        f"prevented={join_report.get('duplicate_outcome_match_prevented_count')}"
     )
     print(
         "[public-eval-ds] Join examples by tier: "

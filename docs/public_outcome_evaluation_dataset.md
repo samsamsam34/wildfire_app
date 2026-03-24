@@ -46,9 +46,10 @@ Use `--no-auto-score-missing` to disable this behavior.
 6. `exact_event_coordinates` (bounded by `--exact-match-distance-m`)
 7. `near_event_coordinates` (bounded by `--near-match-distance-m`)
 8. `extended_event_coordinates` (bounded by `--max-distance-m`)
-9. `nearest_event_name_coordinates_tolerant_year` (bounded, year tolerance configurable)
-10. `approx_global_address_token_overlap` (global fallback using address token overlap)
-11. `nearest_global_coordinates` (bounded by `--global-max-distance-m`, optional via `--enable-global-nearest-fallback`)
+9. `buffered_event_coordinates` (bounded by `--buffer-match-radius-m`)
+10. `nearest_event_name_coordinates_tolerant_year` (bounded, year tolerance configurable)
+11. `approx_global_address_token_overlap` (global fallback using address token overlap)
+12. `nearest_global_coordinates` (bounded by `--global-max-distance-m`, optional via `--enable-global-nearest-fallback`)
 
 Each joined row includes:
 
@@ -67,10 +68,16 @@ Each joined row includes:
 Coordinate handling:
 - incoming coordinates are normalized to WGS84 latitude/longitude with fixed precision
 - invalid/out-of-range coordinates are treated as missing rather than silently used
+- Web Mercator (`x`/`y` or projected `latitude`/`longitude`) is converted to WGS84 when detected
 
 Confidence-distance controls:
 - `--high-confidence-distance-m` (default `20`)
 - `--medium-confidence-distance-m` (default `100`)
+- `--buffer-match-radius-m` (default `80`)
+
+Duplicate handling:
+- one outcome is matched to at most one feature row by default
+- override with `--allow-duplicate-outcome-matches` only for diagnostics/debug workflows
 
 ## Leakage Guardrails
 
@@ -113,6 +120,10 @@ Artifacts:
 - join confidence distance stats by tier
 - join confidence examples by tier
 - average/median join distance
+- distance histogram
+- distance outlier threshold + examples
+- coordinate normalization summary
+- duplicate-prevention counts
 - low-confidence join count
 - by-event join counts
 - by-label join counts
