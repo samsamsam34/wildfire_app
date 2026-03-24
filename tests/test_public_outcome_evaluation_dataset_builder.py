@@ -182,14 +182,19 @@ def test_builder_joins_rows_and_reports_join_quality(tmp_path: Path) -> None:
     manifest = json.loads(Path(result["manifest_path"]).read_text(encoding="utf-8"))
     assert manifest["summary"]["joined_records"] == 3
     assert manifest["summary"]["excluded_rows"] == 1
+    assert Path(result["join_quality_metrics_path"]).exists()
+    assert Path(result["join_quality_markdown_path"]).exists()
     join_quality = json.loads(Path(result["join_quality_report_path"]).read_text(encoding="utf-8"))
     assert join_quality["total_outcomes_loaded"] == 3
     assert join_quality["total_feature_rows_loaded"] == 4
     assert join_quality["total_joined_records"] == 3
+    assert "min_join_distance_m" in join_quality
+    assert "max_join_distance_m" in join_quality
     assert join_quality["outcomes_by_event_counts"]
     assert join_quality["feature_rows_by_event_counts"]
     assert join_quality["join_method_counts"]
     assert join_quality["join_confidence_tier_counts"]
+    assert "join_quality_warnings" in join_quality
     assert join_quality["by_event_join_counts"]["evt-a"] == 2
     assert join_quality["by_event_join_counts"]["evt-b"] == 1
     assert join_quality["by_label_join_counts"]["destroyed"] == 1
@@ -197,6 +202,49 @@ def test_builder_joins_rows_and_reports_join_quality(tmp_path: Path) -> None:
     assert join_quality["by_label_join_counts"]["major_damage"] == 1
     assert join_quality["row_confidence_tier_counts"]
     assert "excluded_reason_counts" in join_quality
+
+
+def test_builder_join_quality_warnings_for_weak_spatial_matches(tmp_path: Path) -> None:
+    outcomes = tmp_path / "normalized_outcomes.json"
+    features = tmp_path / "feature_artifact_far_match.json"
+    _write_outcomes(outcomes)
+    features.write_text(
+        json.dumps(
+            {
+                "records": [
+                    {
+                        "event_id": "evt-a",
+                        "event_name": "Event A",
+                        "event_date": "2021-08-01",
+                        "record_id": "far-1",
+                        "source_record_id": "UNKNOWN",
+                        "latitude": 39.1016,
+                        "longitude": -120.1001,
+                        "address_text": "Far Address",
+                        "scores": {"wildfire_risk_score": 58.0},
+                    }
+                ]
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    result = build_public_outcome_evaluation_dataset(
+        outcomes_path=outcomes,
+        feature_artifacts=[features],
+        output_root=tmp_path / "out",
+        run_id="weak_join_warning",
+        near_match_distance_m=30.0,
+        max_distance_m=300.0,
+        medium_confidence_distance_m=60.0,
+        overwrite=True,
+    )
+    join_quality = json.loads(Path(result["join_quality_metrics_path"]).read_text(encoding="utf-8"))
+    warnings = join_quality.get("join_quality_warnings") if isinstance(join_quality.get("join_quality_warnings"), list) else []
+    assert warnings
+    assert any("No high-confidence matches were found" in warning for warning in warnings)
+    assert any("Average join distance is high" in warning for warning in warnings)
 
 
 def test_join_confidence_and_leakage_flags_are_exposed(tmp_path: Path) -> None:

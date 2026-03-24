@@ -1339,6 +1339,97 @@ def _build_markdown_summary(
     return "\n".join(lines) + "\n"
 
 
+def _build_join_quality_warnings(*, quality: dict[str, Any]) -> list[str]:
+    warnings: list[str] = []
+    tier_counts = (
+        quality.get("join_confidence_tier_counts")
+        if isinstance(quality.get("join_confidence_tier_counts"), dict)
+        else {}
+    )
+    high_count = int(tier_counts.get("high") or 0)
+    if high_count <= 0:
+        warnings.append(
+            "No high-confidence matches were found; review source alignment, thresholds, and coordinate quality."
+        )
+
+    avg_distance = _safe_float(quality.get("average_join_distance_m"))
+    threshold_m = _safe_float(
+        (
+            (quality.get("warning_thresholds") or {}).get("high_average_distance_m")
+            if isinstance(quality.get("warning_thresholds"), dict)
+            else None
+        )
+    )
+    if avg_distance is not None and threshold_m is not None and avg_distance > threshold_m:
+        warnings.append(
+            f"Average join distance is high ({round(float(avg_distance), 3)} m > {round(float(threshold_m), 3)} m)."
+        )
+    return warnings
+
+
+def _build_join_quality_report_markdown(
+    *,
+    run_id: str,
+    generated_at: str,
+    quality: dict[str, Any],
+) -> str:
+    tier_counts = (
+        quality.get("join_confidence_tier_counts")
+        if isinstance(quality.get("join_confidence_tier_counts"), dict)
+        else {}
+    )
+    tier_examples = (
+        quality.get("join_confidence_tier_examples")
+        if isinstance(quality.get("join_confidence_tier_examples"), dict)
+        else {}
+    )
+    warnings = quality.get("join_quality_warnings")
+    warnings = warnings if isinstance(warnings, list) else []
+
+    high_examples = tier_examples.get("high") if isinstance(tier_examples.get("high"), list) else []
+    low_examples = tier_examples.get("low") if isinstance(tier_examples.get("low"), list) else []
+
+    lines = [
+        "# Join Quality Report",
+        "",
+        "Public-outcome match quality diagnostics for evaluation-dataset joins.",
+        "",
+        f"- Run ID: `{run_id}`",
+        f"- Generated at: `{generated_at}`",
+        f"- Total outcomes: `{quality.get('total_outcomes_loaded')}`",
+        f"- Matched records: `{quality.get('total_joined_records')}`",
+        f"- Match rate: `{quality.get('join_rate')}` (`{quality.get('match_rate_percent')}%`)",
+        f"- Confidence-tier counts: `{tier_counts}`",
+        "",
+        "## Distance Analysis",
+        f"- Min distance (m): `{quality.get('min_join_distance_m')}`",
+        f"- Mean distance (m): `{quality.get('average_join_distance_m')}`",
+        f"- Max distance (m): `{quality.get('max_join_distance_m')}`",
+        f"- Median distance (m): `{quality.get('median_join_distance_m')}`",
+        f"- Distance histogram (m): `{quality.get('match_distance_histogram_m')}`",
+        "",
+        "## Example Matches",
+        f"- High-confidence examples: `{high_examples}`",
+        f"- Low-confidence examples: `{low_examples}`",
+        "",
+        "## Warnings",
+    ]
+    if warnings:
+        for warning in warnings:
+            lines.append(f"- {warning}")
+    else:
+        lines.append("- None.")
+    lines.extend(
+        [
+            "",
+            "## Caveats",
+            "- Match diagnostics describe join quality only; they do not establish predictive accuracy.",
+            "- Public-outcome datasets are heterogeneous and incomplete.",
+        ]
+    )
+    return "\n".join(lines) + "\n"
+
+
 def build_public_outcome_evaluation_dataset(
     *,
     outcomes_path: Path | None = None,
@@ -1731,8 +1822,10 @@ def build_public_outcome_evaluation_dataset(
         "total_joined_records": len(joined_rows),
         "join_rate": join_rate,
         "match_rate_percent": round(join_rate * 100.0, 2),
+        "min_join_distance_m": (round(float(min(sorted_distances)), 3) if sorted_distances else None),
         "average_join_distance_m": mean_join_distance,
         "median_join_distance_m": (round(float(median_join_distance), 3) if median_join_distance is not None else None),
+        "max_join_distance_m": (round(float(max(sorted_distances)), 3) if sorted_distances else None),
         "distance_percentiles_m": {
             "p50": (round(float(median_join_distance), 3) if median_join_distance is not None else None),
             "p95": p95_distance,
@@ -1776,14 +1869,30 @@ def build_public_outcome_evaluation_dataset(
         "excluded_rows": excluded_rows[:200],
         "leakage_warnings": sorted(set(leakage_warnings)),
         "score_backfill": score_backfill,
+        "warning_thresholds": {
+            "high_average_distance_m": round(float(join_config.medium_confidence_distance_m), 3),
+        },
     }
+    join_quality["join_quality_warnings"] = _build_join_quality_warnings(quality=join_quality)
 
     jsonl_path = run_dir / "evaluation_dataset.jsonl"
     _write_jsonl(jsonl_path, joined_rows)
     csv_path = run_dir / "evaluation_dataset.csv"
     _write_csv(csv_path, joined_rows)
+    join_metrics_path = run_dir / "join_quality_metrics.json"
+    join_metrics_path.write_text(json.dumps(join_quality, indent=2, sort_keys=True), encoding="utf-8")
+    # Backward-compatible alias kept for existing consumers.
     join_report_path = run_dir / "join_quality_report.json"
     join_report_path.write_text(json.dumps(join_quality, indent=2, sort_keys=True), encoding="utf-8")
+    join_report_md_path = run_dir / "join_quality_report.md"
+    join_report_md_path.write_text(
+        _build_join_quality_report_markdown(
+            run_id=run_token,
+            generated_at=generated_at,
+            quality=join_quality,
+        ),
+        encoding="utf-8",
+    )
     summary_path = run_dir / "summary.md"
     summary_path.write_text(
         _build_markdown_summary(run_id=run_token, generated_at=generated_at, quality=join_quality),
@@ -1815,6 +1924,8 @@ def build_public_outcome_evaluation_dataset(
         "artifacts": {
             "evaluation_dataset_jsonl": str(jsonl_path),
             "evaluation_dataset_csv": str(csv_path),
+            "join_quality_metrics_json": str(join_metrics_path),
+            "join_quality_report_markdown": str(join_report_md_path),
             "join_quality_report_json": str(join_report_path),
             "summary_markdown": str(summary_path),
         },
@@ -1840,6 +1951,8 @@ def build_public_outcome_evaluation_dataset(
         "run_id": run_token,
         "run_dir": str(run_dir),
         "manifest_path": str(manifest_path),
+        "join_quality_metrics_path": str(join_metrics_path),
+        "join_quality_markdown_path": str(join_report_md_path),
         "join_quality_report_path": str(join_report_path),
         "joined_record_count": len(joined_rows),
         "excluded_row_count": len(excluded_rows),
@@ -2080,7 +2193,7 @@ def main() -> int:
         auto_score_missing=bool(args.auto_score_missing),
         overwrite=bool(args.overwrite),
     )
-    join_report = json.loads(Path(result["join_quality_report_path"]).read_text(encoding="utf-8"))
+    join_report = json.loads(Path(result["join_quality_metrics_path"]).read_text(encoding="utf-8"))
     print(
         f"[public-eval-ds] Loaded outcomes={join_report.get('total_outcomes_loaded')} "
         f"feature_rows={join_report.get('total_feature_rows_loaded')}"
@@ -2122,6 +2235,9 @@ def main() -> int:
         "[public-eval-ds] Join examples by tier: "
         f"{join_report.get('join_confidence_tier_examples')}"
     )
+    join_warnings = join_report.get("join_quality_warnings") if isinstance(join_report.get("join_quality_warnings"), list) else []
+    if join_warnings:
+        print(f"[public-eval-ds] Join-quality warnings: {join_warnings}")
     score_backfill = join_report.get("score_backfill") if isinstance(join_report.get("score_backfill"), dict) else {}
     if score_backfill:
         print(
