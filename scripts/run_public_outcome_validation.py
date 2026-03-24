@@ -15,6 +15,7 @@ if str(REPO_ROOT) not in sys.path:
 from backend.public_outcome_validation import (  # noqa: E402
     DEFAULT_THRESHOLDS,
     evaluate_public_outcome_dataset_file,
+    trace_public_outcome_dataset_flow,
     write_evaluation_rows_csv,
 )
 from backend.public_outcome_governance import (  # noqa: E402
@@ -130,6 +131,23 @@ def _dataset_governance(dataset_path: Path, rows: list[dict[str, Any]]) -> dict[
             else None
         ),
         "feature_input_versions": _extract_feature_input_versions(rows),
+    }
+
+
+def _dataset_join_stage_counts(dataset_path: Path) -> dict[str, Any]:
+    join_path = dataset_path.parent / "join_quality_report.json"
+    if not join_path.exists():
+        return {}
+    payload = _safe_load_json(join_path)
+    if not isinstance(payload, dict):
+        return {}
+    return {
+        "outcomes_loaded": int(payload.get("total_outcomes_loaded") or 0),
+        "feature_rows_loaded": int(payload.get("total_feature_rows_loaded") or 0),
+        "joined_rows": int(payload.get("total_joined_records") or 0),
+        "join_rate": payload.get("join_rate"),
+        "excluded_rows": int(payload.get("excluded_row_count") or 0),
+        "score_backfill": payload.get("score_backfill") if isinstance(payload.get("score_backfill"), dict) else {},
     }
 
 
@@ -324,8 +342,12 @@ def _insufficient_data_report(
     generated_at: str,
     dataset_path: Path,
     error: str,
+    dataset_flow: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     total_rows = _count_rows_in_dataset(dataset_path)
+    flow = dataset_flow if isinstance(dataset_flow, dict) else {}
+    missing_required = flow.get("missing_required_fields") if isinstance(flow, dict) else {}
+    invalid_examples = flow.get("invalid_row_examples") if isinstance(flow, dict) else []
     return {
         "schema_version": "1.1.0",
         "generated_at": generated_at,
@@ -339,8 +361,12 @@ def _insufficient_data_report(
             "negative_count": 0,
             "positive_rate": None,
             "validation_exclusions": {
-                "missing_required_fields": {},
-                "invalid_row_examples": [],
+                "missing_required_fields": (
+                    missing_required if isinstance(missing_required, dict) else {}
+                ),
+                "invalid_row_examples": (
+                    invalid_examples if isinstance(invalid_examples, list) else []
+                ),
             },
         },
         "discrimination_metrics": {
@@ -376,6 +402,11 @@ def _insufficient_data_report(
         },
         "directional_predictive_value": False,
         "calibration_artifact_recommendation": "not_recommended_yet",
+        "pipeline_stage_counts": {
+            "loaded_rows": int(flow.get("loaded_rows") or total_rows),
+            "prepared_rows": int(flow.get("prepared_rows") or 0),
+            "dropped_rows": int(flow.get("dropped_rows") or max(0, total_rows)),
+        },
     }
 
 
@@ -391,6 +422,7 @@ def run_public_outcome_validation(
     min_slice_size: int = 20,
     false_low_max_score: float = 40.0,
     false_high_min_score: float = 70.0,
+    min_labeled_rows: int = 1,
     baseline_run_id: str | None = None,
     overwrite: bool = False,
 ) -> dict[str, Any]:
@@ -406,6 +438,42 @@ def run_public_outcome_validation(
         dataset_root=evaluation_dataset_root.expanduser(),
         dataset_run_id=evaluation_dataset_run_id,
     )
+    dataset_flow = trace_public_outcome_dataset_flow(dataset_path=dataset_path)
+    join_stage_counts = _dataset_join_stage_counts(dataset_path)
+    if join_stage_counts:
+        print(
+            "[public-validation] Join stage: "
+            f"outcomes={join_stage_counts.get('outcomes_loaded')} "
+            f"feature_rows={join_stage_counts.get('feature_rows_loaded')} "
+            f"joined={join_stage_counts.get('joined_rows')} "
+            f"excluded={join_stage_counts.get('excluded_rows')} "
+            f"join_rate={join_stage_counts.get('join_rate')}"
+        )
+        score_backfill = join_stage_counts.get("score_backfill")
+        if isinstance(score_backfill, dict) and score_backfill:
+            print(
+                "[public-validation] Score backfill stage: "
+                f"before_missing={score_backfill.get('missing_score_record_count_before')} "
+                f"backfilled={score_backfill.get('backfilled_record_count')} "
+                f"remaining_missing={score_backfill.get('remaining_missing_score_record_count')}"
+            )
+    print(
+        f"[public-validation] Loaded {dataset_flow.get('loaded_rows')} dataset rows "
+        f"from {dataset_flow.get('dataset_path')}"
+    )
+    print(
+        f"[public-validation] Prepared {dataset_flow.get('prepared_rows')} usable rows "
+        f"(dropped {dataset_flow.get('dropped_rows')})"
+    )
+    missing_map = dataset_flow.get("missing_required_fields")
+    if isinstance(missing_map, dict) and missing_map:
+        print(f"[public-validation] Missing required field counts: {missing_map}")
+    invalid_examples = dataset_flow.get("invalid_row_examples")
+    if isinstance(invalid_examples, list) and invalid_examples:
+        print(
+            "[public-validation] Invalid-row examples: "
+            + str(invalid_examples[:5])
+        )
 
     rows: list[dict[str, Any]]
     try:
@@ -416,14 +484,25 @@ def run_public_outcome_validation(
             min_slice_size=max(2, int(min_slice_size)),
             false_low_max_score=float(false_low_max_score),
             false_high_min_score=float(false_high_min_score),
+            min_labeled_rows=max(1, int(min_labeled_rows)),
             generated_at=generated_at,
         )
+        report["pipeline_stage_counts"] = {
+            "outcomes_loaded": int(join_stage_counts.get("outcomes_loaded") or 0),
+            "feature_rows_loaded": int(join_stage_counts.get("feature_rows_loaded") or 0),
+            "joined_rows": int(join_stage_counts.get("joined_rows") or 0),
+            "join_excluded_rows": int(join_stage_counts.get("excluded_rows") or 0),
+            "loaded_rows": int(dataset_flow.get("loaded_rows") or 0),
+            "prepared_rows": int(dataset_flow.get("prepared_rows") or 0),
+            "dropped_rows": int(dataset_flow.get("dropped_rows") or 0),
+        }
     except ValueError as exc:
         rows = []
         report = _insufficient_data_report(
             generated_at=generated_at,
             dataset_path=dataset_path,
             error=str(exc),
+            dataset_flow=dataset_flow,
         )
 
     validation_metrics_path = output_dir / "validation_metrics.json"
@@ -546,6 +625,7 @@ def run_public_outcome_validation(
             "min_slice_size": int(max(2, int(min_slice_size))),
             "false_low_max_score": float(false_low_max_score),
             "false_high_min_score": float(false_high_min_score),
+            "min_labeled_rows": int(max(1, int(min_labeled_rows))),
             "baseline_run_id_requested": baseline_run_id,
         },
         "versions": {
@@ -569,6 +649,7 @@ def run_public_outcome_validation(
                 "min_slice_size": int(max(2, int(min_slice_size))),
                 "false_low_max_score": float(false_low_max_score),
                 "false_high_min_score": float(false_high_min_score),
+                "min_labeled_rows": int(max(1, int(min_labeled_rows))),
                 "baseline_run_id": selected_baseline_run,
             },
         },
@@ -653,6 +734,12 @@ def main() -> int:
     )
     parser.add_argument("--bins", type=int, default=10, help="Number of quantile bins for calibration table.")
     parser.add_argument("--min-slice-size", type=int, default=20, help="Minimum slice size before small-sample warning.")
+    parser.add_argument(
+        "--min-labeled-rows",
+        type=int,
+        default=1,
+        help="Minimum usable labeled rows required before evaluation raises insufficient-data.",
+    )
     parser.add_argument("--false-low-max-score", type=float, default=40.0)
     parser.add_argument("--false-high-min-score", type=float, default=70.0)
     parser.add_argument(
@@ -675,6 +762,7 @@ def main() -> int:
         min_slice_size=max(2, int(args.min_slice_size)),
         false_low_max_score=float(args.false_low_max_score),
         false_high_min_score=float(args.false_high_min_score),
+        min_labeled_rows=max(1, int(args.min_labeled_rows)),
         baseline_run_id=(args.baseline_run_id or None),
         overwrite=bool(args.overwrite),
     )

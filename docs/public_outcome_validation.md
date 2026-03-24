@@ -28,6 +28,14 @@ python scripts/run_public_outcome_validation.py \
   --evaluation-dataset-run-id <run_id>
 ```
 
+You can lower/raise the minimum required usable rows:
+
+```bash
+python scripts/run_public_outcome_validation.py \
+  --evaluation-dataset-run-id <run_id> \
+  --min-labeled-rows 1
+```
+
 Compare explicitly against a baseline validation run:
 
 ```bash
@@ -101,6 +109,11 @@ The workflow warns when:
 - leakage-like patterns are detected
 
 If the sample is small, the report still computes available metrics and avoids overstating precision.
+The runner also logs stage counts:
+- loaded dataset rows
+- prepared/usable rows
+- dropped rows with missing required fields
+- join-stage counts when `join_quality_report.json` is available.
 
 ## Run-to-run Governance
 

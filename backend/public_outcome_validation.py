@@ -764,14 +764,16 @@ def evaluate_public_outcome_dataset_rows(
     min_slice_size: int = 20,
     false_low_max_score: float = 40.0,
     false_high_min_score: float = 70.0,
+    min_labeled_rows: int = 1,
     generated_at: str | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     prepared_rows, validation = _prepare_rows(rows)
-    if len(prepared_rows) < 5:
+    if len(prepared_rows) < max(1, int(min_labeled_rows)):
         missing = validation.get("missing_required_fields") or {}
         raise ValueError(
             "Not enough usable labeled rows for evaluation. "
-            f"usable_rows={len(prepared_rows)} missing_required_counts={missing}"
+            f"usable_rows={len(prepared_rows)} min_labeled_rows={max(1, int(min_labeled_rows))} "
+            f"missing_required_counts={missing}"
         )
 
     y_true = [int(row["structure_loss_or_major_damage"]) for row in prepared_rows]
@@ -1013,6 +1015,7 @@ def evaluate_public_outcome_dataset_file(
     min_slice_size: int = 20,
     false_low_max_score: float = 40.0,
     false_high_min_score: float = 70.0,
+    min_labeled_rows: int = 1,
     generated_at: str | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     clean_rows, dataset_format = _load_rows_from_dataset_file(dataset_path)
@@ -1023,6 +1026,7 @@ def evaluate_public_outcome_dataset_file(
         min_slice_size=min_slice_size,
         false_low_max_score=false_low_max_score,
         false_high_min_score=false_high_min_score,
+        min_labeled_rows=min_labeled_rows,
         generated_at=generated_at,
     )
     report["dataset_path"] = str(dataset_path)
@@ -1032,6 +1036,25 @@ def evaluate_public_outcome_dataset_file(
         if isinstance(payload, dict):
             report["dataset_schema_version"] = payload.get("schema_version")
     return report, eval_rows
+
+
+def trace_public_outcome_dataset_flow(
+    *,
+    dataset_path: Path,
+) -> dict[str, Any]:
+    rows, dataset_format = _load_rows_from_dataset_file(dataset_path)
+    prepared_rows, validation = _prepare_rows(rows)
+    missing = validation.get("missing_required_fields") if isinstance(validation, dict) else {}
+    invalid = validation.get("invalid_row_examples") if isinstance(validation, dict) else []
+    return {
+        "dataset_path": str(dataset_path),
+        "dataset_format": dataset_format,
+        "loaded_rows": len(rows),
+        "prepared_rows": len(prepared_rows),
+        "dropped_rows": max(0, len(rows) - len(prepared_rows)),
+        "missing_required_fields": (missing if isinstance(missing, dict) else {}),
+        "invalid_row_examples": (invalid if isinstance(invalid, list) else []),
+    }
 
 
 def write_evaluation_rows_csv(*, rows: list[dict[str, Any]], output_csv: Path) -> None:

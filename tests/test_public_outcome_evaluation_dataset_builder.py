@@ -103,6 +103,26 @@ def _write_feature_artifact(path: Path) -> None:
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
+def _write_unscored_feature_artifact(path: Path) -> None:
+    payload = {
+        "records": [
+            {
+                "event_id": "evt-a",
+                "event_name": "Event A",
+                "event_date": "2021-08-01",
+                "record_id": "f-unscored-1",
+                "source_record_id": "SRC-001",
+                "latitude": 39.10011,
+                "longitude": -120.10011,
+                "address_text": "100 Main Street, Town, CA 90001",
+                "input_payload": {"attributes": {"roof_type": "wood"}},
+                "context_overrides": {"fuel_index": 80.0},
+            }
+        ]
+    }
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
 def test_builder_joins_rows_and_reports_join_quality(tmp_path: Path) -> None:
     outcomes = tmp_path / "normalized_outcomes.json"
     features = tmp_path / "event_backtest.json"
@@ -184,3 +204,54 @@ def test_deterministic_with_fixed_run_id(tmp_path: Path) -> None:
     m1 = Path(first["manifest_path"]).read_text(encoding="utf-8")
     m2 = Path(second["manifest_path"]).read_text(encoding="utf-8")
     assert m1 == m2
+
+
+def test_builder_backfills_missing_scores_via_event_backtest(monkeypatch, tmp_path: Path) -> None:
+    outcomes = tmp_path / "normalized_outcomes.json"
+    features = tmp_path / "event_backtest_unscored.json"
+    _write_outcomes(outcomes)
+    _write_unscored_feature_artifact(features)
+
+    def _fake_run_event_backtest(*, dataset_paths, output_dir, ruleset_id=None, reuse_existing_assessments=False):
+        return {
+            "artifact_path": str(Path(output_dir) / "fake_event_backtest.json"),
+            "records": [
+                {
+                    "event_id": "evt-a",
+                    "record_id": "f-unscored-1",
+                    "source_record_id": "SRC-001",
+                    "scores": {
+                        "wildfire_risk_score": 81.0,
+                        "site_hazard_score": 73.0,
+                        "home_ignition_vulnerability_score": 75.0,
+                        "insurance_readiness_score": 36.0,
+                    },
+                    "confidence": {"confidence_tier": "moderate", "confidence_score": 63.0},
+                    "evidence_quality_summary": {"evidence_tier": "moderate"},
+                    "coverage_summary": {"failed_count": 0, "fallback_count": 0},
+                    "model_governance": {"scoring_model_version": "1.10.0"},
+                }
+            ],
+        }
+
+    import backend.event_backtesting as event_backtesting
+
+    monkeypatch.setattr(event_backtesting, "run_event_backtest", _fake_run_event_backtest)
+
+    result = build_public_outcome_evaluation_dataset(
+        outcomes_path=outcomes,
+        feature_artifacts=[features],
+        output_root=tmp_path / "out",
+        run_id="backfill_eval_ds",
+        overwrite=True,
+    )
+    rows = []
+    with (Path(result["run_dir"]) / "evaluation_dataset.jsonl").open("r", encoding="utf-8") as fh:
+        for line in fh:
+            rows.append(json.loads(line))
+    assert rows
+    assert rows[0]["scores"]["wildfire_risk_score"] == 81.0
+    join_quality = json.loads(Path(result["join_quality_report_path"]).read_text(encoding="utf-8"))
+    score_backfill = join_quality.get("score_backfill") or {}
+    assert score_backfill.get("backfilled_record_count") == 1
+    assert score_backfill.get("remaining_missing_score_record_count") == 0

@@ -427,6 +427,174 @@ def _load_feature_records(paths: list[Path]) -> tuple[list[FeatureRecord], list[
     return records, missing_artifacts
 
 
+def _coalesce_float(*values: Any) -> float | None:
+    for value in values:
+        out = _safe_float(value)
+        if out is not None:
+            return out
+    return None
+
+
+def _extract_feature_scores(payload: dict[str, Any]) -> dict[str, float | None]:
+    scores = payload.get("scores") if isinstance(payload.get("scores"), dict) else {}
+    return {
+        "wildfire_risk_score": _coalesce_float(
+            scores.get("wildfire_risk_score"),
+            payload.get("wildfire_risk_score"),
+            payload.get("overall_wildfire_risk"),
+            (payload.get("assessment") or {}).get("wildfire_risk_score")
+            if isinstance(payload.get("assessment"), dict)
+            else None,
+        ),
+        "site_hazard_score": _coalesce_float(
+            scores.get("site_hazard_score"),
+            payload.get("site_hazard_score"),
+            (payload.get("assessment") or {}).get("site_hazard_score")
+            if isinstance(payload.get("assessment"), dict)
+            else None,
+        ),
+        "home_ignition_vulnerability_score": _coalesce_float(
+            scores.get("home_ignition_vulnerability_score"),
+            payload.get("home_ignition_vulnerability_score"),
+            (payload.get("assessment") or {}).get("home_ignition_vulnerability_score")
+            if isinstance(payload.get("assessment"), dict)
+            else None,
+        ),
+        "insurance_readiness_score": _coalesce_float(
+            scores.get("insurance_readiness_score"),
+            payload.get("insurance_readiness_score"),
+            (payload.get("assessment") or {}).get("insurance_readiness_score")
+            if isinstance(payload.get("assessment"), dict)
+            else None,
+        ),
+    }
+
+
+def _build_scored_record_maps(rows: list[dict[str, Any]]) -> tuple[dict[tuple[str, str], dict[str, Any]], dict[str, dict[str, Any]]]:
+    by_event_record: dict[tuple[str, str], dict[str, Any]] = {}
+    by_record: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        event_id = str(row.get("event_id") or "").strip()
+        record_id = str(row.get("record_id") or "").strip()
+        source_record_id = str(row.get("source_record_id") or "").strip()
+        if event_id and record_id:
+            by_event_record[(event_id, record_id)] = row
+        if record_id:
+            by_record.setdefault(record_id, row)
+        if source_record_id:
+            by_record.setdefault(source_record_id, row)
+    return by_event_record, by_record
+
+
+def _backfill_missing_feature_scores(
+    *,
+    feature_rows: list[FeatureRecord],
+    run_dir: Path,
+    auto_score_missing: bool,
+) -> dict[str, Any]:
+    missing_rows = [
+        row
+        for row in feature_rows
+        if _extract_feature_scores(row.payload).get("wildfire_risk_score") is None
+    ]
+    per_artifact_missing: dict[str, int] = {}
+    for row in missing_rows:
+        per_artifact_missing[row.artifact_path] = per_artifact_missing.get(row.artifact_path, 0) + 1
+    diagnostics: dict[str, Any] = {
+        "auto_score_missing_enabled": bool(auto_score_missing),
+        "missing_score_record_count_before": len(missing_rows),
+        "missing_score_by_artifact_before": dict(sorted(per_artifact_missing.items())),
+        "rescoring_attempted": False,
+        "rescoring_artifact_count": 0,
+        "rescoring_artifact_path": None,
+        "rescoring_record_count": 0,
+        "backfilled_record_count": 0,
+        "remaining_missing_score_record_count": len(missing_rows),
+        "warnings": [],
+    }
+    if not missing_rows:
+        return diagnostics
+    if not auto_score_missing:
+        diagnostics["warnings"].append(
+            "Feature artifacts are missing wildfire scores; auto-score backfill is disabled."
+        )
+        return diagnostics
+
+    artifact_paths = sorted(per_artifact_missing.keys())
+    try:
+        from backend.event_backtesting import run_event_backtest  # lazy import
+
+        rescoring_dir = run_dir / "_auto_scored_event_backtest"
+        rescoring_dir.mkdir(parents=True, exist_ok=True)
+        diagnostics["rescoring_attempted"] = True
+        diagnostics["rescoring_artifact_count"] = len(artifact_paths)
+        artifact = run_event_backtest(
+            dataset_paths=artifact_paths,
+            output_dir=rescoring_dir,
+        )
+        diagnostics["rescoring_artifact_path"] = str(artifact.get("artifact_path") or "")
+        scored_rows = artifact.get("records") if isinstance(artifact.get("records"), list) else []
+        diagnostics["rescoring_record_count"] = len(scored_rows)
+        by_event_record, by_record = _build_scored_record_maps(scored_rows)
+        patched = 0
+        for row in missing_rows:
+            scored = by_event_record.get((row.event_id, row.record_id))
+            if scored is None:
+                scored = by_record.get(row.record_id) or by_record.get(row.source_record_id)
+            if not isinstance(scored, dict):
+                continue
+            scored_scores = scored.get("scores") if isinstance(scored.get("scores"), dict) else {}
+            target_scores = row.payload.setdefault("scores", {})
+            if not isinstance(target_scores, dict):
+                target_scores = {}
+                row.payload["scores"] = target_scores
+            for key in (
+                "wildfire_risk_score",
+                "site_hazard_score",
+                "home_ignition_vulnerability_score",
+                "insurance_readiness_score",
+            ):
+                if target_scores.get(key) is None and scored_scores.get(key) is not None:
+                    target_scores[key] = scored_scores.get(key)
+            confidence = scored.get("confidence") if isinstance(scored.get("confidence"), dict) else {}
+            if row.payload.get("confidence_tier") is None and confidence.get("confidence_tier") is not None:
+                row.payload["confidence_tier"] = confidence.get("confidence_tier")
+            if row.payload.get("confidence_score") is None and confidence.get("confidence_score") is not None:
+                row.payload["confidence_score"] = confidence.get("confidence_score")
+            if row.payload.get("use_restriction") is None and confidence.get("use_restriction") is not None:
+                row.payload["use_restriction"] = confidence.get("use_restriction")
+            if row.payload.get("evidence_quality_summary") is None and isinstance(scored.get("evidence_quality_summary"), dict):
+                row.payload["evidence_quality_summary"] = scored.get("evidence_quality_summary")
+            if row.payload.get("coverage_summary") is None and isinstance(scored.get("coverage_summary"), dict):
+                row.payload["coverage_summary"] = scored.get("coverage_summary")
+            if row.payload.get("factor_contribution_breakdown") is None and isinstance(scored.get("factor_contribution_breakdown"), dict):
+                row.payload["factor_contribution_breakdown"] = scored.get("factor_contribution_breakdown")
+            if row.payload.get("raw_feature_vector") is None and isinstance(scored.get("raw_feature_vector"), dict):
+                row.payload["raw_feature_vector"] = scored.get("raw_feature_vector")
+            if row.payload.get("transformed_feature_vector") is None and isinstance(scored.get("transformed_feature_vector"), dict):
+                row.payload["transformed_feature_vector"] = scored.get("transformed_feature_vector")
+            if row.payload.get("compression_flags") is None and isinstance(scored.get("compression_flags"), list):
+                row.payload["compression_flags"] = scored.get("compression_flags")
+            if row.payload.get("model_governance") is None and isinstance(scored.get("model_governance"), dict):
+                row.payload["model_governance"] = scored.get("model_governance")
+            row.payload["score_backfill_source"] = "event_backtest_auto_rescore"
+            if _extract_feature_scores(row.payload).get("wildfire_risk_score") is not None:
+                patched += 1
+        diagnostics["backfilled_record_count"] = patched
+    except Exception as exc:
+        diagnostics["warnings"].append(f"Auto-score backfill failed: {exc}")
+
+    remaining_missing = [
+        row
+        for row in feature_rows
+        if _extract_feature_scores(row.payload).get("wildfire_risk_score") is None
+    ]
+    diagnostics["remaining_missing_score_record_count"] = len(remaining_missing)
+    return diagnostics
+
+
 def _write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
     with path.open("w", encoding="utf-8") as fh:
         for row in rows:
@@ -514,6 +682,9 @@ def _build_markdown_summary(
         "## Join Quality",
         f"- Join method counts: `{quality.get('join_method_counts')}`",
         f"- Join confidence tier counts: `{quality.get('join_confidence_tier_counts')}`",
+        f"- Join confidence score stats: `{quality.get('join_confidence_score_stats')}`",
+        f"- Average join distance (m): `{quality.get('average_join_distance_m')}`",
+        f"- Median join distance (m): `{quality.get('median_join_distance_m')}`",
         f"- Low-confidence joins: `{quality.get('low_confidence_join_count')}`",
         "",
         "## Coverage",
@@ -523,6 +694,9 @@ def _build_markdown_summary(
         "",
         "## Leakage Guardrails",
         f"- Leakage warning count: `{len(quality.get('leakage_warnings') or [])}`",
+        "",
+        "## Score Availability",
+        f"- Score backfill summary: `{quality.get('score_backfill')}`",
     ]
     for warning in (quality.get("leakage_warnings") or [])[:10]:
         lines.append(f"- {warning}")
@@ -544,6 +718,7 @@ def build_public_outcome_evaluation_dataset(
     output_root: Path = Path("benchmark/public_outcomes/evaluation_dataset"),
     run_id: str | None = None,
     max_distance_m: float = 120.0,
+    auto_score_missing: bool = True,
     overwrite: bool = False,
 ) -> dict[str, Any]:
     run_token = str(run_id or _timestamp_id())
@@ -559,6 +734,11 @@ def build_public_outcome_evaluation_dataset(
     feature_rows, missing_feature_artifacts = _load_feature_records(feature_artifacts)
     if not feature_rows:
         raise ValueError("No feature rows were loaded from provided feature artifacts.")
+    score_backfill = _backfill_missing_feature_scores(
+        feature_rows=feature_rows,
+        run_dir=run_dir,
+        auto_score_missing=bool(auto_score_missing),
+    )
 
     indexes = _build_indexes(outcomes)
     joined_rows: list[dict[str, Any]] = []
@@ -608,15 +788,11 @@ def build_public_outcome_evaluation_dataset(
         if leak_flags:
             caveat_flags.append("leakage_warning_present")
 
-        feature_scores = feature.payload.get("scores") if isinstance(feature.payload.get("scores"), dict) else {}
-        wildfire_risk = _safe_float(feature_scores.get("wildfire_risk_score") if feature_scores else feature.payload.get("wildfire_risk_score"))
-        site_hazard = _safe_float(feature_scores.get("site_hazard_score") if feature_scores else feature.payload.get("site_hazard_score"))
-        home_vuln = _safe_float(
-            feature_scores.get("home_ignition_vulnerability_score")
-            if feature_scores
-            else feature.payload.get("home_ignition_vulnerability_score")
-        )
-        readiness = _safe_float(feature_scores.get("insurance_readiness_score") if feature_scores else feature.payload.get("insurance_readiness_score"))
+        extracted_scores = _extract_feature_scores(feature.payload)
+        wildfire_risk = extracted_scores.get("wildfire_risk_score")
+        site_hazard = extracted_scores.get("site_hazard_score")
+        home_vuln = extracted_scores.get("home_ignition_vulnerability_score")
+        readiness = extracted_scores.get("insurance_readiness_score")
 
         confidence_payload = feature.payload.get("confidence") if isinstance(feature.payload.get("confidence"), dict) else {}
         evidence_summary = feature.payload.get("evidence_quality_summary") if isinstance(feature.payload.get("evidence_quality_summary"), dict) else {}
@@ -717,6 +893,31 @@ def build_public_outcome_evaluation_dataset(
 
     joined_rows.sort(key=lambda row: str(row.get("property_event_id") or ""))
     join_rate = round(len(joined_rows) / float(len(feature_rows)), 4) if feature_rows else 0.0
+    join_distances = [
+        float((row.get("join_metadata") or {}).get("join_distance_m"))
+        for row in joined_rows
+        if _safe_float((row.get("join_metadata") or {}).get("join_distance_m")) is not None
+    ]
+    mean_join_distance = (
+        round(sum(join_distances) / float(len(join_distances)), 3)
+        if join_distances
+        else None
+    )
+    sorted_distances = sorted(join_distances)
+    median_join_distance = (
+        (
+            sorted_distances[len(sorted_distances) // 2]
+            if len(sorted_distances) % 2 == 1
+            else (sorted_distances[(len(sorted_distances) // 2) - 1] + sorted_distances[len(sorted_distances) // 2]) / 2.0
+        )
+        if sorted_distances
+        else None
+    )
+    confidence_scores = [
+        _safe_float((row.get("join_metadata") or {}).get("join_confidence_score"))
+        for row in joined_rows
+    ]
+    confidence_scores = [value for value in confidence_scores if value is not None]
 
     join_quality = {
         "schema_version": SCHEMA_VERSION,
@@ -725,14 +926,23 @@ def build_public_outcome_evaluation_dataset(
         "total_feature_rows_loaded": len(feature_rows),
         "total_joined_records": len(joined_rows),
         "join_rate": join_rate,
+        "average_join_distance_m": mean_join_distance,
+        "median_join_distance_m": (round(float(median_join_distance), 3) if median_join_distance is not None else None),
         "join_method_counts": dict(sorted(join_method_counts.items())),
         "join_confidence_tier_counts": dict(sorted(join_tier_counts.items())),
+        "join_confidence_score_stats": {
+            "mean": (round(sum(confidence_scores) / float(len(confidence_scores)), 4) if confidence_scores else None),
+            "min": (round(min(confidence_scores), 4) if confidence_scores else None),
+            "max": (round(max(confidence_scores), 4) if confidence_scores else None),
+            "count": len(confidence_scores),
+        },
         "low_confidence_join_count": low_confidence_join_count,
         "by_event_join_counts": dict(sorted(by_event_counts.items())),
         "by_label_join_counts": dict(sorted(by_label_counts.items())),
         "excluded_row_count": len(excluded_rows),
         "excluded_rows": excluded_rows[:200],
         "leakage_warnings": sorted(set(leakage_warnings)),
+        "score_backfill": score_backfill,
     }
 
     jsonl_path = run_dir / "evaluation_dataset.jsonl"
@@ -755,6 +965,7 @@ def build_public_outcome_evaluation_dataset(
             "normalized_outcomes_path": str(Path(outcomes_path).expanduser()),
             "feature_artifacts": [str(Path(path).expanduser()) for path in feature_artifacts],
             "max_distance_m": float(max_distance_m),
+            "auto_score_missing": bool(auto_score_missing),
         },
         "artifacts": {
             "evaluation_dataset_jsonl": str(jsonl_path),
@@ -770,6 +981,8 @@ def build_public_outcome_evaluation_dataset(
             "excluded_rows": len(excluded_rows),
             "low_confidence_join_count": low_confidence_join_count,
             "leakage_warning_count": len(set(leakage_warnings)),
+            "score_backfilled_records": int(score_backfill.get("backfilled_record_count") or 0),
+            "remaining_missing_scores": int(score_backfill.get("remaining_missing_score_record_count") or 0),
         },
         "caveat": (
             "Public observed outcomes are directional validation signals and not equivalent to insurer claims truth."
@@ -817,6 +1030,15 @@ def main() -> int:
         default=120.0,
         help="Maximum nearest-neighbor join distance in meters for geospatial fallback joins.",
     )
+    parser.add_argument(
+        "--auto-score-missing",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "When feature artifacts lack wildfire score fields, run event-backtest scoring to backfill "
+            "scores before join (enabled by default)."
+        ),
+    )
     parser.add_argument("--overwrite", action="store_true", help="Overwrite existing run directory.")
     args = parser.parse_args()
 
@@ -829,8 +1051,30 @@ def main() -> int:
         output_root=Path(args.output_root).expanduser(),
         run_id=(args.run_id or None),
         max_distance_m=float(args.max_distance_m),
+        auto_score_missing=bool(args.auto_score_missing),
         overwrite=bool(args.overwrite),
     )
+    join_report = json.loads(Path(result["join_quality_report_path"]).read_text(encoding="utf-8"))
+    print(
+        f"[public-eval-ds] Loaded outcomes={join_report.get('total_outcomes_loaded')} "
+        f"feature_rows={join_report.get('total_feature_rows_loaded')}"
+    )
+    print(
+        f"[public-eval-ds] Matched rows={join_report.get('total_joined_records')} "
+        f"excluded={join_report.get('excluded_row_count')} "
+        f"join_rate={join_report.get('join_rate')}"
+    )
+    score_backfill = join_report.get("score_backfill") if isinstance(join_report.get("score_backfill"), dict) else {}
+    if score_backfill:
+        print(
+            "[public-eval-ds] Score backfill: "
+            f"before_missing={score_backfill.get('missing_score_record_count_before')} "
+            f"backfilled={score_backfill.get('backfilled_record_count')} "
+            f"remaining_missing={score_backfill.get('remaining_missing_score_record_count')}"
+        )
+        warnings = score_backfill.get("warnings") if isinstance(score_backfill.get("warnings"), list) else []
+        if warnings:
+            print(f"[public-eval-ds] Score-backfill warnings: {warnings}")
     print(json.dumps(result, indent=2, sort_keys=True))
     return 0
 

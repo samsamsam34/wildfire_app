@@ -17,6 +17,18 @@ python scripts/build_public_outcome_evaluation_dataset.py \
 
 Multiple feature artifacts are supported by repeating `--feature-artifact`.
 
+If feature artifacts do not already contain model score fields, the builder can auto-backfill
+scores by running event-backtest scoring directly on those records:
+
+```bash
+python scripts/build_public_outcome_evaluation_dataset.py \
+  --outcomes benchmark/public_outcomes/normalized/<run_id>/normalized_outcomes.json \
+  --feature-artifact benchmark/event_backtest_sample_v1.json \
+  --auto-score-missing
+```
+
+Use `--no-auto-score-missing` to disable this behavior.
+
 ## Join Logic (priority order)
 
 1. `exact_parcel_event`
@@ -68,11 +80,14 @@ Artifacts:
 - total joined records + join rate
 - join method counts
 - join confidence tier counts
+- join confidence score stats (min/mean/max)
+- average/median join distance
 - low-confidence join count
 - by-event join counts
 - by-label join counts
 - excluded rows and reasons
 - leakage warnings
+- score-backfill diagnostics (attempted/backfilled/remaining-missing)
 
 ## Graceful Degradation
 

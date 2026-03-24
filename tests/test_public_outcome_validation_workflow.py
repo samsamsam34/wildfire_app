@@ -264,6 +264,33 @@ def test_evaluate_public_outcome_dataset_fails_when_required_fields_missing(tmp_
         evaluate_public_outcome_dataset_file(dataset_path=dataset_path)
 
 
+def test_evaluate_public_outcome_dataset_allows_small_usable_set_when_configured(tmp_path: Path) -> None:
+    dataset_path = tmp_path / "small_dataset.jsonl"
+    dataset_path.write_text(
+        json.dumps(
+            {
+                "event": {"event_id": "evt-small"},
+                "feature": {"record_id": "r-small-1"},
+                "outcome": {
+                    "damage_label": "destroyed",
+                    "damage_severity_class": "destroyed",
+                    "structure_loss_or_major_damage": 1,
+                },
+                "scores": {"wildfire_risk_score": 78.0},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    report, rows = evaluate_public_outcome_dataset_file(
+        dataset_path=dataset_path,
+        min_labeled_rows=1,
+    )
+    assert report["row_count_labeled"] == 1
+    assert report["sample_counts"]["row_count_usable"] == 1
+    assert len(rows) == 1
+
+
 def test_orchestration_writes_bundle_for_insufficient_dataset(tmp_path: Path) -> None:
     dataset_path = tmp_path / "insufficient.jsonl"
     dataset_path.write_text(
