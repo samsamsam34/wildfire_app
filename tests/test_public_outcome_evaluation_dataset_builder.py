@@ -48,6 +48,30 @@ def _write_outcomes(path: Path) -> None:
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
+def _write_outcomes_second_source(path: Path) -> None:
+    payload = {
+        "records": [
+            {
+                "record_id": "o3",
+                "source_record_id": "SRC-003",
+                "source_name": "public_source_b",
+                "event_id": "evt-b",
+                "event_name": "Event B",
+                "event_date": "2022-09-04",
+                "event_year": 2022,
+                "latitude": 38.2001,
+                "longitude": -121.2001,
+                "address_text": "200 Oak St, Town, CA 90002",
+                "damage_label": "major_damage",
+                "damage_severity_class": "major",
+                "structure_loss_or_major_damage": 1,
+                "source_native_label": "Major Damage",
+            }
+        ]
+    }
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
 def _write_feature_artifact(path: Path) -> None:
     payload = {
         "records": [
@@ -88,6 +112,20 @@ def _write_feature_artifact(path: Path) -> None:
                 "factor_contribution_breakdown": {"defensible_space_risk": {"contribution": 2.1}},
             },
             {
+                "event_id": "evt-b",
+                "event_name": "Event B",
+                "event_date": "2022-09-04",
+                "record_id": "f-b-1",
+                "source_record_id": "SRC-003",
+                "latitude": 38.20009,
+                "longitude": -121.20009,
+                "address_text": "200 Oak Street, Town, CA 90002",
+                "scores": {"wildfire_risk_score": 74.0},
+                "confidence": {"confidence_tier": "moderate", "confidence_score": 61.0},
+                "evidence_quality_summary": {"evidence_tier": "moderate"},
+                "coverage_summary": {"failed_count": 0, "fallback_count": 0},
+            },
+            {
                 "event_id": "evt-z",
                 "event_name": "Event Z",
                 "event_date": "2022-09-01",
@@ -125,12 +163,14 @@ def _write_unscored_feature_artifact(path: Path) -> None:
 
 def test_builder_joins_rows_and_reports_join_quality(tmp_path: Path) -> None:
     outcomes = tmp_path / "normalized_outcomes.json"
+    outcomes_b = tmp_path / "normalized_outcomes_b.json"
     features = tmp_path / "event_backtest.json"
     _write_outcomes(outcomes)
+    _write_outcomes_second_source(outcomes_b)
     _write_feature_artifact(features)
 
     result = build_public_outcome_evaluation_dataset(
-        outcomes_path=outcomes,
+        outcomes_paths=[outcomes, outcomes_b],
         feature_artifacts=[features],
         output_root=tmp_path / "out",
         run_id="fixed_eval_ds",
@@ -139,17 +179,20 @@ def test_builder_joins_rows_and_reports_join_quality(tmp_path: Path) -> None:
     )
 
     manifest = json.loads(Path(result["manifest_path"]).read_text(encoding="utf-8"))
-    assert manifest["summary"]["joined_records"] == 2
+    assert manifest["summary"]["joined_records"] == 3
     assert manifest["summary"]["excluded_rows"] == 1
     join_quality = json.loads(Path(result["join_quality_report_path"]).read_text(encoding="utf-8"))
-    assert join_quality["total_outcomes_loaded"] == 2
-    assert join_quality["total_feature_rows_loaded"] == 3
-    assert join_quality["total_joined_records"] == 2
+    assert join_quality["total_outcomes_loaded"] == 3
+    assert join_quality["total_feature_rows_loaded"] == 4
+    assert join_quality["total_joined_records"] == 3
     assert join_quality["join_method_counts"]
     assert join_quality["join_confidence_tier_counts"]
     assert join_quality["by_event_join_counts"]["evt-a"] == 2
+    assert join_quality["by_event_join_counts"]["evt-b"] == 1
     assert join_quality["by_label_join_counts"]["destroyed"] == 1
     assert join_quality["by_label_join_counts"]["no_damage"] == 1
+    assert join_quality["by_label_join_counts"]["major_damage"] == 1
+    assert join_quality["row_confidence_tier_counts"]
 
 
 def test_join_confidence_and_leakage_flags_are_exposed(tmp_path: Path) -> None:
@@ -173,6 +216,7 @@ def test_join_confidence_and_leakage_flags_are_exposed(tmp_path: Path) -> None:
     assert len(rows) == 2
     assert all("join_metadata" in row for row in rows)
     assert all("join_confidence_score" in row["join_metadata"] for row in rows)
+    assert all((row.get("evaluation") or {}).get("row_confidence_tier") in {"high-confidence", "medium-confidence", "low-confidence"} for row in rows)
     # second row includes leakage token in raw feature vector key.
     leaked = [row for row in rows if row["feature"]["record_id"] == "f2"][0]
     assert "potential_outcome_leakage_token_in_raw_feature_vector" in leaked["leakage_flags"]
@@ -255,3 +299,55 @@ def test_builder_backfills_missing_scores_via_event_backtest(monkeypatch, tmp_pa
     score_backfill = join_quality.get("score_backfill") or {}
     assert score_backfill.get("backfilled_record_count") == 1
     assert score_backfill.get("remaining_missing_score_record_count") == 0
+
+
+def test_builder_respects_global_fallback_toggle(tmp_path: Path) -> None:
+    outcomes = tmp_path / "normalized_outcomes.json"
+    features = tmp_path / "feature_artifact_far.json"
+    _write_outcomes(outcomes)
+    features.write_text(
+        json.dumps(
+            {
+                "records": [
+                    {
+                        "event_id": "evt-z",
+                        "event_name": "Event Z",
+                        "event_date": "2022-01-01",
+                        "record_id": "far-1",
+                        "source_record_id": "UNKNOWN",
+                        "latitude": 39.11,
+                        "longitude": -120.11,
+                        "scores": {"wildfire_risk_score": 57.0},
+                    }
+                ]
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    disabled = build_public_outcome_evaluation_dataset(
+        outcomes_path=outcomes,
+        feature_artifacts=[features],
+        output_root=tmp_path / "out",
+        run_id="fallback_disabled",
+        max_distance_m=50.0,
+        global_max_distance_m=100000.0,
+        enable_global_nearest_fallback=False,
+        overwrite=True,
+    )
+    disabled_manifest = json.loads(Path(disabled["manifest_path"]).read_text(encoding="utf-8"))
+    assert disabled_manifest["summary"]["joined_records"] == 0
+
+    enabled = build_public_outcome_evaluation_dataset(
+        outcomes_path=outcomes,
+        feature_artifacts=[features],
+        output_root=tmp_path / "out",
+        run_id="fallback_enabled",
+        max_distance_m=50.0,
+        global_max_distance_m=100000.0,
+        enable_global_nearest_fallback=True,
+        overwrite=True,
+    )
+    enabled_manifest = json.loads(Path(enabled["manifest_path"]).read_text(encoding="utf-8"))
+    assert enabled_manifest["summary"]["joined_records"] == 1

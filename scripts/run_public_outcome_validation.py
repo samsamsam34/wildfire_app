@@ -94,11 +94,16 @@ def _dataset_governance(dataset_path: Path, rows: list[dict[str, Any]]) -> dict[
     dataset_manifest_path = dataset_path.parent / "manifest.json"
     dataset_manifest = _safe_load_json(dataset_manifest_path) if dataset_manifest_path.exists() else None
     dataset_inputs = dataset_manifest.get("inputs") if isinstance(dataset_manifest, dict) else {}
-    outcomes_path = (
-        Path(str(dataset_inputs.get("normalized_outcomes_path"))).expanduser()
-        if isinstance(dataset_inputs, dict) and dataset_inputs.get("normalized_outcomes_path")
-        else None
-    )
+    outcomes_path: Path | None = None
+    if isinstance(dataset_inputs, dict):
+        single = dataset_inputs.get("normalized_outcomes_path")
+        multiple = dataset_inputs.get("normalized_outcomes_paths")
+        if isinstance(single, str) and single.strip():
+            outcomes_path = Path(single).expanduser()
+        elif isinstance(multiple, list) and multiple:
+            first = next((str(item) for item in multiple if str(item).strip()), "")
+            if first:
+                outcomes_path = Path(first).expanduser()
     outcomes_manifest_path = outcomes_path.parent / "manifest.json" if outcomes_path else None
     outcomes_manifest = (
         _safe_load_json(outcomes_manifest_path)
@@ -235,6 +240,7 @@ def _build_summary_markdown(
     default_threshold = report.get("default_threshold_70") if isinstance(report.get("default_threshold_70"), dict) else {}
     guardrails = report.get("guardrails") if isinstance(report.get("guardrails"), dict) else {}
     slice_metrics = report.get("slice_metrics") if isinstance(report.get("slice_metrics"), dict) else {}
+    subset_metrics = report.get("subset_metrics") if isinstance(report.get("subset_metrics"), dict) else {}
     review_sets = report.get("false_review_sets") if isinstance(report.get("false_review_sets"), dict) else {}
     calibration_metrics = report.get("calibration_metrics") if isinstance(report.get("calibration_metrics"), dict) else {}
     wildfire_calibration = (
@@ -304,6 +310,28 @@ def _build_summary_markdown(
                 f"- `{name}`: n={detail.get('count')}, "
                 f"auc={_format_float(detail.get('wildfire_risk_score_auc'))}, "
                 f"pr_auc={_format_float(detail.get('wildfire_risk_score_pr_auc'))}"
+            )
+    by_validation_tier = slice_metrics.get("by_validation_confidence_tier") if isinstance(slice_metrics.get("by_validation_confidence_tier"), dict) else {}
+    if by_validation_tier:
+        lines.append("")
+        lines.append("### By Validation Confidence Tier")
+        for name in sorted(by_validation_tier):
+            detail = by_validation_tier[name] if isinstance(by_validation_tier[name], dict) else {}
+            lines.append(
+                f"- `{name}`: n={detail.get('count')}, "
+                f"auc={_format_float(detail.get('wildfire_risk_score_auc'))}, "
+                f"brier={_format_float(detail.get('wildfire_risk_score_brier'))}"
+            )
+    if subset_metrics:
+        lines.append("")
+        lines.append("### Subset Evaluation")
+        for name in ("full_dataset", "high_confidence_subset", "high_evidence_subset"):
+            detail = subset_metrics.get(name) if isinstance(subset_metrics.get(name), dict) else {}
+            lines.append(
+                f"- `{name}`: n={detail.get('count')}, "
+                f"auc={_format_float(detail.get('wildfire_risk_score_auc'))}, "
+                f"pr_auc={_format_float(detail.get('wildfire_risk_score_pr_auc'))}, "
+                f"brier={_format_float(detail.get('wildfire_risk_score_brier'))}"
             )
 
     lines.extend(
@@ -382,6 +410,7 @@ def _insufficient_data_report(
             "by_confidence_tier": {},
             "by_evidence_group": {},
             "by_join_confidence_tier": {},
+            "by_validation_confidence_tier": {},
         },
         "false_review_sets": {
             "false_low_count": 0,
@@ -496,6 +525,14 @@ def run_public_outcome_validation(
             "prepared_rows": int(dataset_flow.get("prepared_rows") or 0),
             "dropped_rows": int(dataset_flow.get("dropped_rows") or 0),
         }
+        subset_metrics = report.get("subset_metrics") if isinstance(report.get("subset_metrics"), dict) else {}
+        if subset_metrics:
+            print(
+                "[public-validation] Subsets: "
+                f"full={((subset_metrics.get('full_dataset') or {}).get('count'))} "
+                f"high_confidence={((subset_metrics.get('high_confidence_subset') or {}).get('count'))} "
+                f"high_evidence={((subset_metrics.get('high_evidence_subset') or {}).get('count'))}"
+            )
     except ValueError as exc:
         rows = []
         report = _insufficient_data_report(

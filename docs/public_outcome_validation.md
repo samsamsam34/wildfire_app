@@ -90,9 +90,15 @@ Sliced metrics include:
 - event
 - region (if available)
 - confidence tier
+- validation confidence tier (`high-confidence`, `medium-confidence`, `low-confidence`)
 - evidence tier/group
 - fallback-heavy vs non-fallback-heavy
 - join-confidence tier
+
+Subset metrics are also reported for:
+- full usable dataset
+- high-confidence subset
+- high-evidence subset
 
 Error-analysis review sets include:
 - false lows
@@ -114,6 +120,8 @@ The runner also logs stage counts:
 - prepared/usable rows
 - dropped rows with missing required fields
 - join-stage counts when `join_quality_report.json` is available.
+
+Rows are retained as long as core label + wildfire score are present; lower-confidence joins/evidence are tagged and sliced rather than silently dropped.
 
 ## Run-to-run Governance
 

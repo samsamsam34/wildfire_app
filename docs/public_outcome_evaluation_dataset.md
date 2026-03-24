@@ -15,7 +15,13 @@ python scripts/build_public_outcome_evaluation_dataset.py \
   --feature-artifact benchmark/event_backtest_results/event_backtest_<stamp>.json
 ```
 
-Multiple feature artifacts are supported by repeating `--feature-artifact`.
+Multiple inputs are supported:
+
+- repeat `--outcomes` to aggregate multiple normalized outcome files (multi-event/multi-year).
+- repeat `--feature-artifact` to aggregate multiple scored feature artifacts.
+- optionally use discovery flags:
+  - `--outcomes-root benchmark/public_outcomes/normalized --outcomes-run-id <run_id>` (repeat run ids)
+  - `--feature-artifact-dir <dir> --feature-artifact-glob "*.json"`
 
 If feature artifacts do not already contain model score fields, the builder can auto-backfill
 scores by running event-backtest scoring directly on those records:
@@ -35,9 +41,10 @@ Use `--no-auto-score-missing` to disable this behavior.
 2. `exact_source_record_id`
 3. `exact_event_record_id`
 4. `exact_event_address`
-5. `nearest_event_coordinates` (bounded by `--max-distance-m`)
-6. `nearest_event_name_year_coordinates` (bounded)
-7. `nearest_global_coordinates` (bounded, low confidence)
+5. `approx_event_address_token_overlap` (bounded by `--address-token-overlap-min`)
+6. `nearest_event_coordinates` (bounded by `--max-distance-m`)
+7. `nearest_event_name_coordinates_tolerant_year` (bounded, year tolerance configurable)
+8. `nearest_global_coordinates` (bounded by `--global-max-distance-m`, optional via `--enable-global-nearest-fallback`)
 
 Each joined row includes:
 
@@ -46,6 +53,7 @@ Each joined row includes:
 - `join_confidence_tier`
 - `join_distance_m`
 - `event_year_consistent`
+- `evaluation.row_confidence_tier` (`high-confidence` / `medium-confidence` / `low-confidence`)
 
 ## Leakage Guardrails
 
@@ -76,10 +84,12 @@ Artifacts:
 `join_quality_report.json` includes:
 
 - total outcomes loaded
+- outcomes loaded by source file path
 - total feature rows loaded
 - total joined records + join rate
 - join method counts
 - join confidence tier counts
+- row confidence tier counts
 - join confidence score stats (min/mean/max)
 - average/median join distance
 - low-confidence join count

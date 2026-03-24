@@ -125,6 +125,9 @@ def test_evaluate_public_outcome_dataset_reports_required_metrics(tmp_path: Path
     assert report["calibration_metrics"]["wildfire_risk_score"]["bins"]
     assert "by_confidence_tier" in (report["slice_metrics"] or {})
     assert "by_evidence_group" in (report["slice_metrics"] or {})
+    assert "by_validation_confidence_tier" in (report["slice_metrics"] or {})
+    assert "subset_metrics" in report
+    assert report["subset_metrics"]["full_dataset"]["count"] == report["row_count_labeled"]
     assert "false_review_sets" in report
     assert isinstance(rows, list) and rows
 
@@ -241,9 +244,12 @@ def test_evaluation_jsonl_dataset_supports_join_confidence_slices(tmp_path: Path
     report, _ = evaluate_public_outcome_dataset_file(dataset_path=dataset_path, thresholds=[40.0, 70.0], bins=4)
     assert report["dataset_format"] == "jsonl"
     assert "by_join_confidence_tier" in (report["slice_metrics"] or {})
+    assert "by_validation_confidence_tier" in (report["slice_metrics"] or {})
     assert "high" in (report["slice_metrics"]["by_join_confidence_tier"] or {})
     assert "moderate" in (report["slice_metrics"]["by_join_confidence_tier"] or {})
     assert "low" in (report["slice_metrics"]["by_join_confidence_tier"] or {})
+    assert "subset_metrics" in report
+    assert report["subset_metrics"]["high_evidence_subset"]["count"] >= 1
     assert report["discrimination_metrics"]["wildfire_risk_score_pr_auc"] is not None
 
 

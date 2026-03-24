@@ -16,7 +16,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-SCHEMA_VERSION = "1.0.0"
+SCHEMA_VERSION = "1.1.0"
 LEAKAGE_TOKENS = (
     "outcome",
     "damage",
@@ -54,6 +54,15 @@ class FeatureRecord:
     address_norm: str
     latitude: float | None
     longitude: float | None
+
+
+@dataclass(frozen=True)
+class JoinConfig:
+    max_distance_m: float = 120.0
+    global_max_distance_m: float = 160.0
+    event_year_tolerance_years: int = 1
+    enable_global_nearest_fallback: bool = True
+    address_token_overlap_min: float = 0.75
 
 
 def _timestamp_id() -> str:
@@ -103,6 +112,18 @@ def _normalize_text(value: Any) -> str:
 
 def _normalize_address(value: Any) -> str:
     return _normalize_text(value)
+
+
+def _token_overlap_ratio(a: str, b: str) -> float:
+    tokens_a = set(str(a or "").split())
+    tokens_b = set(str(b or "").split())
+    if not tokens_a or not tokens_b:
+        return 0.0
+    inter = len(tokens_a & tokens_b)
+    union = len(tokens_a | tokens_b)
+    if union <= 0:
+        return 0.0
+    return inter / float(union)
 
 
 def _haversine_m(
@@ -223,6 +244,16 @@ def _event_year_consistent(feature: FeatureRecord, outcome: OutcomeRecord) -> bo
     return abs(int(feature.event_year) - int(outcome.event_year)) <= 1
 
 
+def _event_year_consistent_with_tolerance(
+    feature: FeatureRecord,
+    outcome: OutcomeRecord,
+    tolerance_years: int,
+) -> bool:
+    if feature.event_year is None or outcome.event_year is None:
+        return True
+    return abs(int(feature.event_year) - int(outcome.event_year)) <= max(0, int(tolerance_years))
+
+
 def _join_confidence_for_distance(distance_m: float | None, max_distance_m: float) -> float:
     if distance_m is None:
         return 0.0
@@ -251,6 +282,22 @@ def _assess_join_tier(score: float) -> str:
     if score >= 0.7:
         return "moderate"
     return "low"
+
+
+def _derive_row_confidence_tier(
+    *,
+    join_confidence_tier: str,
+    model_confidence_tier: str,
+    evidence_quality_tier: str,
+) -> str:
+    join_tier = str(join_confidence_tier or "").strip().lower()
+    model_tier = str(model_confidence_tier or "").strip().lower()
+    evidence_tier = str(evidence_quality_tier or "").strip().lower()
+    if join_tier == "low" or model_tier in {"low", "preliminary", "unknown"} or evidence_tier in {"low", "preliminary", "unknown"}:
+        return "low-confidence"
+    if join_tier == "high" and model_tier in {"high", "moderate"} and evidence_tier in {"high", "moderate"}:
+        return "high-confidence"
+    return "medium-confidence"
 
 
 def _detect_leakage_flags(feature_row: dict[str, Any], event_date: Any) -> list[str]:
@@ -283,6 +330,7 @@ def _build_indexes(outcomes: list[OutcomeRecord]) -> dict[str, Any]:
     by_parcel_event: dict[str, list[OutcomeRecord]] = {}
     by_address_event: dict[str, list[OutcomeRecord]] = {}
     by_event: dict[str, list[OutcomeRecord]] = {}
+    by_event_name: dict[str, list[OutcomeRecord]] = {}
     by_event_name_year: dict[str, list[OutcomeRecord]] = {}
     for row in outcomes:
         if row.source_record_id:
@@ -295,6 +343,8 @@ def _build_indexes(outcomes: list[OutcomeRecord]) -> dict[str, Any]:
             by_address_event.setdefault(f"{row.event_id}|{row.address_norm}", []).append(row)
         if row.event_id:
             by_event.setdefault(row.event_id, []).append(row)
+        if row.event_name_norm:
+            by_event_name.setdefault(row.event_name_norm, []).append(row)
         if row.event_name_norm and row.event_year is not None:
             by_event_name_year.setdefault(f"{row.event_name_norm}|{row.event_year}", []).append(row)
     return {
@@ -303,6 +353,7 @@ def _build_indexes(outcomes: list[OutcomeRecord]) -> dict[str, Any]:
         "by_parcel_event": by_parcel_event,
         "by_address_event": by_address_event,
         "by_event": by_event,
+        "by_event_name": by_event_name,
         "by_event_name_year": by_event_name_year,
         "all": outcomes,
     }
@@ -312,7 +363,7 @@ def _choose_outcome(
     feature: FeatureRecord,
     indexes: dict[str, Any],
     *,
-    max_distance_m: float,
+    join_config: JoinConfig,
 ) -> tuple[OutcomeRecord | None, dict[str, Any]]:
     # 1) Exact parcel + event.
     if feature.event_id and feature.parcel_id:
@@ -330,7 +381,7 @@ def _choose_outcome(
         rows = indexes["by_source_record"].get(feature.source_record_id, [])
         if rows:
             chosen = rows[0]
-            score = 0.97 if _event_year_consistent(feature, chosen) else 0.82
+            score = 0.97 if _event_year_consistent_with_tolerance(feature, chosen, join_config.event_year_tolerance_years) else 0.82
             return chosen, {
                 "join_method": "exact_source_record_id",
                 "join_confidence_score": score,
@@ -362,12 +413,32 @@ def _choose_outcome(
                 "join_distance_m": _haversine_m(feature.latitude, feature.longitude, chosen.latitude, chosen.longitude),
             }
 
-    # 5) Nearest within event.
+    # 5) Approximate event+address token overlap fallback.
+    if feature.event_id and feature.address_norm:
+        candidates = indexes["by_event"].get(feature.event_id, [])
+        best: OutcomeRecord | None = None
+        best_overlap = 0.0
+        for row in candidates:
+            overlap = _token_overlap_ratio(feature.address_norm, row.address_norm)
+            if overlap > best_overlap:
+                best_overlap = overlap
+                best = row
+        if best is not None and best_overlap >= max(0.35, min(1.0, float(join_config.address_token_overlap_min))):
+            score = min(0.9, max(0.55, 0.55 + 0.35 * best_overlap))
+            return best, {
+                "join_method": "approx_event_address_token_overlap",
+                "join_confidence_score": round(score, 4),
+                "join_confidence_tier": _assess_join_tier(score),
+                "join_distance_m": _haversine_m(feature.latitude, feature.longitude, best.latitude, best.longitude),
+                "address_overlap_ratio": round(best_overlap, 4),
+            }
+
+    # 6) Nearest within event.
     if feature.event_id:
         candidates = indexes["by_event"].get(feature.event_id, [])
         chosen, distance_m = _pick_nearest(feature, candidates)
-        if chosen is not None and distance_m is not None and distance_m <= max_distance_m:
-            score = _join_confidence_for_distance(distance_m, max_distance_m)
+        if chosen is not None and distance_m is not None and distance_m <= join_config.max_distance_m:
+            score = _join_confidence_for_distance(distance_m, join_config.max_distance_m)
             return chosen, {
                 "join_method": "nearest_event_coordinates",
                 "join_confidence_score": round(score, 4),
@@ -375,29 +446,34 @@ def _choose_outcome(
                 "join_distance_m": round(distance_m, 2),
             }
 
-    # 6) Nearest by event name/year.
+    # 7) Nearest by event name/year within tolerance.
     if feature.event_name_norm and feature.event_year is not None:
-        candidates = indexes["by_event_name_year"].get(f"{feature.event_name_norm}|{feature.event_year}", [])
+        candidates = [
+            row
+            for row in indexes["by_event_name"].get(feature.event_name_norm, [])
+            if _event_year_consistent_with_tolerance(feature, row, join_config.event_year_tolerance_years)
+        ]
         chosen, distance_m = _pick_nearest(feature, candidates)
-        if chosen is not None and distance_m is not None and distance_m <= max_distance_m:
-            score = max(0.55, _join_confidence_for_distance(distance_m, max_distance_m) - 0.05)
+        if chosen is not None and distance_m is not None and distance_m <= join_config.max_distance_m:
+            score = max(0.55, _join_confidence_for_distance(distance_m, join_config.max_distance_m) - 0.05)
             return chosen, {
-                "join_method": "nearest_event_name_year_coordinates",
+                "join_method": "nearest_event_name_coordinates_tolerant_year",
                 "join_confidence_score": round(score, 4),
                 "join_confidence_tier": _assess_join_tier(score),
                 "join_distance_m": round(distance_m, 2),
             }
 
-    # 7) Global nearest as low confidence fallback.
-    chosen, distance_m = _pick_nearest(feature, indexes["all"])
-    if chosen is not None and distance_m is not None and distance_m <= max_distance_m:
-        score = max(0.30, _join_confidence_for_distance(distance_m, max_distance_m) - 0.20)
-        return chosen, {
-            "join_method": "nearest_global_coordinates",
-            "join_confidence_score": round(score, 4),
-            "join_confidence_tier": _assess_join_tier(score),
-            "join_distance_m": round(distance_m, 2),
-        }
+    # 8) Global nearest as low confidence fallback (optional).
+    if join_config.enable_global_nearest_fallback:
+        chosen, distance_m = _pick_nearest(feature, indexes["all"])
+        if chosen is not None and distance_m is not None and distance_m <= join_config.global_max_distance_m:
+            score = max(0.30, _join_confidence_for_distance(distance_m, join_config.global_max_distance_m) - 0.20)
+            return chosen, {
+                "join_method": "nearest_global_coordinates",
+                "join_confidence_score": round(score, 4),
+                "join_confidence_tier": _assess_join_tier(score),
+                "join_distance_m": round(distance_m, 2),
+            }
     return None, {
         "join_method": "unmatched",
         "join_confidence_score": 0.0,
@@ -410,6 +486,33 @@ def _load_outcomes(path: Path) -> list[OutcomeRecord]:
     payload = _load_json(path)
     rows = _iter_outcome_rows(payload)
     return [_as_outcome_record(row) for row in rows]
+
+
+def _outcome_dedupe_key(row: OutcomeRecord) -> str:
+    source_name = str(row.payload.get("source_name") or "").strip()
+    if source_name and row.source_record_id:
+        return f"source::{source_name}::{row.source_record_id}"
+    if row.event_id and row.record_id:
+        return f"event_record::{row.event_id}::{row.record_id}"
+    if row.event_id and row.latitude is not None and row.longitude is not None:
+        return f"event_coord::{row.event_id}::{round(float(row.latitude), 5)}::{round(float(row.longitude), 5)}"
+    return f"fallback::{row.event_id}::{row.record_id}::{row.source_record_id}"
+
+
+def _load_outcomes_from_paths(paths: list[Path]) -> tuple[list[OutcomeRecord], dict[str, int]]:
+    deduped: dict[str, OutcomeRecord] = {}
+    per_source_loaded: dict[str, int] = {}
+    for path in paths:
+        p = Path(path).expanduser()
+        rows = _load_outcomes(p)
+        per_source_loaded[str(p)] = len(rows)
+        for row in rows:
+            deduped[_outcome_dedupe_key(row)] = row
+    merged = sorted(
+        deduped.values(),
+        key=lambda row: (row.event_id, row.event_year or 0, row.record_id, row.source_record_id),
+    )
+    return merged, per_source_loaded
 
 
 def _load_feature_records(paths: list[Path]) -> tuple[list[FeatureRecord], list[dict[str, Any]]]:
@@ -425,6 +528,43 @@ def _load_feature_records(paths: list[Path]) -> tuple[list[FeatureRecord], list[
         for row in rows:
             records.append(_as_feature_record(row, str(p)))
     return records, missing_artifacts
+
+
+def _resolve_latest_normalized_outcomes(root: Path) -> list[Path]:
+    resolved_root = Path(root).expanduser()
+    if not resolved_root.exists():
+        return []
+    run_dirs = sorted([path for path in resolved_root.iterdir() if path.is_dir()], key=lambda path: path.name, reverse=True)
+    for run_dir in run_dirs:
+        candidate = run_dir / "normalized_outcomes.json"
+        if candidate.exists():
+            return [candidate]
+    return []
+
+
+def _resolve_normalized_outcomes_from_run_ids(root: Path, run_ids: list[str]) -> list[Path]:
+    resolved_root = Path(root).expanduser()
+    resolved: list[Path] = []
+    for run_id in run_ids:
+        token = str(run_id or "").strip()
+        if not token:
+            continue
+        candidate = resolved_root / token / "normalized_outcomes.json"
+        if candidate.exists():
+            resolved.append(candidate)
+    return resolved
+
+
+def _resolve_feature_artifacts_from_dirs(directories: list[Path], artifact_glob: str) -> list[Path]:
+    resolved: list[Path] = []
+    for directory in directories:
+        root = Path(directory).expanduser()
+        if not root.exists():
+            continue
+        for candidate in sorted(root.glob(str(artifact_glob))):
+            if candidate.is_file():
+                resolved.append(candidate)
+    return resolved
 
 
 def _coalesce_float(*values: Any) -> float | None:
@@ -613,6 +753,7 @@ def _write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         "join_method",
         "join_confidence_score",
         "join_confidence_tier",
+        "row_confidence_tier",
         "join_distance_m",
         "wildfire_risk_score",
         "site_hazard_score",
@@ -642,6 +783,7 @@ def _write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
                 "join_method": row.get("join_metadata", {}).get("join_method"),
                 "join_confidence_score": row.get("join_metadata", {}).get("join_confidence_score"),
                 "join_confidence_tier": row.get("join_metadata", {}).get("join_confidence_tier"),
+                "row_confidence_tier": row.get("evaluation", {}).get("row_confidence_tier"),
                 "join_distance_m": row.get("join_metadata", {}).get("join_distance_m"),
                 "wildfire_risk_score": row.get("scores", {}).get("wildfire_risk_score"),
                 "site_hazard_score": row.get("scores", {}).get("site_hazard_score"),
@@ -675,6 +817,7 @@ def _build_markdown_summary(
         f"- Run ID: `{run_id}`",
         f"- Generated at: `{generated_at}`",
         f"- Outcomes loaded: `{quality.get('total_outcomes_loaded')}`",
+        f"- Outcome source files: `{quality.get('outcomes_loaded_by_source_path')}`",
         f"- Feature rows loaded: `{quality.get('total_feature_rows_loaded')}`",
         f"- Joined rows: `{quality.get('total_joined_records')}`",
         f"- Join rate: `{quality.get('join_rate')}`",
@@ -682,6 +825,7 @@ def _build_markdown_summary(
         "## Join Quality",
         f"- Join method counts: `{quality.get('join_method_counts')}`",
         f"- Join confidence tier counts: `{quality.get('join_confidence_tier_counts')}`",
+        f"- Row confidence tier counts: `{quality.get('row_confidence_tier_counts')}`",
         f"- Join confidence score stats: `{quality.get('join_confidence_score_stats')}`",
         f"- Average join distance (m): `{quality.get('average_join_distance_m')}`",
         f"- Median join distance (m): `{quality.get('median_join_distance_m')}`",
@@ -713,11 +857,16 @@ def _build_markdown_summary(
 
 def build_public_outcome_evaluation_dataset(
     *,
-    outcomes_path: Path,
+    outcomes_path: Path | None = None,
+    outcomes_paths: list[Path] | None = None,
     feature_artifacts: list[Path],
     output_root: Path = Path("benchmark/public_outcomes/evaluation_dataset"),
     run_id: str | None = None,
     max_distance_m: float = 120.0,
+    global_max_distance_m: float | None = None,
+    event_year_tolerance_years: int = 1,
+    enable_global_nearest_fallback: bool = True,
+    address_token_overlap_min: float = 0.75,
     auto_score_missing: bool = True,
     overwrite: bool = False,
 ) -> dict[str, Any]:
@@ -728,7 +877,13 @@ def build_public_outcome_evaluation_dataset(
         raise ValueError(f"Output run directory already exists: {run_dir}. Use --overwrite to replace it.")
     run_dir.mkdir(parents=True, exist_ok=True)
 
-    outcomes = _load_outcomes(Path(outcomes_path).expanduser())
+    configured_outcome_paths = [Path(path).expanduser() for path in (outcomes_paths or []) if str(path).strip()]
+    if not configured_outcome_paths and outcomes_path is not None:
+        configured_outcome_paths = [Path(outcomes_path).expanduser()]
+    if not configured_outcome_paths:
+        raise ValueError("At least one normalized outcomes path is required.")
+
+    outcomes, outcomes_by_source = _load_outcomes_from_paths(configured_outcome_paths)
     if not outcomes:
         raise ValueError("No normalized outcome rows available.")
     feature_rows, missing_feature_artifacts = _load_feature_records(feature_artifacts)
@@ -741,6 +896,13 @@ def build_public_outcome_evaluation_dataset(
     )
 
     indexes = _build_indexes(outcomes)
+    join_config = JoinConfig(
+        max_distance_m=float(max_distance_m),
+        global_max_distance_m=float(global_max_distance_m if global_max_distance_m is not None else max_distance_m),
+        event_year_tolerance_years=max(0, int(event_year_tolerance_years)),
+        enable_global_nearest_fallback=bool(enable_global_nearest_fallback),
+        address_token_overlap_min=max(0.35, min(1.0, float(address_token_overlap_min))),
+    )
     joined_rows: list[dict[str, Any]] = []
     excluded_rows: list[dict[str, Any]] = list(missing_feature_artifacts)
     leakage_warnings: list[str] = []
@@ -751,7 +913,7 @@ def build_public_outcome_evaluation_dataset(
     low_confidence_join_count = 0
 
     for feature in sorted(feature_rows, key=lambda row: (row.artifact_path, row.event_id, row.record_id)):
-        matched, join_meta = _choose_outcome(feature, indexes, max_distance_m=float(max_distance_m))
+        matched, join_meta = _choose_outcome(feature, indexes, join_config=join_config)
         method = str(join_meta.get("join_method") or "unmatched")
         if matched is None:
             excluded_rows.append(
@@ -778,10 +940,10 @@ def build_public_outcome_evaluation_dataset(
             )
 
         caveat_flags: list[str] = []
-        if not _event_year_consistent(feature, matched):
+        if not _event_year_consistent_with_tolerance(feature, matched, join_config.event_year_tolerance_years):
             caveat_flags.append("event_year_mismatch")
         distance_m = _safe_float(join_meta.get("join_distance_m"))
-        if distance_m is not None and distance_m > float(max_distance_m) * 0.6:
+        if distance_m is not None and distance_m > float(join_config.max_distance_m) * 0.6:
             caveat_flags.append("high_join_distance")
         if tier == "low":
             caveat_flags.append("low_confidence_join")
@@ -797,6 +959,11 @@ def build_public_outcome_evaluation_dataset(
         confidence_payload = feature.payload.get("confidence") if isinstance(feature.payload.get("confidence"), dict) else {}
         evidence_summary = feature.payload.get("evidence_quality_summary") if isinstance(feature.payload.get("evidence_quality_summary"), dict) else {}
         coverage_summary = feature.payload.get("coverage_summary") if isinstance(feature.payload.get("coverage_summary"), dict) else {}
+        row_confidence_tier = _derive_row_confidence_tier(
+            join_confidence_tier=str(join_meta.get("join_confidence_tier") or "low"),
+            model_confidence_tier=str(confidence_payload.get("confidence_tier") or feature.payload.get("confidence_tier") or "unknown"),
+            evidence_quality_tier=str(evidence_summary.get("evidence_tier") or "unknown"),
+        )
 
         joined = {
             "property_event_id": f"{feature.event_id or 'unknown_event'}::{feature.record_id or feature.source_record_id or 'unknown_record'}",
@@ -870,8 +1037,19 @@ def build_public_outcome_evaluation_dataset(
             },
             "join_metadata": {
                 **join_meta,
-                "max_distance_m": float(max_distance_m),
-                "event_year_consistent": _event_year_consistent(feature, matched),
+                "max_distance_m": float(join_config.max_distance_m),
+                "global_max_distance_m": float(join_config.global_max_distance_m),
+                "event_year_tolerance_years": int(join_config.event_year_tolerance_years),
+                "global_fallback_enabled": bool(join_config.enable_global_nearest_fallback),
+                "event_year_consistent": _event_year_consistent_with_tolerance(
+                    feature,
+                    matched,
+                    join_config.event_year_tolerance_years,
+                ),
+            },
+            "evaluation": {
+                "row_usable": True,
+                "row_confidence_tier": row_confidence_tier,
             },
             "provenance": {
                 "model_governance": (
@@ -918,11 +1096,16 @@ def build_public_outcome_evaluation_dataset(
         for row in joined_rows
     ]
     confidence_scores = [value for value in confidence_scores if value is not None]
+    row_confidence_tiers: dict[str, int] = {}
+    for row in joined_rows:
+        tier = str(((row.get("evaluation") or {}).get("row_confidence_tier")) or "unknown")
+        row_confidence_tiers[tier] = row_confidence_tiers.get(tier, 0) + 1
 
     join_quality = {
         "schema_version": SCHEMA_VERSION,
         "generated_at": generated_at,
         "total_outcomes_loaded": len(outcomes),
+        "outcomes_loaded_by_source_path": dict(sorted(outcomes_by_source.items())),
         "total_feature_rows_loaded": len(feature_rows),
         "total_joined_records": len(joined_rows),
         "join_rate": join_rate,
@@ -930,6 +1113,7 @@ def build_public_outcome_evaluation_dataset(
         "median_join_distance_m": (round(float(median_join_distance), 3) if median_join_distance is not None else None),
         "join_method_counts": dict(sorted(join_method_counts.items())),
         "join_confidence_tier_counts": dict(sorted(join_tier_counts.items())),
+        "row_confidence_tier_counts": dict(sorted(row_confidence_tiers.items())),
         "join_confidence_score_stats": {
             "mean": (round(sum(confidence_scores) / float(len(confidence_scores)), 4) if confidence_scores else None),
             "min": (round(min(confidence_scores), 4) if confidence_scores else None),
@@ -962,9 +1146,15 @@ def build_public_outcome_evaluation_dataset(
         "run_id": run_token,
         "generated_at": generated_at,
         "inputs": {
-            "normalized_outcomes_path": str(Path(outcomes_path).expanduser()),
+            "normalized_outcomes_paths": [str(path) for path in configured_outcome_paths],
             "feature_artifacts": [str(Path(path).expanduser()) for path in feature_artifacts],
-            "max_distance_m": float(max_distance_m),
+            "join_config": {
+                "max_distance_m": float(join_config.max_distance_m),
+                "global_max_distance_m": float(join_config.global_max_distance_m),
+                "event_year_tolerance_years": int(join_config.event_year_tolerance_years),
+                "enable_global_nearest_fallback": bool(join_config.enable_global_nearest_fallback),
+                "address_token_overlap_min": float(join_config.address_token_overlap_min),
+            },
             "auto_score_missing": bool(auto_score_missing),
         },
         "artifacts": {
@@ -1009,14 +1199,46 @@ def main() -> int:
     )
     parser.add_argument(
         "--outcomes",
-        required=True,
-        help="Path to normalized public outcomes JSON (records array expected).",
+        action="append",
+        default=[],
+        help="Path to normalized public outcomes JSON (records array expected). May be supplied multiple times.",
+    )
+    parser.add_argument(
+        "--outcomes-root",
+        default="",
+        help=(
+            "Optional root with normalized outcome runs (benchmark/public_outcomes/normalized). "
+            "If --outcomes is omitted, latest normalized_outcomes.json is used."
+        ),
+    )
+    parser.add_argument(
+        "--outcomes-run-id",
+        action="append",
+        default=[],
+        help=(
+            "Optional run id under --outcomes-root to include. May be supplied multiple times. "
+            "Ignored when explicit --outcomes paths are supplied."
+        ),
     )
     parser.add_argument(
         "--feature-artifact",
         action="append",
         default=[],
         help="Event-backtest feature artifact JSON path. May be supplied multiple times.",
+    )
+    parser.add_argument(
+        "--feature-artifact-dir",
+        action="append",
+        default=[],
+        help=(
+            "Optional directory to discover feature artifact JSON files. "
+            "Use with --feature-artifact-glob."
+        ),
+    )
+    parser.add_argument(
+        "--feature-artifact-glob",
+        default="*.json",
+        help="Glob used for --feature-artifact-dir discovery (default: *.json).",
     )
     parser.add_argument(
         "--output-root",
@@ -1031,6 +1253,30 @@ def main() -> int:
         help="Maximum nearest-neighbor join distance in meters for geospatial fallback joins.",
     )
     parser.add_argument(
+        "--global-max-distance-m",
+        type=float,
+        default=160.0,
+        help="Maximum nearest-neighbor distance in meters for global fallback joins.",
+    )
+    parser.add_argument(
+        "--event-year-tolerance-years",
+        type=int,
+        default=1,
+        help="Allowed event year mismatch tolerance for event-name fallback joins.",
+    )
+    parser.add_argument(
+        "--enable-global-nearest-fallback",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Allow/disallow low-confidence global nearest-neighbor fallback joins.",
+    )
+    parser.add_argument(
+        "--address-token-overlap-min",
+        type=float,
+        default=0.75,
+        help="Minimum token-overlap ratio for approximate event+address joins.",
+    )
+    parser.add_argument(
         "--auto-score-missing",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -1042,15 +1288,36 @@ def main() -> int:
     parser.add_argument("--overwrite", action="store_true", help="Overwrite existing run directory.")
     args = parser.parse_args()
 
-    feature_artifacts = [Path(token).expanduser() for token in (args.feature_artifact or []) if str(token).strip()]
+    explicit_feature_artifacts = [Path(token).expanduser() for token in (args.feature_artifact or []) if str(token).strip()]
+    discovered_feature_artifacts = _resolve_feature_artifacts_from_dirs(
+        [Path(token).expanduser() for token in (args.feature_artifact_dir or []) if str(token).strip()],
+        artifact_glob=str(args.feature_artifact_glob or "*.json"),
+    )
+    feature_artifacts = sorted({path for path in (explicit_feature_artifacts + discovered_feature_artifacts)})
     if not feature_artifacts:
-        raise ValueError("At least one --feature-artifact path is required.")
+        raise ValueError("At least one feature artifact is required (--feature-artifact or --feature-artifact-dir).")
+    explicit_outcomes = [Path(token).expanduser() for token in (args.outcomes or []) if str(token).strip()]
+    outcomes_root = Path(args.outcomes_root).expanduser() if str(args.outcomes_root or "").strip() else None
+    resolved_from_root: list[Path] = []
+    if not explicit_outcomes and outcomes_root is not None:
+        run_ids = [str(token) for token in (args.outcomes_run_id or []) if str(token).strip()]
+        if run_ids:
+            resolved_from_root = _resolve_normalized_outcomes_from_run_ids(outcomes_root, run_ids)
+        else:
+            resolved_from_root = _resolve_latest_normalized_outcomes(outcomes_root)
+    outcomes_paths = sorted({path for path in (explicit_outcomes + resolved_from_root)})
+    if not outcomes_paths:
+        raise ValueError("At least one outcomes source is required (--outcomes or --outcomes-root).")
     result = build_public_outcome_evaluation_dataset(
-        outcomes_path=Path(args.outcomes).expanduser(),
+        outcomes_paths=outcomes_paths,
         feature_artifacts=feature_artifacts,
         output_root=Path(args.output_root).expanduser(),
         run_id=(args.run_id or None),
         max_distance_m=float(args.max_distance_m),
+        global_max_distance_m=float(args.global_max_distance_m),
+        event_year_tolerance_years=int(args.event_year_tolerance_years),
+        enable_global_nearest_fallback=bool(args.enable_global_nearest_fallback),
+        address_token_overlap_min=float(args.address_token_overlap_min),
         auto_score_missing=bool(args.auto_score_missing),
         overwrite=bool(args.overwrite),
     )
@@ -1063,6 +1330,12 @@ def main() -> int:
         f"[public-eval-ds] Matched rows={join_report.get('total_joined_records')} "
         f"excluded={join_report.get('excluded_row_count')} "
         f"join_rate={join_report.get('join_rate')}"
+    )
+    print(
+        "[public-eval-ds] Coverage: "
+        f"by_event={join_report.get('by_event_join_counts')} "
+        f"by_label={join_report.get('by_label_join_counts')} "
+        f"row_confidence_tiers={join_report.get('row_confidence_tier_counts')}"
     )
     score_backfill = join_report.get("score_backfill") if isinstance(join_report.get("score_backfill"), dict) else {}
     if score_backfill:

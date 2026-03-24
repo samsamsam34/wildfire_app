@@ -273,6 +273,7 @@ def _extract_join_confidence_tier(row: dict[str, Any]) -> str:
     if direct:
         return direct
     join_meta = row.get("join_metadata") if isinstance(row.get("join_metadata"), dict) else {}
+    evaluation = row.get("evaluation") if isinstance(row.get("evaluation"), dict) else {}
     tier = str(join_meta.get("join_confidence_tier") or "").strip().lower()
     return tier or "unknown"
 
@@ -316,6 +317,48 @@ def _derive_evidence_group(*, evidence_tier: str, fallback_flags: dict[str, floa
     ):
         return "high_evidence"
     return "mixed_evidence"
+
+
+def _derive_validation_confidence_tier(
+    *,
+    confidence_tier: str,
+    evidence_group: str,
+    join_confidence_tier: str,
+    fallback_flags: dict[str, float | int],
+    existing_row_tier: str,
+) -> str:
+    existing = str(existing_row_tier or "").strip().lower()
+    if existing in {"high-confidence", "medium-confidence", "low-confidence"}:
+        return existing
+    conf = str(confidence_tier or "").strip().lower()
+    evidence = str(evidence_group or "").strip().lower()
+    join = str(join_confidence_tier or "").strip().lower()
+    fallback_weight = float(fallback_flags.get("fallback_weight_fraction") or 0.0)
+    if conf in {"low", "preliminary", "unknown"} or join == "low" or evidence == "fallback_heavy" or fallback_weight >= 0.5:
+        return "low-confidence"
+    if conf in {"high", "moderate"} and join == "high" and evidence == "high_evidence":
+        return "high-confidence"
+    return "medium-confidence"
+
+
+def _compute_subset_metrics(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    if not rows:
+        return {
+            "count": 0,
+            "positive_rate": None,
+            "wildfire_risk_score_auc": None,
+            "wildfire_risk_score_pr_auc": None,
+            "wildfire_risk_score_brier": None,
+        }
+    y_true = [int(row["structure_loss_or_major_damage"]) for row in rows]
+    probs = [max(0.0, min(1.0, float(row["wildfire_risk_score"]) / 100.0)) for row in rows]
+    return {
+        "count": len(rows),
+        "positive_rate": _mean([float(v) for v in y_true]),
+        "wildfire_risk_score_auc": _roc_auc(y_true, probs),
+        "wildfire_risk_score_pr_auc": _pr_auc(y_true, probs),
+        "wildfire_risk_score_brier": _brier(y_true, probs),
+    }
 
 
 def _top_factor_contributions(row: dict[str, Any], limit: int = 5) -> list[dict[str, Any]]:
@@ -414,6 +457,7 @@ def _flatten_joined_labeled_row(row: dict[str, Any]) -> dict[str, Any]:
     coverage_summary = evidence.get("coverage_summary") if isinstance(evidence.get("coverage_summary"), dict) else {}
     feature_snapshot = row.get("feature_snapshot") if isinstance(row.get("feature_snapshot"), dict) else {}
     join_meta = row.get("join_metadata") if isinstance(row.get("join_metadata"), dict) else {}
+    evaluation = row.get("evaluation") if isinstance(row.get("evaluation"), dict) else {}
     provenance = row.get("provenance") if isinstance(row.get("provenance"), dict) else {}
     governance = provenance.get("model_governance") if isinstance(provenance.get("model_governance"), dict) else {}
 
@@ -483,6 +527,7 @@ def _flatten_joined_labeled_row(row: dict[str, Any]) -> dict[str, Any]:
         "join_method": join_meta.get("join_method"),
         "join_confidence_tier": join_meta.get("join_confidence_tier"),
         "join_confidence_score": join_meta.get("join_confidence_score"),
+        "row_confidence_tier": evaluation.get("row_confidence_tier"),
         "caveat_flags": row.get("caveat_flags") if isinstance(row.get("caveat_flags"), list) else [],
         "leakage_flags": row.get("leakage_flags") if isinstance(row.get("leakage_flags"), list) else [],
         "model_governance": governance,
@@ -747,6 +792,13 @@ def _prepare_rows(
             or str(((row.get("join_metadata") or {}).get("join_method") if isinstance(row.get("join_metadata"), dict) else "")).strip()
             or "unknown"
         )
+        prepared_row["validation_confidence_tier"] = _derive_validation_confidence_tier(
+            confidence_tier=confidence_tier,
+            evidence_group=evidence_group,
+            join_confidence_tier=join_tier,
+            fallback_flags=fallback_flags,
+            existing_row_tier=str(row.get("row_confidence_tier") or ""),
+        )
         prepared_row["fallback_status"] = "fallback_heavy" if evidence_group == "fallback_heavy" else "not_fallback_heavy"
         prepared.append(prepared_row)
 
@@ -824,13 +876,16 @@ def evaluate_public_outcome_dataset_rows(
     by_event: dict[str, Any] = {}
     by_region: dict[str, Any] = {}
     by_join_confidence_tier: dict[str, Any] = {}
+    by_validation_confidence_tier: dict[str, Any] = {}
     event_groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
     region_groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
     join_tier_groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    validation_tier_groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in prepared_rows:
         event_groups[str(row.get("event_id") or "unknown")].append(row)
         region_groups[str(row.get("region_id") or "unknown")].append(row)
         join_tier_groups[str(row.get("join_confidence_tier") or "unknown")].append(row)
+        validation_tier_groups[str(row.get("validation_confidence_tier") or "unknown")].append(row)
     for key in sorted(event_groups.keys()):
         bucket = event_groups[key]
         by_event[key] = {
@@ -846,6 +901,12 @@ def evaluate_public_outcome_dataset_rows(
     for key in sorted(join_tier_groups.keys()):
         bucket = join_tier_groups[key]
         by_join_confidence_tier[key] = {
+            "count": len(bucket),
+            "positive_rate": _mean([float(row["structure_loss_or_major_damage"]) for row in bucket]),
+        }
+    for key in sorted(validation_tier_groups.keys()):
+        bucket = validation_tier_groups[key]
+        by_validation_confidence_tier[key] = {
             "count": len(bucket),
             "positive_rate": _mean([float(row["structure_loss_or_major_damage"]) for row in bucket]),
         }
@@ -882,6 +943,12 @@ def evaluate_public_outcome_dataset_rows(
         false_low_max_score=float(false_low_max_score),
         false_high_min_score=float(false_high_min_score),
     )
+    high_confidence_rows = [row for row in prepared_rows if str(row.get("validation_confidence_tier")) == "high-confidence"]
+    high_evidence_rows = [row for row in prepared_rows if str(row.get("evidence_group")) == "high_evidence"]
+    if not high_confidence_rows:
+        guardrail_warnings.append("No high-confidence rows in this run; prioritize stronger join/feature coverage before calibration decisions.")
+    if not high_evidence_rows:
+        guardrail_warnings.append("No high-evidence rows in this run; results are dominated by inferred/fallback-heavy evidence.")
 
     directional_predictive_value = bool(raw_auc is not None and raw_auc >= 0.6)
     calibration_recommendation = (
@@ -909,6 +976,7 @@ def evaluate_public_outcome_dataset_rows(
             "by_event": by_event,
             "by_region": by_region,
             "by_join_confidence_tier": by_join_confidence_tier,
+            "by_validation_confidence_tier": by_validation_confidence_tier,
             "validation_exclusions": validation,
         },
         "discrimination_metrics": {
@@ -985,11 +1053,21 @@ def evaluate_public_outcome_dataset_rows(
                 slice_key="join_confidence_tier",
                 min_slice_size=min_slice_size,
             ),
+            "by_validation_confidence_tier": _slice_metrics(
+                prepared_rows,
+                slice_key="validation_confidence_tier",
+                min_slice_size=min_slice_size,
+            ),
             "by_fallback_status": _slice_metrics(
                 prepared_rows,
                 slice_key="fallback_status",
                 min_slice_size=min_slice_size,
             ),
+        },
+        "subset_metrics": {
+            "full_dataset": _compute_subset_metrics(prepared_rows),
+            "high_confidence_subset": _compute_subset_metrics(high_confidence_rows),
+            "high_evidence_subset": _compute_subset_metrics(high_evidence_rows),
         },
         "fallback_diagnostics": fallback_stats,
         "factor_contribution_summary_by_confusion_class": _factor_summary_by_confusion_class(prepared_rows),
@@ -1076,6 +1154,7 @@ def write_evaluation_rows_csv(*, rows: list[dict[str, Any]], output_csv: Path) -
                 "evidence_group",
                 "join_confidence_tier",
                 "join_confidence_score",
+                "validation_confidence_tier",
                 "join_method",
                 "confusion_class_default_threshold_70",
                 "fallback_factor_count",
@@ -1104,6 +1183,7 @@ def write_evaluation_rows_csv(*, rows: list[dict[str, Any]], output_csv: Path) -
                     "evidence_group": row.get("evidence_group"),
                     "join_confidence_tier": row.get("join_confidence_tier"),
                     "join_confidence_score": row.get("join_confidence_score"),
+                    "validation_confidence_tier": row.get("validation_confidence_tier"),
                     "join_method": row.get("join_method"),
                     "confusion_class_default_threshold_70": row.get("_confusion_class"),
                     "fallback_factor_count": flags.get("fallback_factor_count"),
