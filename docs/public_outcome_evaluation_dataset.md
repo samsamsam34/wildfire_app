@@ -42,15 +42,19 @@ Use `--no-auto-score-missing` to disable this behavior.
 3. `exact_event_record_id`
 4. `exact_event_address`
 5. `approx_event_address_token_overlap` (bounded by `--address-token-overlap-min`)
-6. `nearest_event_coordinates` (bounded by `--max-distance-m`)
-7. `nearest_event_name_coordinates_tolerant_year` (bounded, year tolerance configurable)
-8. `nearest_global_coordinates` (bounded by `--global-max-distance-m`, optional via `--enable-global-nearest-fallback`)
+6. `exact_event_coordinates` (bounded by `--exact-match-distance-m`)
+7. `near_event_coordinates` (bounded by `--near-match-distance-m`)
+8. `extended_event_coordinates` (bounded by `--max-distance-m`)
+9. `nearest_event_name_coordinates_tolerant_year` (bounded, year tolerance configurable)
+10. `approx_global_address_token_overlap` (global fallback using address token overlap)
+11. `nearest_global_coordinates` (bounded by `--global-max-distance-m`, optional via `--enable-global-nearest-fallback`)
 
 Each joined row includes:
 
 - `join_method`
 - `join_confidence_score`
 - `join_confidence_tier`
+- `match_tier` (`exact` / `near` / `extended` / `fallback`)
 - `join_distance_m`
 - `event_year_consistent`
 - `evaluation.row_confidence_tier` (`high-confidence` / `medium-confidence` / `low-confidence`)
@@ -87,8 +91,10 @@ Artifacts:
 - outcomes loaded by source file path
 - total feature rows loaded
 - total joined records + join rate
+- match rate percent
 - join method counts
 - join confidence tier counts
+- match tier counts
 - row confidence tier counts
 - join confidence score stats (min/mean/max)
 - average/median join distance

@@ -351,3 +351,96 @@ def test_builder_respects_global_fallback_toggle(tmp_path: Path) -> None:
     )
     enabled_manifest = json.loads(Path(enabled["manifest_path"]).read_text(encoding="utf-8"))
     assert enabled_manifest["summary"]["joined_records"] == 1
+
+
+def test_builder_assigns_extended_geospatial_match_tier(tmp_path: Path) -> None:
+    outcomes = tmp_path / "normalized_outcomes.json"
+    features = tmp_path / "feature_artifact_extended_radius.json"
+    _write_outcomes(outcomes)
+    features.write_text(
+        json.dumps(
+            {
+                "records": [
+                    {
+                        "event_id": "evt-a",
+                        "event_name": "Event A",
+                        "event_date": "2021-08-01",
+                        "record_id": "extended-1",
+                        "source_record_id": "UNKNOWN",
+                        "latitude": 39.10095,
+                        "longitude": -120.10095,
+                        "address_text": "Unmatched Address",
+                        "scores": {"wildfire_risk_score": 63.0},
+                    }
+                ]
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    result = build_public_outcome_evaluation_dataset(
+        outcomes_path=outcomes,
+        feature_artifacts=[features],
+        output_root=tmp_path / "out",
+        run_id="extended_radius",
+        near_match_distance_m=30.0,
+        max_distance_m=200.0,
+        overwrite=True,
+    )
+    rows = []
+    with (Path(result["run_dir"]) / "evaluation_dataset.jsonl").open("r", encoding="utf-8") as fh:
+        for line in fh:
+            rows.append(json.loads(line))
+    assert len(rows) == 1
+    join_meta = rows[0]["join_metadata"]
+    assert join_meta["join_method"] in {"extended_event_coordinates", "nearest_event_name_coordinates_tolerant_year"}
+    assert join_meta.get("match_tier") in {"extended", "near"}
+
+    join_quality = json.loads(Path(result["join_quality_report_path"]).read_text(encoding="utf-8"))
+    assert join_quality["match_tier_counts"]
+    assert join_quality["match_rate_percent"] == 100.0
+
+
+def test_builder_uses_global_address_overlap_fallback_when_coordinates_missing(tmp_path: Path) -> None:
+    outcomes = tmp_path / "normalized_outcomes.json"
+    features = tmp_path / "feature_artifact_address_overlap.json"
+    _write_outcomes(outcomes)
+    features.write_text(
+        json.dumps(
+            {
+                "records": [
+                    {
+                        "event_id": "evt-z",
+                        "event_name": "Event Z",
+                        "event_date": "2021-08-01",
+                        "record_id": "addr-overlap-1",
+                        "source_record_id": "UNKNOWN",
+                        "address_text": "100 Main Street Town CA 90001",
+                        "scores": {"wildfire_risk_score": 49.0},
+                    }
+                ]
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    result = build_public_outcome_evaluation_dataset(
+        outcomes_path=outcomes,
+        feature_artifacts=[features],
+        output_root=tmp_path / "out",
+        run_id="address_overlap",
+        enable_global_nearest_fallback=False,
+        address_token_overlap_min=0.6,
+        overwrite=True,
+    )
+    rows = []
+    with (Path(result["run_dir"]) / "evaluation_dataset.jsonl").open("r", encoding="utf-8") as fh:
+        for line in fh:
+            rows.append(json.loads(line))
+    assert len(rows) == 1
+    join_meta = rows[0]["join_metadata"]
+    assert join_meta["join_method"] == "approx_global_address_token_overlap"
+    assert join_meta["match_tier"] == "fallback"
+    assert join_meta["join_confidence_tier"] in {"low", "moderate"}
