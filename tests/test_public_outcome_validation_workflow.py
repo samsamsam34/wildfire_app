@@ -132,6 +132,9 @@ def test_evaluate_public_outcome_dataset_reports_required_metrics(tmp_path: Path
     assert report["minimum_viable_metrics"]["available"] is True
     assert "data_sufficiency_flags" in report
     assert "narrative_summary" in report
+    assert "proxy_validation" in report
+    assert "synthetic_validation" in report
+    assert "validation_streams" in report
     assert "false_review_sets" in report
     assert isinstance(rows, list) and rows
 
@@ -254,6 +257,8 @@ def test_evaluation_jsonl_dataset_supports_join_confidence_slices(tmp_path: Path
     assert "low" in (report["slice_metrics"]["by_join_confidence_tier"] or {})
     assert "subset_metrics" in report
     assert report["subset_metrics"]["high_evidence_subset"]["count"] >= 1
+    assert "proxy_validation" in report
+    assert "synthetic_validation" in report
     assert report["discrimination_metrics"]["wildfire_risk_score_pr_auc"] is not None
 
 
@@ -329,4 +334,54 @@ def test_orchestration_writes_bundle_for_insufficient_dataset(tmp_path: Path) ->
     assert metrics["minimum_viable_metrics"]["available"] is False
     assert metrics["data_sufficiency_flags"]["flags"]["small_sample_size"] is True
     assert "no usable labeled rows" in str((metrics.get("narrative_summary") or {}).get("headline", "")).lower()
+    assert metrics["proxy_validation"]["available"] is False
+    assert metrics["synthetic_validation"]["available"] is False
+    assert metrics["validation_streams"]["real_outcome_validation"]["available"] is False
     assert "Insufficient usable labeled rows" in " ".join((metrics.get("guardrails") or {}).get("warnings") or [])
+
+
+def test_proxy_validation_stream_available_when_proxy_features_present(tmp_path: Path) -> None:
+    rows = []
+    for idx, (score, label, burn, hazard, dist, slope) in enumerate(
+        [
+            (88.0, 1, 0.92, 4.7, 120.0, 34.0),
+            (82.0, 1, 0.86, 4.4, 180.0, 31.0),
+            (70.0, 1, 0.74, 3.9, 260.0, 28.0),
+            (42.0, 0, 0.35, 2.2, 880.0, 14.0),
+            (34.0, 0, 0.22, 1.6, 1200.0, 11.0),
+            (28.0, 0, 0.18, 1.3, 1400.0, 9.0),
+        ],
+        start=1,
+    ):
+        rows.append(
+            {
+                "event": {"event_id": "evt-proxy", "event_date": "2021-08-01"},
+                "feature": {"record_id": f"p-{idx}", "source_record_id": str(idx)},
+                "outcome": {
+                    "damage_label": "destroyed" if label == 1 else "no_damage",
+                    "damage_severity_class": "destroyed" if label == 1 else "none",
+                    "structure_loss_or_major_damage": label,
+                },
+                "scores": {"wildfire_risk_score": score},
+                "confidence": {"confidence_tier": "moderate"},
+                "evidence": {"evidence_quality_tier": "moderate", "evidence_quality_summary": {}, "coverage_summary": {}},
+                "feature_snapshot": {
+                    "raw_feature_vector": {
+                        "burn_probability": burn,
+                        "wildfire_hazard": hazard,
+                        "wildland_distance_m": dist,
+                        "slope": slope,
+                    }
+                },
+                "join_metadata": {"join_confidence_tier": "moderate", "join_confidence_score": 0.8},
+            }
+        )
+    dataset_path = tmp_path / "proxy_eval.jsonl"
+    dataset_path.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
+    report, _ = evaluate_public_outcome_dataset_file(dataset_path=dataset_path, thresholds=[40.0, 70.0], bins=4)
+    proxy = report.get("proxy_validation") or {}
+    assert proxy.get("available") is True
+    assert (proxy.get("alignment_metrics") or {}).get("spearman_model_vs_proxy_index") is not None
+    assert (proxy.get("alignment_metrics") or {}).get("auc_model_vs_proxy_high_low") is not None
+    synthetic = report.get("synthetic_validation") or {}
+    assert "available" in synthetic

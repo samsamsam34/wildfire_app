@@ -25,6 +25,24 @@ OUTCOME_RANKS = {
     "major_damage": 3,
     "destroyed": 4,
 }
+PROXY_RISK_UP_FEATURE_KEYS = (
+    "burn_probability",
+    "wildfire_hazard",
+    "fuel_model",
+    "canopy_cover",
+    "slope",
+    "canopy_adjacency_proxy_pct",
+    "vegetation_continuity_proxy_pct",
+    "near_structure_vegetation_0_5_pct",
+    "ring_0_5_ft_vegetation_density",
+    "ring_5_30_ft_vegetation_density",
+)
+PROXY_RISK_DOWN_FEATURE_KEYS = (
+    "historic_fire_distance_km",
+    "wildland_distance_m",
+    "nearest_high_fuel_patch_distance_ft",
+    "nearest_vegetation_distance_ft",
+)
 
 
 def _utc_now_iso() -> str:
@@ -896,6 +914,240 @@ def _build_narrative_summary(
     return {"headline": headline, "bullets": lines}
 
 
+def _proxy_feature_value(row: dict[str, Any], key: str) -> float | None:
+    raw = row.get("raw_feature_vector") if isinstance(row.get("raw_feature_vector"), dict) else {}
+    transformed = row.get("transformed_feature_vector") if isinstance(row.get("transformed_feature_vector"), dict) else {}
+    if key in raw:
+        value = _safe_float(raw.get(key))
+        if value is not None:
+            return value
+    if key in transformed:
+        value = _safe_float(transformed.get(key))
+        if value is not None:
+            return value
+    return _safe_float(row.get(key))
+
+
+def _proxy_quantile(values: list[float], q: float) -> float | None:
+    if not values:
+        return None
+    clean = sorted(float(v) for v in values)
+    if len(clean) == 1:
+        return clean[0]
+    pct = max(0.0, min(1.0, float(q)))
+    idx = pct * (len(clean) - 1)
+    lo = int(math.floor(idx))
+    hi = int(math.ceil(idx))
+    if lo == hi:
+        return clean[lo]
+    frac = idx - lo
+    return clean[lo] + (clean[hi] - clean[lo]) * frac
+
+
+def _pairwise_hit_rate_from_scores(positive_scores: list[float], negative_scores: list[float]) -> dict[str, Any]:
+    pair_count = len(positive_scores) * len(negative_scores)
+    if pair_count <= 0:
+        return {"available": False, "pair_count": pair_count, "hit_rate": None}
+    wins = 0.0
+    ties = 0
+    for pos in positive_scores:
+        for neg in negative_scores:
+            if pos > neg:
+                wins += 1.0
+            elif pos == neg:
+                wins += 0.5
+                ties += 1
+    hit_rate = wins / float(pair_count)
+    return {
+        "available": True,
+        "pair_count": pair_count,
+        "hit_rate": hit_rate,
+        "ties_fraction": ties / float(pair_count),
+        "confidence_interval_95": _wilson_interval(int(round(wins)), pair_count),
+    }
+
+
+def _compute_proxy_validation(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    feature_ranges: dict[str, tuple[float, float, str]] = {}
+    for key in PROXY_RISK_UP_FEATURE_KEYS:
+        values = [
+            _proxy_feature_value(row, key)
+            for row in rows
+            if _proxy_feature_value(row, key) is not None
+        ]
+        clean = [float(v) for v in values if v is not None]
+        if len(clean) >= 2 and max(clean) > min(clean):
+            feature_ranges[key] = (min(clean), max(clean), "risk_up")
+    for key in PROXY_RISK_DOWN_FEATURE_KEYS:
+        values = [
+            _proxy_feature_value(row, key)
+            for row in rows
+            if _proxy_feature_value(row, key) is not None
+        ]
+        clean = [float(v) for v in values if v is not None]
+        if len(clean) >= 2 and max(clean) > min(clean):
+            feature_ranges[key] = (min(clean), max(clean), "risk_down")
+
+    scored_rows: list[dict[str, Any]] = []
+    for row in rows:
+        components: list[float] = []
+        for key, (lo, hi, direction) in feature_ranges.items():
+            value = _proxy_feature_value(row, key)
+            if value is None:
+                continue
+            norm = (float(value) - lo) / float(hi - lo)
+            norm = max(0.0, min(1.0, norm))
+            if direction == "risk_down":
+                norm = 1.0 - norm
+            components.append(norm)
+        if len(components) < 2:
+            continue
+        scored_rows.append(
+            {
+                "record_id": row.get("record_id"),
+                "event_id": row.get("event_id"),
+                "wildfire_risk_score": float(row.get("wildfire_risk_score") or 0.0),
+                "proxy_risk_index": sum(components) / float(len(components)),
+            }
+        )
+
+    if len(scored_rows) < 3:
+        return {
+            "available": False,
+            "caveat": "Proxy validation uses weak labels from environmental proxies and is not ground-truth validation.",
+            "reason": "insufficient_proxy_feature_coverage",
+            "feature_count_used": len(feature_ranges),
+            "rows_with_proxy_index": len(scored_rows),
+        }
+
+    proxy_values = [float(row["proxy_risk_index"]) for row in scored_rows]
+    low_cut = _proxy_quantile(proxy_values, 0.33)
+    high_cut = _proxy_quantile(proxy_values, 0.67)
+    if low_cut is None or high_cut is None or high_cut <= low_cut:
+        return {
+            "available": False,
+            "caveat": "Proxy validation uses weak labels from environmental proxies and is not ground-truth validation.",
+            "reason": "insufficient_proxy_separation",
+            "feature_count_used": len(feature_ranges),
+            "rows_with_proxy_index": len(scored_rows),
+        }
+
+    weak_labeled_rows: list[dict[str, Any]] = []
+    for row in scored_rows:
+        idx = float(row["proxy_risk_index"])
+        if idx >= high_cut:
+            weak_label = 1
+            weak_class = "high_proxy_risk"
+        elif idx <= low_cut:
+            weak_label = 0
+            weak_class = "low_proxy_risk"
+        else:
+            weak_label = None
+            weak_class = "mid_proxy_risk"
+        weak_labeled_rows.append({**row, "weak_proxy_label": weak_label, "weak_proxy_class": weak_class})
+
+    high_rows = [row for row in weak_labeled_rows if row.get("weak_proxy_label") == 1]
+    low_rows = [row for row in weak_labeled_rows if row.get("weak_proxy_label") == 0]
+    usable = high_rows + low_rows
+
+    if len(usable) < 4:
+        return {
+            "available": False,
+            "caveat": "Proxy validation uses weak labels from environmental proxies and is not ground-truth validation.",
+            "reason": "insufficient_high_low_proxy_labels",
+            "feature_count_used": len(feature_ranges),
+            "rows_with_proxy_index": len(scored_rows),
+            "weak_label_counts": {
+                "high_proxy_risk": len(high_rows),
+                "low_proxy_risk": len(low_rows),
+                "mid_proxy_risk": len(weak_labeled_rows) - len(usable),
+            },
+        }
+
+    y_true = [int(row["weak_proxy_label"]) for row in usable]
+    y_score = [max(0.0, min(1.0, float(row["wildfire_risk_score"]) / 100.0)) for row in usable]
+    raw_scores = [float(row["wildfire_risk_score"]) for row in usable]
+    proxy_idx = [float(row["proxy_risk_index"]) for row in usable]
+    threshold = 70.0
+    pred = [1 if score >= threshold else 0 for score in raw_scores]
+    conf = _confusion(y_true, pred)
+    top_bucket_n = max(1, int(math.ceil(0.2 * len(scored_rows))))
+    top_bucket = sorted(scored_rows, key=lambda row: float(row["wildfire_risk_score"]), reverse=True)[:top_bucket_n]
+    top_bucket_high = sum(1 for row in top_bucket if float(row["proxy_risk_index"]) >= high_cut)
+    overall_high = sum(1 for row in scored_rows if float(row["proxy_risk_index"]) >= high_cut)
+    overall_high_rate = overall_high / float(len(scored_rows))
+    top_bucket_high_rate = top_bucket_high / float(top_bucket_n)
+    lift = (top_bucket_high_rate / overall_high_rate) if overall_high_rate > 0 else None
+
+    return {
+        "available": True,
+        "evaluation_basis": "weak_proxy_labels",
+        "caveat": "Proxy validation uses weak labels from environmental proxies and is not ground-truth validation.",
+        "feature_count_used": len(feature_ranges),
+        "features_used": sorted(feature_ranges.keys()),
+        "rows_with_proxy_index": len(scored_rows),
+        "weak_label_counts": {
+            "high_proxy_risk": len(high_rows),
+            "low_proxy_risk": len(low_rows),
+            "mid_proxy_risk": len(weak_labeled_rows) - len(usable),
+            "usable_high_low_rows": len(usable),
+        },
+        "proxy_thresholds": {"low_cut": low_cut, "high_cut": high_cut},
+        "alignment_metrics": {
+            "spearman_model_vs_proxy_index": _spearman(
+                [float(row["wildfire_risk_score"]) for row in scored_rows],
+                [float(row["proxy_risk_index"]) for row in scored_rows],
+            ),
+            "auc_model_vs_proxy_high_low": _roc_auc(y_true, y_score),
+            "pr_auc_model_vs_proxy_high_low": _pr_auc(y_true, y_score),
+            "rank_order_hit_rate_high_vs_low_proxy": _pairwise_hit_rate_from_scores(
+                [float(row["wildfire_risk_score"]) for row in high_rows],
+                [float(row["wildfire_risk_score"]) for row in low_rows],
+            ),
+            "accuracy_at_threshold_70_for_proxy_high": {
+                "threshold": threshold,
+                "confusion_matrix": conf,
+                **_precision_recall(conf),
+            },
+            "top_risk_bucket_proxy_high_rate": {
+                "bucket_definition": "top_20_percent_by_model_score",
+                "bucket_count": top_bucket_n,
+                "proxy_high_rate": top_bucket_high_rate,
+                "overall_proxy_high_rate": overall_high_rate,
+                "lift_vs_overall": lift,
+            },
+        },
+    }
+
+
+def _run_synthetic_stress_validation() -> dict[str, Any]:
+    try:
+        from backend.model_tuning import run_monotonic_guardrails
+        from backend.scoring_config import load_scoring_config
+
+        guardrails = run_monotonic_guardrails(load_scoring_config())
+        checks = guardrails.get("checks") if isinstance(guardrails.get("checks"), list) else []
+        passed = [row for row in checks if isinstance(row, dict) and bool(row.get("passed"))]
+        failed = [row for row in checks if isinstance(row, dict) and not bool(row.get("passed"))]
+        return {
+            "available": True,
+            "evaluation_basis": "synthetic_stress_scenarios",
+            "caveat": "Synthetic stress validation checks directional behavior and is not real-outcome ground truth.",
+            "passed": bool(guardrails.get("passed")),
+            "check_count": len(checks),
+            "pass_count": len(passed),
+            "fail_count": len(failed),
+            "checks": checks,
+        }
+    except Exception as exc:
+        return {
+            "available": False,
+            "evaluation_basis": "synthetic_stress_scenarios",
+            "caveat": "Synthetic stress validation checks directional behavior and is not real-outcome ground truth.",
+            "error": str(exc),
+        }
+
+
 def _false_review_sets(
     *,
     rows: list[dict[str, Any]],
@@ -1338,6 +1590,25 @@ def evaluate_public_outcome_dataset_rows(
         data_sufficiency=data_sufficiency_flags,
         by_evidence_group=(report.get("slice_metrics") or {}).get("by_evidence_group") if isinstance(report.get("slice_metrics"), dict) else {},
     )
+    proxy_validation = _compute_proxy_validation(prepared_rows)
+    synthetic_validation = _run_synthetic_stress_validation()
+    report["proxy_validation"] = proxy_validation
+    report["synthetic_validation"] = synthetic_validation
+    report["validation_streams"] = {
+        "real_outcome_validation": {
+            "available": True,
+            "row_count_labeled": len(prepared_rows),
+            "caveat": "Real-outcome validation uses public observed outcomes and remains directional rather than claims-grade truth.",
+        },
+        "proxy_validation": {
+            "available": bool(proxy_validation.get("available")),
+            "caveat": str(proxy_validation.get("caveat") or ""),
+        },
+        "synthetic_validation": {
+            "available": bool(synthetic_validation.get("available")),
+            "caveat": str(synthetic_validation.get("caveat") or ""),
+        },
+    }
     return report, prepared_rows
 
 

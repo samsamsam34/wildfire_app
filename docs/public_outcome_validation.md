@@ -93,6 +93,12 @@ Minimum viable diagnostics are emitted for usable datasets (including small samp
 - adverse outcome rate by score decile/bucket (when computable)
 - narrative summary and data sufficiency flags
 
+Supplemental (non-ground-truth) streams are also emitted:
+- `synthetic_validation`: deterministic stress-scenario monotonic checks
+- `proxy_validation`: weak-label alignment against proxy wildfire signals (e.g., burn/hazard/distance context)
+
+These streams are explicitly separated from real-outcome validation and should be treated as behavioral diagnostics, not ground-truth accuracy evidence.
+
 Sliced metrics include:
 - event
 - region (if available)

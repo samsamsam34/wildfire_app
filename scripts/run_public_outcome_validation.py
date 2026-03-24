@@ -243,6 +243,8 @@ def _build_summary_markdown(
     minimum_viable = report.get("minimum_viable_metrics") if isinstance(report.get("minimum_viable_metrics"), dict) else {}
     data_suff = report.get("data_sufficiency_flags") if isinstance(report.get("data_sufficiency_flags"), dict) else {}
     slice_metrics = report.get("slice_metrics") if isinstance(report.get("slice_metrics"), dict) else {}
+    proxy_validation = report.get("proxy_validation") if isinstance(report.get("proxy_validation"), dict) else {}
+    synthetic_validation = report.get("synthetic_validation") if isinstance(report.get("synthetic_validation"), dict) else {}
     subset_metrics = report.get("subset_metrics") if isinstance(report.get("subset_metrics"), dict) else {}
     review_sets = report.get("false_review_sets") if isinstance(report.get("false_review_sets"), dict) else {}
     calibration_metrics = report.get("calibration_metrics") if isinstance(report.get("calibration_metrics"), dict) else {}
@@ -311,6 +313,41 @@ def _build_summary_markdown(
         lines.append(f"- Low join-confidence prevalent: `{flags.get('low_join_confidence_prevalent')}`")
         lines.append(f"- Fallback-heavy prevalent: `{flags.get('fallback_heavy_prevalent')}`")
         lines.append("")
+
+    lines.append("## Supplemental Validation (Non-Ground-Truth)")
+    if synthetic_validation:
+        lines.append("### Synthetic Stress Validation")
+        lines.append(f"- Available: `{synthetic_validation.get('available')}`")
+        lines.append(f"- Passed: `{synthetic_validation.get('passed')}`")
+        lines.append(
+            f"- Checks: `{synthetic_validation.get('check_count')}` "
+            f"(pass={synthetic_validation.get('pass_count')}, fail={synthetic_validation.get('fail_count')})"
+        )
+        lines.append(
+            "- Caveat: `Synthetic stress scenarios test directional behavior only; they are not real-outcome truth.`"
+        )
+    if proxy_validation:
+        align = proxy_validation.get("alignment_metrics") if isinstance(proxy_validation.get("alignment_metrics"), dict) else {}
+        lines.append("")
+        lines.append("### Proxy Validation")
+        lines.append(f"- Available: `{proxy_validation.get('available')}`")
+        lines.append(f"- Rows with proxy index: `{proxy_validation.get('rows_with_proxy_index')}`")
+        weak_counts = proxy_validation.get("weak_label_counts")
+        lines.append(f"- Weak-label counts: `{weak_counts}`")
+        lines.append(
+            f"- Spearman(model, proxy index): `{_format_float(align.get('spearman_model_vs_proxy_index'))}`"
+        )
+        lines.append(
+            f"- AUC(model vs high/low proxy labels): `{_format_float(align.get('auc_model_vs_proxy_high_low'))}`"
+        )
+        rank_align = align.get("rank_order_hit_rate_high_vs_low_proxy") if isinstance(align.get("rank_order_hit_rate_high_vs_low_proxy"), dict) else {}
+        lines.append(
+            f"- Rank-hit(high proxy vs low proxy): `{_format_float(rank_align.get('hit_rate'))}`"
+        )
+        lines.append(
+            "- Caveat: `Proxy validation uses weak labels from perimeter/burn-probability-style signals and is not ground truth.`"
+        )
+    lines.append("")
 
     by_evidence = slice_metrics.get("by_evidence_group") if isinstance(slice_metrics.get("by_evidence_group"), dict) else {}
     by_confidence = slice_metrics.get("by_confidence_tier") if isinstance(slice_metrics.get("by_confidence_tier"), dict) else {}
@@ -477,6 +514,31 @@ def _insufficient_data_report(
                 "Directional validation is unavailable because no usable labeled rows were found.",
                 "Insufficient data for stable calibration conclusions.",
             ],
+        },
+        "proxy_validation": {
+            "available": False,
+            "caveat": "Proxy validation uses weak proxy labels and is not ground-truth validation.",
+            "reason": "insufficient_real_outcome_rows",
+        },
+        "synthetic_validation": {
+            "available": False,
+            "caveat": "Synthetic stress validation checks directional behavior and is not real-outcome ground truth.",
+            "reason": "insufficient_real_outcome_rows",
+        },
+        "validation_streams": {
+            "real_outcome_validation": {
+                "available": False,
+                "row_count_labeled": 0,
+                "caveat": "No usable public-outcome rows were available in this run.",
+            },
+            "proxy_validation": {
+                "available": False,
+                "caveat": "Proxy validation uses weak labels and is not ground-truth validation.",
+            },
+            "synthetic_validation": {
+                "available": False,
+                "caveat": "Synthetic stress validation is not real-outcome ground truth.",
+            },
         },
         "false_review_sets": {
             "false_low_count": 0,
