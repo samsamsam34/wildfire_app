@@ -184,6 +184,7 @@ def test_builder_joins_rows_and_reports_join_quality(tmp_path: Path) -> None:
     assert manifest["summary"]["excluded_rows"] == 1
     assert Path(result["join_quality_metrics_path"]).exists()
     assert Path(result["join_quality_markdown_path"]).exists()
+    assert Path(result["filter_summary_path"]).exists()
     join_quality = json.loads(Path(result["join_quality_report_path"]).read_text(encoding="utf-8"))
     assert join_quality["total_outcomes_loaded"] == 3
     assert join_quality["total_feature_rows_loaded"] == 4
@@ -202,6 +203,11 @@ def test_builder_joins_rows_and_reports_join_quality(tmp_path: Path) -> None:
     assert join_quality["by_label_join_counts"]["major_damage"] == 1
     assert join_quality["row_confidence_tier_counts"]
     assert "excluded_reason_counts" in join_quality
+    assert join_quality.get("no_silent_data_loss_guarantee") is True
+    filter_summary = join_quality.get("filter_summary") or {}
+    assert isinstance(filter_summary.get("filter_reason_counts"), dict)
+    assert isinstance(filter_summary.get("soft_flag_counts"), dict)
+    assert (filter_summary.get("accounting") or {}).get("matches_attempts_accounted") is True
 
 
 def test_builder_join_quality_warnings_for_weak_spatial_matches(tmp_path: Path) -> None:
@@ -269,6 +275,8 @@ def test_join_confidence_and_leakage_flags_are_exposed(tmp_path: Path) -> None:
     assert all("join_metadata" in row for row in rows)
     assert all("join_confidence_score" in row["join_metadata"] for row in rows)
     assert all((row.get("evaluation") or {}).get("row_confidence_tier") in {"high-confidence", "medium-confidence", "low-confidence"} for row in rows)
+    assert all(isinstance((row.get("evaluation") or {}).get("soft_filter_flags"), list) for row in rows)
+    assert any("missing_features" in ((row.get("evaluation") or {}).get("soft_filter_flags") or []) for row in rows)
     # second row includes leakage token in raw feature vector key.
     leaked = [row for row in rows if row["feature"]["record_id"] == "f2"][0]
     assert "potential_outcome_leakage_token_in_raw_feature_vector" in leaked["leakage_flags"]

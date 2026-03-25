@@ -236,6 +236,22 @@ def _iter_feature_rows(payload: dict[str, Any]) -> list[dict[str, Any]]:
     return []
 
 
+def _extract_rows_with_filter_stats(payload: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    rows = payload.get("records")
+    if rows is None:
+        return [], {"raw_row_count": 0, "valid_dict_row_count": 0, "invalid_non_dict_row_count": 0, "invalid_records_container_count": 0}
+    if not isinstance(rows, list):
+        return [], {"raw_row_count": 0, "valid_dict_row_count": 0, "invalid_non_dict_row_count": 0, "invalid_records_container_count": 1}
+    valid_rows = [row for row in rows if isinstance(row, dict)]
+    invalid_non_dict = max(0, len(rows) - len(valid_rows))
+    return valid_rows, {
+        "raw_row_count": len(rows),
+        "valid_dict_row_count": len(valid_rows),
+        "invalid_non_dict_row_count": invalid_non_dict,
+        "invalid_records_container_count": 0,
+    }
+
+
 def _as_outcome_record(row: dict[str, Any]) -> OutcomeRecord:
     event_id = str(row.get("event_id") or "").strip()
     event_name = str(row.get("event_name") or "").strip()
@@ -998,46 +1014,89 @@ def _choose_outcome(
     }
 
 
-def _load_outcomes(path: Path) -> list[OutcomeRecord]:
+def _load_outcomes(path: Path) -> tuple[list[OutcomeRecord], dict[str, int]]:
     payload = _load_json(path)
-    rows = _iter_outcome_rows(payload)
-    return [_as_outcome_record(row) for row in rows]
+    rows, stats = _extract_rows_with_filter_stats(payload)
+    return ([_as_outcome_record(row) for row in rows], stats)
 
 
 def _outcome_dedupe_key(row: OutcomeRecord) -> str:
     return _outcome_identity_key(row)
 
 
-def _load_outcomes_from_paths(paths: list[Path]) -> tuple[list[OutcomeRecord], dict[str, int]]:
+def _load_outcomes_from_paths(paths: list[Path]) -> tuple[list[OutcomeRecord], dict[str, int], dict[str, Any]]:
     deduped: dict[str, OutcomeRecord] = {}
     per_source_loaded: dict[str, int] = {}
+    source_filter_stats: dict[str, dict[str, int]] = {}
+    duplicate_outcome_rows_removed_count = 0
     for path in sorted({Path(path).expanduser() for path in paths}, key=lambda token: str(token)):
         p = Path(path).expanduser()
-        rows = _load_outcomes(p)
+        rows, stats = _load_outcomes(p)
         per_source_loaded[str(p)] = len(rows)
+        source_filter_stats[str(p)] = stats
         for row in rows:
-            deduped[_outcome_dedupe_key(row)] = row
+            dedupe_key = _outcome_dedupe_key(row)
+            if dedupe_key in deduped:
+                duplicate_outcome_rows_removed_count += 1
+            deduped[dedupe_key] = row
     merged = sorted(
         deduped.values(),
         key=lambda row: (row.event_id, row.event_year or 0, row.record_id, row.source_record_id),
     )
-    return merged, per_source_loaded
+    total_raw_row_count = sum(int((stats or {}).get("raw_row_count") or 0) for stats in source_filter_stats.values())
+    total_invalid_non_dict_row_count = sum(int((stats or {}).get("invalid_non_dict_row_count") or 0) for stats in source_filter_stats.values())
+    total_invalid_records_container_count = sum(
+        int((stats or {}).get("invalid_records_container_count") or 0) for stats in source_filter_stats.values()
+    )
+    diagnostics = {
+        "source_filter_stats": dict(sorted(source_filter_stats.items())),
+        "total_raw_row_count": total_raw_row_count,
+        "total_valid_row_count_before_dedupe": sum(per_source_loaded.values()),
+        "total_invalid_non_dict_row_count": total_invalid_non_dict_row_count,
+        "total_invalid_records_container_count": total_invalid_records_container_count,
+        "duplicate_outcome_rows_removed_count": duplicate_outcome_rows_removed_count,
+        "total_outcome_rows_after_dedupe": len(merged),
+        "outcome_prejoin_filter_reason_counts": {
+            "invalid_non_dict_outcome_row": total_invalid_non_dict_row_count,
+            "invalid_outcome_records_container": total_invalid_records_container_count,
+            "duplicate_outcome_identity": duplicate_outcome_rows_removed_count,
+        },
+    }
+    return merged, per_source_loaded, diagnostics
 
 
-def _load_feature_records(paths: list[Path]) -> tuple[list[FeatureRecord], list[dict[str, Any]]]:
+def _load_feature_records(paths: list[Path]) -> tuple[list[FeatureRecord], list[dict[str, Any]], dict[str, Any]]:
     records: list[FeatureRecord] = []
     missing_artifacts: list[dict[str, Any]] = []
+    source_filter_stats: dict[str, dict[str, int]] = {}
+    invalid_feature_records_container_count = 0
     for path in sorted({Path(path).expanduser() for path in paths}, key=lambda token: str(token)):
         p = Path(path).expanduser()
         if not p.exists():
             missing_artifacts.append({"feature_artifact_path": str(p), "reason": "missing_feature_artifact"})
             continue
         payload = _load_json(p)
-        rows = _iter_feature_rows(payload)
+        rows, stats = _extract_rows_with_filter_stats(payload)
+        source_filter_stats[str(p)] = stats
+        invalid_feature_records_container_count += int(stats.get("invalid_records_container_count") or 0)
         for row in rows:
             records.append(_as_feature_record(row, str(p)))
     records.sort(key=_stable_feature_sort_key)
-    return records, sorted(missing_artifacts, key=lambda item: (str(item.get("feature_artifact_path") or ""), str(item.get("reason") or "")))
+    missing_artifacts = sorted(missing_artifacts, key=lambda item: (str(item.get("feature_artifact_path") or ""), str(item.get("reason") or "")))
+    diagnostics = {
+        "source_filter_stats": dict(sorted(source_filter_stats.items())),
+        "total_raw_row_count": sum(int((stats or {}).get("raw_row_count") or 0) for stats in source_filter_stats.values()),
+        "total_valid_row_count": len(records),
+        "total_invalid_non_dict_row_count": sum(int((stats or {}).get("invalid_non_dict_row_count") or 0) for stats in source_filter_stats.values()),
+        "total_invalid_records_container_count": invalid_feature_records_container_count,
+        "missing_feature_artifact_count": len(missing_artifacts),
+        "feature_prejoin_filter_reason_counts": {
+            "missing_feature_artifact": len(missing_artifacts),
+            "invalid_non_dict_feature_row": sum(int((stats or {}).get("invalid_non_dict_row_count") or 0) for stats in source_filter_stats.values()),
+            "invalid_feature_records_container": invalid_feature_records_container_count,
+        },
+    }
+    return records, missing_artifacts, diagnostics
 
 
 def _resolve_latest_normalized_outcomes(root: Path) -> list[Path]:
@@ -1403,6 +1462,43 @@ def _build_markdown_summary(
     return "\n".join(lines) + "\n"
 
 
+def _build_filter_summary_markdown(
+    *,
+    run_id: str,
+    generated_at: str,
+    filter_summary: dict[str, Any],
+) -> str:
+    lines = [
+        "# Evaluation Dataset Filter Summary",
+        "",
+        f"- Run ID: `{run_id}`",
+        f"- Generated at: `{generated_at}`",
+        "- Purpose: account for all rows filtered during evaluation dataset construction.",
+        "",
+        "## Stage Counts",
+        f"- Outcomes raw rows: `{filter_summary.get('outcomes_raw_rows')}`",
+        f"- Outcomes post-preprocessing rows: `{filter_summary.get('outcomes_after_prejoin_filters')}`",
+        f"- Feature raw rows: `{filter_summary.get('features_raw_rows')}`",
+        f"- Feature candidate rows: `{filter_summary.get('feature_candidate_rows')}`",
+        f"- Candidate match attempts: `{filter_summary.get('candidate_match_attempt_count')}`",
+        f"- Matched before post-join filters: `{filter_summary.get('matched_candidate_count_before_filters')}`",
+        f"- Joined rows: `{filter_summary.get('joined_rows')}`",
+        f"- Filtered rows: `{filter_summary.get('filtered_rows_total')}`",
+        "",
+        "## Filter Reasons",
+        f"- Filter reason counts: `{filter_summary.get('filter_reason_counts')}`",
+        f"- Filter reason percentages: `{filter_summary.get('filter_reason_percentages')}`",
+        "",
+        "## Soft Flags (rows retained)",
+        f"- Soft-flag counts: `{filter_summary.get('soft_flag_counts')}`",
+        "",
+        "## Accounting",
+        f"- Accounting check passed: `{filter_summary.get('no_silent_data_loss_guarantee')}`",
+        f"- Accounting details: `{filter_summary.get('accounting')}`",
+    ]
+    return "\n".join(lines) + "\n"
+
+
 def _build_join_quality_warnings(*, quality: dict[str, Any]) -> list[str]:
     warnings: list[str] = []
     tier_counts = (
@@ -1531,7 +1627,7 @@ def build_public_outcome_evaluation_dataset(
     if not configured_outcome_paths:
         raise ValueError("At least one normalized outcomes path is required.")
 
-    outcomes, outcomes_by_source = _load_outcomes_from_paths(configured_outcome_paths)
+    outcomes, outcomes_by_source, outcome_load_diagnostics = _load_outcomes_from_paths(configured_outcome_paths)
     if not outcomes:
         raise ValueError("No normalized outcome rows available.")
     outcomes_by_event_counts: dict[str, int] = {}
@@ -1542,7 +1638,7 @@ def build_public_outcome_evaluation_dataset(
         year_key = str(outcome.event_year or "unknown")
         outcomes_by_year_counts[year_key] = outcomes_by_year_counts.get(year_key, 0) + 1
     feature_artifacts = sorted({Path(path).expanduser() for path in feature_artifacts}, key=lambda token: str(token))
-    feature_rows, missing_feature_artifacts = _load_feature_records(feature_artifacts)
+    feature_rows, missing_feature_artifacts, feature_load_diagnostics = _load_feature_records(feature_artifacts)
     if not feature_rows:
         raise ValueError("No feature rows were loaded from provided feature artifacts.")
     feature_rows_by_event_counts: dict[str, int] = {}
@@ -1585,6 +1681,7 @@ def build_public_outcome_evaluation_dataset(
     duplicate_outcome_match_prevented_count = 0
     candidate_match_attempt_count = 0
     matched_candidate_count_before_filters = 0
+    soft_flag_counts: dict[str, int] = {}
     used_outcome_keys: set[str] = set()
     by_event_counts: dict[str, int] = {}
     by_label_counts: dict[str, int] = {}
@@ -1685,6 +1782,37 @@ def build_public_outcome_evaluation_dataset(
         confidence_payload = feature.payload.get("confidence") if isinstance(feature.payload.get("confidence"), dict) else {}
         evidence_summary = feature.payload.get("evidence_quality_summary") if isinstance(feature.payload.get("evidence_quality_summary"), dict) else {}
         coverage_summary = feature.payload.get("coverage_summary") if isinstance(feature.payload.get("coverage_summary"), dict) else {}
+        missing_feature_fields = sorted(
+            [
+                key
+                for key, value in {
+                    "wildfire_risk_score": wildfire_risk,
+                    "site_hazard_score": site_hazard,
+                    "home_ignition_vulnerability_score": home_vuln,
+                    "insurance_readiness_score": readiness,
+                }.items()
+                if value is None
+            ]
+        )
+        fallback_count = int(_safe_float((coverage_summary or {}).get("fallback_count")) or 0)
+        failed_count = int(_safe_float((coverage_summary or {}).get("failed_count")) or 0)
+        evidence_tier = str((evidence_summary or {}).get("evidence_tier") or "").strip().lower()
+        fallback_weight_fraction = _safe_float((evidence_summary or {}).get("fallback_weight_fraction"))
+        fallback_heavy = (
+            evidence_tier == "fallback_heavy"
+            or fallback_count > 0
+            or failed_count > 0
+            or (fallback_weight_fraction is not None and float(fallback_weight_fraction) >= 0.5)
+        )
+        soft_flags: list[str] = []
+        if tier == "low":
+            soft_flags.append("low_confidence_join")
+        if missing_feature_fields:
+            soft_flags.append("missing_features")
+        if fallback_heavy:
+            soft_flags.append("fallback_heavy")
+        for flag in soft_flags:
+            soft_flag_counts[flag] = soft_flag_counts.get(flag, 0) + 1
         row_confidence_tier = _derive_row_confidence_tier(
             join_confidence_tier=str(join_meta.get("join_confidence_tier") or "low"),
             model_confidence_tier=str(confidence_payload.get("confidence_tier") or feature.payload.get("confidence_tier") or "unknown"),
@@ -1780,6 +1908,9 @@ def build_public_outcome_evaluation_dataset(
             "evaluation": {
                 "row_usable": True,
                 "row_confidence_tier": row_confidence_tier,
+                "soft_filter_flags": soft_flags,
+                "missing_feature_fields": missing_feature_fields,
+                "fallback_heavy": bool(fallback_heavy),
             },
             "provenance": {
                 "model_governance": (
@@ -1945,10 +2076,58 @@ def build_public_outcome_evaluation_dataset(
         "excluded_rows": excluded_rows[:200],
         "leakage_warnings": sorted(set(leakage_warnings)),
         "score_backfill": score_backfill,
+        "outcome_load_diagnostics": outcome_load_diagnostics,
+        "feature_load_diagnostics": feature_load_diagnostics,
+        "soft_flag_counts": dict(sorted(soft_flag_counts.items())),
         "warning_thresholds": {
             "high_average_distance_m": round(float(join_config.medium_confidence_distance_m), 3),
         },
     }
+    filter_reason_counts: dict[str, int] = {}
+    for source_counts in (
+        (outcome_load_diagnostics.get("outcome_prejoin_filter_reason_counts") if isinstance(outcome_load_diagnostics, dict) else {}),
+        (feature_load_diagnostics.get("feature_prejoin_filter_reason_counts") if isinstance(feature_load_diagnostics, dict) else {}),
+        excluded_reason_counts,
+    ):
+        if not isinstance(source_counts, dict):
+            continue
+        for key, value in source_counts.items():
+            filter_reason_counts[str(key)] = filter_reason_counts.get(str(key), 0) + int(value or 0)
+    total_filtered_rows = int(sum(int(v or 0) for v in filter_reason_counts.values()))
+    filter_reason_percentages = (
+        {
+            key: round((float(value) / float(total_filtered_rows)) * 100.0, 3)
+            for key, value in sorted(filter_reason_counts.items())
+            if total_filtered_rows > 0
+        }
+        if total_filtered_rows > 0
+        else {}
+    )
+    post_join_filtered_count = int(sum(excluded_reason_counts.values()))
+    accounting = {
+        "candidate_match_attempt_count": candidate_match_attempt_count,
+        "joined_rows": len(joined_rows),
+        "post_join_filtered_rows": post_join_filtered_count,
+        "joined_plus_post_join_filtered": len(joined_rows) + post_join_filtered_count,
+        "matches_attempts_accounted": (len(joined_rows) + post_join_filtered_count) == candidate_match_attempt_count,
+    }
+    filter_summary = {
+        "outcomes_raw_rows": int(outcome_load_diagnostics.get("total_raw_row_count") or 0),
+        "outcomes_after_prejoin_filters": len(outcomes),
+        "features_raw_rows": int(feature_load_diagnostics.get("total_raw_row_count") or 0),
+        "feature_candidate_rows": len(feature_rows),
+        "candidate_match_attempt_count": candidate_match_attempt_count,
+        "matched_candidate_count_before_filters": matched_candidate_count_before_filters,
+        "joined_rows": len(joined_rows),
+        "filtered_rows_total": total_filtered_rows,
+        "filter_reason_counts": dict(sorted(filter_reason_counts.items())),
+        "filter_reason_percentages": dict(sorted(filter_reason_percentages.items())),
+        "soft_flag_counts": dict(sorted(soft_flag_counts.items())),
+        "accounting": accounting,
+        "no_silent_data_loss_guarantee": bool(accounting.get("matches_attempts_accounted")),
+    }
+    join_quality["filter_summary"] = filter_summary
+    join_quality["no_silent_data_loss_guarantee"] = bool(filter_summary.get("no_silent_data_loss_guarantee"))
     join_quality["join_quality_warnings"] = _build_join_quality_warnings(quality=join_quality)
 
     jsonl_path = run_dir / "evaluation_dataset.jsonl"
@@ -1972,6 +2151,17 @@ def build_public_outcome_evaluation_dataset(
     summary_path = run_dir / "summary.md"
     summary_path.write_text(
         _build_markdown_summary(run_id=run_token, generated_at=generated_at, quality=join_quality),
+        encoding="utf-8",
+    )
+    filter_summary_path = run_dir / "filter_summary.json"
+    filter_summary_path.write_text(json.dumps(filter_summary, indent=2, sort_keys=True), encoding="utf-8")
+    filter_summary_md_path = run_dir / "filter_summary.md"
+    filter_summary_md_path.write_text(
+        _build_filter_summary_markdown(
+            run_id=run_token,
+            generated_at=generated_at,
+            filter_summary=filter_summary,
+        ),
         encoding="utf-8",
     )
 
@@ -2003,6 +2193,8 @@ def build_public_outcome_evaluation_dataset(
             "join_quality_metrics_json": str(join_metrics_path),
             "join_quality_report_markdown": str(join_report_md_path),
             "join_quality_report_json": str(join_report_path),
+            "filter_summary_json": str(filter_summary_path),
+            "filter_summary_markdown": str(filter_summary_md_path),
             "summary_markdown": str(summary_path),
         },
         "summary": {
@@ -2016,6 +2208,7 @@ def build_public_outcome_evaluation_dataset(
             "leakage_warning_count": len(set(leakage_warnings)),
             "score_backfilled_records": int(score_backfill.get("backfilled_record_count") or 0),
             "remaining_missing_scores": int(score_backfill.get("remaining_missing_score_record_count") or 0),
+            "no_silent_data_loss_guarantee": bool(filter_summary.get("no_silent_data_loss_guarantee")),
         },
         "caveat": (
             "Public observed outcomes are directional validation signals and not equivalent to insurer claims truth."
@@ -2030,6 +2223,7 @@ def build_public_outcome_evaluation_dataset(
         "join_quality_metrics_path": str(join_metrics_path),
         "join_quality_markdown_path": str(join_report_md_path),
         "join_quality_report_path": str(join_report_path),
+        "filter_summary_path": str(filter_summary_path),
         "joined_record_count": len(joined_rows),
         "excluded_row_count": len(excluded_rows),
     }
@@ -2281,6 +2475,18 @@ def main() -> int:
         f"filtered={join_report.get('filtered_records_count')} "
         f"final_dataset_size={join_report.get('final_dataset_size')}"
     )
+    filter_summary = join_report.get("filter_summary") if isinstance(join_report.get("filter_summary"), dict) else {}
+    if filter_summary:
+        print(
+            "[public-eval-ds] Filter summary: "
+            f"no_silent_data_loss_guarantee={filter_summary.get('no_silent_data_loss_guarantee')} "
+            f"reason_counts={filter_summary.get('filter_reason_counts')} "
+            f"reason_percentages={filter_summary.get('filter_reason_percentages')} "
+            f"soft_flags={filter_summary.get('soft_flag_counts')}"
+        )
+        accounting = filter_summary.get("accounting") if isinstance(filter_summary.get("accounting"), dict) else {}
+        if accounting:
+            print(f"[public-eval-ds] Filter accounting: {accounting}")
     print(
         f"[public-eval-ds] Matched rows={join_report.get('total_joined_records')} "
         f"excluded={join_report.get('excluded_row_count')} "
