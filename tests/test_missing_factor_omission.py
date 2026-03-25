@@ -177,3 +177,108 @@ def test_blended_score_gives_credit_for_strong_readiness_in_low_hazard_condition
         insurance_readiness_score=42.0,
     )
     assert strong_readiness + 4.0 < weak_readiness
+
+
+def test_blended_score_amplifies_hazard_x_vegetation_interaction():
+    engine = RiskEngine(load_scoring_config())
+    attrs = PropertyAttributes(roof_type="class a", vent_type="ember-resistant", defensible_space_ft=18.0)
+
+    low_vegetation_context = _context(
+        ring_metrics={
+            "ring_0_5_ft": {"vegetation_density": 24.0},
+            "ring_5_30_ft": {"vegetation_density": 32.0},
+            "ring_30_100_ft": {"vegetation_density": 40.0},
+        }
+    )
+    high_vegetation_context = _context(
+        ring_metrics={
+            "ring_0_5_ft": {"vegetation_density": 78.0},
+            "ring_5_30_ft": {"vegetation_density": 86.0},
+            "ring_30_100_ft": {"vegetation_density": 82.0},
+        }
+    )
+
+    low_veg_risk = engine.score(attrs, lat=0.0, lon=0.0, context=low_vegetation_context)
+    high_veg_risk = engine.score(attrs, lat=0.0, lon=0.0, context=high_vegetation_context)
+
+    low_veg_blended = engine.compute_blended_wildfire_score(
+        site_hazard_score=78.0,
+        home_ignition_vulnerability_score=66.0,
+        insurance_readiness_score=55.0,
+        risk=low_veg_risk,
+    )
+    high_veg_blended = engine.compute_blended_wildfire_score(
+        site_hazard_score=78.0,
+        home_ignition_vulnerability_score=66.0,
+        insurance_readiness_score=55.0,
+        risk=high_veg_risk,
+    )
+    assert high_veg_blended > low_veg_blended + 1.0
+
+
+def test_blended_score_amplifies_hazard_x_slope_and_hazard_x_fuel_proximity():
+    engine = RiskEngine(load_scoring_config())
+    attrs = PropertyAttributes(roof_type="class a", vent_type="ember-resistant", defensible_space_ft=20.0)
+
+    mild_context = _context(ring_metrics={"ring_5_30_ft": {"vegetation_density": 45.0}})
+    mild_context.slope_index = 38.0
+    mild_context.wildland_distance_index = 30.0
+    steep_close_fuel_context = _context(ring_metrics={"ring_5_30_ft": {"vegetation_density": 45.0}})
+    steep_close_fuel_context.slope_index = 88.0
+    steep_close_fuel_context.wildland_distance_index = 86.0
+
+    mild_risk = engine.score(attrs, lat=0.0, lon=0.0, context=mild_context)
+    steep_close_fuel_risk = engine.score(attrs, lat=0.0, lon=0.0, context=steep_close_fuel_context)
+
+    mild_blended = engine.compute_blended_wildfire_score(
+        site_hazard_score=76.0,
+        home_ignition_vulnerability_score=62.0,
+        insurance_readiness_score=58.0,
+        risk=mild_risk,
+    )
+    steep_close_fuel_blended = engine.compute_blended_wildfire_score(
+        site_hazard_score=76.0,
+        home_ignition_vulnerability_score=62.0,
+        insurance_readiness_score=58.0,
+        risk=steep_close_fuel_risk,
+    )
+    assert steep_close_fuel_blended > mild_blended + 0.5
+
+
+def test_blended_score_dampens_when_hardening_is_strong():
+    engine = RiskEngine(load_scoring_config())
+    strong_attrs = PropertyAttributes(
+        roof_type="class a",
+        vent_type="ember-resistant",
+        defensible_space_ft=45.0,
+        construction_year=2019,
+    )
+    weak_attrs = PropertyAttributes(
+        roof_type="wood",
+        vent_type="standard",
+        defensible_space_ft=5.0,
+        construction_year=1975,
+    )
+    shared_context = _context(
+        ring_metrics={
+            "ring_0_5_ft": {"vegetation_density": 48.0},
+            "ring_5_30_ft": {"vegetation_density": 62.0},
+        }
+    )
+
+    strong_risk = engine.score(strong_attrs, lat=0.0, lon=0.0, context=shared_context)
+    weak_risk = engine.score(weak_attrs, lat=0.0, lon=0.0, context=shared_context)
+
+    strong_blended = engine.compute_blended_wildfire_score(
+        site_hazard_score=67.0,
+        home_ignition_vulnerability_score=63.0,
+        insurance_readiness_score=86.0,
+        risk=strong_risk,
+    )
+    weak_blended = engine.compute_blended_wildfire_score(
+        site_hazard_score=67.0,
+        home_ignition_vulnerability_score=63.0,
+        insurance_readiness_score=86.0,
+        risk=weak_risk,
+    )
+    assert strong_blended + 1.0 < weak_blended

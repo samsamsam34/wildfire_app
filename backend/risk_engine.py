@@ -1142,6 +1142,10 @@ class RiskEngine:
         ) / denom
 
         near_structure_signal = float(home_ignition_vulnerability_score)
+        vegetation_signal = float(home_ignition_vulnerability_score)
+        slope_signal = float(site_hazard_score)
+        fuel_signal = float(site_hazard_score)
+        structure_vulnerability_signal = float(home_ignition_vulnerability_score)
         interaction_gate = 1.0
         if risk is not None:
             near_weights: dict[str, float] = {
@@ -1163,21 +1167,45 @@ class RiskEngine:
                 near_den += float(factor_weight)
             if near_den > 0.0:
                 near_structure_signal = near_num / near_den
+            vegetation_signal = float(
+                (risk.submodel_scores.get("vegetation_intensity_risk") or SubmodelResult(near_structure_signal, "", {})).score
+            )
+            slope_signal = float(
+                (risk.submodel_scores.get("slope_topography_risk") or SubmodelResult(site_hazard_score, "", {})).score
+            )
+            fuel_signal = float(
+                (risk.submodel_scores.get("fuel_proximity_risk") or SubmodelResult(site_hazard_score, "", {})).score
+            )
+            structure_vulnerability_signal = float(
+                (risk.submodel_scores.get("structure_vulnerability_risk") or SubmodelResult(home_ignition_vulnerability_score, "", {})).score
+            )
             geometry_gate = 0.55 + (0.45 * max(0.0, min(1.0, float(risk.geometry_quality_score))))
             evidence_gate = 0.50 + (0.50 * max(0.0, min(1.0, float(risk.observed_weight_fraction))))
             fallback_gate = 1.0 - min(0.35, max(0.0, float(risk.fallback_weight_fraction)) * 0.50)
             interaction_gate = max(0.35, min(1.0, geometry_gate * evidence_gate * fallback_gate))
 
-        # Explainable interactions for stronger separation:
-        # 1) high hazard + high near-structure fuel pressure compounds risk.
-        # 2) high readiness + low hazard/near pressure yields limited credit.
-        overlap_high = max(0.0, min(float(site_hazard_score), float(near_structure_signal)) - 50.0)
-        high_risk_compound = overlap_high * 0.16 * interaction_gate
+        # Explainable interactions for stronger separation (deterministic, bounded):
+        # 1) high hazard x high vegetation intensity
+        # 2) high hazard x steep slope
+        # 3) high vulnerability x high vegetation intensity
+        # 4) high hazard x close fuel proximity
         hazard_tail = max(0.0, float(site_hazard_score) - 55.0)
         near_tail = max(0.0, float(near_structure_signal) - 45.0)
-        hazard_near_compound = ((hazard_tail * near_tail) / 100.0) * 0.22 * interaction_gate
+        veg_tail = max(0.0, vegetation_signal - 55.0)
+        slope_tail = max(0.0, slope_signal - 55.0)
+        fuel_tail = max(0.0, fuel_signal - 55.0)
+        vulnerability_tail = max(0.0, structure_vulnerability_signal - 50.0)
+
+        overlap_high = max(0.0, min(float(site_hazard_score), float(near_structure_signal)) - 50.0)
+        high_risk_compound = overlap_high * 0.14 * interaction_gate
+        hazard_near_compound = ((hazard_tail * near_tail) / 100.0) * 0.18 * interaction_gate
+        hazard_vegetation_compound = ((hazard_tail * veg_tail) / 100.0) * 0.20 * interaction_gate
+        hazard_slope_compound = ((max(0.0, float(site_hazard_score) - 58.0) * slope_tail) / 100.0) * 0.11 * interaction_gate
+        vulnerability_vegetation_compound = ((vulnerability_tail * veg_tail) / 100.0) * 0.13 * interaction_gate
+        hazard_fuel_compound = ((hazard_tail * fuel_tail) / 100.0) * 0.14 * interaction_gate
         readiness_drag = 0.0
         low_risk_credit = 0.0
+        hardening_dampen = 0.0
         if insurance_readiness_score is not None:
             readiness_value = max(0.0, min(100.0, float(insurance_readiness_score)))
             if readiness_value < 50.0:
@@ -1189,12 +1217,31 @@ class RiskEngine:
             if readiness_value < 45.0 and near_structure_signal > 70.0:
                 readiness_drag += (float(near_structure_signal) - 70.0) * 0.08
 
+            # Strong hardening dampens wildfire score only partially in severe hazard;
+            # this avoids over-crediting hardening when landscape hazard is extreme.
+            hardening_strength = max(0.0, 55.0 - structure_vulnerability_signal)
+            readiness_strength = max(0.0, readiness_value - 70.0)
+            if hardening_strength > 0.0 or readiness_strength > 0.0:
+                severity = max(float(site_hazard_score), vegetation_signal, fuel_signal)
+                severity_dampen_gate = max(0.40, 1.0 - max(0.0, severity - 55.0) * 0.01)
+                hardening_dampen = (
+                    ((hardening_strength * 0.11) + (readiness_strength * 0.09))
+                    * severity_dampen_gate
+                    * interaction_gate
+                )
+                hardening_dampen = min(hardening_dampen, 9.0)
+
         interaction_adjusted = (
             base_blended
             + high_risk_compound
             + hazard_near_compound
+            + hazard_vegetation_compound
+            + hazard_slope_compound
+            + vulnerability_vegetation_compound
+            + hazard_fuel_compound
             + readiness_drag
             - low_risk_credit
+            - hardening_dampen
         )
         contrast_adjusted = 50.0 + ((interaction_adjusted - 50.0) * 1.12)
         return round(max(0.0, min(100.0, contrast_adjusted)), 1)
