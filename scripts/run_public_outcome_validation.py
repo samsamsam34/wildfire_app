@@ -795,6 +795,11 @@ def _build_segment_report_markdown(
         if isinstance(segment_summary.get("highlights"), list)
         else []
     )
+    strength_map = (
+        segment_summary.get("segment_strength_map")
+        if isinstance(segment_summary.get("segment_strength_map"), dict)
+        else {}
+    )
     lines.append("## Strengths and Weaknesses")
     lines.append(
         f"- Eligible segments: `{segment_summary.get('eligible_segment_count')}` "
@@ -802,24 +807,77 @@ def _build_segment_report_markdown(
     )
     for item in highlights[:6]:
         lines.append(f"- {item}")
-    if strongest:
+
+    family_statuses: list[dict[str, Any]] = []
+    for key in ("hazard_level", "vegetation_density", "confidence_tier", "region"):
+        payload = strength_map.get(key) if isinstance(strength_map.get(key), dict) else {}
+        if payload:
+            family_statuses.append(payload)
+    has_comparative_family = any(
+        int(payload.get("eligible_segment_count") or 0) >= 2
+        and str(payload.get("status") or "") not in {"single_segment_only", "insufficient_data"}
+        for payload in family_statuses
+    )
+
+    strong_rows = [row for row in strongest if isinstance(row, dict)]
+    strong_ids = {
+        (str(row.get("segment_family") or ""), str(row.get("segment_name") or ""))
+        for row in strong_rows
+    }
+    weak_rows = [
+        row
+        for row in weakest
+        if isinstance(row, dict)
+        and (str(row.get("segment_family") or ""), str(row.get("segment_name") or "")) not in strong_ids
+    ]
+
+    if not has_comparative_family:
+        lines.append(
+            "- No segment family currently has multiple eligible class-balanced slices; "
+            "strength/weakness ranking is provisional until segment coverage improves."
+        )
+    elif strong_rows:
         lines.append("- Strong segments:")
-        for row in strongest[:5]:
-            if not isinstance(row, dict):
-                continue
+        for row in strong_rows[:5]:
             lines.append(
                 f"  - {row.get('segment_family')}={row.get('segment_name')} "
                 f"(auc={_format_float(row.get('auc'))}, brier={_format_float(row.get('brier'))}, n={row.get('count')})"
             )
-    if weakest:
+    if has_comparative_family and weak_rows:
         lines.append("- Weak segments:")
-        for row in weakest[:5]:
-            if not isinstance(row, dict):
-                continue
+        for row in weak_rows[:5]:
             lines.append(
                 f"  - {row.get('segment_family')}={row.get('segment_name')} "
                 f"(auc={_format_float(row.get('auc'))}, brier={_format_float(row.get('brier'))}, n={row.get('count')})"
             )
+    if strength_map:
+        lines.append("")
+        lines.append("## Segment Strength Map")
+        family_order = ["hazard_level", "vegetation_density", "confidence_tier", "region"]
+        for family in family_order:
+            payload = strength_map.get(family) if isinstance(strength_map.get(family), dict) else {}
+            if not payload:
+                continue
+            lines.append(
+                f"- `{family}`: status=`{payload.get('status')}`, "
+                f"eligible_segments=`{payload.get('eligible_segment_count')}`/{payload.get('segment_count')}, "
+                f"auc_spread=`{_format_float(payload.get('auc_spread'))}`"
+            )
+            best = payload.get("best_segment") if isinstance(payload.get("best_segment"), dict) else {}
+            if best:
+                lines.append(
+                    f"  - best: `{best.get('segment_name')}` "
+                    f"(auc={_format_float(best.get('auc'))}, brier={_format_float(best.get('brier'))}, n={best.get('count')})"
+                )
+            worst = payload.get("worst_segment") if isinstance(payload.get("worst_segment"), dict) else {}
+            if worst:
+                lines.append(
+                    f"  - worst: `{worst.get('segment_name')}` "
+                    f"(auc={_format_float(worst.get('auc'))}, brier={_format_float(worst.get('brier'))}, n={worst.get('count')})"
+                )
+            notes = payload.get("notes") if isinstance(payload.get("notes"), list) else []
+            for note in notes[:2]:
+                lines.append(f"  - note: {note}")
     lines.append("")
     lines.append("## Caveat")
     lines.append(
@@ -892,6 +950,52 @@ def _insufficient_data_report(
             "strongest_segments": [],
             "weakest_segments": [],
             "insufficient_or_unstable_segments": [],
+            "segment_strength_map": {
+                "hazard_level": {
+                    "segment_count": 0,
+                    "eligible_segment_count": 0,
+                    "status": "insufficient_data",
+                    "auc_spread": None,
+                    "best_segment": None,
+                    "worst_segment": None,
+                    "strong_segments": [],
+                    "weak_segments": [],
+                    "notes": ["No usable rows available for hazard-level segmentation."],
+                },
+                "vegetation_density": {
+                    "segment_count": 0,
+                    "eligible_segment_count": 0,
+                    "status": "insufficient_data",
+                    "auc_spread": None,
+                    "best_segment": None,
+                    "worst_segment": None,
+                    "strong_segments": [],
+                    "weak_segments": [],
+                    "notes": ["No usable rows available for vegetation-density segmentation."],
+                },
+                "confidence_tier": {
+                    "segment_count": 0,
+                    "eligible_segment_count": 0,
+                    "status": "insufficient_data",
+                    "auc_spread": None,
+                    "best_segment": None,
+                    "worst_segment": None,
+                    "strong_segments": [],
+                    "weak_segments": [],
+                    "notes": ["No usable rows available for confidence-tier segmentation."],
+                },
+                "region": {
+                    "segment_count": 0,
+                    "eligible_segment_count": 0,
+                    "status": "insufficient_data",
+                    "auc_spread": None,
+                    "best_segment": None,
+                    "worst_segment": None,
+                    "strong_segments": [],
+                    "weak_segments": [],
+                    "notes": ["No usable rows available for region segmentation."],
+                },
+            },
             "highlights": [
                 "No segment-level evaluation is available because there are no usable labeled rows."
             ],
@@ -1339,6 +1443,11 @@ def run_public_outcome_validation(
         "generated_at": generated_at,
         "segment_performance_summary": (
             report.get("segment_performance_summary")
+            if isinstance(report.get("segment_performance_summary"), dict)
+            else {}
+        ),
+        "segment_strength_map": (
+            ((report.get("segment_performance_summary") or {}).get("segment_strength_map"))
             if isinstance(report.get("segment_performance_summary"), dict)
             else {}
         ),

@@ -135,6 +135,12 @@ def test_evaluate_public_outcome_dataset_reports_required_metrics(tmp_path: Path
     assert "by_region" in (report["slice_metrics"] or {})
     assert "segment_performance_summary" in report
     assert "strongest_segments" in (report.get("segment_performance_summary") or {})
+    assert "segment_strength_map" in (report.get("segment_performance_summary") or {})
+    strength_map = (report.get("segment_performance_summary") or {}).get("segment_strength_map") or {}
+    assert "hazard_level" in strength_map
+    assert "vegetation_density" in strength_map
+    assert "confidence_tier" in strength_map
+    assert "region" in strength_map
     assert "subset_metrics" in report
     assert report["subset_metrics"]["full_dataset"]["count"] == report["row_count_labeled"]
     assert "medium_confidence_subset" in report["subset_metrics"]
@@ -285,6 +291,7 @@ def test_evaluation_jsonl_dataset_supports_join_confidence_slices(tmp_path: Path
     assert "high" in (report["slice_metrics"]["by_join_confidence_tier"] or {})
     assert "moderate" in (report["slice_metrics"]["by_join_confidence_tier"] or {})
     assert "low" in (report["slice_metrics"]["by_join_confidence_tier"] or {})
+    assert "segment_strength_map" in (report.get("segment_performance_summary") or {})
     assert "subset_metrics" in report
     assert "medium_confidence_subset" in report["subset_metrics"]
     assert report["subset_metrics"]["high_evidence_subset"]["count"] >= 1

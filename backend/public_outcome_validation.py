@@ -946,6 +946,16 @@ def _build_segment_performance_summary(
         ("confidence_tier", "by_confidence_tier"),
         ("region", "by_region"),
     )
+
+    def _is_strong_segment(row: dict[str, Any]) -> bool:
+        auc = row.get("auc")
+        brier = row.get("brier")
+        return isinstance(auc, float) and isinstance(brier, float) and auc >= 0.60 and brier <= 0.26
+
+    def _is_weak_segment(row: dict[str, Any]) -> bool:
+        auc = row.get("auc")
+        brier = row.get("brier")
+        return isinstance(auc, float) and isinstance(brier, float) and (auc < 0.55 or brier >= 0.26)
     segment_rows: list[dict[str, Any]] = []
     insufficient_rows: list[dict[str, Any]] = []
 
@@ -1005,6 +1015,111 @@ def _build_segment_performance_summary(
         ),
     )[:8]
 
+    def _family_status(*, eligible_rows: list[dict[str, Any]], min_n: int) -> tuple[str, list[str]]:
+        notes: list[str] = []
+        if not eligible_rows:
+            return "insufficient_data", [f"No segments met minimum slice size n>={min_n} with valid AUC/Brier."]
+        if len(eligible_rows) == 1:
+            only = eligible_rows[0]
+            notes.append(
+                f"Only one eligible segment ({only.get('segment_name')}); no within-family separation estimate available."
+            )
+            return "single_segment_only", notes
+        auc_values = [float(row.get("auc") or 0.0) for row in eligible_rows]
+        auc_max = max(auc_values)
+        auc_min = min(auc_values)
+        auc_spread = auc_max - auc_min
+        if auc_spread < 0.02:
+            notes.append("AUC spread across segments is <0.02, indicating weak differentiation by this family.")
+            if auc_max < 0.55:
+                notes.append("All segment AUC values are weak (<0.55).")
+                return "flat_and_weak", notes
+            return "flat", notes
+        if auc_max >= 0.62 and auc_min >= 0.55:
+            notes.append("Most segments show directional discrimination with limited degradation.")
+            return "strong", notes
+        if auc_max >= 0.60 and auc_min < 0.55:
+            notes.append("Some segments discriminate well while others are weak.")
+            return "mixed", notes
+        if auc_max < 0.55:
+            notes.append("All eligible segments are weak (AUC <0.55).")
+            return "weak", notes
+        notes.append("Segment behavior is usable but not consistently strong.")
+        return "moderate", notes
+
+    family_map: dict[str, Any] = {}
+    for segment_family, _slice_key in segment_specs:
+        family_rows = [row for row in segment_rows if str(row.get("segment_family")) == segment_family]
+        family_eligible = [
+            row
+            for row in family_rows
+            if int(row.get("count") or 0) >= max(1, int(min_slice_size))
+            and isinstance(row.get("auc"), float)
+            and isinstance(row.get("brier"), float)
+        ]
+        family_sorted_best = sorted(
+            family_eligible,
+            key=lambda row: (
+                -float(row.get("auc") or 0.0),
+                float(row.get("brier") or 1.0),
+                -int(row.get("count") or 0),
+                str(row.get("segment_name") or ""),
+            ),
+        )
+        family_sorted_weak = sorted(
+            family_eligible,
+            key=lambda row: (
+                float(row.get("auc") or 0.0),
+                -float(row.get("brier") or 0.0),
+                -int(row.get("count") or 0),
+                str(row.get("segment_name") or ""),
+            ),
+        )
+        best_segment = family_sorted_best[0] if family_sorted_best else None
+        worst_segment = family_sorted_weak[0] if family_sorted_weak else None
+        auc_spread = (
+            float(best_segment.get("auc") or 0.0) - float(worst_segment.get("auc") or 0.0)
+            if best_segment and worst_segment
+            else None
+        )
+        status, notes = _family_status(eligible_rows=family_eligible, min_n=max(1, int(min_slice_size)))
+        strong_segments = [row for row in family_sorted_best if _is_strong_segment(row)][:3]
+        strong_keys = {
+            (str(row.get("segment_family") or ""), str(row.get("segment_name") or ""))
+            for row in strong_segments
+        }
+        weak_segments = [
+            row
+            for row in family_sorted_weak
+            if _is_weak_segment(row)
+            and (str(row.get("segment_family") or ""), str(row.get("segment_name") or "")) not in strong_keys
+        ][:3]
+
+        # If eligible segments exist but no rows qualify as strong/weak by thresholds,
+        # fall back to reporting best/worst without duplicating the same segment.
+        if not strong_segments and family_sorted_best:
+            strong_segments = family_sorted_best[:1]
+        if not weak_segments and family_sorted_weak:
+            candidate = family_sorted_weak[0]
+            candidate_key = (
+                str(candidate.get("segment_family") or ""),
+                str(candidate.get("segment_name") or ""),
+            )
+            if candidate_key not in strong_keys:
+                weak_segments = [candidate]
+
+        family_map[segment_family] = {
+            "segment_count": len(family_rows),
+            "eligible_segment_count": len(family_eligible),
+            "status": status,
+            "auc_spread": auc_spread,
+            "best_segment": best_segment,
+            "worst_segment": worst_segment,
+            "strong_segments": strong_segments,
+            "weak_segments": weak_segments,
+            "notes": notes,
+        }
+
     highlights: list[str] = []
     if strongest:
         top = strongest[0]
@@ -1039,6 +1154,7 @@ def _build_segment_performance_summary(
                 str(row.get("segment_name") or ""),
             ),
         )[:50],
+        "segment_strength_map": family_map,
         "highlights": highlights,
     }
 
