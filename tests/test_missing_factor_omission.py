@@ -147,3 +147,33 @@ def test_blended_score_supports_adaptive_weighting_with_risk_context():
     adaptive = engine.compute_blended_wildfire_score(site, home, readiness, risk=risk)
 
     assert adaptive != baseline
+
+
+def test_blended_score_compounds_high_hazard_with_high_near_structure_pressure():
+    engine = RiskEngine(load_scoring_config())
+    high_hazard_high_near = engine.compute_blended_wildfire_score(
+        site_hazard_score=82.0,
+        home_ignition_vulnerability_score=84.0,
+        insurance_readiness_score=40.0,
+    )
+    high_hazard_low_near = engine.compute_blended_wildfire_score(
+        site_hazard_score=82.0,
+        home_ignition_vulnerability_score=42.0,
+        insurance_readiness_score=40.0,
+    )
+    assert high_hazard_high_near > high_hazard_low_near + 3.0
+
+
+def test_blended_score_gives_credit_for_strong_readiness_in_low_hazard_conditions():
+    engine = RiskEngine(load_scoring_config())
+    strong_readiness = engine.compute_blended_wildfire_score(
+        site_hazard_score=34.0,
+        home_ignition_vulnerability_score=36.0,
+        insurance_readiness_score=90.0,
+    )
+    weak_readiness = engine.compute_blended_wildfire_score(
+        site_hazard_score=34.0,
+        home_ignition_vulnerability_score=36.0,
+        insurance_readiness_score=42.0,
+    )
+    assert strong_readiness + 4.0 < weak_readiness

@@ -147,6 +147,52 @@ def test_event_dataset_normalization_from_csv(tmp_path: Path):
     assert ds.records[0].outcome_rank == 3
 
 
+def test_event_dataset_derives_context_overrides_from_feature_vectors(tmp_path: Path):
+    payload = {
+        "dataset_id": "derived_context_dataset",
+        "records": [
+            {
+                "event_id": "event_a",
+                "event_name": "Event A",
+                "event_date": "2020-01-01",
+                "record_id": "derived_1",
+                "latitude": 39.75,
+                "longitude": -105.0,
+                "outcome_label": "major_damage",
+                "raw_feature_vector": {
+                    "ring_0_5_ft_vegetation_density": 82.0,
+                    "ring_5_30_ft_vegetation_density": 76.0,
+                    "near_structure_vegetation_0_5_pct": 88.0,
+                    "canopy_adjacency_proxy_pct": 67.0,
+                },
+                "transformed_feature_vector": {
+                    "burn_probability_index": 84.0,
+                    "hazard_severity_index": 81.0,
+                    "slope_index": 66.0,
+                    "fuel_index": 79.0,
+                    "moisture_index": 72.0,
+                    "canopy_index": 74.0,
+                    "wildland_distance_index": 58.0,
+                    "historic_fire_index": 55.0,
+                },
+            }
+        ],
+    }
+    path = tmp_path / "derived_context_dataset.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    ds = load_event_backtest_dataset(path)
+    assert len(ds.records) == 1
+    ctx = ds.records[0].context_overrides
+    assert isinstance(ctx, dict)
+    assert float(ctx.get("burn_probability_index") or 0.0) == 84.0
+    assert float(ctx.get("fuel_index") or 0.0) == 79.0
+    ring_metrics = ctx.get("structure_ring_metrics") if isinstance(ctx.get("structure_ring_metrics"), dict) else {}
+    assert float(((ring_metrics.get("ring_0_5_ft") or {}).get("vegetation_density") or 0.0)) == 82.0
+    property_level = ctx.get("property_level_context") if isinstance(ctx.get("property_level_context"), dict) else {}
+    assert float(property_level.get("near_structure_vegetation_0_5_pct") or 0.0) == 88.0
+    assert bool(property_level.get("footprint_used")) is True
+
+
 def test_rank_metric_helper():
     corr = spearman_rank_correlation([(10.0, 1.0), (20.0, 2.0), (30.0, 3.0), (40.0, 4.0)])
     assert isinstance(corr, float)

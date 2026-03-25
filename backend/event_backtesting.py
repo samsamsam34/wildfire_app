@@ -118,6 +118,84 @@ def _parse_jsonish(value: Any, default: Any) -> Any:
         return default
 
 
+def _derive_context_overrides_from_vectors(raw: dict[str, Any]) -> dict[str, Any]:
+    transformed = raw.get("transformed_feature_vector") if isinstance(raw.get("transformed_feature_vector"), dict) else {}
+    raw_vector = raw.get("raw_feature_vector") if isinstance(raw.get("raw_feature_vector"), dict) else {}
+    property_level_raw = raw.get("property_level_context") if isinstance(raw.get("property_level_context"), dict) else {}
+    if not transformed and not raw_vector and not property_level_raw:
+        return {}
+
+    overrides: dict[str, Any] = {}
+    for key in (
+        "burn_probability_index",
+        "hazard_severity_index",
+        "slope_index",
+        "aspect_index",
+        "fuel_index",
+        "moisture_index",
+        "canopy_index",
+        "wildland_distance_index",
+        "historic_fire_index",
+        "access_exposure_index",
+    ):
+        value = _to_float(transformed.get(key))
+        if value is None:
+            value = _to_float(raw_vector.get(key))
+        if value is not None:
+            overrides[key] = float(value)
+
+    scalar_map = {
+        "burn_probability": "burn_probability",
+        "wildfire_hazard": "wildfire_hazard",
+        "slope": "slope",
+        "fuel_model": "fuel_model",
+        "canopy_cover": "canopy_cover",
+        "historic_fire_distance_km": "historic_fire_distance",
+        "wildland_distance_m": "wildland_distance",
+    }
+    for source_key, target_key in scalar_map.items():
+        value = _to_float(raw_vector.get(source_key))
+        if value is not None:
+            overrides[target_key] = float(value)
+
+    ring_key_map = {
+        "ring_0_5_ft_vegetation_density": "ring_0_5_ft",
+        "ring_5_30_ft_vegetation_density": "ring_5_30_ft",
+        "ring_30_100_ft_vegetation_density": "ring_30_100_ft",
+        "ring_100_300_ft_vegetation_density": "ring_100_300_ft",
+    }
+    ring_metrics: dict[str, dict[str, float]] = {}
+    for source_key, ring_key in ring_key_map.items():
+        value = _to_float(raw_vector.get(source_key))
+        if value is None:
+            continue
+        ring_metrics[ring_key] = {"vegetation_density": float(value)}
+    if ring_metrics:
+        overrides["structure_ring_metrics"] = ring_metrics
+
+    property_level: dict[str, Any] = dict(property_level_raw) if property_level_raw else {}
+    if ring_metrics:
+        existing_ring_metrics = property_level.get("ring_metrics")
+        if not isinstance(existing_ring_metrics, dict) or not existing_ring_metrics:
+            property_level["ring_metrics"] = ring_metrics
+        property_level.setdefault("footprint_used", True)
+        property_level.setdefault("footprint_status", "used")
+        property_level.setdefault("fallback_mode", "footprint")
+    for key in (
+        "near_structure_vegetation_0_5_pct",
+        "canopy_adjacency_proxy_pct",
+        "vegetation_continuity_proxy_pct",
+        "nearest_high_fuel_patch_distance_ft",
+        "nearest_vegetation_distance_ft",
+    ):
+        value = _to_float(raw_vector.get(key))
+        if value is not None and property_level.get(key) is None:
+            property_level[key] = float(value)
+    if property_level:
+        overrides["property_level_context"] = property_level
+    return overrides
+
+
 def _normalize_record(
     raw: dict[str, Any],
     *,
@@ -140,6 +218,10 @@ def _normalize_record(
     source_metadata = _parse_jsonish(raw.get("source_metadata"), {})
     input_payload = _parse_jsonish(raw.get("input_payload"), {})
     context_overrides = _parse_jsonish(raw.get("context_overrides"), {})
+    if not isinstance(context_overrides, dict):
+        context_overrides = {}
+    if not context_overrides:
+        context_overrides = _derive_context_overrides_from_vectors(raw)
     geometry = raw.get("geometry") if isinstance(raw.get("geometry"), dict) else None
     return EventBacktestRecord(
         event_id=event_id,

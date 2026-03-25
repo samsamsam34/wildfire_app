@@ -1070,25 +1070,25 @@ class RiskEngine:
             return max(0.0, (value - threshold) * slope)
 
         ring_penalty = 0.0
-        ring_penalty += _penalty("zone_0_5_ft", zone_0_5, 50.0, 0.30)
-        ring_penalty += _penalty("zone_5_30_ft", zone_5_30, 58.0, 0.16)
-        ring_penalty += _penalty("zone_30_100_ft", zone_30_100, 65.0, 0.08)
+        ring_penalty += _penalty("zone_0_5_ft", zone_0_5, 45.0, 0.38)
+        ring_penalty += _penalty("zone_5_30_ft", zone_5_30, 55.0, 0.20)
+        ring_penalty += _penalty("zone_30_100_ft", zone_30_100, 63.0, 0.10)
         ring_penalty += _penalty("zone_100_300_ft", zone_100_300, 70.0, 0.05)
 
         # Piecewise surcharges keep the near-home vegetation effect monotonic
         # and meaningful without allowing unbounded score jumps.
         if zone_0_5 is not None:
             if zone_0_5 >= 80.0:
-                ring_penalty += 4.5
+                ring_penalty += 6.0
             elif zone_0_5 >= 65.0:
-                ring_penalty += 3.0
+                ring_penalty += 4.0
             elif zone_0_5 >= 50.0:
-                ring_penalty += 1.5
+                ring_penalty += 2.0
         if zone_5_30 is not None:
             if zone_5_30 >= 85.0:
-                ring_penalty += 2.5
+                ring_penalty += 3.0
             elif zone_5_30 >= 70.0:
-                ring_penalty += 1.5
+                ring_penalty += 2.0
 
         distance_cfg = ring_cfg.get("nearest_vegetation_distance_ft") if isinstance(ring_cfg.get("nearest_vegetation_distance_ft"), dict) else {}
         try:
@@ -1100,13 +1100,13 @@ class RiskEngine:
         except (TypeError, ValueError, AttributeError):
             watch_max_ft = 15.0
         try:
-            critical_penalty = float(distance_cfg.get("critical_penalty", 6.0))
+            critical_penalty = float(distance_cfg.get("critical_penalty", 8.0))
         except (TypeError, ValueError, AttributeError):
-            critical_penalty = 6.0
+            critical_penalty = 8.0
         try:
-            watch_penalty = float(distance_cfg.get("watch_penalty", 3.0))
+            watch_penalty = float(distance_cfg.get("watch_penalty", 4.0))
         except (TypeError, ValueError, AttributeError):
-            watch_penalty = 3.0
+            watch_penalty = 4.0
         if nearest_vegetation_distance_ft is not None:
             if nearest_vegetation_distance_ft <= critical_max_ft:
                 ring_penalty += critical_penalty
@@ -1140,22 +1140,63 @@ class RiskEngine:
             + home_ignition_vulnerability_score * struct_weight
             + readiness_risk_equivalent * max(0.0, readiness_weight)
         ) / denom
-        # Mild interaction and contrast expansion improves score separation
-        # between clearly different risk profiles while preserving determinism.
-        overlap_high = max(0.0, min(float(site_hazard_score), float(home_ignition_vulnerability_score)) - 55.0)
-        high_risk_compound = overlap_high * 0.10
+
+        near_structure_signal = float(home_ignition_vulnerability_score)
+        interaction_gate = 1.0
+        if risk is not None:
+            near_weights: dict[str, float] = {
+                "defensible_space_risk": 0.34,
+                "flame_contact_risk": 0.30,
+                "vegetation_intensity_risk": 0.22,
+                "fuel_proximity_risk": 0.14,
+            }
+            near_num = 0.0
+            near_den = 0.0
+            for factor_key, factor_weight in near_weights.items():
+                result = risk.submodel_scores.get(factor_key)
+                if result is None:
+                    continue
+                effective_weight = float((risk.weighted_contributions.get(factor_key) or {}).get("effective_weight") or 0.0)
+                if effective_weight <= 0.0:
+                    continue
+                near_num += float(result.score) * float(factor_weight)
+                near_den += float(factor_weight)
+            if near_den > 0.0:
+                near_structure_signal = near_num / near_den
+            geometry_gate = 0.55 + (0.45 * max(0.0, min(1.0, float(risk.geometry_quality_score))))
+            evidence_gate = 0.50 + (0.50 * max(0.0, min(1.0, float(risk.observed_weight_fraction))))
+            fallback_gate = 1.0 - min(0.35, max(0.0, float(risk.fallback_weight_fraction)) * 0.50)
+            interaction_gate = max(0.35, min(1.0, geometry_gate * evidence_gate * fallback_gate))
+
+        # Explainable interactions for stronger separation:
+        # 1) high hazard + high near-structure fuel pressure compounds risk.
+        # 2) high readiness + low hazard/near pressure yields limited credit.
+        overlap_high = max(0.0, min(float(site_hazard_score), float(near_structure_signal)) - 50.0)
+        high_risk_compound = overlap_high * 0.16 * interaction_gate
+        hazard_tail = max(0.0, float(site_hazard_score) - 55.0)
+        near_tail = max(0.0, float(near_structure_signal) - 45.0)
+        hazard_near_compound = ((hazard_tail * near_tail) / 100.0) * 0.22 * interaction_gate
         readiness_drag = 0.0
         low_risk_credit = 0.0
         if insurance_readiness_score is not None:
             readiness_value = max(0.0, min(100.0, float(insurance_readiness_score)))
-            if readiness_value < 45.0:
-                readiness_drag = (45.0 - readiness_value) * 0.08
-            low_overlap = max(0.0, 42.0 - max(float(site_hazard_score), float(home_ignition_vulnerability_score)))
-            if readiness_value >= 70.0 and low_overlap > 0.0:
-                low_risk_credit = low_overlap * 0.07
+            if readiness_value < 50.0:
+                severity_gate = 0.70 + (0.30 * max(float(site_hazard_score), float(near_structure_signal)) / 100.0)
+                readiness_drag = (50.0 - readiness_value) * 0.11 * severity_gate
+            low_overlap = max(0.0, 50.0 - max(float(site_hazard_score), float(near_structure_signal)))
+            if readiness_value >= 72.0 and low_overlap > 0.0:
+                low_risk_credit = ((readiness_value - 72.0) * 0.06) + (low_overlap * 0.08)
+            if readiness_value < 45.0 and near_structure_signal > 70.0:
+                readiness_drag += (float(near_structure_signal) - 70.0) * 0.08
 
-        interaction_adjusted = base_blended + high_risk_compound + readiness_drag - low_risk_credit
-        contrast_adjusted = 50.0 + ((interaction_adjusted - 50.0) * 1.08)
+        interaction_adjusted = (
+            base_blended
+            + high_risk_compound
+            + hazard_near_compound
+            + readiness_drag
+            - low_risk_credit
+        )
+        contrast_adjusted = 50.0 + ((interaction_adjusted - 50.0) * 1.12)
         return round(max(0.0, min(100.0, contrast_adjusted)), 1)
 
     def resolve_blend_weights(

@@ -1337,6 +1337,7 @@ def _backfill_missing_feature_scores(
     feature_rows: list[FeatureRecord],
     run_dir: Path,
     auto_score_missing: bool,
+    auto_score_all: bool = False,
 ) -> dict[str, Any]:
     missing_rows = [
         row
@@ -1348,6 +1349,9 @@ def _backfill_missing_feature_scores(
         per_artifact_missing[row.artifact_path] = per_artifact_missing.get(row.artifact_path, 0) + 1
     diagnostics: dict[str, Any] = {
         "auto_score_missing_enabled": bool(auto_score_missing),
+        "auto_score_all_enabled": bool(auto_score_all),
+        "rescore_mode": ("all_records" if auto_score_all else "missing_scores_only"),
+        "total_feature_rows": len(feature_rows),
         "missing_score_record_count_before": len(missing_rows),
         "missing_score_by_artifact_before": dict(sorted(per_artifact_missing.items())),
         "rescoring_attempted": False,
@@ -1358,15 +1362,18 @@ def _backfill_missing_feature_scores(
         "remaining_missing_score_record_count": len(missing_rows),
         "warnings": [],
     }
-    if not missing_rows:
+    if not feature_rows:
         return diagnostics
-    if not auto_score_missing:
+    if not missing_rows and not auto_score_all:
+        return diagnostics
+    if not auto_score_missing and not auto_score_all:
         diagnostics["warnings"].append(
             "Feature artifacts are missing wildfire scores; auto-score backfill is disabled."
         )
         return diagnostics
 
-    artifact_paths = sorted(per_artifact_missing.keys())
+    rows_to_patch = list(feature_rows if auto_score_all else missing_rows)
+    artifact_paths = sorted({row.artifact_path for row in rows_to_patch})
     try:
         from backend.event_backtesting import run_event_backtest  # lazy import
 
@@ -1383,7 +1390,9 @@ def _backfill_missing_feature_scores(
         diagnostics["rescoring_record_count"] = len(scored_rows)
         by_event_record, by_record = _build_scored_record_maps(scored_rows)
         patched = 0
-        for row in missing_rows:
+        for row in rows_to_patch:
+            before_scores = _extract_feature_scores(row.payload)
+            before_wildfire = before_scores.get("wildfire_risk_score")
             scored = by_event_record.get((row.event_id, row.record_id))
             if scored is None:
                 scored = by_record.get(row.record_id) or by_record.get(row.source_record_id)
@@ -1400,31 +1409,41 @@ def _backfill_missing_feature_scores(
                 "home_ignition_vulnerability_score",
                 "insurance_readiness_score",
             ):
-                if target_scores.get(key) is None and scored_scores.get(key) is not None:
+                if auto_score_all and scored_scores.get(key) is not None:
+                    target_scores[key] = scored_scores.get(key)
+                elif target_scores.get(key) is None and scored_scores.get(key) is not None:
                     target_scores[key] = scored_scores.get(key)
             confidence = scored.get("confidence") if isinstance(scored.get("confidence"), dict) else {}
-            if row.payload.get("confidence_tier") is None and confidence.get("confidence_tier") is not None:
+            if (auto_score_all or row.payload.get("confidence_tier") is None) and confidence.get("confidence_tier") is not None:
                 row.payload["confidence_tier"] = confidence.get("confidence_tier")
-            if row.payload.get("confidence_score") is None and confidence.get("confidence_score") is not None:
+            if (auto_score_all or row.payload.get("confidence_score") is None) and confidence.get("confidence_score") is not None:
                 row.payload["confidence_score"] = confidence.get("confidence_score")
-            if row.payload.get("use_restriction") is None and confidence.get("use_restriction") is not None:
+            if (auto_score_all or row.payload.get("use_restriction") is None) and confidence.get("use_restriction") is not None:
                 row.payload["use_restriction"] = confidence.get("use_restriction")
-            if row.payload.get("evidence_quality_summary") is None and isinstance(scored.get("evidence_quality_summary"), dict):
+            if (auto_score_all or row.payload.get("evidence_quality_summary") is None) and isinstance(scored.get("evidence_quality_summary"), dict):
                 row.payload["evidence_quality_summary"] = scored.get("evidence_quality_summary")
-            if row.payload.get("coverage_summary") is None and isinstance(scored.get("coverage_summary"), dict):
+            if (auto_score_all or row.payload.get("coverage_summary") is None) and isinstance(scored.get("coverage_summary"), dict):
                 row.payload["coverage_summary"] = scored.get("coverage_summary")
-            if row.payload.get("factor_contribution_breakdown") is None and isinstance(scored.get("factor_contribution_breakdown"), dict):
+            if (auto_score_all or row.payload.get("factor_contribution_breakdown") is None) and isinstance(scored.get("factor_contribution_breakdown"), dict):
                 row.payload["factor_contribution_breakdown"] = scored.get("factor_contribution_breakdown")
-            if row.payload.get("raw_feature_vector") is None and isinstance(scored.get("raw_feature_vector"), dict):
+            if (auto_score_all or row.payload.get("raw_feature_vector") is None) and isinstance(scored.get("raw_feature_vector"), dict):
                 row.payload["raw_feature_vector"] = scored.get("raw_feature_vector")
-            if row.payload.get("transformed_feature_vector") is None and isinstance(scored.get("transformed_feature_vector"), dict):
+            if (auto_score_all or row.payload.get("transformed_feature_vector") is None) and isinstance(scored.get("transformed_feature_vector"), dict):
                 row.payload["transformed_feature_vector"] = scored.get("transformed_feature_vector")
-            if row.payload.get("compression_flags") is None and isinstance(scored.get("compression_flags"), list):
+            if (auto_score_all or row.payload.get("compression_flags") is None) and isinstance(scored.get("compression_flags"), list):
                 row.payload["compression_flags"] = scored.get("compression_flags")
-            if row.payload.get("model_governance") is None and isinstance(scored.get("model_governance"), dict):
+            if (auto_score_all or row.payload.get("model_governance") is None) and isinstance(scored.get("model_governance"), dict):
                 row.payload["model_governance"] = scored.get("model_governance")
-            row.payload["score_backfill_source"] = "event_backtest_auto_rescore"
-            if _extract_feature_scores(row.payload).get("wildfire_risk_score") is not None:
+            row.payload["score_backfill_source"] = (
+                "event_backtest_auto_rescore_all"
+                if auto_score_all
+                else "event_backtest_auto_rescore_missing"
+            )
+            after_wildfire = _extract_feature_scores(row.payload).get("wildfire_risk_score")
+            if after_wildfire is not None and (
+                before_wildfire is None
+                or not math.isclose(float(before_wildfire), float(after_wildfire), rel_tol=0.0, abs_tol=1e-9)
+            ):
                 patched += 1
         diagnostics["backfilled_record_count"] = patched
     except Exception as exc:
@@ -1813,6 +1832,7 @@ def build_public_outcome_evaluation_dataset(
     min_retained_records: int = 0,
     auto_relax_for_min_retention: bool = False,
     auto_score_missing: bool = True,
+    auto_score_all: bool = False,
     audit_mode: bool = False,
     audit_sample_rows: int = 10,
     overwrite: bool = False,
@@ -1858,6 +1878,7 @@ def build_public_outcome_evaluation_dataset(
         feature_rows=feature_rows,
         run_dir=run_dir,
         auto_score_missing=bool(auto_score_missing),
+        auto_score_all=bool(auto_score_all),
     )
 
     indexes = _build_indexes(outcomes)
@@ -2630,6 +2651,7 @@ def build_public_outcome_evaluation_dataset(
             "min_retained_records": int(retention_target),
             "auto_relax_for_min_retention": bool(auto_relax_for_min_retention),
             "auto_score_missing": bool(auto_score_missing),
+            "auto_score_all": bool(auto_score_all),
             "audit_mode": bool(audit_mode),
             "audit_sample_rows": int(audit_sample_size),
         },
@@ -2855,6 +2877,15 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--auto-score-all",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Rescore all feature rows from artifacts before joining outcomes. This is useful after "
+            "model-weight changes to regenerate comparable validation datasets."
+        ),
+    )
+    parser.add_argument(
         "--include-normalized-outcomes-as-feature-artifacts",
         action=argparse.BooleanOptionalAction,
         default=False,
@@ -2956,6 +2987,7 @@ def main() -> int:
         min_retained_records=int(args.min_retained_records),
         auto_relax_for_min_retention=bool(args.auto_relax_for_min_retention),
         auto_score_missing=bool(args.auto_score_missing),
+        auto_score_all=bool(args.auto_score_all),
         audit_mode=bool(audit_mode),
         audit_sample_rows=int(audit_sample_rows),
         overwrite=bool(args.overwrite),
@@ -3137,6 +3169,7 @@ def main() -> int:
     if score_backfill:
         print(
             "[public-eval-ds] Score backfill: "
+            f"mode={score_backfill.get('rescore_mode')} "
             f"before_missing={score_backfill.get('missing_score_record_count_before')} "
             f"backfilled={score_backfill.get('backfilled_record_count')} "
             f"remaining_missing={score_backfill.get('remaining_missing_score_record_count')}"

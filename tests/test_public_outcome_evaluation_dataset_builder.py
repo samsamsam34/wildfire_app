@@ -478,6 +478,84 @@ def test_builder_backfills_missing_scores_via_event_backtest(monkeypatch, tmp_pa
     assert score_backfill.get("remaining_missing_score_record_count") == 0
 
 
+def test_builder_auto_score_all_replaces_existing_scores(monkeypatch, tmp_path: Path) -> None:
+    outcomes = tmp_path / "normalized_outcomes.json"
+    _write_outcomes(outcomes)
+    features = tmp_path / "event_backtest_scored.json"
+    features.write_text(
+        json.dumps(
+            {
+                "records": [
+                    {
+                        "event_id": "evt-a",
+                        "event_name": "Event A",
+                        "event_date": "2021-08-01",
+                        "record_id": "f-scored-1",
+                        "source_record_id": "SRC-001",
+                        "latitude": 39.10011,
+                        "longitude": -120.10011,
+                        "scores": {
+                            "wildfire_risk_score": 25.0,
+                            "site_hazard_score": 24.0,
+                            "home_ignition_vulnerability_score": 27.0,
+                            "insurance_readiness_score": 70.0,
+                        },
+                    }
+                ]
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    def _fake_run_event_backtest(*, dataset_paths, output_dir, ruleset_id=None, reuse_existing_assessments=False):
+        return {
+            "artifact_path": str(Path(output_dir) / "fake_event_backtest_all.json"),
+            "records": [
+                {
+                    "event_id": "evt-a",
+                    "record_id": "f-scored-1",
+                    "source_record_id": "SRC-001",
+                    "scores": {
+                        "wildfire_risk_score": 79.0,
+                        "site_hazard_score": 71.0,
+                        "home_ignition_vulnerability_score": 76.0,
+                        "insurance_readiness_score": 39.0,
+                    },
+                    "confidence": {"confidence_tier": "moderate", "confidence_score": 62.0},
+                    "evidence_quality_summary": {"evidence_tier": "moderate"},
+                    "coverage_summary": {"failed_count": 0, "fallback_count": 0},
+                }
+            ],
+        }
+
+    import backend.event_backtesting as event_backtesting
+
+    monkeypatch.setattr(event_backtesting, "run_event_backtest", _fake_run_event_backtest)
+
+    result = build_public_outcome_evaluation_dataset(
+        outcomes_path=outcomes,
+        feature_artifacts=[features],
+        output_root=tmp_path / "out",
+        run_id="backfill_eval_ds_all",
+        auto_score_missing=False,
+        auto_score_all=True,
+        overwrite=True,
+    )
+    rows = []
+    with (Path(result["run_dir"]) / "evaluation_dataset.jsonl").open("r", encoding="utf-8") as fh:
+        for line in fh:
+            rows.append(json.loads(line))
+    assert rows
+    assert rows[0]["scores"]["wildfire_risk_score"] == 79.0
+    assert rows[0]["scores"]["site_hazard_score"] == 71.0
+    join_quality = json.loads(Path(result["join_quality_report_path"]).read_text(encoding="utf-8"))
+    score_backfill = join_quality.get("score_backfill") or {}
+    assert score_backfill.get("rescore_mode") == "all_records"
+    assert bool(score_backfill.get("auto_score_all_enabled")) is True
+    assert int(score_backfill.get("backfilled_record_count") or 0) >= 1
+
+
 def test_builder_respects_global_fallback_toggle(tmp_path: Path) -> None:
     outcomes = tmp_path / "normalized_outcomes.json"
     features = tmp_path / "feature_artifact_far.json"

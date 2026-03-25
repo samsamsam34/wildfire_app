@@ -15,33 +15,33 @@ class ScoringConfig:
     # Deterministic heuristic configuration (not underwriting-approved).
     submodel_weights: Dict[str, float] = field(
         default_factory=lambda: {
-            "vegetation_intensity_risk": 0.13,
-            "fuel_proximity_risk": 0.12,
-            "slope_topography_risk": 0.09,
-            "ember_exposure_risk": 0.13,
-            "flame_contact_risk": 0.17,
-            "historic_fire_risk": 0.08,
-            "structure_vulnerability_risk": 0.14,
-            "defensible_space_risk": 0.14,
+            "vegetation_intensity_risk": 0.16,
+            "fuel_proximity_risk": 0.14,
+            "slope_topography_risk": 0.08,
+            "ember_exposure_risk": 0.11,
+            "flame_contact_risk": 0.18,
+            "historic_fire_risk": 0.04,
+            "structure_vulnerability_risk": 0.12,
+            "defensible_space_risk": 0.17,
         }
     )
     risk_blending_weights: Dict[str, float] = field(
         default_factory=lambda: {
-            "environmental": 0.50,
-            "structural": 0.36,
-            "readiness": 0.14,
+            "environmental": 0.45,
+            "structural": 0.45,
+            "readiness": 0.10,
         }
     )
     vulnerability_ring_penalties: Dict[str, Dict[str, float]] = field(
         default_factory=lambda: {
-            "zone_0_5_ft": {"threshold": 50.0, "slope": 0.30},
-            "zone_5_30_ft": {"threshold": 58.0, "slope": 0.16},
-            "zone_30_100_ft": {"threshold": 65.0, "slope": 0.08},
+            "zone_0_5_ft": {"threshold": 45.0, "slope": 0.38},
+            "zone_5_30_ft": {"threshold": 55.0, "slope": 0.20},
+            "zone_30_100_ft": {"threshold": 63.0, "slope": 0.10},
             "nearest_vegetation_distance_ft": {
                 "critical_max_ft": 5.0,
                 "watch_max_ft": 15.0,
-                "critical_penalty": 7.0,
-                "watch_penalty": 3.5,
+                "critical_penalty": 8.0,
+                "watch_penalty": 4.0,
             },
         }
     )
