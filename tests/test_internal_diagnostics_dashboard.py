@@ -163,6 +163,17 @@ def _write_public_validation_run(root: Path, run_id: str, *, roc_auc: float) -> 
                 "calibration_metrics": {"wildfire_risk_score": {"expected_calibration_error": 0.08}},
                 "false_review_sets": {"false_low_count": 3, "false_high_count": 2},
                 "slice_metrics": {"by_confidence_tier": {"high": {"count": 10, "wildfire_risk_score_auc": 0.71, "wildfire_risk_score_brier": 0.12}}},
+                "baseline_model_comparison": {
+                    "available": True,
+                    "full_model_auc": roc_auc,
+                    "comparison": {
+                        "beats_all_baselines_by_auc": True,
+                        "best_baseline_name": "hazard_only",
+                        "best_baseline_auc": max(0.0, float(roc_auc) - 0.02),
+                        "auc_margin_vs_best_baseline": 0.02,
+                        "complexity_justified_signal": "yes",
+                    },
+                },
             }
         ),
         encoding="utf-8",
@@ -337,6 +348,10 @@ def test_internal_dashboard_public_outcome_governance_endpoint(monkeypatch, tmp_
     assert payload["available"] is True
     assert payload["validation"]["latest_summary"]["run_id"] == "20260319T000000Z"
     assert payload["calibration"]["latest_summary"]["run_id"] == "20260319T000000Z"
+    baseline_cmp = ((payload["validation"]["latest_summary"] or {}).get("baseline_comparison") or {})
+    assert baseline_cmp.get("available") is True
+    assert baseline_cmp.get("best_baseline_name") == "hazard_only"
+    assert baseline_cmp.get("complexity_justified_signal") == "yes"
     suff = (payload["validation"]["latest_summary"] or {}).get("data_sufficiency") or {}
     assert ((suff.get("total_dataset") or {}).get("tier")) == "limited"
     assert ((suff.get("high_confidence_subset") or {}).get("tier")) == "insufficient"

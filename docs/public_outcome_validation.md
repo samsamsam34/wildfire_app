@@ -71,6 +71,7 @@ Each run writes:
 
 Artifacts:
 - `validation_metrics.json`
+- `baseline_model_comparison.json`
 - `feature_diagnostics.json`
 - `segment_metrics.json`
 - `segment_report.md`
@@ -119,6 +120,24 @@ Minimum viable diagnostics are emitted for usable datasets (including small samp
 - top-risk-bucket adverse hit rate and lift vs baseline
 - adverse outcome rate by score decile/bucket (when computable)
 - narrative summary and data sufficiency flags
+
+Simple baseline comparisons are also emitted to justify model complexity:
+- `random` baseline (deterministic pseudo-random by record identity)
+- `hazard_only` baseline
+- `vegetation_only` baseline
+
+For each baseline:
+- ROC AUC / PR AUC / Brier
+- missing-signal count
+
+And full-model comparison fields:
+- `beats_all_baselines_by_auc`
+- `best_baseline_name`
+- `best_baseline_auc`
+- `auc_margin_vs_best_baseline`
+- `complexity_justified_signal`
+
+These comparisons are directional checks only; they are not ground-truth claims-performance validation.
 
 Validation outputs now include a explicit sufficiency indicator object:
 - `data_sufficiency_indicator.total_dataset`

@@ -118,6 +118,16 @@ def _validation_summary(manifest: dict[str, Any], report: dict[str, Any]) -> dic
         if isinstance(sufficiency.get("high_confidence_subset"), dict)
         else _sufficiency_from_count(high_conf_count)
     )
+    baseline_cmp = (
+        report.get("baseline_model_comparison")
+        if isinstance(report.get("baseline_model_comparison"), dict)
+        else {}
+    )
+    baseline_cmp_detail = (
+        baseline_cmp.get("comparison")
+        if isinstance(baseline_cmp.get("comparison"), dict)
+        else {}
+    )
     return {
         "available": True,
         "run_id": manifest.get("run_id"),
@@ -139,6 +149,19 @@ def _validation_summary(manifest: dict[str, Any], report: dict[str, Any]) -> dic
             if isinstance(report.get("slice_metrics"), dict)
             else {}
         ),
+        "baseline_comparison": {
+            "available": bool(baseline_cmp.get("available")),
+            "full_model_auc": _safe_float(baseline_cmp.get("full_model_auc")),
+            "beats_all_baselines_by_auc": baseline_cmp_detail.get("beats_all_baselines_by_auc"),
+            "best_baseline_name": baseline_cmp_detail.get("best_baseline_name"),
+            "best_baseline_auc": _safe_float(baseline_cmp_detail.get("best_baseline_auc")),
+            "auc_margin_vs_best_baseline": _safe_float(
+                baseline_cmp_detail.get("auc_margin_vs_best_baseline")
+            ),
+            "complexity_justified_signal": baseline_cmp_detail.get(
+                "complexity_justified_signal"
+            ),
+        },
         "raw_vs_calibrated_within_run": (
             {
                 "available": (

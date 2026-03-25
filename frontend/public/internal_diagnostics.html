@@ -870,6 +870,7 @@
 
           const validationSuff = ((validation.data_sufficiency || {}).total_dataset) || {};
           const highConfSuff = ((validation.data_sufficiency || {}).high_confidence_subset) || {};
+          const baselineCmp = (validation.baseline_comparison || {});
           const suffTier = String(validationSuff.tier || "unknown").toLowerCase();
           const suffClass = suffTier === "strong" ? "good" : (suffTier === "moderate" ? "warn" : "bad");
 
@@ -885,6 +886,12 @@
               value: validation.brier_score != null ? Number(validation.brier_score).toFixed(4) : "N/A",
               className: (validation.brier_score != null && Number(validation.brier_score) <= 0.20) ? "good" : "warn",
               detail: `ECE=${validation.calibration_error != null ? Number(validation.calibration_error).toFixed(4) : "N/A"} | false lows=${validation.false_low_count ?? 0}`,
+            },
+            {
+              title: "Model vs Baselines",
+              value: baselineCmp.beats_all_baselines_by_auc === true ? "Beats Baselines" : (baselineCmp.beats_all_baselines_by_auc === false ? "No" : "N/A"),
+              className: baselineCmp.beats_all_baselines_by_auc === true ? "good" : "warn",
+              detail: `margin=${baselineCmp.auc_margin_vs_best_baseline != null ? Number(baselineCmp.auc_margin_vs_best_baseline).toFixed(4) : "N/A"} | best=${baselineCmp.best_baseline_name || "N/A"}`,
             },
             {
               title: "Validation Data Sufficiency",
