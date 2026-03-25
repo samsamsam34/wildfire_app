@@ -52,6 +52,26 @@ def _iso_mtime(path: Path) -> str:
     return datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc).isoformat()
 
 
+def _parse_run_datetime(value: Any) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    # ISO timestamps (with optional Z suffix).
+    try:
+        iso_text = text[:-1] + "+00:00" if text.endswith("Z") else text
+        parsed = datetime.fromisoformat(iso_text)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+    except Exception:
+        pass
+    # Compact run-id timestamp format, e.g. 20260325T180150Z.
+    try:
+        return datetime.strptime(text, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
+    except Exception:
+        return None
+
+
 def list_public_outcome_runs(
     *,
     artifact_root: Path,
@@ -86,15 +106,22 @@ def list_public_outcome_runs(
             if isinstance(manifest, dict) and manifest.get("generated_at")
             else _iso_mtime(entry)
         )
+        sort_dt = _parse_run_datetime(generated_at)
+        if sort_dt is None:
+            sort_dt = datetime.fromtimestamp(entry.stat().st_mtime, tz=timezone.utc)
         runs.append(
             {
                 "run_id": entry.name,
                 "path": str(entry),
                 "generated_at": generated_at,
+                "sort_timestamp": sort_dt.isoformat(),
                 "has_manifest": bool(manifest),
             }
         )
-    runs.sort(key=lambda row: str(row.get("generated_at") or ""), reverse=True)
+    runs.sort(key=lambda row: str(row.get("sort_timestamp") or ""), reverse=True)
+    for row in runs:
+        if isinstance(row, dict):
+            row.pop("sort_timestamp", None)
     return {
         "available": bool(runs),
         "artifact_root": str(root),
