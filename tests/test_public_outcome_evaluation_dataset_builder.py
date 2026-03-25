@@ -788,6 +788,86 @@ def test_builder_prevents_duplicate_outcome_matches_by_default(tmp_path: Path) -
     assert join_quality["allow_duplicate_outcome_matches"] is False
 
 
+def test_builder_collapses_duplicate_property_event_rows_and_reports_duplication_metrics(tmp_path: Path) -> None:
+    outcomes = tmp_path / "normalized_outcomes.json"
+    _write_outcomes(outcomes)
+
+    features_a = tmp_path / "feature_artifact_dupe_a.json"
+    features_a.write_text(
+        json.dumps(
+            {
+                "records": [
+                    {
+                        "event_id": "evt-a",
+                        "event_name": "Event A",
+                        "event_date": "2021-08-01",
+                        "record_id": "prop-dup-1",
+                        "source_record_id": "PROP-DUP-1",
+                        "latitude": 39.10012,
+                        "longitude": -120.10012,
+                        "address_text": "100 Main Street, Town, CA 90001",
+                        "scores": {"wildfire_risk_score": 81.0},
+                    }
+                ]
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    features_b = tmp_path / "feature_artifact_dupe_b.json"
+    features_b.write_text(
+        json.dumps(
+            {
+                "records": [
+                    {
+                        "event_id": "evt-a",
+                        "event_name": "Event A",
+                        "event_date": "2021-08-01",
+                        "record_id": "prop-dup-1",
+                        "source_record_id": "PROP-DUP-1",
+                        "latitude": 39.1007,
+                        "longitude": -120.1007,
+                        "address_text": "100 Main Street, Town, CA 90001",
+                        "scores": {"wildfire_risk_score": 60.0},
+                    }
+                ]
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    result = build_public_outcome_evaluation_dataset(
+        outcomes_path=outcomes,
+        feature_artifacts=[features_a, features_b],
+        output_root=tmp_path / "out",
+        run_id="property_event_dedupe",
+        allow_duplicate_outcome_matches=True,
+        overwrite=True,
+    )
+    rows = []
+    with (Path(result["run_dir"]) / "evaluation_dataset.jsonl").open("r", encoding="utf-8") as fh:
+        for line in fh:
+            rows.append(json.loads(line))
+    assert len(rows) == 1
+    # Keep the closer/higher-confidence representative row.
+    assert ((rows[0].get("feature") or {}).get("feature_artifact_path") == str(features_a))
+    dedupe_eval = rows[0].get("evaluation") or {}
+    assert dedupe_eval.get("property_event_dedupe_applied") is True
+    assert dedupe_eval.get("property_event_duplicate_count_collapsed") == 1
+
+    join_quality = json.loads(Path(result["join_quality_report_path"]).read_text(encoding="utf-8"))
+    assert join_quality.get("total_rows_before_property_event_dedupe") == 2
+    assert join_quality.get("unique_property_event_id_count") == 1
+    assert join_quality.get("duplicate_property_event_rows_removed_count") == 1
+    assert join_quality.get("duplication_factor") == 2.0
+    assert "duplicate_property_event_id_collapsed" in (join_quality.get("excluded_reason_counts") or {})
+    filter_summary = join_quality.get("filter_summary") or {}
+    assert filter_summary.get("joined_rows_before_property_event_dedupe") == 2
+    assert filter_summary.get("joined_rows") == 1
+    assert filter_summary.get("no_silent_data_loss_guarantee") is True
+
+
 def test_builder_converts_web_mercator_coordinates_to_wgs84(tmp_path: Path) -> None:
     outcomes = tmp_path / "normalized_outcomes_mercator.json"
     features = tmp_path / "feature_artifact_wgs84.json"

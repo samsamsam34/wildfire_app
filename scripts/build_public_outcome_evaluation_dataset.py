@@ -16,7 +16,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-SCHEMA_VERSION = "1.3.0"
+SCHEMA_VERSION = "1.4.0"
 WGS84_COORD_DECIMALS = 6
 DISTANCE_TIEBREAK_DECIMALS = 6
 DEFAULT_HIGH_CONFIDENCE_DISTANCE_M = 30.0
@@ -347,6 +347,149 @@ def _stable_feature_sort_key(row: FeatureRecord) -> tuple[Any, ...]:
         float(row.latitude) if row.latitude is not None else float("inf"),
         float(row.longitude) if row.longitude is not None else float("inf"),
     )
+
+
+def _joined_row_sort_key(row: dict[str, Any]) -> tuple[Any, ...]:
+    event_payload = row.get("event") if isinstance(row.get("event"), dict) else {}
+    feature_payload = row.get("feature") if isinstance(row.get("feature"), dict) else {}
+    outcome_payload = row.get("outcome") if isinstance(row.get("outcome"), dict) else {}
+    join_payload = row.get("join_metadata") if isinstance(row.get("join_metadata"), dict) else {}
+    distance = _safe_float(join_payload.get("join_distance_m"))
+    score = _safe_float(join_payload.get("join_confidence_score"))
+    return (
+        str(row.get("property_event_id") or ""),
+        str(event_payload.get("event_id") or ""),
+        str(feature_payload.get("record_id") or ""),
+        str(feature_payload.get("source_record_id") or ""),
+        str(feature_payload.get("feature_artifact_path") or ""),
+        str(outcome_payload.get("record_id") or ""),
+        str(outcome_payload.get("source_record_id") or ""),
+        str(join_payload.get("join_method") or ""),
+        float(distance) if distance is not None else float("inf"),
+        -float(score) if score is not None else float("inf"),
+    )
+
+
+def _join_confidence_tier_rank(value: str) -> int:
+    tier = str(value or "").strip().lower()
+    if tier == "high":
+        return 3
+    if tier in {"moderate", "medium"}:
+        return 2
+    if tier == "low":
+        return 1
+    return 0
+
+
+def _dedupe_joined_rows_by_property_event_id(
+    rows: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
+    if not rows:
+        return [], [], {
+            "total_rows_before_property_event_dedupe": 0,
+            "unique_property_event_id_count": 0,
+            "duplicate_property_event_rows_removed_count": 0,
+            "property_event_ids_with_duplicates_count": 0,
+            "duplication_factor": 1.0,
+            "duplicate_property_event_ids_examples": [],
+            "duplicate_rows_removed_by_join_confidence_tier": {},
+            "duplicate_rows_removed_by_join_method": {},
+        }
+
+    def _selection_rank(row: dict[str, Any]) -> tuple[Any, ...]:
+        join_payload = row.get("join_metadata") if isinstance(row.get("join_metadata"), dict) else {}
+        evaluation_payload = row.get("evaluation") if isinstance(row.get("evaluation"), dict) else {}
+        feature_payload = row.get("feature") if isinstance(row.get("feature"), dict) else {}
+        outcome_payload = row.get("outcome") if isinstance(row.get("outcome"), dict) else {}
+        score = _safe_float(join_payload.get("join_confidence_score"))
+        distance = _safe_float(join_payload.get("join_distance_m"))
+        tier_rank = _join_confidence_tier_rank(str(join_payload.get("join_confidence_tier") or ""))
+        soft_flags = evaluation_payload.get("soft_filter_flags")
+        soft_flag_count = len(soft_flags) if isinstance(soft_flags, list) else 0
+        fallback_heavy = 1 if bool(evaluation_payload.get("fallback_heavy")) else 0
+        return (
+            -float(score) if score is not None else 1.0,
+            -int(tier_rank),
+            float(distance) if distance is not None else float("inf"),
+            int(soft_flag_count),
+            int(fallback_heavy),
+            str(join_payload.get("join_method") or ""),
+            str(feature_payload.get("feature_artifact_path") or ""),
+            str(feature_payload.get("record_id") or ""),
+            str(outcome_payload.get("record_id") or ""),
+        )
+
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for row in sorted(rows, key=_joined_row_sort_key):
+        property_event_id = str(row.get("property_event_id") or "").strip()
+        if not property_event_id:
+            event_payload = row.get("event") if isinstance(row.get("event"), dict) else {}
+            feature_payload = row.get("feature") if isinstance(row.get("feature"), dict) else {}
+            property_event_id = (
+                f"unknown::{event_payload.get('event_id') or 'unknown_event'}::"
+                f"{feature_payload.get('record_id') or feature_payload.get('source_record_id') or 'unknown_feature'}::"
+                f"{feature_payload.get('feature_artifact_path') or 'unknown_artifact'}"
+            )
+        grouped.setdefault(property_event_id, []).append(row)
+
+    kept_rows: list[dict[str, Any]] = []
+    removed_rows: list[dict[str, Any]] = []
+    duplicate_tier_counts: dict[str, int] = {}
+    duplicate_method_counts: dict[str, int] = {}
+    duplicate_ids: list[str] = []
+    for property_event_id in sorted(grouped.keys()):
+        candidates = grouped[property_event_id]
+        if len(candidates) <= 1:
+            kept_rows.extend(candidates)
+            continue
+        duplicate_ids.append(property_event_id)
+        ranked = sorted(candidates, key=_selection_rank)
+        best = ranked[0]
+        best_eval = best.get("evaluation") if isinstance(best.get("evaluation"), dict) else {}
+        best_eval = dict(best_eval)
+        best_eval["property_event_dedupe_applied"] = True
+        best_eval["property_event_duplicate_count_collapsed"] = max(0, len(candidates) - 1)
+        best["evaluation"] = best_eval
+        kept_rows.append(best)
+        for removed in ranked[1:]:
+            removed_meta = removed.get("join_metadata") if isinstance(removed.get("join_metadata"), dict) else {}
+            removed_tier = str(removed_meta.get("join_confidence_tier") or "unknown")
+            removed_method = str(removed_meta.get("join_method") or "unknown")
+            duplicate_tier_counts[removed_tier] = duplicate_tier_counts.get(removed_tier, 0) + 1
+            duplicate_method_counts[removed_method] = duplicate_method_counts.get(removed_method, 0) + 1
+            removed_rows.append(
+                {
+                    "feature_artifact_path": ((removed.get("feature") or {}).get("feature_artifact_path")),
+                    "record_id": ((removed.get("feature") or {}).get("record_id")),
+                    "event_id": ((removed.get("event") or {}).get("event_id")),
+                    "reason": "duplicate_property_event_id_collapsed",
+                    "property_event_id": property_event_id,
+                    "retained_feature_record_id": ((best.get("feature") or {}).get("record_id")),
+                    "retained_outcome_record_id": ((best.get("outcome") or {}).get("record_id")),
+                    "removed_outcome_record_id": ((removed.get("outcome") or {}).get("record_id")),
+                    "removed_join_confidence_tier": removed_tier,
+                    "removed_join_distance_m": _safe_float(removed_meta.get("join_distance_m")),
+                    "removed_join_confidence_score": _safe_float(removed_meta.get("join_confidence_score")),
+                    "removed_join_method": removed_method,
+                    "join_pass": str(removed_meta.get("join_pass") or ""),
+                }
+            )
+
+    kept_rows = sorted(kept_rows, key=_joined_row_sort_key)
+    before_count = len(rows)
+    after_count = len(kept_rows)
+    duplication_factor = round(float(before_count) / float(after_count), 4) if after_count > 0 else None
+    stats = {
+        "total_rows_before_property_event_dedupe": before_count,
+        "unique_property_event_id_count": after_count,
+        "duplicate_property_event_rows_removed_count": len(removed_rows),
+        "property_event_ids_with_duplicates_count": len(duplicate_ids),
+        "duplication_factor": duplication_factor,
+        "duplicate_property_event_ids_examples": duplicate_ids[:20],
+        "duplicate_rows_removed_by_join_confidence_tier": dict(sorted(duplicate_tier_counts.items())),
+        "duplicate_rows_removed_by_join_method": dict(sorted(duplicate_method_counts.items())),
+    }
+    return kept_rows, removed_rows, stats
 
 
 def _distance_sort_key(distance_m: float | None, outcome: OutcomeRecord) -> tuple[Any, ...]:
@@ -1547,6 +1690,10 @@ def _build_markdown_summary(
         f"- Feature rows loaded: `{quality.get('total_feature_rows_loaded')}`",
         f"- Feature rows by event: `{quality.get('feature_rows_by_event_counts')}`",
         f"- Joined rows: `{quality.get('total_joined_records')}`",
+        f"- Joined rows before property-event dedupe: `{quality.get('total_rows_before_property_event_dedupe')}`",
+        f"- Unique property_event_id count: `{quality.get('unique_property_event_id_count')}`",
+        f"- Duplicate property_event rows removed: `{quality.get('duplicate_property_event_rows_removed_count')}`",
+        f"- Duplication factor (before/unique): `{quality.get('duplication_factor')}`",
         f"- Filtered records: `{quality.get('filtered_records_count')}`",
         f"- Final dataset size: `{quality.get('final_dataset_size')}`",
         f"- Join rate: `{quality.get('join_rate')}`",
@@ -1572,6 +1719,8 @@ def _build_markdown_summary(
         f"- Duplicate matches prevented: `{quality.get('duplicate_outcome_match_prevented_count')}`",
         f"- Coordinate normalization summary: `{quality.get('coordinate_normalization_summary')}`",
         f"- Join tier examples: `{quality.get('join_confidence_tier_examples')}`",
+        f"- Duplicate rows removed by join tier: `{quality.get('duplicate_rows_removed_by_join_confidence_tier')}`",
+        f"- Duplicate rows removed by join method: `{quality.get('duplicate_rows_removed_by_join_method')}`",
         "",
         "## Coverage",
         f"- By event joined counts: `{quality.get('by_event_join_counts')}`",
@@ -1620,6 +1769,10 @@ def _build_filter_summary_markdown(
         f"- Candidate match attempts: `{filter_summary.get('candidate_match_attempt_count')}`",
         f"- Matched before post-join filters: `{filter_summary.get('matched_candidate_count_before_filters')}`",
         f"- Joined rows: `{filter_summary.get('joined_rows')}`",
+        f"- Joined rows before property-event dedupe: `{filter_summary.get('joined_rows_before_property_event_dedupe')}`",
+        f"- Unique property_event_id count: `{filter_summary.get('unique_property_event_id_count')}`",
+        f"- Duplicate property_event rows removed: `{filter_summary.get('duplicate_property_event_rows_removed_count')}`",
+        f"- Duplication factor (before/unique): `{filter_summary.get('duplication_factor')}`",
         f"- Filtered rows: `{filter_summary.get('filtered_rows_total')}`",
         "",
         "## Filter Reasons",
@@ -1664,7 +1817,11 @@ def _build_pipeline_audit_markdown(
         "## Join Pipeline",
         f"- Candidate match attempts: `{quality.get('candidate_match_attempt_count')}`",
         f"- Matched before post-join filtering: `{quality.get('matched_candidate_count_before_filters')}`",
+        f"- Joined rows before property-event dedupe: `{quality.get('total_rows_before_property_event_dedupe')}`",
         f"- Joined rows (final): `{quality.get('total_joined_records')}`",
+        f"- Unique property_event_id count: `{quality.get('unique_property_event_id_count')}`",
+        f"- Duplicate property_event rows removed: `{quality.get('duplicate_property_event_rows_removed_count')}`",
+        f"- Duplication factor (before/unique): `{quality.get('duplication_factor')}`",
         f"- Match rate: `{quality.get('match_rate_percent')}%`",
         f"- Join method counts: `{quality.get('join_method_counts')}`",
         f"- Join confidence tier counts: `{quality.get('join_confidence_tier_counts')}`",
@@ -1743,6 +1900,11 @@ def _build_join_quality_warnings(*, quality: dict[str, Any]) -> list[str]:
         warnings.append(
             "Minimum-retention fallback mode was triggered; lower-confidence joins were included to prevent near-zero dataset collapse."
         )
+    duplicate_removed = int(quality.get("duplicate_property_event_rows_removed_count") or 0)
+    if duplicate_removed > 0:
+        warnings.append(
+            "Property-event dedupe removed duplicate joined rows; inspect duplication metrics for source artifact overlap."
+        )
     return warnings
 
 
@@ -1777,6 +1939,10 @@ def _build_join_quality_report_markdown(
         f"- Generated at: `{generated_at}`",
         f"- Total outcomes: `{quality.get('total_outcomes_loaded')}`",
         f"- Matched records: `{quality.get('total_joined_records')}`",
+        f"- Matched records before property-event dedupe: `{quality.get('total_rows_before_property_event_dedupe')}`",
+        f"- Unique property_event_id count: `{quality.get('unique_property_event_id_count')}`",
+        f"- Duplicate property_event rows removed: `{quality.get('duplicate_property_event_rows_removed_count')}`",
+        f"- Duplication factor (before/unique): `{quality.get('duplication_factor')}`",
         f"- Match rate: `{quality.get('join_rate')}` (`{quality.get('match_rate_percent')}%`)",
         f"- Confidence-tier counts: `{tier_counts}`",
         f"- Non-high confidence reasons: `{quality.get('join_confidence_non_high_reason_counts')}`",
@@ -2277,28 +2443,77 @@ def build_public_outcome_evaluation_dataset(
         else:
             retention_fallback_summary["active_pass"] = "primary"
 
-    joined_rows = list(selected_pass["joined_rows"])
-    excluded_rows = list(selected_pass["excluded_rows"])
+    joined_rows_pre_property_event_dedupe = list(selected_pass["joined_rows"])
+    joined_rows, dedupe_removed_rows, property_event_dedupe_stats = _dedupe_joined_rows_by_property_event_id(
+        joined_rows_pre_property_event_dedupe
+    )
+    excluded_rows = list(selected_pass["excluded_rows"]) + dedupe_removed_rows
     leakage_warnings = list(selected_pass["leakage_warnings"])
-    join_method_counts = dict(selected_pass["join_method_counts"])
-    join_tier_counts = dict(selected_pass["join_tier_counts"])
-    match_tier_counts = dict(selected_pass["match_tier_counts"])
-    join_tier_distance_values = dict(selected_pass["join_tier_distance_values"])
-    join_tier_examples = dict(selected_pass["join_tier_examples"])
+    join_method_counts: dict[str, int] = {}
+    join_tier_counts: dict[str, int] = {}
+    match_tier_counts: dict[str, int] = {}
+    join_tier_distance_values: dict[str, list[float]] = {}
+    join_tier_examples: dict[str, list[dict[str, Any]]] = {}
     feature_coordinate_modes = dict(selected_pass["feature_coordinate_modes"])
     outcome_coordinate_modes = dict(selected_pass["outcome_coordinate_modes"])
     duplicate_outcome_match_prevented_count = int(selected_pass["duplicate_outcome_match_prevented_count"])
     candidate_match_attempt_count = int(selected_pass["candidate_match_attempt_count"])
     matched_candidate_count_before_filters = int(selected_pass["matched_candidate_count_before_filters"])
-    soft_flag_counts = dict(selected_pass["soft_flag_counts"])
-    non_high_reason_counts = dict(selected_pass["non_high_reason_counts"])
-    within_high_distance_threshold_count = int(selected_pass["within_high_distance_threshold_count"])
-    just_above_high_distance_threshold_count = int(selected_pass["just_above_high_distance_threshold_count"])
-    just_below_high_score_threshold_count = int(selected_pass["just_below_high_score_threshold_count"])
-    by_event_counts = dict(selected_pass["by_event_counts"])
-    by_label_counts = dict(selected_pass["by_label_counts"])
+    soft_flag_counts: dict[str, int] = {}
+    non_high_reason_counts: dict[str, int] = {}
+    within_high_distance_threshold_count = 0
+    just_above_high_distance_threshold_count = 0
+    just_below_high_score_threshold_count = 0
+    by_event_counts: dict[str, int] = {}
+    by_label_counts: dict[str, int] = {}
     unmatched_feature_rows_by_event_counts = dict(selected_pass["unmatched_feature_rows_by_event_counts"])
-    low_confidence_join_count = int(selected_pass["low_confidence_join_count"])
+    low_confidence_join_count = 0
+    for row in joined_rows:
+        join_meta = row.get("join_metadata") if isinstance(row.get("join_metadata"), dict) else {}
+        method = str(join_meta.get("join_method") or "unknown")
+        tier = str(join_meta.get("join_confidence_tier") or "low")
+        match_tier = str(join_meta.get("match_tier") or "unknown")
+        join_method_counts[method] = join_method_counts.get(method, 0) + 1
+        join_tier_counts[tier] = join_tier_counts.get(tier, 0) + 1
+        match_tier_counts[match_tier] = match_tier_counts.get(match_tier, 0) + 1
+        if tier == "low":
+            low_confidence_join_count += 1
+        distance_value = _safe_float(join_meta.get("join_distance_m"))
+        if distance_value is not None:
+            join_tier_distance_values.setdefault(tier, []).append(float(distance_value))
+            if float(distance_value) <= float(join_config.high_confidence_distance_m):
+                within_high_distance_threshold_count += 1
+        debug_payload = join_meta.get("join_confidence_debug") if isinstance(join_meta.get("join_confidence_debug"), dict) else {}
+        if bool(debug_payload.get("near_high_distance_threshold")):
+            just_above_high_distance_threshold_count += 1
+        if bool(debug_payload.get("just_below_high_score_threshold")):
+            just_below_high_score_threshold_count += 1
+        non_high_codes = (
+            debug_payload.get("non_high_reason_codes")
+            if isinstance(debug_payload.get("non_high_reason_codes"), list)
+            else []
+        )
+        for reason in non_high_codes:
+            token = str(reason)
+            non_high_reason_counts[token] = non_high_reason_counts.get(token, 0) + 1
+        examples = join_tier_examples.setdefault(tier, [])
+        if len(examples) < 3:
+            examples.append(
+                {
+                    "feature_record_id": (row.get("feature") or {}).get("record_id"),
+                    "outcome_record_id": (row.get("outcome") or {}).get("record_id"),
+                    "event_id": (row.get("event") or {}).get("event_id"),
+                    "join_method": method,
+                    "join_distance_m": (round(float(distance_value), 2) if distance_value is not None else None),
+                    "address_text": (row.get("feature") or {}).get("address_text") or (row.get("outcome") or {}).get("address_text"),
+                }
+            )
+        for flag in ((row.get("evaluation") or {}).get("soft_filter_flags") or []):
+            soft_flag_counts[str(flag)] = soft_flag_counts.get(str(flag), 0) + 1
+        event_key = str((row.get("event") or {}).get("event_id") or "unknown_event")
+        by_event_counts[event_key] = by_event_counts.get(event_key, 0) + 1
+        label_key = str((row.get("outcome") or {}).get("damage_label") or "unknown")
+        by_label_counts[label_key] = by_label_counts.get(label_key, 0) + 1
     join_rate = round(len(joined_rows) / float(len(feature_rows)), 4) if feature_rows else 0.0
     join_distances = [
         float((row.get("join_metadata") or {}).get("join_distance_m"))
@@ -2392,6 +2607,32 @@ def build_public_outcome_evaluation_dataset(
         "matched_candidate_count_before_filters": matched_candidate_count_before_filters,
         "feature_rows_by_event_counts": dict(sorted(feature_rows_by_event_counts.items())),
         "feature_rows_by_year_counts": dict(sorted(feature_rows_by_year_counts.items())),
+        "total_rows_before_property_event_dedupe": int(
+            property_event_dedupe_stats.get("total_rows_before_property_event_dedupe") or 0
+        ),
+        "unique_property_event_id_count": int(property_event_dedupe_stats.get("unique_property_event_id_count") or 0),
+        "duplicate_property_event_rows_removed_count": int(
+            property_event_dedupe_stats.get("duplicate_property_event_rows_removed_count") or 0
+        ),
+        "property_event_ids_with_duplicates_count": int(
+            property_event_dedupe_stats.get("property_event_ids_with_duplicates_count") or 0
+        ),
+        "duplication_factor": property_event_dedupe_stats.get("duplication_factor"),
+        "duplicate_property_event_ids_examples": (
+            property_event_dedupe_stats.get("duplicate_property_event_ids_examples")
+            if isinstance(property_event_dedupe_stats.get("duplicate_property_event_ids_examples"), list)
+            else []
+        ),
+        "duplicate_rows_removed_by_join_confidence_tier": (
+            property_event_dedupe_stats.get("duplicate_rows_removed_by_join_confidence_tier")
+            if isinstance(property_event_dedupe_stats.get("duplicate_rows_removed_by_join_confidence_tier"), dict)
+            else {}
+        ),
+        "duplicate_rows_removed_by_join_method": (
+            property_event_dedupe_stats.get("duplicate_rows_removed_by_join_method")
+            if isinstance(property_event_dedupe_stats.get("duplicate_rows_removed_by_join_method"), dict)
+            else {}
+        ),
         "total_joined_records": len(joined_rows),
         "join_rate": join_rate,
         "match_rate_percent": round(join_rate * 100.0, 2),
@@ -2503,6 +2744,14 @@ def build_public_outcome_evaluation_dataset(
         "candidate_match_attempt_count": candidate_match_attempt_count,
         "matched_candidate_count_before_filters": matched_candidate_count_before_filters,
         "joined_rows": len(joined_rows),
+        "joined_rows_before_property_event_dedupe": int(
+            property_event_dedupe_stats.get("total_rows_before_property_event_dedupe") or 0
+        ),
+        "unique_property_event_id_count": int(property_event_dedupe_stats.get("unique_property_event_id_count") or 0),
+        "duplicate_property_event_rows_removed_count": int(
+            property_event_dedupe_stats.get("duplicate_property_event_rows_removed_count") or 0
+        ),
+        "duplication_factor": property_event_dedupe_stats.get("duplication_factor"),
         "filtered_rows_total": total_filtered_rows,
         "filter_reason_counts": dict(sorted(filter_reason_counts.items())),
         "filter_reason_percentages": dict(sorted(filter_reason_percentages.items())),
@@ -2673,6 +2922,14 @@ def build_public_outcome_evaluation_dataset(
             "outcomes_loaded": len(outcomes),
             "feature_rows_loaded": len(feature_rows),
             "joined_records": len(joined_rows),
+            "rows_before_property_event_dedupe": int(
+                property_event_dedupe_stats.get("total_rows_before_property_event_dedupe") or 0
+            ),
+            "unique_property_event_id_count": int(property_event_dedupe_stats.get("unique_property_event_id_count") or 0),
+            "duplicate_property_event_rows_removed_count": int(
+                property_event_dedupe_stats.get("duplicate_property_event_rows_removed_count") or 0
+            ),
+            "duplication_factor": property_event_dedupe_stats.get("duplication_factor"),
             "join_rate": join_rate,
             "excluded_rows": len(excluded_rows),
             "low_confidence_join_count": low_confidence_join_count,
@@ -2703,6 +2960,14 @@ def build_public_outcome_evaluation_dataset(
             str(pipeline_audit_report_path) if pipeline_audit_report_path is not None else None
         ),
         "joined_record_count": len(joined_rows),
+        "rows_before_property_event_dedupe": int(
+            property_event_dedupe_stats.get("total_rows_before_property_event_dedupe") or 0
+        ),
+        "unique_property_event_id_count": int(property_event_dedupe_stats.get("unique_property_event_id_count") or 0),
+        "duplicate_property_event_rows_removed_count": int(
+            property_event_dedupe_stats.get("duplicate_property_event_rows_removed_count") or 0
+        ),
+        "duplication_factor": property_event_dedupe_stats.get("duplication_factor"),
         "excluded_row_count": len(excluded_rows),
     }
 
@@ -3015,8 +3280,15 @@ def main() -> int:
         f"[public-eval-ds] Stage counts: "
         f"candidate_attempts={join_report.get('candidate_match_attempt_count')} "
         f"matched_before_filters={join_report.get('matched_candidate_count_before_filters')} "
+        f"joined_before_property_event_dedupe={join_report.get('total_rows_before_property_event_dedupe')} "
         f"filtered={join_report.get('filtered_records_count')} "
         f"final_dataset_size={join_report.get('final_dataset_size')}"
+    )
+    print(
+        "[public-eval-ds] Property-event dedupe: "
+        f"unique_property_event_id={join_report.get('unique_property_event_id_count')} "
+        f"duplicate_rows_removed={join_report.get('duplicate_property_event_rows_removed_count')} "
+        f"duplication_factor={join_report.get('duplication_factor')}"
     )
     filter_summary = join_report.get("filter_summary") if isinstance(join_report.get("filter_summary"), dict) else {}
     if filter_summary:
