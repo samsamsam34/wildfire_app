@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Tuple
 
@@ -1055,7 +1056,14 @@ class RiskEngine:
 
         ring_cfg = self.config.vulnerability_ring_penalties or {}
 
-        def _penalty(zone_key: str, value: float | None, default_threshold: float, default_slope: float) -> float:
+        def _penalty(
+            zone_key: str,
+            value: float | None,
+            default_threshold: float,
+            default_slope: float,
+            *,
+            default_nonlinear_boost: float = 0.0,
+        ) -> float:
             if value is None:
                 return 0.0
             zone_params = ring_cfg.get(zone_key) if isinstance(ring_cfg.get(zone_key), dict) else {}
@@ -1067,25 +1075,38 @@ class RiskEngine:
                 slope = float(zone_params.get("slope", default_slope))
             except (TypeError, ValueError, AttributeError):
                 slope = default_slope
-            return max(0.0, (value - threshold) * slope)
+            try:
+                nonlinear_boost = float(zone_params.get("nonlinear_boost", default_nonlinear_boost))
+            except (TypeError, ValueError, AttributeError):
+                nonlinear_boost = default_nonlinear_boost
+            excess = max(0.0, value - threshold)
+            if excess <= 0.0:
+                return 0.0
+            baseline = excess * slope
+            nonlinear_scale = 1.0 + (max(0.0, nonlinear_boost) * min(1.25, excess / 28.0))
+            return baseline * nonlinear_scale
 
         ring_penalty = 0.0
-        ring_penalty += _penalty("zone_0_5_ft", zone_0_5, 45.0, 0.38)
-        ring_penalty += _penalty("zone_5_30_ft", zone_5_30, 55.0, 0.20)
+        ring_penalty += _penalty("zone_0_5_ft", zone_0_5, 42.0, 0.46, default_nonlinear_boost=0.60)
+        ring_penalty += _penalty("zone_5_30_ft", zone_5_30, 52.0, 0.27, default_nonlinear_boost=0.35)
         ring_penalty += _penalty("zone_30_100_ft", zone_30_100, 63.0, 0.10)
         ring_penalty += _penalty("zone_100_300_ft", zone_100_300, 70.0, 0.05)
 
         # Piecewise surcharges keep the near-home vegetation effect monotonic
         # and meaningful without allowing unbounded score jumps.
         if zone_0_5 is not None:
-            if zone_0_5 >= 80.0:
-                ring_penalty += 6.0
+            if zone_0_5 >= 85.0:
+                ring_penalty += 9.0
+            elif zone_0_5 >= 75.0:
+                ring_penalty += 6.5
             elif zone_0_5 >= 65.0:
-                ring_penalty += 4.0
+                ring_penalty += 4.5
             elif zone_0_5 >= 50.0:
-                ring_penalty += 2.0
+                ring_penalty += 2.5
         if zone_5_30 is not None:
-            if zone_5_30 >= 85.0:
+            if zone_5_30 >= 88.0:
+                ring_penalty += 4.5
+            elif zone_5_30 >= 76.0:
                 ring_penalty += 3.0
             elif zone_5_30 >= 70.0:
                 ring_penalty += 2.0
@@ -1107,13 +1128,35 @@ class RiskEngine:
             watch_penalty = float(distance_cfg.get("watch_penalty", 4.0))
         except (TypeError, ValueError, AttributeError):
             watch_penalty = 4.0
+        try:
+            ultra_critical_max_ft = float(distance_cfg.get("ultra_critical_max_ft", 2.0))
+        except (TypeError, ValueError, AttributeError):
+            ultra_critical_max_ft = 2.0
+        try:
+            ultra_critical_penalty = float(distance_cfg.get("ultra_critical_penalty", 13.0))
+        except (TypeError, ValueError, AttributeError):
+            ultra_critical_penalty = 13.0
         if nearest_vegetation_distance_ft is not None:
-            if nearest_vegetation_distance_ft <= critical_max_ft:
+            if nearest_vegetation_distance_ft <= ultra_critical_max_ft:
+                ring_penalty += ultra_critical_penalty
+            elif nearest_vegetation_distance_ft <= critical_max_ft:
                 ring_penalty += critical_penalty
             elif nearest_vegetation_distance_ft <= watch_max_ft:
                 ring_penalty += watch_penalty
 
-        return round(max(0.0, min(100.0, base + ring_penalty)), 1)
+        clearance_credit = 0.0
+        if zone_0_5 is not None and zone_0_5 < 40.0:
+            margin = max(0.0, 40.0 - zone_0_5)
+            clearance_credit += 4.2 * (1.0 - math.exp(-margin / 11.0))
+        if zone_5_30 is not None and zone_5_30 < 50.0:
+            margin = max(0.0, 50.0 - zone_5_30)
+            clearance_credit += 2.3 * (1.0 - math.exp(-margin / 16.0))
+        if nearest_vegetation_distance_ft is not None and nearest_vegetation_distance_ft > watch_max_ft:
+            extra_clearance = max(0.0, nearest_vegetation_distance_ft - watch_max_ft)
+            clearance_credit += 1.9 * (1.0 - math.exp(-extra_clearance / 20.0))
+        clearance_credit = min(clearance_credit, 6.0)
+
+        return round(max(0.0, min(100.0, base + ring_penalty - clearance_credit)), 1)
 
     def compute_blended_wildfire_score(
         self,

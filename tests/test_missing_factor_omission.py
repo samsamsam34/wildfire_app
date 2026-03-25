@@ -282,3 +282,99 @@ def test_blended_score_dampens_when_hardening_is_strong():
         risk=weak_risk,
     )
     assert strong_blended + 1.0 < weak_blended
+
+
+def test_home_vulnerability_weights_0_5_ft_more_than_5_30_ft():
+    engine = RiskEngine(load_scoring_config())
+    attrs = PropertyAttributes(roof_type="class a", vent_type="ember-resistant", defensible_space_ft=22.0)
+
+    base_context = _context(
+        ring_metrics={
+            "ring_0_5_ft": {"vegetation_density": 28.0},
+            "ring_5_30_ft": {"vegetation_density": 34.0},
+            "ring_30_100_ft": {"vegetation_density": 45.0},
+        }
+    )
+    high_0_5_context = _context(
+        ring_metrics={
+            "ring_0_5_ft": {"vegetation_density": 82.0},
+            "ring_5_30_ft": {"vegetation_density": 34.0},
+            "ring_30_100_ft": {"vegetation_density": 45.0},
+        }
+    )
+    high_5_30_context = _context(
+        ring_metrics={
+            "ring_0_5_ft": {"vegetation_density": 28.0},
+            "ring_5_30_ft": {"vegetation_density": 82.0},
+            "ring_30_100_ft": {"vegetation_density": 45.0},
+        }
+    )
+
+    base_home = engine.compute_home_ignition_vulnerability_score(engine.score(attrs, lat=0.0, lon=0.0, context=base_context))
+    high_0_5_home = engine.compute_home_ignition_vulnerability_score(
+        engine.score(attrs, lat=0.0, lon=0.0, context=high_0_5_context)
+    )
+    high_5_30_home = engine.compute_home_ignition_vulnerability_score(
+        engine.score(attrs, lat=0.0, lon=0.0, context=high_5_30_context)
+    )
+
+    delta_0_5 = high_0_5_home - base_home
+    delta_5_30 = high_5_30_home - base_home
+    assert delta_0_5 > delta_5_30 + 1.5
+
+
+def test_home_vulnerability_sharp_increase_when_vegetation_is_very_close():
+    engine = RiskEngine(load_scoring_config())
+    attrs = PropertyAttributes(roof_type="class a", vent_type="ember-resistant", defensible_space_ft=22.0)
+    ring_metrics = {
+        "ring_0_5_ft": {"vegetation_density": 55.0},
+        "ring_5_30_ft": {"vegetation_density": 60.0},
+        "ring_30_100_ft": {"vegetation_density": 48.0},
+    }
+    far_context = _context(ring_metrics=ring_metrics)
+    near_context = _context(ring_metrics=ring_metrics)
+    far_context.property_level_context["nearest_vegetation_distance_ft"] = 12.0
+    near_context.property_level_context["nearest_vegetation_distance_ft"] = 1.5
+
+    far_home = engine.compute_home_ignition_vulnerability_score(engine.score(attrs, lat=0.0, lon=0.0, context=far_context))
+    near_home = engine.compute_home_ignition_vulnerability_score(engine.score(attrs, lat=0.0, lon=0.0, context=near_context))
+    assert near_home > far_home + 4.0
+
+
+def test_home_vulnerability_clearing_has_diminishing_returns():
+    engine = RiskEngine(load_scoring_config())
+    attrs = PropertyAttributes(roof_type="class a", vent_type="ember-resistant", defensible_space_ft=25.0)
+
+    high_context = _context(
+        ring_metrics={
+            "ring_0_5_ft": {"vegetation_density": 88.0},
+            "ring_5_30_ft": {"vegetation_density": 82.0},
+            "ring_30_100_ft": {"vegetation_density": 58.0},
+        }
+    )
+    medium_context = _context(
+        ring_metrics={
+            "ring_0_5_ft": {"vegetation_density": 44.0},
+            "ring_5_30_ft": {"vegetation_density": 54.0},
+            "ring_30_100_ft": {"vegetation_density": 58.0},
+        }
+    )
+    low_context = _context(
+        ring_metrics={
+            "ring_0_5_ft": {"vegetation_density": 12.0},
+            "ring_5_30_ft": {"vegetation_density": 22.0},
+            "ring_30_100_ft": {"vegetation_density": 58.0},
+        }
+    )
+    high_context.property_level_context["nearest_vegetation_distance_ft"] = 2.0
+    medium_context.property_level_context["nearest_vegetation_distance_ft"] = 8.0
+    low_context.property_level_context["nearest_vegetation_distance_ft"] = 24.0
+
+    high_home = engine.compute_home_ignition_vulnerability_score(engine.score(attrs, lat=0.0, lon=0.0, context=high_context))
+    medium_home = engine.compute_home_ignition_vulnerability_score(engine.score(attrs, lat=0.0, lon=0.0, context=medium_context))
+    low_home = engine.compute_home_ignition_vulnerability_score(engine.score(attrs, lat=0.0, lon=0.0, context=low_context))
+
+    first_clear_delta = high_home - medium_home
+    extra_clear_delta = medium_home - low_home
+    assert high_home > medium_home > low_home
+    assert first_clear_delta > extra_clear_delta + 1.0

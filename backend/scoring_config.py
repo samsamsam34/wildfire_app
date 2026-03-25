@@ -34,10 +34,12 @@ class ScoringConfig:
     )
     vulnerability_ring_penalties: Dict[str, Dict[str, float]] = field(
         default_factory=lambda: {
-            "zone_0_5_ft": {"threshold": 45.0, "slope": 0.38},
-            "zone_5_30_ft": {"threshold": 55.0, "slope": 0.20},
+            "zone_0_5_ft": {"threshold": 42.0, "slope": 0.46, "nonlinear_boost": 0.60},
+            "zone_5_30_ft": {"threshold": 52.0, "slope": 0.27, "nonlinear_boost": 0.35},
             "zone_30_100_ft": {"threshold": 63.0, "slope": 0.10},
             "nearest_vegetation_distance_ft": {
+                "ultra_critical_max_ft": 2.0,
+                "ultra_critical_penalty": 13.0,
                 "critical_max_ft": 5.0,
                 "watch_max_ft": 15.0,
                 "critical_penalty": 8.0,
