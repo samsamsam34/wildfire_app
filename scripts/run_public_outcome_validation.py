@@ -152,6 +152,21 @@ def _dataset_join_stage_counts(dataset_path: Path) -> dict[str, Any]:
         "joined_rows": int(payload.get("total_joined_records") or 0),
         "join_rate": payload.get("join_rate"),
         "excluded_rows": int(payload.get("excluded_row_count") or 0),
+        "join_confidence_tier_counts": (
+            payload.get("join_confidence_tier_counts")
+            if isinstance(payload.get("join_confidence_tier_counts"), dict)
+            else {}
+        ),
+        "join_confidence_non_high_reason_counts": (
+            payload.get("join_confidence_non_high_reason_counts")
+            if isinstance(payload.get("join_confidence_non_high_reason_counts"), dict)
+            else {}
+        ),
+        "high_confidence_threshold_diagnostics": (
+            payload.get("high_confidence_threshold_diagnostics")
+            if isinstance(payload.get("high_confidence_threshold_diagnostics"), dict)
+            else {}
+        ),
         "score_backfill": payload.get("score_backfill") if isinstance(payload.get("score_backfill"), dict) else {},
         "retention_fallback": payload.get("retention_fallback") if isinstance(payload.get("retention_fallback"), dict) else {},
         "retention_fallback_triggered": bool(payload.get("retention_fallback_triggered")),
@@ -823,6 +838,18 @@ def run_public_outcome_validation(
             f"excluded={join_stage_counts.get('excluded_rows')} "
             f"join_rate={join_stage_counts.get('join_rate')}"
         )
+        print(
+            "[public-validation] Join confidence tiers: "
+            f"{join_stage_counts.get('join_confidence_tier_counts')}"
+        )
+        print(
+            "[public-validation] Join non-high reasons: "
+            f"{join_stage_counts.get('join_confidence_non_high_reason_counts')}"
+        )
+        print(
+            "[public-validation] Join threshold diagnostics: "
+            f"{join_stage_counts.get('high_confidence_threshold_diagnostics')}"
+        )
         score_backfill = join_stage_counts.get("score_backfill")
         if isinstance(score_backfill, dict) and score_backfill:
             print(
@@ -881,6 +908,21 @@ def run_public_outcome_validation(
             "feature_rows_loaded": int(join_stage_counts.get("feature_rows_loaded") or 0),
             "joined_rows": int(join_stage_counts.get("joined_rows") or 0),
             "join_excluded_rows": int(join_stage_counts.get("excluded_rows") or 0),
+            "join_confidence_tier_counts": (
+                join_stage_counts.get("join_confidence_tier_counts")
+                if isinstance(join_stage_counts.get("join_confidence_tier_counts"), dict)
+                else {}
+            ),
+            "join_confidence_non_high_reason_counts": (
+                join_stage_counts.get("join_confidence_non_high_reason_counts")
+                if isinstance(join_stage_counts.get("join_confidence_non_high_reason_counts"), dict)
+                else {}
+            ),
+            "high_confidence_threshold_diagnostics": (
+                join_stage_counts.get("high_confidence_threshold_diagnostics")
+                if isinstance(join_stage_counts.get("high_confidence_threshold_diagnostics"), dict)
+                else {}
+            ),
             "retention_fallback_triggered": bool(join_stage_counts.get("retention_fallback_triggered")),
             "retention_fallback_used": bool(join_stage_counts.get("retention_fallback_used")),
             "retention_fallback": (

@@ -19,6 +19,10 @@ if str(REPO_ROOT) not in sys.path:
 SCHEMA_VERSION = "1.3.0"
 WGS84_COORD_DECIMALS = 6
 DISTANCE_TIEBREAK_DECIMALS = 6
+DEFAULT_HIGH_CONFIDENCE_DISTANCE_M = 30.0
+HIGH_CONFIDENCE_DISTANCE_NEAR_MISS_MARGIN_M = 10.0
+HIGH_CONFIDENCE_SCORE_THRESHOLD = 0.9
+HIGH_CONFIDENCE_SCORE_NEAR_MISS_MARGIN = 0.05
 LEAKAGE_TOKENS = (
     "outcome",
     "damage",
@@ -65,7 +69,7 @@ class JoinConfig:
     max_distance_m: float = 120.0
     global_max_distance_m: float = 1000.0
     buffer_match_radius_m: float = 80.0
-    high_confidence_distance_m: float = 20.0
+    high_confidence_distance_m: float = DEFAULT_HIGH_CONFIDENCE_DISTANCE_M
     medium_confidence_distance_m: float = 100.0
     event_year_tolerance_years: int = 1
     enable_global_nearest_fallback: bool = True
@@ -525,7 +529,7 @@ def _pick_nearest(feature: FeatureRecord, candidates: list[OutcomeRecord]) -> tu
 
 
 def _assess_join_tier(score: float) -> str:
-    if score >= 0.9:
+    if score >= HIGH_CONFIDENCE_SCORE_THRESHOLD:
         return "high"
     if score >= 0.7:
         return "moderate"
@@ -571,6 +575,7 @@ def _join_tier_from_score_and_distance(
     high_confidence_distance_m: float,
     medium_confidence_distance_m: float,
     max_allowed_tier: str = "high",
+    prefer_score_for_high: bool = False,
 ) -> str:
     by_score = _assess_join_tier(float(score))
     by_distance = _distance_join_tier(
@@ -578,10 +583,76 @@ def _join_tier_from_score_and_distance(
         high_confidence_distance_m=high_confidence_distance_m,
         medium_confidence_distance_m=medium_confidence_distance_m,
     )
-    # When distance is available, enforce explicit distance-based tiers.
-    resolved_rank = _tier_rank(by_distance) if distance_m is not None else _tier_rank(by_score)
+    if distance_m is not None and prefer_score_for_high:
+        resolved_rank = max(_tier_rank(by_score), _tier_rank(by_distance))
+    else:
+        # Default path keeps distance-led tiers where distance is known.
+        resolved_rank = _tier_rank(by_distance) if distance_m is not None else _tier_rank(by_score)
     capped_rank = min(resolved_rank, _tier_rank(max_allowed_tier))
     return _tier_name(capped_rank)
+
+
+def _join_max_allowed_tier_for_method(method: str) -> str:
+    normalized = str(method or "").strip().lower()
+    if normalized in {"nearest_global_coordinates", "unmatched"}:
+        return "low"
+    if normalized in {"nearest_event_name_coordinates_tolerant_year", "approx_global_address_token_overlap"}:
+        return "moderate"
+    return "high"
+
+
+def _build_join_confidence_debug(
+    *,
+    score: float,
+    distance_m: float | None,
+    high_confidence_distance_m: float,
+    medium_confidence_distance_m: float,
+    max_allowed_tier: str,
+    resolved_tier: str,
+) -> dict[str, Any]:
+    by_score = _assess_join_tier(float(score))
+    by_distance = _distance_join_tier(
+        distance_m=distance_m,
+        high_confidence_distance_m=high_confidence_distance_m,
+        medium_confidence_distance_m=medium_confidence_distance_m,
+    )
+    reasons: list[str] = []
+    if str(resolved_tier or "").strip().lower() != "high":
+        if distance_m is None:
+            reasons.append("distance_missing")
+        else:
+            if float(distance_m) > float(high_confidence_distance_m):
+                if float(distance_m) <= float(medium_confidence_distance_m):
+                    reasons.append("distance_between_high_and_medium_threshold")
+                else:
+                    reasons.append("distance_above_medium_threshold")
+        if float(score) < float(HIGH_CONFIDENCE_SCORE_THRESHOLD):
+            reasons.append("score_below_high_threshold")
+        if _tier_rank(max_allowed_tier) < _tier_rank("high"):
+            reasons.append("max_allowed_tier_cap")
+    near_high_distance = (
+        distance_m is not None
+        and float(distance_m) > float(high_confidence_distance_m)
+        and float(distance_m) <= float(high_confidence_distance_m + HIGH_CONFIDENCE_DISTANCE_NEAR_MISS_MARGIN_M)
+    )
+    just_below_high_score = (
+        float(score) < float(HIGH_CONFIDENCE_SCORE_THRESHOLD)
+        and float(score) >= float(HIGH_CONFIDENCE_SCORE_THRESHOLD - HIGH_CONFIDENCE_SCORE_NEAR_MISS_MARGIN)
+    )
+    return {
+        "score": round(float(score), 4),
+        "distance_m": (round(float(distance_m), 3) if distance_m is not None else None),
+        "high_confidence_distance_threshold_m": float(high_confidence_distance_m),
+        "medium_confidence_distance_threshold_m": float(medium_confidence_distance_m),
+        "high_confidence_score_threshold": float(HIGH_CONFIDENCE_SCORE_THRESHOLD),
+        "by_score_tier": by_score,
+        "by_distance_tier": by_distance,
+        "max_allowed_tier": str(max_allowed_tier),
+        "resolved_tier": str(resolved_tier),
+        "near_high_distance_threshold": bool(near_high_distance),
+        "just_below_high_score_threshold": bool(just_below_high_score),
+        "non_high_reason_codes": sorted(set(reasons)),
+    }
 
 
 def _derive_row_confidence_tier(
@@ -707,6 +778,7 @@ def _choose_outcome(
                 "join_confidence_score": 0.98,
                 "join_confidence_tier": "high",
                 "join_distance_m": 0.0,
+                "join_confidence_max_allowed_tier": "high",
                 "match_tier": "exact",
             }
 
@@ -729,8 +801,10 @@ def _choose_outcome(
                     high_confidence_distance_m=join_config.high_confidence_distance_m,
                     medium_confidence_distance_m=join_config.medium_confidence_distance_m,
                     max_allowed_tier="high",
+                    prefer_score_for_high=True,
                 ),
                 "join_distance_m": distance_m,
+                "join_confidence_max_allowed_tier": "high",
                 "match_tier": "exact",
             }
 
@@ -747,6 +821,7 @@ def _choose_outcome(
                 "join_confidence_score": 0.96,
                 "join_confidence_tier": "high",
                 "join_distance_m": _haversine_m(feature.latitude, feature.longitude, chosen.latitude, chosen.longitude),
+                "join_confidence_max_allowed_tier": "high",
                 "match_tier": "exact",
             }
 
@@ -763,6 +838,7 @@ def _choose_outcome(
                 "join_confidence_score": 0.90,
                 "join_confidence_tier": "high",
                 "join_distance_m": _haversine_m(feature.latitude, feature.longitude, chosen.latitude, chosen.longitude),
+                "join_confidence_max_allowed_tier": "high",
                 "match_tier": "exact",
             }
 
@@ -796,6 +872,7 @@ def _choose_outcome(
                     max_allowed_tier="high",
                 ),
                 "join_distance_m": distance_m,
+                "join_confidence_max_allowed_tier": "high",
                 "address_overlap_ratio": round(best_overlap, 4),
                 "match_tier": "near",
             }
@@ -818,6 +895,7 @@ def _choose_outcome(
                 "join_confidence_score": 0.94,
                 "join_confidence_tier": "high",
                 "join_distance_m": round(distance_m, 2),
+                "join_confidence_max_allowed_tier": "high",
                 "match_tier": "exact",
                 "radius_candidate_count": candidate_count,
             }
@@ -858,6 +936,7 @@ def _choose_outcome(
                     max_allowed_tier="high",
                 ),
                 "join_distance_m": round(distance_m, 2),
+                "join_confidence_max_allowed_tier": "high",
                 "match_tier": match_tier if match_tier != "outside" else "near",
                 "buffer_radius_m": round(buffer_radius, 2),
                 "buffer_candidate_count": candidate_count,
@@ -904,6 +983,7 @@ def _choose_outcome(
                     max_allowed_tier="high",
                 ),
                 "join_distance_m": round(distance_m, 2),
+                "join_confidence_max_allowed_tier": "high",
                 "match_tier": distance_tier,
             }
 
@@ -941,6 +1021,7 @@ def _choose_outcome(
                     max_allowed_tier="moderate",
                 ),
                 "join_distance_m": round(distance_m, 2),
+                "join_confidence_max_allowed_tier": "moderate",
                 "match_tier": distance_tier if distance_tier != "outside" else "extended",
             }
 
@@ -971,6 +1052,7 @@ def _choose_outcome(
                     max_allowed_tier="moderate",
                 ),
                 "join_distance_m": distance_m,
+                "join_confidence_max_allowed_tier": "moderate",
                 "address_overlap_ratio": round(best_overlap, 4),
                 "match_tier": "fallback",
             }
@@ -998,6 +1080,7 @@ def _choose_outcome(
                     max_allowed_tier="low",
                 ),
                 "join_distance_m": round(distance_m, 2),
+                "join_confidence_max_allowed_tier": "low",
                 "match_tier": "fallback",
             }
     return None, {
@@ -1005,6 +1088,7 @@ def _choose_outcome(
         "join_confidence_score": 0.0,
         "join_confidence_tier": "low",
         "join_distance_m": None,
+        "join_confidence_max_allowed_tier": "low",
         "match_tier": "none",
         "unmatched_reason": (
             "no_unused_outcome_match_within_constraints"
@@ -1426,6 +1510,8 @@ def _build_markdown_summary(
         f"- Join confidence score stats: `{quality.get('join_confidence_score_stats')}`",
         f"- Join confidence distance stats by tier: `{quality.get('join_confidence_tier_distance_stats')}`",
         f"- Retention fallback: `{quality.get('retention_fallback')}`",
+        f"- Non-high confidence reason counts: `{quality.get('join_confidence_non_high_reason_counts')}`",
+        f"- High-confidence threshold diagnostics: `{quality.get('high_confidence_threshold_diagnostics')}`",
         f"- Average join distance (m): `{quality.get('average_join_distance_m')}`",
         f"- Median join distance (m): `{quality.get('median_join_distance_m')}`",
         f"- Distance percentiles (m): `{quality.get('distance_percentiles_m')}`",
@@ -1569,6 +1655,8 @@ def _build_join_quality_report_markdown(
         f"- Matched records: `{quality.get('total_joined_records')}`",
         f"- Match rate: `{quality.get('join_rate')}` (`{quality.get('match_rate_percent')}%`)",
         f"- Confidence-tier counts: `{tier_counts}`",
+        f"- Non-high confidence reasons: `{quality.get('join_confidence_non_high_reason_counts')}`",
+        f"- High-confidence threshold diagnostics: `{quality.get('high_confidence_threshold_diagnostics')}`",
         "",
         "## Distance Analysis",
         f"- Min distance (m): `{quality.get('min_join_distance_m')}`",
@@ -1611,7 +1699,7 @@ def build_public_outcome_evaluation_dataset(
     max_distance_m: float = 120.0,
     global_max_distance_m: float | None = 1000.0,
     buffer_match_radius_m: float = 80.0,
-    high_confidence_distance_m: float = 20.0,
+    high_confidence_distance_m: float = DEFAULT_HIGH_CONFIDENCE_DISTANCE_M,
     medium_confidence_distance_m: float = 100.0,
     event_year_tolerance_years: int = 1,
     enable_global_nearest_fallback: bool = True,
@@ -1694,6 +1782,10 @@ def build_public_outcome_evaluation_dataset(
         candidate_match_attempt_count_pass = 0
         matched_candidate_count_before_filters_pass = 0
         soft_flag_counts_pass: dict[str, int] = {}
+        non_high_reason_counts_pass: dict[str, int] = {}
+        within_high_distance_threshold_count_pass = 0
+        just_above_high_distance_threshold_count_pass = 0
+        just_below_high_score_threshold_count_pass = 0
         used_outcome_keys_pass: set[str] = set()
         by_event_counts_pass: dict[str, int] = {}
         by_label_counts_pass: dict[str, int] = {}
@@ -1752,6 +1844,28 @@ def build_public_outcome_evaluation_dataset(
             match_tier = str(join_meta.get("match_tier") or "unknown")
             match_tier_counts_pass[match_tier] = match_tier_counts_pass.get(match_tier, 0) + 1
             join_distance_value = _safe_float(join_meta.get("join_distance_m"))
+            join_score_value = _safe_float(join_meta.get("join_confidence_score")) or 0.0
+            max_allowed_tier = str(join_meta.get("join_confidence_max_allowed_tier") or _join_max_allowed_tier_for_method(method))
+            join_confidence_debug = _build_join_confidence_debug(
+                score=join_score_value,
+                distance_m=join_distance_value,
+                high_confidence_distance_m=pass_join_config.high_confidence_distance_m,
+                medium_confidence_distance_m=pass_join_config.medium_confidence_distance_m,
+                max_allowed_tier=max_allowed_tier,
+                resolved_tier=tier,
+            )
+            join_meta["join_confidence_max_allowed_tier"] = max_allowed_tier
+            join_meta["join_confidence_debug"] = join_confidence_debug
+            join_meta["join_confidence_non_high_reason_codes"] = list(join_confidence_debug.get("non_high_reason_codes") or [])
+            if bool(join_confidence_debug.get("near_high_distance_threshold")):
+                just_above_high_distance_threshold_count_pass += 1
+            if bool(join_confidence_debug.get("just_below_high_score_threshold")):
+                just_below_high_score_threshold_count_pass += 1
+            if join_distance_value is not None and float(join_distance_value) <= float(pass_join_config.high_confidence_distance_m):
+                within_high_distance_threshold_count_pass += 1
+            for reason in (join_confidence_debug.get("non_high_reason_codes") if isinstance(join_confidence_debug.get("non_high_reason_codes"), list) else []):
+                token = str(reason)
+                non_high_reason_counts_pass[token] = non_high_reason_counts_pass.get(token, 0) + 1
             if join_distance_value is not None:
                 join_tier_distance_values_pass.setdefault(tier, []).append(float(join_distance_value))
             examples = join_tier_examples_pass.setdefault(tier, [])
@@ -1966,6 +2080,10 @@ def build_public_outcome_evaluation_dataset(
             "candidate_match_attempt_count": candidate_match_attempt_count_pass,
             "matched_candidate_count_before_filters": matched_candidate_count_before_filters_pass,
             "soft_flag_counts": soft_flag_counts_pass,
+            "non_high_reason_counts": non_high_reason_counts_pass,
+            "within_high_distance_threshold_count": within_high_distance_threshold_count_pass,
+            "just_above_high_distance_threshold_count": just_above_high_distance_threshold_count_pass,
+            "just_below_high_score_threshold_count": just_below_high_score_threshold_count_pass,
             "by_event_counts": by_event_counts_pass,
             "by_label_counts": by_label_counts_pass,
             "unmatched_feature_rows_by_event_counts": unmatched_feature_rows_by_event_counts_pass,
@@ -2045,6 +2163,10 @@ def build_public_outcome_evaluation_dataset(
     candidate_match_attempt_count = int(selected_pass["candidate_match_attempt_count"])
     matched_candidate_count_before_filters = int(selected_pass["matched_candidate_count_before_filters"])
     soft_flag_counts = dict(selected_pass["soft_flag_counts"])
+    non_high_reason_counts = dict(selected_pass["non_high_reason_counts"])
+    within_high_distance_threshold_count = int(selected_pass["within_high_distance_threshold_count"])
+    just_above_high_distance_threshold_count = int(selected_pass["just_above_high_distance_threshold_count"])
+    just_below_high_score_threshold_count = int(selected_pass["just_below_high_score_threshold_count"])
     by_event_counts = dict(selected_pass["by_event_counts"])
     by_label_counts = dict(selected_pass["by_label_counts"])
     unmatched_feature_rows_by_event_counts = dict(selected_pass["unmatched_feature_rows_by_event_counts"])
@@ -2197,6 +2319,18 @@ def build_public_outcome_evaluation_dataset(
         "outcome_load_diagnostics": outcome_load_diagnostics,
         "feature_load_diagnostics": feature_load_diagnostics,
         "soft_flag_counts": dict(sorted(soft_flag_counts.items())),
+        "join_confidence_non_high_reason_counts": dict(sorted(non_high_reason_counts.items())),
+        "high_confidence_threshold_diagnostics": {
+            "high_confidence_distance_threshold_m": float(join_config.high_confidence_distance_m),
+            "medium_confidence_distance_threshold_m": float(join_config.medium_confidence_distance_m),
+            "high_confidence_score_threshold": float(HIGH_CONFIDENCE_SCORE_THRESHOLD),
+            "within_high_distance_threshold_count": within_high_distance_threshold_count,
+            "just_above_high_distance_threshold_count": just_above_high_distance_threshold_count,
+            "just_below_high_score_threshold_count": just_below_high_score_threshold_count,
+            "high_confidence_match_count": int(join_tier_counts.get("high") or 0),
+            "moderate_confidence_match_count": int(join_tier_counts.get("moderate") or 0),
+            "low_confidence_match_count": int(join_tier_counts.get("low") or 0),
+        },
         "retention_fallback": retention_fallback_summary,
         "retention_fallback_triggered": bool(retention_fallback_summary.get("triggered")),
         "retention_fallback_used": bool(retention_fallback_summary.get("used")),
@@ -2254,6 +2388,31 @@ def build_public_outcome_evaluation_dataset(
     join_quality["filter_summary"] = filter_summary
     join_quality["no_silent_data_loss_guarantee"] = bool(filter_summary.get("no_silent_data_loss_guarantee"))
     join_quality["join_quality_warnings"] = _build_join_quality_warnings(quality=join_quality)
+    join_confidence_debug_rows: list[dict[str, Any]] = []
+    for row in joined_rows:
+        join_meta = row.get("join_metadata") if isinstance(row.get("join_metadata"), dict) else {}
+        debug = join_meta.get("join_confidence_debug") if isinstance(join_meta.get("join_confidence_debug"), dict) else {}
+        join_confidence_debug_rows.append(
+            {
+                "property_event_id": row.get("property_event_id"),
+                "event_id": (row.get("event") or {}).get("event_id"),
+                "feature_record_id": (row.get("feature") or {}).get("record_id"),
+                "outcome_record_id": (row.get("outcome") or {}).get("record_id"),
+                "join_method": join_meta.get("join_method"),
+                "join_confidence_score": join_meta.get("join_confidence_score"),
+                "join_confidence_tier": join_meta.get("join_confidence_tier"),
+                "join_distance_m": join_meta.get("join_distance_m"),
+                "max_allowed_tier": join_meta.get("join_confidence_max_allowed_tier"),
+                "non_high_reason_codes": (
+                    debug.get("non_high_reason_codes")
+                    if isinstance(debug.get("non_high_reason_codes"), list)
+                    else []
+                ),
+                "near_high_distance_threshold": bool(debug.get("near_high_distance_threshold")),
+                "just_below_high_score_threshold": bool(debug.get("just_below_high_score_threshold")),
+            }
+        )
+    join_quality["join_confidence_debug_examples"] = join_confidence_debug_rows[:20]
 
     jsonl_path = run_dir / "evaluation_dataset.jsonl"
     _write_jsonl(jsonl_path, joined_rows)
@@ -2273,6 +2432,8 @@ def build_public_outcome_evaluation_dataset(
         ),
         encoding="utf-8",
     )
+    join_confidence_debug_path = run_dir / "join_confidence_debug.jsonl"
+    _write_jsonl(join_confidence_debug_path, join_confidence_debug_rows)
     summary_path = run_dir / "summary.md"
     summary_path.write_text(
         _build_markdown_summary(run_id=run_token, generated_at=generated_at, quality=join_quality),
@@ -2320,6 +2481,7 @@ def build_public_outcome_evaluation_dataset(
             "join_quality_metrics_json": str(join_metrics_path),
             "join_quality_report_markdown": str(join_report_md_path),
             "join_quality_report_json": str(join_report_path),
+            "join_confidence_debug_jsonl": str(join_confidence_debug_path),
             "filter_summary_json": str(filter_summary_path),
             "filter_summary_markdown": str(filter_summary_md_path),
             "summary_markdown": str(summary_path),
@@ -2352,6 +2514,7 @@ def build_public_outcome_evaluation_dataset(
         "join_quality_metrics_path": str(join_metrics_path),
         "join_quality_markdown_path": str(join_report_md_path),
         "join_quality_report_path": str(join_report_path),
+        "join_confidence_debug_path": str(join_confidence_debug_path),
         "filter_summary_path": str(filter_summary_path),
         "joined_record_count": len(joined_rows),
         "excluded_row_count": len(excluded_rows),
@@ -2464,7 +2627,7 @@ def main() -> int:
     parser.add_argument(
         "--high-confidence-distance-m",
         type=float,
-        default=20.0,
+        default=DEFAULT_HIGH_CONFIDENCE_DISTANCE_M,
         help="Distance threshold (meters) for high join-confidence distance tier.",
     )
     parser.add_argument(
@@ -2610,6 +2773,20 @@ def main() -> int:
         overwrite=bool(args.overwrite),
     )
     join_report = json.loads(Path(result["join_quality_metrics_path"]).read_text(encoding="utf-8"))
+    join_confidence_debug_rows: list[dict[str, Any]] = []
+    join_confidence_debug_path = Path(result.get("join_confidence_debug_path") or "")
+    if str(join_confidence_debug_path).strip() and join_confidence_debug_path.is_file():
+        with join_confidence_debug_path.open("r", encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    payload = json.loads(line)
+                except Exception:
+                    continue
+                if isinstance(payload, dict):
+                    join_confidence_debug_rows.append(payload)
     print(
         f"[public-eval-ds] Loaded outcomes={join_report.get('total_outcomes_loaded')} "
         f"feature_rows={join_report.get('total_feature_rows_loaded')}"
@@ -2690,6 +2867,29 @@ def main() -> int:
     join_warnings = join_report.get("join_quality_warnings") if isinstance(join_report.get("join_quality_warnings"), list) else []
     if join_warnings:
         print(f"[public-eval-ds] Join-quality warnings: {join_warnings}")
+    if join_confidence_debug_rows:
+        print(
+            "[public-eval-ds] Join-confidence classification diagnostics: "
+            f"rows={len(join_confidence_debug_rows)} path={join_confidence_debug_path}"
+        )
+        max_print = 500
+        for idx, row in enumerate(join_confidence_debug_rows):
+            if idx >= max_print:
+                remaining = len(join_confidence_debug_rows) - max_print
+                print(
+                    "[public-eval-ds] Join-confidence diagnostics truncated in stdout "
+                    f"(remaining_rows={remaining}); full list available at {join_confidence_debug_path}"
+                )
+                break
+            print(
+                "[public-eval-ds][join-confidence] "
+                f"property_event_id={row.get('property_event_id')} "
+                f"method={row.get('join_method')} "
+                f"distance_m={row.get('join_distance_m')} "
+                f"score={row.get('join_confidence_score')} "
+                f"tier={row.get('join_confidence_tier')} "
+                f"non_high_reasons={row.get('non_high_reason_codes')}"
+            )
     score_backfill = join_report.get("score_backfill") if isinstance(join_report.get("score_backfill"), dict) else {}
     if score_backfill:
         print(

@@ -659,6 +659,8 @@ def test_builder_applies_distance_based_join_confidence_tiers(tmp_path: Path) ->
     assert "match_distance_histogram_m" in join_quality
     assert "distance_outlier_examples" in join_quality
     assert (join_quality.get("join_confidence_tier_counts") or {}).get("high", 0) >= 1
+    assert "join_confidence_non_high_reason_counts" in join_quality
+    assert "high_confidence_threshold_diagnostics" in join_quality
 
 
 def test_builder_prevents_duplicate_outcome_matches_by_default(tmp_path: Path) -> None:
@@ -815,6 +817,61 @@ def test_builder_uses_global_address_overlap_fallback_when_coordinates_missing(t
     assert join_meta["join_method"] == "approx_global_address_token_overlap"
     assert join_meta["match_tier"] == "fallback"
     assert join_meta["join_confidence_tier"] in {"low", "moderate"}
+
+
+def test_high_confidence_matches_are_recognized_with_realistic_distance(tmp_path: Path) -> None:
+    outcomes = tmp_path / "normalized_outcomes.json"
+    _write_outcomes(outcomes)
+    features = tmp_path / "feature_artifact_realistic_high_conf.json"
+    features.write_text(
+        json.dumps(
+            {
+                "records": [
+                    {
+                        "event_id": "evt-a",
+                        "event_name": "Event A",
+                        "event_date": "2021-08-01",
+                        "record_id": "f-realistic-high",
+                        "source_record_id": "UNKNOWN-R",
+                        "latitude": 39.10033,
+                        "longitude": -120.1001,
+                        "address_text": "Unknown Realistic High",
+                        "scores": {"wildfire_risk_score": 79.0},
+                    }
+                ]
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    result = build_public_outcome_evaluation_dataset(
+        outcomes_path=outcomes,
+        feature_artifacts=[features],
+        output_root=tmp_path / "out",
+        run_id="realistic_high_confidence",
+        near_match_distance_m=40.0,
+        max_distance_m=180.0,
+        overwrite=True,
+    )
+    rows = []
+    with (Path(result["run_dir"]) / "evaluation_dataset.jsonl").open("r", encoding="utf-8") as fh:
+        for line in fh:
+            rows.append(json.loads(line))
+    assert rows
+    join_meta = rows[0].get("join_metadata") or {}
+    assert join_meta.get("join_confidence_tier") == "high"
+    debug = join_meta.get("join_confidence_debug") or {}
+    assert debug.get("resolved_tier") == "high"
+    assert isinstance(debug.get("distance_m"), (int, float))
+
+    join_quality = json.loads(Path(result["join_quality_report_path"]).read_text(encoding="utf-8"))
+    assert (join_quality.get("join_confidence_tier_counts") or {}).get("high", 0) >= 1
+    threshold_diag = join_quality.get("high_confidence_threshold_diagnostics") or {}
+    assert "just_above_high_distance_threshold_count" in threshold_diag
+    assert "just_below_high_score_threshold_count" in threshold_diag
+    debug_path = Path(result["join_confidence_debug_path"])
+    assert debug_path.exists()
 
 
 def test_resolve_all_normalized_outcomes_returns_all_runs(tmp_path: Path) -> None:
