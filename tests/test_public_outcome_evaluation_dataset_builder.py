@@ -964,3 +964,54 @@ def test_min_retention_fallback_relaxes_matching_when_dataset_is_too_small(tmp_p
         "retention_fallback_mode" in ((row.get("evaluation") or {}).get("soft_filter_flags") or [])
         for row in rows
     )
+
+
+def test_audit_mode_writes_pipeline_audit_report_with_samples(tmp_path: Path) -> None:
+    outcomes = tmp_path / "normalized_outcomes.json"
+    features = tmp_path / "event_backtest.json"
+    _write_outcomes(outcomes)
+    _write_feature_artifact(features)
+
+    result = build_public_outcome_evaluation_dataset(
+        outcomes_path=outcomes,
+        feature_artifacts=[features],
+        output_root=tmp_path / "out",
+        run_id="audit_mode_run",
+        audit_mode=True,
+        audit_sample_rows=9,
+        overwrite=True,
+    )
+    audit_path = result.get("pipeline_audit_report_path")
+    assert isinstance(audit_path, str) and audit_path
+    report_path = Path(audit_path)
+    assert report_path.exists()
+    report = report_path.read_text(encoding="utf-8")
+    assert "## Ingestion" in report
+    assert "## Join Pipeline" in report
+    assert "## Filtering" in report
+    assert "## Joined Sample Rows" in report
+    assert "## Filtered Sample Rows" in report
+    assert "join_confidence_tier" in report
+    assert "outcome_label" in report
+
+
+def test_audit_mode_clamps_sample_rows_and_records_in_manifest(tmp_path: Path) -> None:
+    outcomes = tmp_path / "normalized_outcomes.json"
+    features = tmp_path / "event_backtest.json"
+    _write_outcomes(outcomes)
+    _write_feature_artifact(features)
+
+    result = build_public_outcome_evaluation_dataset(
+        outcomes_path=outcomes,
+        feature_artifacts=[features],
+        output_root=tmp_path / "out",
+        run_id="audit_mode_clamped",
+        audit_mode=True,
+        audit_sample_rows=2,
+        overwrite=True,
+    )
+    manifest = json.loads(Path(result["manifest_path"]).read_text(encoding="utf-8"))
+    assert ((manifest.get("inputs") or {}).get("audit_mode")) is True
+    assert ((manifest.get("inputs") or {}).get("audit_sample_rows")) == 5
+    artifacts = manifest.get("artifacts") or {}
+    assert isinstance(artifacts.get("pipeline_audit_report_markdown"), str)

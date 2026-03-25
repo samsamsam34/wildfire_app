@@ -168,6 +168,21 @@ def _safe_int(value: Any) -> int | None:
         return None
 
 
+def _parse_bool_flag(value: Any, *, default: bool = False) -> bool:
+    if value is None:
+        return bool(default)
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if not text:
+        return bool(default)
+    if text in {"1", "true", "t", "yes", "y", "on"}:
+        return True
+    if text in {"0", "false", "f", "no", "n", "off"}:
+        return False
+    return bool(default)
+
+
 def _parse_year(value: Any) -> int | None:
     if value is None:
         return None
@@ -779,6 +794,7 @@ def _choose_outcome(
                 "join_confidence_tier": "high",
                 "join_distance_m": 0.0,
                 "join_confidence_max_allowed_tier": "high",
+                "diagnostic_candidate_pool_count": len(rows),
                 "match_tier": "exact",
             }
 
@@ -805,6 +821,7 @@ def _choose_outcome(
                 ),
                 "join_distance_m": distance_m,
                 "join_confidence_max_allowed_tier": "high",
+                "diagnostic_candidate_pool_count": len(rows),
                 "match_tier": "exact",
             }
 
@@ -822,6 +839,7 @@ def _choose_outcome(
                 "join_confidence_tier": "high",
                 "join_distance_m": _haversine_m(feature.latitude, feature.longitude, chosen.latitude, chosen.longitude),
                 "join_confidence_max_allowed_tier": "high",
+                "diagnostic_candidate_pool_count": len(rows),
                 "match_tier": "exact",
             }
 
@@ -839,6 +857,7 @@ def _choose_outcome(
                 "join_confidence_tier": "high",
                 "join_distance_m": _haversine_m(feature.latitude, feature.longitude, chosen.latitude, chosen.longitude),
                 "join_confidence_max_allowed_tier": "high",
+                "diagnostic_candidate_pool_count": len(rows),
                 "match_tier": "exact",
             }
 
@@ -873,6 +892,7 @@ def _choose_outcome(
                 ),
                 "join_distance_m": distance_m,
                 "join_confidence_max_allowed_tier": "high",
+                "diagnostic_candidate_pool_count": len(candidates),
                 "address_overlap_ratio": round(best_overlap, 4),
                 "match_tier": "near",
             }
@@ -896,6 +916,7 @@ def _choose_outcome(
                 "join_confidence_tier": "high",
                 "join_distance_m": round(distance_m, 2),
                 "join_confidence_max_allowed_tier": "high",
+                "diagnostic_candidate_pool_count": len(candidates),
                 "match_tier": "exact",
                 "radius_candidate_count": candidate_count,
             }
@@ -937,6 +958,7 @@ def _choose_outcome(
                 ),
                 "join_distance_m": round(distance_m, 2),
                 "join_confidence_max_allowed_tier": "high",
+                "diagnostic_candidate_pool_count": len(candidates),
                 "match_tier": match_tier if match_tier != "outside" else "near",
                 "buffer_radius_m": round(buffer_radius, 2),
                 "buffer_candidate_count": candidate_count,
@@ -984,6 +1006,7 @@ def _choose_outcome(
                 ),
                 "join_distance_m": round(distance_m, 2),
                 "join_confidence_max_allowed_tier": "high",
+                "diagnostic_candidate_pool_count": len(search_candidates),
                 "match_tier": distance_tier,
             }
 
@@ -1022,6 +1045,7 @@ def _choose_outcome(
                 ),
                 "join_distance_m": round(distance_m, 2),
                 "join_confidence_max_allowed_tier": "moderate",
+                "diagnostic_candidate_pool_count": len(candidates),
                 "match_tier": distance_tier if distance_tier != "outside" else "extended",
             }
 
@@ -1053,6 +1077,7 @@ def _choose_outcome(
                 ),
                 "join_distance_m": distance_m,
                 "join_confidence_max_allowed_tier": "moderate",
+                "diagnostic_candidate_pool_count": len(indexes["all"]),
                 "address_overlap_ratio": round(best_overlap, 4),
                 "match_tier": "fallback",
             }
@@ -1081,6 +1106,7 @@ def _choose_outcome(
                 ),
                 "join_distance_m": round(distance_m, 2),
                 "join_confidence_max_allowed_tier": "low",
+                "diagnostic_candidate_pool_count": len(search_candidates),
                 "match_tier": "fallback",
             }
     return None, {
@@ -1089,6 +1115,11 @@ def _choose_outcome(
         "join_confidence_tier": "low",
         "join_distance_m": None,
         "join_confidence_max_allowed_tier": "low",
+        "diagnostic_candidate_pool_count": (
+            len(indexes["by_event"].get(feature.event_id, []))
+            if feature.event_id and isinstance(indexes.get("by_event"), dict)
+            else len(indexes.get("all", []))
+        ),
         "match_tier": "none",
         "unmatched_reason": (
             "no_unused_outcome_match_within_constraints"
@@ -1589,6 +1620,80 @@ def _build_filter_summary_markdown(
     return "\n".join(lines) + "\n"
 
 
+def _build_pipeline_audit_markdown(
+    *,
+    run_id: str,
+    generated_at: str,
+    quality: dict[str, Any],
+    filter_summary: dict[str, Any],
+    sample_joined_rows: list[dict[str, Any]],
+    sample_filtered_rows: list[dict[str, Any]],
+) -> str:
+    lines = [
+        "# Pipeline Audit Report",
+        "",
+        "- Developer audit trace for evaluation dataset construction.",
+        f"- Run ID: `{run_id}`",
+        f"- Generated at: `{generated_at}`",
+        "",
+        "## Ingestion",
+        f"- Outcomes loaded: `{quality.get('total_outcomes_loaded')}`",
+        f"- Outcome load diagnostics: `{quality.get('outcome_load_diagnostics')}`",
+        f"- Feature rows loaded: `{quality.get('total_feature_rows_loaded')}`",
+        f"- Feature load diagnostics: `{quality.get('feature_load_diagnostics')}`",
+        "",
+        "## Join Pipeline",
+        f"- Candidate match attempts: `{quality.get('candidate_match_attempt_count')}`",
+        f"- Matched before post-join filtering: `{quality.get('matched_candidate_count_before_filters')}`",
+        f"- Joined rows (final): `{quality.get('total_joined_records')}`",
+        f"- Match rate: `{quality.get('match_rate_percent')}%`",
+        f"- Join method counts: `{quality.get('join_method_counts')}`",
+        f"- Join confidence tier counts: `{quality.get('join_confidence_tier_counts')}`",
+        f"- Distance histogram: `{quality.get('match_distance_histogram_m')}`",
+        f"- High-confidence diagnostics: `{quality.get('high_confidence_threshold_diagnostics')}`",
+        f"- Non-high reason counts: `{quality.get('join_confidence_non_high_reason_counts')}`",
+        "",
+        "## Filtering",
+        f"- Filter summary: `{filter_summary}`",
+        "",
+        "## Joined Sample Rows",
+    ]
+    if sample_joined_rows:
+        for row in sample_joined_rows:
+            lines.append(
+                "- "
+                + str(
+                    {
+                        "property_event_id": row.get("property_event_id"),
+                        "feature_lat": row.get("feature_lat"),
+                        "feature_lon": row.get("feature_lon"),
+                        "outcome_lat": row.get("outcome_lat"),
+                        "outcome_lon": row.get("outcome_lon"),
+                        "join_distance_m": row.get("join_distance_m"),
+                        "join_confidence_score": row.get("join_confidence_score"),
+                        "join_confidence_tier": row.get("join_confidence_tier"),
+                        "join_method": row.get("join_method"),
+                        "candidate_pool_count": row.get("candidate_pool_count"),
+                        "outcome_label": row.get("outcome_label"),
+                        "non_high_reason_codes": row.get("non_high_reason_codes"),
+                    }
+                )
+            )
+    else:
+        lines.append("- No joined sample rows available.")
+    lines.append("")
+    lines.append("## Filtered Sample Rows")
+    if sample_filtered_rows:
+        for row in sample_filtered_rows:
+            lines.append(f"- {row}")
+    else:
+        lines.append("- No filtered rows.")
+    lines.append("")
+    lines.append("## Caveats")
+    lines.append("- Audit output is for debugging data flow and join behavior, not predictive-accuracy claims.")
+    return "\n".join(lines) + "\n"
+
+
 def _build_join_quality_warnings(*, quality: dict[str, Any]) -> list[str]:
     warnings: list[str] = []
     tier_counts = (
@@ -1708,6 +1813,8 @@ def build_public_outcome_evaluation_dataset(
     min_retained_records: int = 0,
     auto_relax_for_min_retention: bool = False,
     auto_score_missing: bool = True,
+    audit_mode: bool = False,
+    audit_sample_rows: int = 10,
     overwrite: bool = False,
 ) -> dict[str, Any]:
     run_token = str(run_id or _timestamp_id())
@@ -2451,6 +2558,55 @@ def build_public_outcome_evaluation_dataset(
         encoding="utf-8",
     )
 
+    audit_sample_size = max(5, min(10, int(audit_sample_rows)))
+    sample_joined_rows: list[dict[str, Any]] = []
+    for row in joined_rows[:audit_sample_size]:
+        feature_payload = row.get("feature") if isinstance(row.get("feature"), dict) else {}
+        outcome_payload = row.get("outcome") if isinstance(row.get("outcome"), dict) else {}
+        join_payload = row.get("join_metadata") if isinstance(row.get("join_metadata"), dict) else {}
+        sample_joined_rows.append(
+            {
+                "property_event_id": row.get("property_event_id"),
+                "feature_lat": feature_payload.get("latitude"),
+                "feature_lon": feature_payload.get("longitude"),
+                "outcome_lat": outcome_payload.get("latitude"),
+                "outcome_lon": outcome_payload.get("longitude"),
+                "join_distance_m": join_payload.get("join_distance_m"),
+                "join_confidence_score": join_payload.get("join_confidence_score"),
+                "join_confidence_tier": join_payload.get("join_confidence_tier"),
+                "join_method": join_payload.get("join_method"),
+                "candidate_pool_count": join_payload.get("diagnostic_candidate_pool_count"),
+                "outcome_label": outcome_payload.get("damage_label"),
+                "non_high_reason_codes": join_payload.get("join_confidence_non_high_reason_codes"),
+            }
+        )
+    sample_filtered_rows: list[dict[str, Any]] = []
+    for row in excluded_rows[:audit_sample_size]:
+        if isinstance(row, dict):
+            sample_filtered_rows.append(
+                {
+                    "feature_artifact_path": row.get("feature_artifact_path"),
+                    "record_id": row.get("record_id"),
+                    "event_id": row.get("event_id"),
+                    "reason": row.get("reason"),
+                    "join_pass": row.get("join_pass"),
+                }
+            )
+    pipeline_audit_report_path: Path | None = None
+    if bool(audit_mode):
+        pipeline_audit_report_path = run_dir / "pipeline_audit_report.md"
+        pipeline_audit_report_path.write_text(
+            _build_pipeline_audit_markdown(
+                run_id=run_token,
+                generated_at=generated_at,
+                quality=join_quality,
+                filter_summary=filter_summary,
+                sample_joined_rows=sample_joined_rows,
+                sample_filtered_rows=sample_filtered_rows,
+            ),
+            encoding="utf-8",
+        )
+
     manifest = {
         "schema_version": SCHEMA_VERSION,
         "run_id": run_token,
@@ -2474,6 +2630,8 @@ def build_public_outcome_evaluation_dataset(
             "min_retained_records": int(retention_target),
             "auto_relax_for_min_retention": bool(auto_relax_for_min_retention),
             "auto_score_missing": bool(auto_score_missing),
+            "audit_mode": bool(audit_mode),
+            "audit_sample_rows": int(audit_sample_size),
         },
         "artifacts": {
             "evaluation_dataset_jsonl": str(jsonl_path),
@@ -2485,6 +2643,9 @@ def build_public_outcome_evaluation_dataset(
             "filter_summary_json": str(filter_summary_path),
             "filter_summary_markdown": str(filter_summary_md_path),
             "summary_markdown": str(summary_path),
+            "pipeline_audit_report_markdown": (
+                str(pipeline_audit_report_path) if pipeline_audit_report_path is not None else None
+            ),
         },
         "summary": {
             "outcomes_loaded": len(outcomes),
@@ -2516,6 +2677,9 @@ def build_public_outcome_evaluation_dataset(
         "join_quality_report_path": str(join_report_path),
         "join_confidence_debug_path": str(join_confidence_debug_path),
         "filter_summary_path": str(filter_summary_path),
+        "pipeline_audit_report_path": (
+            str(pipeline_audit_report_path) if pipeline_audit_report_path is not None else None
+        ),
         "joined_record_count": len(joined_rows),
         "excluded_row_count": len(excluded_rows),
     }
@@ -2708,6 +2872,26 @@ def main() -> int:
             "discovering all auto-scored feature artifacts, and allowing duplicate outcome matches."
         ),
     )
+    parser.add_argument(
+        "--audit-mode",
+        "--audit_mode",
+        dest="audit_mode",
+        nargs="?",
+        const="true",
+        default="false",
+        help=(
+            "Enable verbose pipeline audit diagnostics and emit pipeline_audit_report.md. "
+            "Accepts true/false (example: --audit_mode true)."
+        ),
+    )
+    parser.add_argument(
+        "--audit-sample-rows",
+        "--audit_sample_rows",
+        dest="audit_sample_rows",
+        type=int,
+        default=10,
+        help="Number of joined/filtered sample rows to show in audit output (clamped to 5-10).",
+    )
     parser.add_argument("--overwrite", action="store_true", help="Overwrite existing run directory.")
     args = parser.parse_args()
 
@@ -2751,6 +2935,8 @@ def main() -> int:
             "At least one feature artifact is required (--feature-artifact, --feature-artifact-dir, or --rapid-max-coverage)."
         )
     allow_duplicate_outcome_matches = bool(args.allow_duplicate_outcome_matches or args.rapid_max_coverage)
+    audit_mode = _parse_bool_flag(args.audit_mode, default=False)
+    audit_sample_rows = max(5, min(10, int(args.audit_sample_rows)))
     result = build_public_outcome_evaluation_dataset(
         outcomes_paths=outcomes_paths,
         feature_artifacts=feature_artifacts,
@@ -2770,6 +2956,8 @@ def main() -> int:
         min_retained_records=int(args.min_retained_records),
         auto_relax_for_min_retention=bool(args.auto_relax_for_min_retention),
         auto_score_missing=bool(args.auto_score_missing),
+        audit_mode=bool(audit_mode),
+        audit_sample_rows=int(audit_sample_rows),
         overwrite=bool(args.overwrite),
     )
     join_report = json.loads(Path(result["join_quality_metrics_path"]).read_text(encoding="utf-8"))
@@ -2890,6 +3078,61 @@ def main() -> int:
                 f"tier={row.get('join_confidence_tier')} "
                 f"non_high_reasons={row.get('non_high_reason_codes')}"
             )
+    if bool(audit_mode):
+        dataset_rows: list[dict[str, Any]] = []
+        with (Path(result["run_dir"]) / "evaluation_dataset.jsonl").open("r", encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    payload = json.loads(line)
+                except Exception:
+                    continue
+                if isinstance(payload, dict):
+                    dataset_rows.append(payload)
+        print(
+            "[public-eval-ds][audit] Ingestion counts: "
+            f"outcomes={join_report.get('total_outcomes_loaded')} "
+            f"feature_rows={join_report.get('total_feature_rows_loaded')}"
+        )
+        print(
+            "[public-eval-ds][audit] Join candidates: "
+            f"candidate_attempts={join_report.get('candidate_match_attempt_count')} "
+            f"matched_before_filters={join_report.get('matched_candidate_count_before_filters')} "
+            f"join_methods={join_report.get('join_method_counts')}"
+        )
+        print(
+            "[public-eval-ds][audit] Match distances: "
+            f"avg_m={join_report.get('average_join_distance_m')} "
+            f"median_m={join_report.get('median_join_distance_m')} "
+            f"histogram={join_report.get('match_distance_histogram_m')}"
+        )
+        print(
+            "[public-eval-ds][audit] Filtering steps: "
+            f"filter_summary={(join_report.get('filter_summary') if isinstance(join_report.get('filter_summary'), dict) else {})}"
+        )
+        print(
+            "[public-eval-ds][audit] Final dataset: "
+            f"size={join_report.get('final_dataset_size')} excluded={join_report.get('excluded_row_count')}"
+        )
+        for idx, row in enumerate(dataset_rows[:audit_sample_rows]):
+            feature_payload = row.get("feature") if isinstance(row.get("feature"), dict) else {}
+            outcome_payload = row.get("outcome") if isinstance(row.get("outcome"), dict) else {}
+            join_payload = row.get("join_metadata") if isinstance(row.get("join_metadata"), dict) else {}
+            print(
+                "[public-eval-ds][audit][sample] "
+                f"index={idx} property_event_id={row.get('property_event_id')} "
+                f"feature_lat={feature_payload.get('latitude')} feature_lon={feature_payload.get('longitude')} "
+                f"outcome_lat={outcome_payload.get('latitude')} outcome_lon={outcome_payload.get('longitude')} "
+                f"distance_m={join_payload.get('join_distance_m')} "
+                f"confidence={join_payload.get('join_confidence_tier')} "
+                f"score={join_payload.get('join_confidence_score')} "
+                f"outcome_label={outcome_payload.get('damage_label')}"
+            )
+        audit_path = result.get("pipeline_audit_report_path")
+        if isinstance(audit_path, str) and audit_path.strip():
+            print(f"[public-eval-ds][audit] Audit report written: {audit_path}")
     score_backfill = join_report.get("score_backfill") if isinstance(join_report.get("score_backfill"), dict) else {}
     if score_backfill:
         print(
