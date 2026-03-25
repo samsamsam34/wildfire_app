@@ -71,6 +71,7 @@ Each run writes:
 
 Artifacts:
 - `validation_metrics.json`
+- `feature_diagnostics.json`
 - `calibration_table.json`
 - `threshold_metrics.json`
 - `false_low_review_set.jsonl`
@@ -98,6 +99,17 @@ Where label/sample coverage allows:
 - Brier 95% bootstrap confidence interval
 - calibration-by-bin and ECE
 - rank correlation (Spearman)
+
+Feature signal diagnostics are also emitted from the labeled rows:
+- per-feature Pearson/Spearman correlations against adverse outcome label
+- univariate rank/AUC-style directional signal checks
+- plot-ready feature-vs-outcome quantile curves
+- ranked lists for:
+  - `top_predictive_features`
+  - `weak_or_noisy_features`
+  - `potentially_harmful_features` (expected-direction conflicts)
+
+These are directional signal/noise diagnostics only. They do not establish causality or insurer-claims predictive truth.
 
 Minimum viable diagnostics are emitted for usable datasets (including small samples):
 - pairwise rank-order hit rate

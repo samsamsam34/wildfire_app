@@ -285,6 +285,11 @@ def _build_summary_markdown(
         if isinstance(report.get("confidence_tier_performance"), dict)
         else {}
     )
+    feature_diag = (
+        report.get("feature_signal_diagnostics")
+        if isinstance(report.get("feature_signal_diagnostics"), dict)
+        else {}
+    )
     review_sets = report.get("false_review_sets") if isinstance(report.get("false_review_sets"), dict) else {}
     calibration_metrics = report.get("calibration_metrics") if isinstance(report.get("calibration_metrics"), dict) else {}
     wildfire_calibration = (
@@ -526,6 +531,82 @@ def _build_summary_markdown(
             for warning in warnings_by_tier:
                 lines.append(f"- Tier warning: {warning}")
 
+    if feature_diag:
+        top_features = (
+            feature_diag.get("top_predictive_features")
+            if isinstance(feature_diag.get("top_predictive_features"), list)
+            else []
+        )
+        weak_features = (
+            feature_diag.get("weak_or_noisy_features")
+            if isinstance(feature_diag.get("weak_or_noisy_features"), list)
+            else []
+        )
+        harmful_features = (
+            feature_diag.get("potentially_harmful_features")
+            if isinstance(feature_diag.get("potentially_harmful_features"), list)
+            else []
+        )
+        family_summary = (
+            feature_diag.get("key_feature_family_summary")
+            if isinstance(feature_diag.get("key_feature_family_summary"), dict)
+            else {}
+        )
+        lines.append("")
+        lines.append("## Feature Signal Diagnostics")
+        lines.append(
+            f"- Features evaluated: `{feature_diag.get('feature_count_evaluated')}` "
+            f"(rows used={feature_diag.get('row_count_used')})"
+        )
+        lines.append(
+            "- Caveat: `Feature diagnostics reflect directional signal/noise in this labeled sample; "
+            "they are not causal inference or insurer-claims truth.`"
+        )
+        if top_features:
+            lines.append("### Top Predictive Features")
+            for row in top_features[:8]:
+                lines.append(
+                    f"- `{row.get('feature')}`: signal={_format_float(row.get('signal_score'))}, "
+                    f"spearman={_format_float(row.get('rank_correlation_with_outcome'))}, "
+                    f"coverage={_format_float(row.get('coverage_fraction'))}, "
+                    f"family={row.get('family')}"
+                )
+        if weak_features:
+            lines.append("")
+            lines.append("### Weak / Noisy Features")
+            for row in weak_features[:6]:
+                lines.append(
+                    f"- `{row.get('feature')}`: signal={_format_float(row.get('signal_score'))}, "
+                    f"coverage={_format_float(row.get('coverage_fraction'))}, "
+                    f"rows={row.get('rows_with_value')}"
+                )
+        if harmful_features:
+            lines.append("")
+            lines.append("### Potentially Harmful Features")
+            for row in harmful_features[:6]:
+                lines.append(
+                    f"- `{row.get('feature')}`: expected={row.get('expected_direction')}, "
+                    f"observed={row.get('observed_direction')}, "
+                    f"signal={_format_float(row.get('signal_score'))}"
+                )
+        if family_summary:
+            lines.append("")
+            lines.append("### Key Feature Families")
+            for family_name in (
+                "vegetation_metrics",
+                "slope_terrain",
+                "hazard_zone_context",
+                "burn_probability",
+                "structural_features",
+            ):
+                detail = family_summary.get(family_name)
+                if not isinstance(detail, dict):
+                    continue
+                lines.append(
+                    f"- `{family_name}`: count={detail.get('feature_count')}, "
+                    f"mean_signal={_format_float(detail.get('mean_signal_score'))}"
+                )
+
     lines.extend(
         [
             "",
@@ -759,6 +840,15 @@ def _insufficient_data_report(
                 "available": False,
                 "caveat": "Synthetic stress validation is not real-outcome ground truth.",
             },
+        },
+        "feature_signal_diagnostics": {
+            "available": False,
+            "reason": "insufficient_real_outcome_rows",
+            "top_predictive_features": [],
+            "weak_or_noisy_features": [],
+            "potentially_harmful_features": [],
+            "feature_vs_outcome_curves": [],
+            "key_feature_family_summary": {},
         },
         "false_review_sets": {
             "false_low_count": 0,
@@ -1013,6 +1103,31 @@ def run_public_outcome_validation(
     evaluated_rows_csv_path = output_dir / "evaluation_rows.csv"
     write_evaluation_rows_csv(rows=rows, output_csv=evaluated_rows_csv_path)
 
+    feature_diag_payload = {
+        "run_id": run_token,
+        "generated_at": generated_at,
+        "dataset_path": str(dataset_path),
+        "feature_signal_diagnostics": (
+            report.get("feature_signal_diagnostics")
+            if isinstance(report.get("feature_signal_diagnostics"), dict)
+            else {
+                "available": False,
+                "reason": "not_present_in_validation_report",
+                "top_predictive_features": [],
+                "weak_or_noisy_features": [],
+                "potentially_harmful_features": [],
+                "feature_vs_outcome_curves": [],
+                "key_feature_family_summary": {},
+            }
+        ),
+        "caveat": (
+            "Feature diagnostics describe directional signal/noise in this labeled sample. "
+            "They are not causal inference and do not establish insurer-claims predictive truth."
+        ),
+    }
+    feature_diagnostics_path = output_dir / "feature_diagnostics.json"
+    _write_json(feature_diagnostics_path, feature_diag_payload)
+
     summary_text = _build_summary_markdown(
         run_id=run_token,
         generated_at=generated_at,
@@ -1141,6 +1256,7 @@ def run_public_outcome_validation(
             "false_low_review_set_jsonl": str(false_low_path),
             "false_high_review_set_jsonl": str(false_high_path),
             "evaluation_rows_csv": str(evaluated_rows_csv_path),
+            "feature_diagnostics_json": str(feature_diagnostics_path),
             "comparison_to_previous_json": str(comparison_json_path),
             "comparison_to_previous_markdown": str(comparison_md_path),
             "summary_markdown": str(summary_path),
@@ -1168,6 +1284,7 @@ def run_public_outcome_validation(
         "manifest_path": str(manifest_path),
         "summary_path": str(summary_path),
         "validation_metrics_path": str(validation_metrics_path),
+        "feature_diagnostics_path": str(feature_diagnostics_path),
         "comparison_json_path": str(comparison_json_path),
         "comparison_markdown_path": str(comparison_md_path),
     }

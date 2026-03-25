@@ -1028,6 +1028,368 @@ def _compute_minimum_viable_metrics(
     }
 
 
+def _feature_family(feature_name: str) -> str:
+    key = str(feature_name or "").strip().lower()
+    if any(token in key for token in ("vegetation", "canopy", "fuel", "ring_", "ember", "defensible")):
+        return "vegetation_metrics"
+    if any(token in key for token in ("slope", "aspect", "elevation", "terrain")):
+        return "slope_terrain"
+    if any(token in key for token in ("hazard", "whp", "mtbs", "fire_history", "perimeter", "burn")):
+        return "hazard_burn_context"
+    if any(token in key for token in ("dry", "drought", "gridmet", "fm1000", "kbdi", "eddi")):
+        return "dryness"
+    if any(token in key for token in ("roof", "vent", "structure", "building", "parcel", "hardening", "home")):
+        return "structural_features"
+    if any(token in key for token in ("road", "access", "travel")):
+        return "access_network"
+    return "other"
+
+
+def _expected_direction(feature_name: str) -> str:
+    key = str(feature_name or "").strip().lower()
+    risk_down_tokens = (
+        "distance",
+        "_ft",
+        "_m",
+        "_km",
+        "clearance",
+        "ember_resistant",
+        "class_a",
+        "hardening",
+    )
+    risk_up_tokens = (
+        "burn_probability",
+        "hazard",
+        "whp",
+        "mtbs",
+        "fuel",
+        "canopy",
+        "vegetation",
+        "slope",
+        "adjacency",
+        "continuity",
+        "ember_exposure_risk",
+        "defensible_space_risk",
+    )
+    if any(token in key for token in risk_down_tokens):
+        return "risk_down"
+    if any(token in key for token in risk_up_tokens):
+        return "risk_up"
+    return "unknown"
+
+
+def _feature_curve_bins(values: list[float], labels: list[int], bins: int = 5) -> list[dict[str, Any]]:
+    if len(values) != len(labels) or len(values) < 2:
+        return []
+    ranked = sorted(zip(values, labels), key=lambda item: item[0])
+    n = len(ranked)
+    out: list[dict[str, Any]] = []
+    for idx in range(max(1, int(bins))):
+        start = int((idx / bins) * n)
+        end = int(((idx + 1) / bins) * n)
+        if end <= start:
+            continue
+        bucket = ranked[start:end]
+        bucket_values = [float(v) for v, _ in bucket]
+        bucket_labels = [int(y) for _, y in bucket]
+        adverse_count = sum(bucket_labels)
+        out.append(
+            {
+                "bin": idx + 1,
+                "count": len(bucket),
+                "value_min": min(bucket_values),
+                "value_max": max(bucket_values),
+                "value_mean": _mean(bucket_values),
+                "adverse_rate": adverse_count / float(len(bucket)),
+            }
+        )
+    return out
+
+
+def _score_feature_signal(
+    *,
+    corr: float | None,
+    rank_corr: float | None,
+    auc_best: float | None,
+    std_delta: float | None,
+    coverage_fraction: float,
+) -> float:
+    corr_signal = max(
+        abs(float(corr or 0.0)),
+        abs(float(rank_corr or 0.0)),
+    )
+    auc_signal = abs(float((auc_best if auc_best is not None else 0.5)) - 0.5) * 2.0
+    delta_signal = min(1.0, abs(float(std_delta or 0.0)) / 2.0)
+    base = (0.45 * corr_signal) + (0.35 * auc_signal) + (0.20 * delta_signal)
+    return max(0.0, min(1.0, base * max(0.0, min(1.0, coverage_fraction))))
+
+
+def _build_feature_signal_diagnostics(
+    *,
+    rows: list[dict[str, Any]],
+    min_feature_rows: int = 4,
+    max_features: int = 200,
+) -> dict[str, Any]:
+    total_rows = len(rows)
+    if total_rows <= 0:
+        return {
+            "available": False,
+            "reason": "no_rows",
+            "top_predictive_features": [],
+            "weak_or_noisy_features": [],
+            "potentially_harmful_features": [],
+            "feature_vs_outcome_curves": [],
+            "key_feature_family_summary": {},
+        }
+
+    feature_keys: set[str] = set()
+    for row in rows:
+        raw = row.get("raw_feature_vector") if isinstance(row.get("raw_feature_vector"), dict) else {}
+        transformed = (
+            row.get("transformed_feature_vector")
+            if isinstance(row.get("transformed_feature_vector"), dict)
+            else {}
+        )
+        feature_keys.update(str(key) for key in raw.keys())
+        feature_keys.update(str(key) for key in transformed.keys())
+    if not feature_keys:
+        return {
+            "available": False,
+            "reason": "no_feature_vectors",
+            "top_predictive_features": [],
+            "weak_or_noisy_features": [],
+            "potentially_harmful_features": [],
+            "feature_vs_outcome_curves": [],
+            "key_feature_family_summary": {},
+        }
+
+    evaluated: list[dict[str, Any]] = []
+    for feature_key in sorted(feature_keys):
+        values: list[float] = []
+        labels: list[int] = []
+        for row in rows:
+            value = _proxy_feature_value(row, feature_key)
+            if value is None:
+                continue
+            target = _safe_int(row.get("structure_loss_or_major_damage"))
+            if target not in {0, 1}:
+                continue
+            values.append(float(value))
+            labels.append(int(target))
+        if not values:
+            continue
+
+        positives = [v for v, y in zip(values, labels) if y == 1]
+        negatives = [v for v, y in zip(values, labels) if y == 0]
+        mean_pos = _mean(positives)
+        mean_neg = _mean(negatives)
+        delta_pos_neg = (
+            (float(mean_pos) - float(mean_neg))
+            if mean_pos is not None and mean_neg is not None
+            else None
+        )
+        feature_std = _stddev(values)
+        standardized_delta = (
+            (float(delta_pos_neg) / float(feature_std))
+            if feature_std not in (None, 0.0) and delta_pos_neg is not None
+            else None
+        )
+
+        corr = _pearson(values, [float(y) for y in labels]) if len(values) >= 3 else None
+        rank_corr = _spearman(values, [float(y) for y in labels]) if len(values) >= 3 else None
+        auc_risk_up = _roc_auc(labels, values) if len(values) >= 3 else None
+        auc_risk_down = _roc_auc(labels, [-v for v in values]) if len(values) >= 3 else None
+        if isinstance(auc_risk_up, float) and isinstance(auc_risk_down, float):
+            auc_best = max(auc_risk_up, auc_risk_down)
+            auc_best_direction = "risk_up" if auc_risk_up >= auc_risk_down else "risk_down"
+        elif isinstance(auc_risk_up, float):
+            auc_best = auc_risk_up
+            auc_best_direction = "risk_up"
+        elif isinstance(auc_risk_down, float):
+            auc_best = auc_risk_down
+            auc_best_direction = "risk_down"
+        else:
+            auc_best = None
+            auc_best_direction = "unknown"
+
+        expected_direction = _expected_direction(feature_key)
+        observed_direction = "unknown"
+        if isinstance(rank_corr, float) and abs(rank_corr) >= 0.05:
+            observed_direction = "risk_up" if rank_corr > 0 else "risk_down"
+        elif isinstance(delta_pos_neg, float) and abs(delta_pos_neg) > 0:
+            observed_direction = "risk_up" if delta_pos_neg > 0 else "risk_down"
+
+        coverage_fraction = len(values) / float(total_rows)
+        signal_score = _score_feature_signal(
+            corr=corr,
+            rank_corr=rank_corr,
+            auc_best=auc_best,
+            std_delta=standardized_delta,
+            coverage_fraction=coverage_fraction,
+        )
+        low_variance = (feature_std is None) or (feature_std <= 1e-9)
+        noisy = bool(
+            len(values) < int(min_feature_rows)
+            or low_variance
+            or signal_score < 0.08
+        )
+        direction_conflict = bool(
+            expected_direction in {"risk_up", "risk_down"}
+            and observed_direction in {"risk_up", "risk_down"}
+            and expected_direction != observed_direction
+            and signal_score >= 0.10
+        )
+
+        evaluated.append(
+            {
+                "feature": feature_key,
+                "family": _feature_family(feature_key),
+                "rows_with_value": len(values),
+                "coverage_fraction": coverage_fraction,
+                "expected_direction": expected_direction,
+                "observed_direction": observed_direction,
+                "correlation_with_outcome": corr,
+                "rank_correlation_with_outcome": rank_corr,
+                "auc_if_risk_up": auc_risk_up,
+                "auc_if_risk_down": auc_risk_down,
+                "best_auc": auc_best,
+                "best_auc_direction": auc_best_direction,
+                "mean_when_adverse": mean_pos,
+                "mean_when_non_adverse": mean_neg,
+                "delta_adverse_minus_non_adverse": delta_pos_neg,
+                "standardized_delta": standardized_delta,
+                "feature_stddev": feature_std,
+                "signal_score": signal_score,
+                "noisy_or_weak": noisy,
+                "potentially_harmful": direction_conflict,
+                "potentially_harmful_reason": (
+                    "direction_conflict_with_expected_risk_relationship"
+                    if direction_conflict
+                    else None
+                ),
+                "feature_vs_outcome_curve": _feature_curve_bins(values, labels, bins=5),
+            }
+        )
+
+    evaluated.sort(
+        key=lambda row: (
+            -float(row.get("signal_score") or 0.0),
+            -float(row.get("coverage_fraction") or 0.0),
+            str(row.get("feature") or ""),
+        )
+    )
+    if len(evaluated) > int(max_features):
+        evaluated = evaluated[: int(max_features)]
+
+    top_predictive = [row for row in evaluated if int(row.get("rows_with_value") or 0) >= int(min_feature_rows)][:20]
+    weak_noisy = sorted(
+        evaluated,
+        key=lambda row: (
+            float(row.get("signal_score") or 0.0),
+            -float(row.get("coverage_fraction") or 0.0),
+            str(row.get("feature") or ""),
+        ),
+    )[:20]
+    harmful = [
+        row
+        for row in evaluated
+        if bool(row.get("potentially_harmful"))
+    ][:20]
+
+    family_summary: dict[str, Any] = {}
+    for family in sorted({str(row.get("family") or "other") for row in evaluated}):
+        bucket = [row for row in evaluated if str(row.get("family") or "other") == family]
+        family_summary[family] = {
+            "feature_count": len(bucket),
+            "mean_signal_score": _mean([float(row.get("signal_score") or 0.0) for row in bucket]),
+            "median_signal_score": _proxy_quantile(
+                [float(row.get("signal_score") or 0.0) for row in bucket],
+                0.5,
+            ),
+            "top_features": [
+                {
+                    "feature": row.get("feature"),
+                    "signal_score": row.get("signal_score"),
+                    "rank_correlation_with_outcome": row.get("rank_correlation_with_outcome"),
+                    "coverage_fraction": row.get("coverage_fraction"),
+                }
+                for row in bucket[:5]
+            ],
+        }
+
+    key_families = {
+        "vegetation_metrics": family_summary.get("vegetation_metrics", {"feature_count": 0, "top_features": []}),
+        "slope_terrain": family_summary.get("slope_terrain", {"feature_count": 0, "top_features": []}),
+        "hazard_zone_context": family_summary.get("hazard_burn_context", {"feature_count": 0, "top_features": []}),
+        "burn_probability": {
+            "feature_count": len(
+                [row for row in evaluated if "burn_probability" in str(row.get("feature") or "").lower()]
+            ),
+            "mean_signal_score": _mean(
+                [
+                    float(row.get("signal_score") or 0.0)
+                    for row in evaluated
+                    if "burn_probability" in str(row.get("feature") or "").lower()
+                ]
+            ),
+            "median_signal_score": _proxy_quantile(
+                [
+                    float(row.get("signal_score") or 0.0)
+                    for row in evaluated
+                    if "burn_probability" in str(row.get("feature") or "").lower()
+                ],
+                0.5,
+            ),
+            "top_features": [
+                {
+                    "feature": row.get("feature"),
+                    "signal_score": row.get("signal_score"),
+                    "rank_correlation_with_outcome": row.get("rank_correlation_with_outcome"),
+                    "coverage_fraction": row.get("coverage_fraction"),
+                }
+                for row in evaluated
+                if "burn_probability" in str(row.get("feature") or "").lower()
+            ][:5],
+        },
+        "structural_features": family_summary.get("structural_features", {"feature_count": 0, "top_features": []}),
+    }
+
+    return {
+        "available": True,
+        "row_count_used": total_rows,
+        "feature_count_evaluated": len(evaluated),
+        "method": {
+            "signal_formula": (
+                "signal_score = coverage * (0.45*max(|pearson|,|spearman|) + "
+                "0.35*auc_signal + 0.20*standardized_delta_signal)"
+            ),
+            "auc_signal_definition": "abs(best_auc - 0.5) * 2",
+            "plot_curve_definition": "feature-quantile bins with observed adverse outcome rate",
+            "caveat": (
+                "These diagnostics identify directional feature signal/noise in this dataset; "
+                "they are not causal inference and not claims-grade validation."
+            ),
+        },
+        "top_predictive_features": top_predictive,
+        "weak_or_noisy_features": weak_noisy,
+        "potentially_harmful_features": harmful,
+        "feature_vs_outcome_curves": [
+            {
+                "feature": row.get("feature"),
+                "family": row.get("family"),
+                "expected_direction": row.get("expected_direction"),
+                "observed_direction": row.get("observed_direction"),
+                "rows_with_value": row.get("rows_with_value"),
+                "coverage_fraction": row.get("coverage_fraction"),
+                "signal_score": row.get("signal_score"),
+                "feature_vs_outcome_curve": row.get("feature_vs_outcome_curve"),
+            }
+            for row in top_predictive[:12]
+        ],
+        "key_feature_family_summary": key_families,
+    }
+
+
 def _build_data_sufficiency_flags(
     *,
     prepared_rows: list[dict[str, Any]],
@@ -1812,6 +2174,7 @@ def evaluate_public_outcome_dataset_rows(
         medium_confidence_rows=medium_confidence_rows,
         min_slice_size=min_slice_size,
     )
+    feature_signal_diagnostics = _build_feature_signal_diagnostics(rows=usable_rows)
     if not high_confidence_rows:
         guardrail_warnings.append("No high-confidence rows in this run; prioritize stronger join/feature coverage before calibration decisions.")
     if not high_evidence_rows:
@@ -1998,6 +2361,7 @@ def evaluate_public_outcome_dataset_rows(
         "metric_stability": metric_stability,
         "directional_predictive_value": directional_predictive_value,
         "calibration_artifact_recommendation": calibration_recommendation,
+        "feature_signal_diagnostics": feature_signal_diagnostics,
     }
     report["narrative_summary"] = _build_narrative_summary(
         raw_auc=raw_auc,

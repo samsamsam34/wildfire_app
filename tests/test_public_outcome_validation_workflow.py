@@ -150,6 +150,9 @@ def test_evaluate_public_outcome_dataset_reports_required_metrics(tmp_path: Path
     assert "proxy_validation" in report
     assert "synthetic_validation" in report
     assert "validation_streams" in report
+    assert "feature_signal_diagnostics" in report
+    assert (report["feature_signal_diagnostics"] or {}).get("available") is True
+    assert isinstance((report["feature_signal_diagnostics"] or {}).get("top_predictive_features"), list)
     assert "false_review_sets" in report
     assert "metric_stability" in report
     assert isinstance(rows, list) and rows
@@ -204,6 +207,7 @@ def test_public_outcome_validation_orchestration_is_deterministic_with_fixed_run
     assert (output_root / "fixed_validation_run" / "threshold_metrics.json").exists()
     assert (output_root / "fixed_validation_run" / "false_low_review_set.jsonl").exists()
     assert (output_root / "fixed_validation_run" / "false_high_review_set.jsonl").exists()
+    assert (output_root / "fixed_validation_run" / "feature_diagnostics.json").exists()
     assert (output_root / "fixed_validation_run" / "comparison_to_previous.json").exists()
     assert (output_root / "fixed_validation_run" / "comparison_to_previous.md").exists()
 
@@ -407,7 +411,42 @@ def test_orchestration_writes_bundle_for_insufficient_dataset(tmp_path: Path) ->
     assert metrics["proxy_validation"]["available"] is False
     assert metrics["synthetic_validation"]["available"] is False
     assert metrics["validation_streams"]["real_outcome_validation"]["available"] is False
+    assert metrics["feature_signal_diagnostics"]["available"] is False
     assert "Insufficient usable labeled rows" in " ".join((metrics.get("guardrails") or {}).get("warnings") or [])
+
+
+def test_feature_signal_diagnostics_flags_direction_conflict(tmp_path: Path) -> None:
+    rows = []
+    for idx in range(10):
+        adverse = 1 if idx < 5 else 0
+        rows.append(
+            {
+                "event": {"event_id": "evt-c"},
+                "feature": {"record_id": f"r-{idx}"},
+                "outcome": {
+                    "damage_label": "destroyed" if adverse else "no_damage",
+                    "damage_severity_class": "destroyed" if adverse else "none",
+                    "structure_loss_or_major_damage": adverse,
+                },
+                "scores": {"wildfire_risk_score": (85.0 if adverse else 30.0)},
+                "feature_snapshot": {
+                    "raw_feature_vector": {
+                        "burn_probability": (0.9 if adverse else 0.2),
+                        "nearest_vegetation_distance_ft": (400.0 if adverse else 40.0),
+                    }
+                },
+                "join_metadata": {"join_confidence_tier": "high", "join_confidence_score": 0.95},
+                "confidence": {"confidence_tier": "high"},
+                "evidence": {"evidence_quality_tier": "high"},
+            }
+        )
+    dataset_path = tmp_path / "direction_conflict_eval.jsonl"
+    dataset_path.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
+    report, _ = evaluate_public_outcome_dataset_file(dataset_path=dataset_path, min_labeled_rows=1)
+    diag = report.get("feature_signal_diagnostics") or {}
+    harmful = diag.get("potentially_harmful_features") or []
+    harmful_names = {str(row.get("feature")) for row in harmful if isinstance(row, dict)}
+    assert "nearest_vegetation_distance_ft" in harmful_names
 
 
 def test_validation_propagates_retention_fallback_warning_from_dataset_join_report(tmp_path: Path) -> None:
