@@ -248,6 +248,12 @@ CRITICAL_PROVENANCE_FIELDS = {
     "vegetation_continuity_proxy_pct",
 }
 
+NEAR_STRUCTURE_PROXY_CRITICAL_FIELDS = {
+    "near_structure_vegetation_0_5_pct",
+    "canopy_adjacency_proxy_pct",
+    "vegetation_continuity_proxy_pct",
+}
+
 SCORE_FAMILY_FIELDS = {
     "site_hazard": [
         "burn_probability",
@@ -808,10 +814,17 @@ def _build_confidence(
         for meta in data_provenance.inputs:
             if meta.field_name not in CRITICAL_PROVENANCE_FIELDS:
                 continue
+            if has_ring_metrics and meta.field_name in NEAR_STRUCTURE_PROXY_CRITICAL_FIELDS:
+                # Footprint/parcel ring metrics already provide direct near-structure evidence.
+                # Do not double-penalize missing imagery-derived proxy fields in this case.
+                continue
             if meta.source_type in LOW_QUALITY_SOURCE_TYPES:
                 missing_critical_fields_set.add(meta.field_name)
             elif meta.source_type in INFERRED_SOURCE_TYPES:
                 inferred_critical_fields_set.add(meta.field_name)
+    if has_ring_metrics:
+        missing_critical_fields_set.difference_update(NEAR_STRUCTURE_PROXY_CRITICAL_FIELDS)
+        inferred_critical_fields_set.difference_update(NEAR_STRUCTURE_PROXY_CRITICAL_FIELDS)
     missing_critical_fields = sorted(missing_critical_fields_set)
     inferred_critical_fields = sorted(inferred_critical_fields_set)
 
@@ -3171,6 +3184,7 @@ def _build_assessment_diagnostics(
     data_provenance: DataProvenanceBlock,
     confidence_downgrade_reasons: list[str],
     trust_tier_blockers: list[str],
+    property_level_context: dict[str, Any] | None = None,
     fallback_decisions: list[dict[str, object]] | None = None,
 ) -> AssessmentDiagnostics:
     critical_present: list[str] = []
@@ -3179,8 +3193,21 @@ def _build_assessment_diagnostics(
     inferred_inputs: list[str] = []
     heuristic_inputs: list[str] = []
 
+    rings = (
+        property_level_context.get("ring_metrics")
+        if isinstance(property_level_context, dict) and isinstance(property_level_context.get("ring_metrics"), dict)
+        else {}
+    )
+    has_ring_metrics = any(
+        isinstance(rings.get(key), dict) and (rings.get(key) or {}).get("vegetation_density") is not None
+        for key in ("ring_0_5_ft", "zone_0_5_ft", "ring_5_30_ft", "zone_5_30_ft", "ring_30_100_ft", "zone_30_100_ft")
+    )
+
     for meta in data_provenance.inputs:
         if meta.field_name in CRITICAL_PROVENANCE_FIELDS:
+            if has_ring_metrics and meta.field_name in NEAR_STRUCTURE_PROXY_CRITICAL_FIELDS:
+                critical_present.append(meta.field_name)
+                continue
             if meta.source_type in LOW_QUALITY_SOURCE_TYPES:
                 critical_missing.append(meta.field_name)
             else:
@@ -5020,6 +5047,7 @@ def _run_assessment(
         data_provenance=data_provenance,
         confidence_downgrade_reasons=confidence_downgrade_reasons,
         trust_tier_blockers=trust_tier_blockers + assessment_blockers,
+        property_level_context=property_level_context,
         fallback_decisions=fallback_decisions,
     )
     assessment_limitations_summary = _build_assessment_limitations_summary(

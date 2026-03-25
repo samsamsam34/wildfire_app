@@ -161,7 +161,178 @@ def build_wildfire_context(overrides: dict[str, Any] | None = None) -> WildfireC
     elif structure_ring_metrics and isinstance(property_level, dict):
         property_level["ring_metrics"] = structure_ring_metrics
         payload["property_level_context"] = property_level
+    if isinstance(property_level, dict):
+        property_level.setdefault("region_property_specific_readiness", "property_specific_ready")
+        if not isinstance(property_level.get("feature_sampling"), dict) or not property_level.get("feature_sampling"):
+            property_level["feature_sampling"] = _build_benchmark_feature_sampling(payload, property_level)
+        feature_bundle_summary = (
+            property_level.get("feature_bundle_summary")
+            if isinstance(property_level.get("feature_bundle_summary"), dict)
+            else {}
+        )
+        coverage_metrics = (
+            feature_bundle_summary.get("coverage_metrics")
+            if isinstance(feature_bundle_summary.get("coverage_metrics"), dict)
+            else None
+        )
+        if coverage_metrics is None:
+            feature_bundle_summary["coverage_metrics"] = _build_benchmark_feature_bundle_metrics(
+                payload=payload,
+                property_level_context=property_level,
+                feature_sampling=property_level["feature_sampling"],
+            )
+        property_level["feature_bundle_summary"] = feature_bundle_summary
+        payload["property_level_context"] = property_level
     return WildfireContext(**payload)
+
+
+def _build_benchmark_feature_sampling(
+    payload: dict[str, Any],
+    property_level_context: dict[str, Any],
+) -> dict[str, dict[str, Any]]:
+    sampling: dict[str, dict[str, Any]] = {}
+    env_fields = {
+        "burn_probability_index": "burn_probability",
+        "hazard_severity_index": "hazard_severity",
+        "slope_index": "slope_topography",
+        "fuel_index": "vegetation_fuel",
+        "moisture_index": "drought_moisture",
+        "canopy_index": "canopy_density",
+        "wildland_distance_index": "fuel_proximity",
+        "historic_fire_index": "historical_fire_recurrence",
+        "access_exposure_index": "access_exposure",
+    }
+    for src_field, feature_key in env_fields.items():
+        value = payload.get(src_field)
+        sampling[feature_key] = {
+            "raw_point_value": value,
+            "index": value,
+            "scope": "region_level" if value is not None else "fallback",
+        }
+
+    rings = property_level_context.get("ring_metrics") if isinstance(property_level_context.get("ring_metrics"), dict) else {}
+    ring_field_map = {
+        "ring_0_5_ft": "zone_0_5_ft",
+        "zone_0_5_ft": "zone_0_5_ft",
+        "ring_5_30_ft": "zone_5_30_ft",
+        "zone_5_30_ft": "zone_5_30_ft",
+        "ring_30_100_ft": "zone_30_100_ft",
+        "zone_30_100_ft": "zone_30_100_ft",
+    }
+    for ring_key, feature_key in ring_field_map.items():
+        ring = rings.get(ring_key)
+        density = ring.get("vegetation_density") if isinstance(ring, dict) else None
+        sampling[feature_key] = {
+            "raw_point_value": density,
+            "index": density,
+            "scope": "property_specific" if density is not None else "fallback",
+        }
+
+    proxy_fields = [
+        "near_structure_vegetation_0_5_pct",
+        "canopy_adjacency_proxy_pct",
+        "vegetation_continuity_proxy_pct",
+        "nearest_high_fuel_patch_distance_ft",
+    ]
+    for field in proxy_fields:
+        value = property_level_context.get(field)
+        sampling[field] = {
+            "raw_point_value": value,
+            "index": value,
+            "scope": "property_specific" if value is not None else "fallback",
+        }
+
+    return sampling
+
+
+def _build_benchmark_feature_bundle_metrics(
+    *,
+    payload: dict[str, Any],
+    property_level_context: dict[str, Any],
+    feature_sampling: dict[str, dict[str, Any]],
+) -> dict[str, float]:
+    observed_feature_count = 0
+    inferred_feature_count = 0
+    fallback_feature_count = 0
+    missing_feature_count = 0
+    for feature in feature_sampling.values():
+        if not isinstance(feature, dict):
+            missing_feature_count += 1
+            continue
+        scope = str(feature.get("scope") or "").strip().lower()
+        value = feature.get("index")
+        if scope in {"property_specific", "neighborhood_level", "region_level"} and value is not None:
+            observed_feature_count += 1
+        elif scope in {"inferred", "estimated"}:
+            inferred_feature_count += 1
+        elif scope == "fallback":
+            fallback_feature_count += 1
+        else:
+            missing_feature_count += 1
+
+    total = max(1, observed_feature_count + inferred_feature_count + fallback_feature_count + missing_feature_count)
+    observed_weight_fraction = round(float(observed_feature_count) / float(total), 3)
+    fallback_dominance_ratio = round(float(fallback_feature_count) / float(total), 3)
+
+    footprint_used = bool(property_level_context.get("footprint_used"))
+    parcel_geometry = property_level_context.get("parcel_geometry")
+    if footprint_used:
+        geometry_quality = 0.92
+    elif isinstance(parcel_geometry, dict):
+        geometry_quality = 0.74
+    else:
+        geometry_quality = 0.46
+
+    env_layer_status = payload.get("environmental_layer_status") if isinstance(payload.get("environmental_layer_status"), dict) else {}
+    env_status_ok = sum(1 for value in env_layer_status.values() if str(value or "").strip().lower() in {"ok", "partial"})
+    env_fields_total = max(1, len(env_layer_status))
+    env_indices = [
+        payload.get("burn_probability_index"),
+        payload.get("hazard_severity_index"),
+        payload.get("moisture_index"),
+        payload.get("historic_fire_index"),
+    ]
+    env_index_ok = sum(1 for value in env_indices if value is not None)
+    environmental_layer_coverage_score = round(
+        ((env_status_ok + env_index_ok) / float(env_fields_total + len(env_indices))) * 100.0,
+        1,
+    )
+
+    enrichment_statuses = []
+    for key in ("hazard_context", "historical_fire_context", "moisture_context", "access_context"):
+        item = payload.get(key)
+        if not isinstance(item, dict):
+            enrichment_statuses.append("missing")
+            continue
+        enrichment_statuses.append(str(item.get("status") or "").strip().lower())
+    enrichment_consumed = sum(1 for status in enrichment_statuses if status in {"ok", "observed", "partial"})
+    regional_enrichment_consumption_score = round((enrichment_consumed / float(max(1, len(enrichment_statuses)))) * 100.0, 1)
+
+    property_specificity_score = round(
+        max(
+            0.0,
+            min(
+                100.0,
+                (geometry_quality * 45.0)
+                + (environmental_layer_coverage_score * 0.35)
+                + (observed_weight_fraction * 20.0),
+            ),
+        ),
+        1,
+    )
+
+    return {
+        "observed_feature_count": float(observed_feature_count),
+        "inferred_feature_count": float(inferred_feature_count),
+        "fallback_feature_count": float(fallback_feature_count),
+        "missing_feature_count": float(missing_feature_count),
+        "observed_weight_fraction": float(observed_weight_fraction),
+        "fallback_dominance_ratio": float(fallback_dominance_ratio),
+        "structure_geometry_quality_score": float(round(geometry_quality, 3)),
+        "environmental_layer_coverage_score": float(environmental_layer_coverage_score),
+        "regional_enrichment_consumption_score": float(regional_enrichment_consumption_score),
+        "property_specificity_score": float(property_specificity_score),
+    }
 
 
 def load_benchmark_pack(pack_path: str | Path | None = None) -> dict[str, Any]:

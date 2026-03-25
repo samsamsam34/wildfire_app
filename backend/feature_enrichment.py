@@ -350,6 +350,52 @@ def build_feature_bundle_summary(
             fallback_feature_count += 1
         else:
             missing_feature_count += 1
+
+    # Some benchmark and legacy contexts do not provide feature_sampling.
+    # Derive a deterministic fallback count profile from available context signals
+    # so observed evidence is not misclassified as "zero observed features".
+    if not feature_sampling:
+        inferred_feature_count = 0
+        observed_feature_count = 0
+        fallback_feature_count = 0
+        missing_feature_count = 0
+
+        for item in source_status.values():
+            if not isinstance(item, dict):
+                missing_feature_count += 1
+                continue
+            status = str(item.get("status") or "missing").strip().lower()
+            if status == "observed":
+                if bool(item.get("fallback_applied")):
+                    fallback_feature_count += 1
+                else:
+                    observed_feature_count += 1
+            elif status in {"inferred", "estimated"}:
+                inferred_feature_count += 1
+            else:
+                missing_feature_count += 1
+
+        for key in ("ring_0_5_ft", "ring_5_30_ft", "ring_30_100_ft", "zone_0_5_ft", "zone_5_30_ft", "zone_30_100_ft"):
+            ring = ring_metrics.get(key) if isinstance(ring_metrics, dict) else None
+            if isinstance(ring, dict) and ring.get("vegetation_density") is not None:
+                observed_feature_count += 1
+
+        for field in (
+            "near_structure_vegetation_0_5_pct",
+            "canopy_adjacency_proxy_pct",
+            "vegetation_continuity_proxy_pct",
+            "nearest_high_fuel_patch_distance_ft",
+            "access_exposure_index",
+        ):
+            if feature_snapshot.get(field) is not None:
+                observed_feature_count += 1
+
+        if observed_feature_count == 0 and fallback_feature_count == 0 and missing_feature_count == 0:
+            for available in coverage_flags.values():
+                if available:
+                    observed_feature_count += 1
+                else:
+                    missing_feature_count += 1
     total_feature_count = max(
         1,
         observed_feature_count + inferred_feature_count + fallback_feature_count + missing_feature_count,
