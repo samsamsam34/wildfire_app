@@ -1425,6 +1425,7 @@ def _build_markdown_summary(
         f"- Row confidence tier counts: `{quality.get('row_confidence_tier_counts')}`",
         f"- Join confidence score stats: `{quality.get('join_confidence_score_stats')}`",
         f"- Join confidence distance stats by tier: `{quality.get('join_confidence_tier_distance_stats')}`",
+        f"- Retention fallback: `{quality.get('retention_fallback')}`",
         f"- Average join distance (m): `{quality.get('average_join_distance_m')}`",
         f"- Median join distance (m): `{quality.get('median_join_distance_m')}`",
         f"- Distance percentiles (m): `{quality.get('distance_percentiles_m')}`",
@@ -1491,6 +1492,9 @@ def _build_filter_summary_markdown(
         "",
         "## Soft Flags (rows retained)",
         f"- Soft-flag counts: `{filter_summary.get('soft_flag_counts')}`",
+        f"- Retention fallback triggered: `{filter_summary.get('retention_fallback_triggered')}`",
+        f"- Retention fallback used: `{filter_summary.get('retention_fallback_used')}`",
+        f"- Retention target: `{filter_summary.get('retention_min_records_target')}`",
         "",
         "## Accounting",
         f"- Accounting check passed: `{filter_summary.get('no_silent_data_loss_guarantee')}`",
@@ -1523,6 +1527,11 @@ def _build_join_quality_warnings(*, quality: dict[str, Any]) -> list[str]:
     if avg_distance is not None and threshold_m is not None and avg_distance > threshold_m:
         warnings.append(
             f"Average join distance is high ({round(float(avg_distance), 3)} m > {round(float(threshold_m), 3)} m)."
+        )
+    retention = quality.get("retention_fallback") if isinstance(quality.get("retention_fallback"), dict) else {}
+    if bool(retention.get("triggered")):
+        warnings.append(
+            "Minimum-retention fallback mode was triggered; lower-confidence joins were included to prevent near-zero dataset collapse."
         )
     return warnings
 
@@ -1608,6 +1617,8 @@ def build_public_outcome_evaluation_dataset(
     enable_global_nearest_fallback: bool = True,
     allow_duplicate_outcome_matches: bool = False,
     address_token_overlap_min: float = 0.75,
+    min_retained_records: int = 0,
+    auto_relax_for_min_retention: bool = False,
     auto_score_missing: bool = True,
     overwrite: bool = False,
 ) -> dict[str, Any]:
@@ -1668,269 +1679,376 @@ def build_public_outcome_evaluation_dataset(
         allow_duplicate_outcome_matches=bool(allow_duplicate_outcome_matches),
         address_token_overlap_min=max(0.35, min(1.0, float(address_token_overlap_min))),
     )
-    joined_rows: list[dict[str, Any]] = []
-    excluded_rows: list[dict[str, Any]] = list(missing_feature_artifacts)
-    leakage_warnings: list[str] = []
-    join_method_counts: dict[str, int] = {}
-    join_tier_counts: dict[str, int] = {}
-    match_tier_counts: dict[str, int] = {}
-    join_tier_distance_values: dict[str, list[float]] = {}
-    join_tier_examples: dict[str, list[dict[str, Any]]] = {}
-    feature_coordinate_modes: dict[str, int] = {}
-    outcome_coordinate_modes: dict[str, int] = {}
-    duplicate_outcome_match_prevented_count = 0
-    candidate_match_attempt_count = 0
-    matched_candidate_count_before_filters = 0
-    soft_flag_counts: dict[str, int] = {}
-    used_outcome_keys: set[str] = set()
-    by_event_counts: dict[str, int] = {}
-    by_label_counts: dict[str, int] = {}
-    unmatched_feature_rows_by_event_counts: dict[str, int] = {}
-    low_confidence_join_count = 0
+    def _run_join_pass(*, pass_name: str, pass_join_config: JoinConfig, retention_fallback_mode: bool) -> dict[str, Any]:
+        joined_rows_pass: list[dict[str, Any]] = []
+        excluded_rows_pass: list[dict[str, Any]] = list(missing_feature_artifacts)
+        leakage_warnings_pass: list[str] = []
+        join_method_counts_pass: dict[str, int] = {}
+        join_tier_counts_pass: dict[str, int] = {}
+        match_tier_counts_pass: dict[str, int] = {}
+        join_tier_distance_values_pass: dict[str, list[float]] = {}
+        join_tier_examples_pass: dict[str, list[dict[str, Any]]] = {}
+        feature_coordinate_modes_pass: dict[str, int] = {}
+        outcome_coordinate_modes_pass: dict[str, int] = {}
+        duplicate_outcome_match_prevented_count_pass = 0
+        candidate_match_attempt_count_pass = 0
+        matched_candidate_count_before_filters_pass = 0
+        soft_flag_counts_pass: dict[str, int] = {}
+        used_outcome_keys_pass: set[str] = set()
+        by_event_counts_pass: dict[str, int] = {}
+        by_label_counts_pass: dict[str, int] = {}
+        unmatched_feature_rows_by_event_counts_pass: dict[str, int] = {}
+        low_confidence_join_count_pass = 0
 
-    for feature in sorted(feature_rows, key=_stable_feature_sort_key):
-        candidate_match_attempt_count += 1
-        feature_coord_mode = str(feature.payload.get("_coordinate_normalization_mode") or "unknown")
-        feature_coordinate_modes[feature_coord_mode] = feature_coordinate_modes.get(feature_coord_mode, 0) + 1
-        matched, join_meta = _choose_outcome(
-            feature,
-            indexes,
-            join_config=join_config,
-            excluded_outcome_keys=(used_outcome_keys if not join_config.allow_duplicate_outcome_matches else None),
-        )
-        method = str(join_meta.get("join_method") or "unmatched")
-        if matched is None:
-            unmatched_event_key = str(feature.event_id or "unknown_event")
-            unmatched_feature_rows_by_event_counts[unmatched_event_key] = (
-                unmatched_feature_rows_by_event_counts.get(unmatched_event_key, 0) + 1
+        for feature in sorted(feature_rows, key=_stable_feature_sort_key):
+            candidate_match_attempt_count_pass += 1
+            feature_coord_mode = str(feature.payload.get("_coordinate_normalization_mode") or "unknown")
+            feature_coordinate_modes_pass[feature_coord_mode] = feature_coordinate_modes_pass.get(feature_coord_mode, 0) + 1
+            matched, join_meta = _choose_outcome(
+                feature,
+                indexes,
+                join_config=pass_join_config,
+                excluded_outcome_keys=(used_outcome_keys_pass if not pass_join_config.allow_duplicate_outcome_matches else None),
             )
-            excluded_rows.append(
-                {
-                    "feature_artifact_path": feature.artifact_path,
-                    "record_id": feature.record_id,
-                    "event_id": feature.event_id,
-                    "reason": str(join_meta.get("unmatched_reason") or "no_outcome_match_within_constraints"),
-                }
-            )
-            continue
-        matched_candidate_count_before_filters += 1
-        matched_key = _outcome_identity_key(matched)
-        if not join_config.allow_duplicate_outcome_matches:
-            if matched_key in used_outcome_keys:
-                duplicate_outcome_match_prevented_count += 1
-                excluded_rows.append(
+            method = str(join_meta.get("join_method") or "unmatched")
+            if matched is None:
+                unmatched_event_key = str(feature.event_id or "unknown_event")
+                unmatched_feature_rows_by_event_counts_pass[unmatched_event_key] = (
+                    unmatched_feature_rows_by_event_counts_pass.get(unmatched_event_key, 0) + 1
+                )
+                excluded_rows_pass.append(
                     {
                         "feature_artifact_path": feature.artifact_path,
                         "record_id": feature.record_id,
                         "event_id": feature.event_id,
-                        "reason": "duplicate_outcome_match_prevented",
-                        "outcome_identity_key": matched_key,
+                        "reason": str(join_meta.get("unmatched_reason") or "no_outcome_match_within_constraints"),
+                        "join_pass": pass_name,
                     }
                 )
                 continue
-            used_outcome_keys.add(matched_key)
-        outcome_coord_mode = str(matched.payload.get("_coordinate_normalization_mode") or "unknown")
-        outcome_coordinate_modes[outcome_coord_mode] = outcome_coordinate_modes.get(outcome_coord_mode, 0) + 1
+            matched_candidate_count_before_filters_pass += 1
+            matched_key = _outcome_identity_key(matched)
+            if not pass_join_config.allow_duplicate_outcome_matches:
+                if matched_key in used_outcome_keys_pass:
+                    duplicate_outcome_match_prevented_count_pass += 1
+                    excluded_rows_pass.append(
+                        {
+                            "feature_artifact_path": feature.artifact_path,
+                            "record_id": feature.record_id,
+                            "event_id": feature.event_id,
+                            "reason": "duplicate_outcome_match_prevented",
+                            "outcome_identity_key": matched_key,
+                            "join_pass": pass_name,
+                        }
+                    )
+                    continue
+                used_outcome_keys_pass.add(matched_key)
+            outcome_coord_mode = str(matched.payload.get("_coordinate_normalization_mode") or "unknown")
+            outcome_coordinate_modes_pass[outcome_coord_mode] = outcome_coordinate_modes_pass.get(outcome_coord_mode, 0) + 1
 
-        join_method_counts[method] = join_method_counts.get(method, 0) + 1
-        tier = str(join_meta.get("join_confidence_tier") or "low")
-        join_tier_counts[tier] = join_tier_counts.get(tier, 0) + 1
-        match_tier = str(join_meta.get("match_tier") or "unknown")
-        match_tier_counts[match_tier] = match_tier_counts.get(match_tier, 0) + 1
-        join_distance_value = _safe_float(join_meta.get("join_distance_m"))
-        if join_distance_value is not None:
-            join_tier_distance_values.setdefault(tier, []).append(float(join_distance_value))
-        examples = join_tier_examples.setdefault(tier, [])
-        if len(examples) < 3:
-            examples.append(
-                {
-                    "feature_record_id": feature.record_id or feature.source_record_id,
-                    "outcome_record_id": matched.record_id or matched.source_record_id,
-                    "event_id": feature.event_id or matched.event_id,
-                    "join_method": method,
-                    "join_distance_m": (round(float(join_distance_value), 2) if join_distance_value is not None else None),
-                    "address_text": feature.payload.get("address_text") or matched.payload.get("address_text"),
-                }
+            join_method_counts_pass[method] = join_method_counts_pass.get(method, 0) + 1
+            tier = str(join_meta.get("join_confidence_tier") or "low")
+            join_tier_counts_pass[tier] = join_tier_counts_pass.get(tier, 0) + 1
+            match_tier = str(join_meta.get("match_tier") or "unknown")
+            match_tier_counts_pass[match_tier] = match_tier_counts_pass.get(match_tier, 0) + 1
+            join_distance_value = _safe_float(join_meta.get("join_distance_m"))
+            if join_distance_value is not None:
+                join_tier_distance_values_pass.setdefault(tier, []).append(float(join_distance_value))
+            examples = join_tier_examples_pass.setdefault(tier, [])
+            if len(examples) < 3:
+                examples.append(
+                    {
+                        "feature_record_id": feature.record_id or feature.source_record_id,
+                        "outcome_record_id": matched.record_id or matched.source_record_id,
+                        "event_id": feature.event_id or matched.event_id,
+                        "join_method": method,
+                        "join_distance_m": (round(float(join_distance_value), 2) if join_distance_value is not None else None),
+                        "address_text": feature.payload.get("address_text") or matched.payload.get("address_text"),
+                    }
+                )
+            if tier == "low":
+                low_confidence_join_count_pass += 1
+
+            severity, binary = _derive_severity_and_binary(matched.payload)
+            leak_flags = _detect_leakage_flags(feature.payload, feature.payload.get("event_date"))
+            if leak_flags:
+                leakage_warnings_pass.append(
+                    f"{feature.event_id or 'unknown_event'}/{feature.record_id or 'unknown_record'}: {','.join(leak_flags)}"
+                )
+
+            caveat_flags: list[str] = []
+            if not _event_year_consistent_with_tolerance(feature, matched, pass_join_config.event_year_tolerance_years):
+                caveat_flags.append("event_year_mismatch")
+            distance_m = _safe_float(join_meta.get("join_distance_m"))
+            if distance_m is not None and distance_m > float(pass_join_config.max_distance_m) * 0.6:
+                caveat_flags.append("high_join_distance")
+            if tier == "low":
+                caveat_flags.append("low_confidence_join")
+            if leak_flags:
+                caveat_flags.append("leakage_warning_present")
+            if retention_fallback_mode:
+                caveat_flags.append("retention_fallback_mode")
+
+            extracted_scores = _extract_feature_scores(feature.payload)
+            wildfire_risk = extracted_scores.get("wildfire_risk_score")
+            site_hazard = extracted_scores.get("site_hazard_score")
+            home_vuln = extracted_scores.get("home_ignition_vulnerability_score")
+            readiness = extracted_scores.get("insurance_readiness_score")
+
+            confidence_payload = feature.payload.get("confidence") if isinstance(feature.payload.get("confidence"), dict) else {}
+            evidence_summary = feature.payload.get("evidence_quality_summary") if isinstance(feature.payload.get("evidence_quality_summary"), dict) else {}
+            coverage_summary = feature.payload.get("coverage_summary") if isinstance(feature.payload.get("coverage_summary"), dict) else {}
+            missing_feature_fields = sorted(
+                [
+                    key
+                    for key, value in {
+                        "wildfire_risk_score": wildfire_risk,
+                        "site_hazard_score": site_hazard,
+                        "home_ignition_vulnerability_score": home_vuln,
+                        "insurance_readiness_score": readiness,
+                    }.items()
+                    if value is None
+                ]
             )
-        if tier == "low":
-            low_confidence_join_count += 1
-
-        severity, binary = _derive_severity_and_binary(matched.payload)
-        leak_flags = _detect_leakage_flags(feature.payload, feature.payload.get("event_date"))
-        if leak_flags:
-            leakage_warnings.append(
-                f"{feature.event_id or 'unknown_event'}/{feature.record_id or 'unknown_record'}: {','.join(leak_flags)}"
+            fallback_count = int(_safe_float((coverage_summary or {}).get("fallback_count")) or 0)
+            failed_count = int(_safe_float((coverage_summary or {}).get("failed_count")) or 0)
+            evidence_tier = str((evidence_summary or {}).get("evidence_tier") or "").strip().lower()
+            fallback_weight_fraction = _safe_float((evidence_summary or {}).get("fallback_weight_fraction"))
+            fallback_heavy = (
+                evidence_tier == "fallback_heavy"
+                or fallback_count > 0
+                or failed_count > 0
+                or (fallback_weight_fraction is not None and float(fallback_weight_fraction) >= 0.5)
+            )
+            soft_flags: list[str] = []
+            if tier == "low":
+                soft_flags.append("low_confidence_join")
+            if missing_feature_fields:
+                soft_flags.append("missing_features")
+            if fallback_heavy:
+                soft_flags.append("fallback_heavy")
+            if retention_fallback_mode:
+                soft_flags.append("retention_fallback_mode")
+            for flag in soft_flags:
+                soft_flag_counts_pass[flag] = soft_flag_counts_pass.get(flag, 0) + 1
+            row_confidence_tier = _derive_row_confidence_tier(
+                join_confidence_tier=str(join_meta.get("join_confidence_tier") or "low"),
+                model_confidence_tier=str(confidence_payload.get("confidence_tier") or feature.payload.get("confidence_tier") or "unknown"),
+                evidence_quality_tier=str(evidence_summary.get("evidence_tier") or "unknown"),
             )
 
-        caveat_flags: list[str] = []
-        if not _event_year_consistent_with_tolerance(feature, matched, join_config.event_year_tolerance_years):
-            caveat_flags.append("event_year_mismatch")
-        distance_m = _safe_float(join_meta.get("join_distance_m"))
-        if distance_m is not None and distance_m > float(join_config.max_distance_m) * 0.6:
-            caveat_flags.append("high_join_distance")
-        if tier == "low":
-            caveat_flags.append("low_confidence_join")
-        if leak_flags:
-            caveat_flags.append("leakage_warning_present")
-
-        extracted_scores = _extract_feature_scores(feature.payload)
-        wildfire_risk = extracted_scores.get("wildfire_risk_score")
-        site_hazard = extracted_scores.get("site_hazard_score")
-        home_vuln = extracted_scores.get("home_ignition_vulnerability_score")
-        readiness = extracted_scores.get("insurance_readiness_score")
-
-        confidence_payload = feature.payload.get("confidence") if isinstance(feature.payload.get("confidence"), dict) else {}
-        evidence_summary = feature.payload.get("evidence_quality_summary") if isinstance(feature.payload.get("evidence_quality_summary"), dict) else {}
-        coverage_summary = feature.payload.get("coverage_summary") if isinstance(feature.payload.get("coverage_summary"), dict) else {}
-        missing_feature_fields = sorted(
-            [
-                key
-                for key, value in {
+            joined = {
+                "property_event_id": f"{feature.event_id or 'unknown_event'}::{feature.record_id or feature.source_record_id or 'unknown_record'}",
+                "event": {
+                    "event_id": feature.payload.get("event_id") or matched.payload.get("event_id"),
+                    "event_name": feature.payload.get("event_name") or matched.payload.get("event_name"),
+                    "event_date": feature.payload.get("event_date") or matched.payload.get("event_date"),
+                    "event_year": feature.event_year or matched.event_year,
+                },
+                "feature": {
+                    "record_id": feature.payload.get("record_id"),
+                    "source_record_id": feature.payload.get("source_record_id"),
+                    "source_name": feature.payload.get("source_name"),
+                    "feature_artifact_path": feature.artifact_path,
+                    "address_text": feature.payload.get("address_text"),
+                    "latitude": feature.latitude,
+                    "longitude": feature.longitude,
+                    "coordinate_normalization_mode": feature.payload.get("_coordinate_normalization_mode"),
+                    "parcel_identifier": feature.payload.get("parcel_identifier") or feature.payload.get("parcel_id"),
+                },
+                "outcome": {
+                    "record_id": matched.payload.get("record_id"),
+                    "source_record_id": matched.payload.get("source_record_id"),
+                    "source_name": matched.payload.get("source_name"),
+                    "source_path": matched.payload.get("source_path"),
+                    "address_text": matched.payload.get("address_text"),
+                    "latitude": matched.latitude,
+                    "longitude": matched.longitude,
+                    "coordinate_normalization_mode": matched.payload.get("_coordinate_normalization_mode"),
+                    "damage_label": matched.payload.get("damage_label"),
+                    "damage_severity_class": severity,
+                    "structure_loss_or_major_damage": binary,
+                    "adverse_outcome_binary": (bool(binary) if binary in (0, 1) else None),
+                    "source_native_label": matched.payload.get("source_native_label") or matched.payload.get("raw_damage_label"),
+                },
+                "scores": {
                     "wildfire_risk_score": wildfire_risk,
                     "site_hazard_score": site_hazard,
                     "home_ignition_vulnerability_score": home_vuln,
                     "insurance_readiness_score": readiness,
-                }.items()
-                if value is None
-            ]
-        )
-        fallback_count = int(_safe_float((coverage_summary or {}).get("fallback_count")) or 0)
-        failed_count = int(_safe_float((coverage_summary or {}).get("failed_count")) or 0)
-        evidence_tier = str((evidence_summary or {}).get("evidence_tier") or "").strip().lower()
-        fallback_weight_fraction = _safe_float((evidence_summary or {}).get("fallback_weight_fraction"))
-        fallback_heavy = (
-            evidence_tier == "fallback_heavy"
-            or fallback_count > 0
-            or failed_count > 0
-            or (fallback_weight_fraction is not None and float(fallback_weight_fraction) >= 0.5)
-        )
-        soft_flags: list[str] = []
-        if tier == "low":
-            soft_flags.append("low_confidence_join")
-        if missing_feature_fields:
-            soft_flags.append("missing_features")
-        if fallback_heavy:
-            soft_flags.append("fallback_heavy")
-        for flag in soft_flags:
-            soft_flag_counts[flag] = soft_flag_counts.get(flag, 0) + 1
-        row_confidence_tier = _derive_row_confidence_tier(
-            join_confidence_tier=str(join_meta.get("join_confidence_tier") or "low"),
-            model_confidence_tier=str(confidence_payload.get("confidence_tier") or feature.payload.get("confidence_tier") or "unknown"),
-            evidence_quality_tier=str(evidence_summary.get("evidence_tier") or "unknown"),
-        )
+                },
+                "confidence": {
+                    "confidence_tier": confidence_payload.get("confidence_tier") or feature.payload.get("confidence_tier"),
+                    "confidence_score": _safe_float(confidence_payload.get("confidence_score") or feature.payload.get("confidence_score")),
+                    "use_restriction": confidence_payload.get("use_restriction") or feature.payload.get("use_restriction"),
+                },
+                "evidence": {
+                    "evidence_quality_tier": evidence_summary.get("evidence_tier"),
+                    "evidence_quality_summary": evidence_summary,
+                    "coverage_summary": coverage_summary,
+                },
+                "feature_snapshot": {
+                    "raw_feature_vector": (
+                        feature.payload.get("raw_feature_vector")
+                        if isinstance(feature.payload.get("raw_feature_vector"), dict)
+                        else {}
+                    ),
+                    "transformed_feature_vector": (
+                        feature.payload.get("transformed_feature_vector")
+                        if isinstance(feature.payload.get("transformed_feature_vector"), dict)
+                        else {}
+                    ),
+                    "factor_contribution_breakdown": (
+                        feature.payload.get("factor_contribution_breakdown")
+                        if isinstance(feature.payload.get("factor_contribution_breakdown"), dict)
+                        else {}
+                    ),
+                    "compression_flags": (
+                        feature.payload.get("compression_flags")
+                        if isinstance(feature.payload.get("compression_flags"), list)
+                        else []
+                    ),
+                },
+                "join_metadata": {
+                    **join_meta,
+                    "max_distance_m": float(pass_join_config.max_distance_m),
+                    "high_confidence_distance_m": float(pass_join_config.high_confidence_distance_m),
+                    "medium_confidence_distance_m": float(pass_join_config.medium_confidence_distance_m),
+                    "global_max_distance_m": float(pass_join_config.global_max_distance_m),
+                    "event_year_tolerance_years": int(pass_join_config.event_year_tolerance_years),
+                    "global_fallback_enabled": bool(pass_join_config.enable_global_nearest_fallback),
+                    "event_year_consistent": _event_year_consistent_with_tolerance(
+                        feature,
+                        matched,
+                        pass_join_config.event_year_tolerance_years,
+                    ),
+                    "join_pass": pass_name,
+                    "retention_fallback_mode": bool(retention_fallback_mode),
+                },
+                "evaluation": {
+                    "row_usable": True,
+                    "row_confidence_tier": row_confidence_tier,
+                    "soft_filter_flags": soft_flags,
+                    "missing_feature_fields": missing_feature_fields,
+                    "fallback_heavy": bool(fallback_heavy),
+                },
+                "provenance": {
+                    "model_governance": (
+                        feature.payload.get("model_governance")
+                        if isinstance(feature.payload.get("model_governance"), dict)
+                        else {}
+                    ),
+                    "outcome_provenance_notes": list(matched.payload.get("provenance_notes") or matched.payload.get("source_quality_flags") or []),
+                },
+                "leakage_flags": leak_flags,
+                "caveat_flags": sorted(set(caveat_flags)),
+            }
+            joined_rows_pass.append(joined)
 
-        joined = {
-            "property_event_id": f"{feature.event_id or 'unknown_event'}::{feature.record_id or feature.source_record_id or 'unknown_record'}",
-            "event": {
-                "event_id": feature.payload.get("event_id") or matched.payload.get("event_id"),
-                "event_name": feature.payload.get("event_name") or matched.payload.get("event_name"),
-                "event_date": feature.payload.get("event_date") or matched.payload.get("event_date"),
-                "event_year": feature.event_year or matched.event_year,
-            },
-            "feature": {
-                "record_id": feature.payload.get("record_id"),
-                "source_record_id": feature.payload.get("source_record_id"),
-                "source_name": feature.payload.get("source_name"),
-                "feature_artifact_path": feature.artifact_path,
-                "address_text": feature.payload.get("address_text"),
-                "latitude": feature.latitude,
-                "longitude": feature.longitude,
-                "coordinate_normalization_mode": feature.payload.get("_coordinate_normalization_mode"),
-                "parcel_identifier": feature.payload.get("parcel_identifier") or feature.payload.get("parcel_id"),
-            },
-            "outcome": {
-                "record_id": matched.payload.get("record_id"),
-                "source_record_id": matched.payload.get("source_record_id"),
-                "source_name": matched.payload.get("source_name"),
-                "source_path": matched.payload.get("source_path"),
-                "address_text": matched.payload.get("address_text"),
-                "latitude": matched.latitude,
-                "longitude": matched.longitude,
-                "coordinate_normalization_mode": matched.payload.get("_coordinate_normalization_mode"),
-                "damage_label": matched.payload.get("damage_label"),
-                "damage_severity_class": severity,
-                "structure_loss_or_major_damage": binary,
-                "adverse_outcome_binary": (bool(binary) if binary in (0, 1) else None),
-                "source_native_label": matched.payload.get("source_native_label") or matched.payload.get("raw_damage_label"),
-            },
-            "scores": {
-                "wildfire_risk_score": wildfire_risk,
-                "site_hazard_score": site_hazard,
-                "home_ignition_vulnerability_score": home_vuln,
-                "insurance_readiness_score": readiness,
-            },
-            "confidence": {
-                "confidence_tier": confidence_payload.get("confidence_tier") or feature.payload.get("confidence_tier"),
-                "confidence_score": _safe_float(confidence_payload.get("confidence_score") or feature.payload.get("confidence_score")),
-                "use_restriction": confidence_payload.get("use_restriction") or feature.payload.get("use_restriction"),
-            },
-            "evidence": {
-                "evidence_quality_tier": evidence_summary.get("evidence_tier"),
-                "evidence_quality_summary": evidence_summary,
-                "coverage_summary": coverage_summary,
-            },
-            "feature_snapshot": {
-                "raw_feature_vector": (
-                    feature.payload.get("raw_feature_vector")
-                    if isinstance(feature.payload.get("raw_feature_vector"), dict)
-                    else {}
-                ),
-                "transformed_feature_vector": (
-                    feature.payload.get("transformed_feature_vector")
-                    if isinstance(feature.payload.get("transformed_feature_vector"), dict)
-                    else {}
-                ),
-                "factor_contribution_breakdown": (
-                    feature.payload.get("factor_contribution_breakdown")
-                    if isinstance(feature.payload.get("factor_contribution_breakdown"), dict)
-                    else {}
-                ),
-                "compression_flags": (
-                    feature.payload.get("compression_flags")
-                    if isinstance(feature.payload.get("compression_flags"), list)
-                    else []
-                ),
-            },
-            "join_metadata": {
-                **join_meta,
-                "max_distance_m": float(join_config.max_distance_m),
-                "high_confidence_distance_m": float(join_config.high_confidence_distance_m),
-                "medium_confidence_distance_m": float(join_config.medium_confidence_distance_m),
-                "global_max_distance_m": float(join_config.global_max_distance_m),
-                "event_year_tolerance_years": int(join_config.event_year_tolerance_years),
-                "global_fallback_enabled": bool(join_config.enable_global_nearest_fallback),
-                "event_year_consistent": _event_year_consistent_with_tolerance(
-                    feature,
-                    matched,
-                    join_config.event_year_tolerance_years,
-                ),
-            },
-            "evaluation": {
-                "row_usable": True,
-                "row_confidence_tier": row_confidence_tier,
-                "soft_filter_flags": soft_flags,
-                "missing_feature_fields": missing_feature_fields,
-                "fallback_heavy": bool(fallback_heavy),
-            },
-            "provenance": {
-                "model_governance": (
-                    feature.payload.get("model_governance")
-                    if isinstance(feature.payload.get("model_governance"), dict)
-                    else {}
-                ),
-                "outcome_provenance_notes": list(matched.payload.get("provenance_notes") or matched.payload.get("source_quality_flags") or []),
-            },
-            "leakage_flags": leak_flags,
-            "caveat_flags": sorted(set(caveat_flags)),
+            event_key = str(joined["event"]["event_id"] or "unknown_event")
+            by_event_counts_pass[event_key] = by_event_counts_pass.get(event_key, 0) + 1
+            label_key = str(joined["outcome"]["damage_label"] or "unknown")
+            by_label_counts_pass[label_key] = by_label_counts_pass.get(label_key, 0) + 1
+
+        joined_rows_pass.sort(key=lambda row: str(row.get("property_event_id") or ""))
+        return {
+            "joined_rows": joined_rows_pass,
+            "excluded_rows": excluded_rows_pass,
+            "leakage_warnings": leakage_warnings_pass,
+            "join_method_counts": join_method_counts_pass,
+            "join_tier_counts": join_tier_counts_pass,
+            "match_tier_counts": match_tier_counts_pass,
+            "join_tier_distance_values": join_tier_distance_values_pass,
+            "join_tier_examples": join_tier_examples_pass,
+            "feature_coordinate_modes": feature_coordinate_modes_pass,
+            "outcome_coordinate_modes": outcome_coordinate_modes_pass,
+            "duplicate_outcome_match_prevented_count": duplicate_outcome_match_prevented_count_pass,
+            "candidate_match_attempt_count": candidate_match_attempt_count_pass,
+            "matched_candidate_count_before_filters": matched_candidate_count_before_filters_pass,
+            "soft_flag_counts": soft_flag_counts_pass,
+            "by_event_counts": by_event_counts_pass,
+            "by_label_counts": by_label_counts_pass,
+            "unmatched_feature_rows_by_event_counts": unmatched_feature_rows_by_event_counts_pass,
+            "low_confidence_join_count": low_confidence_join_count_pass,
         }
-        joined_rows.append(joined)
 
-        event_key = str(joined["event"]["event_id"] or "unknown_event")
-        by_event_counts[event_key] = by_event_counts.get(event_key, 0) + 1
-        label_key = str(joined["outcome"]["damage_label"] or "unknown")
-        by_label_counts[label_key] = by_label_counts.get(label_key, 0) + 1
+    primary_pass = _run_join_pass(pass_name="primary", pass_join_config=join_config, retention_fallback_mode=False)
+    selected_pass = primary_pass
+    retention_target = max(0, int(min_retained_records))
+    retention_fallback_summary: dict[str, Any] = {
+        "enabled": bool(auto_relax_for_min_retention and retention_target > 0),
+        "triggered": False,
+        "used": False,
+        "target_min_records": retention_target,
+        "primary_joined_records": len(primary_pass["joined_rows"]),
+        "fallback_joined_records": None,
+        "active_pass": "primary",
+        "reason": None,
+        "relaxed_join_config": None,
+    }
+    if retention_fallback_summary["enabled"] and len(primary_pass["joined_rows"]) < retention_target:
+        retention_fallback_summary["triggered"] = True
+        retention_fallback_summary["reason"] = (
+            f"Primary join produced {len(primary_pass['joined_rows'])} rows, below minimum retention target {retention_target}."
+        )
+        relaxed_join_config = JoinConfig(
+            exact_match_distance_m=float(join_config.exact_match_distance_m),
+            near_match_distance_m=max(float(join_config.near_match_distance_m), 75.0),
+            max_distance_m=max(float(join_config.max_distance_m), 500.0),
+            global_max_distance_m=max(float(join_config.global_max_distance_m), 5000.0),
+            buffer_match_radius_m=max(float(join_config.buffer_match_radius_m), 250.0),
+            high_confidence_distance_m=float(join_config.high_confidence_distance_m),
+            medium_confidence_distance_m=max(float(join_config.medium_confidence_distance_m), 250.0),
+            event_year_tolerance_years=max(int(join_config.event_year_tolerance_years), 2),
+            enable_global_nearest_fallback=True,
+            allow_duplicate_outcome_matches=True,
+            address_token_overlap_min=min(float(join_config.address_token_overlap_min), 0.45),
+        )
+        fallback_pass = _run_join_pass(
+            pass_name="retention_fallback_relaxed",
+            pass_join_config=relaxed_join_config,
+            retention_fallback_mode=True,
+        )
+        retention_fallback_summary["fallback_joined_records"] = len(fallback_pass["joined_rows"])
+        retention_fallback_summary["relaxed_join_config"] = {
+            "exact_match_distance_m": float(relaxed_join_config.exact_match_distance_m),
+            "near_match_distance_m": float(relaxed_join_config.near_match_distance_m),
+            "max_distance_m": float(relaxed_join_config.max_distance_m),
+            "global_max_distance_m": float(relaxed_join_config.global_max_distance_m),
+            "buffer_match_radius_m": float(relaxed_join_config.buffer_match_radius_m),
+            "high_confidence_distance_m": float(relaxed_join_config.high_confidence_distance_m),
+            "medium_confidence_distance_m": float(relaxed_join_config.medium_confidence_distance_m),
+            "event_year_tolerance_years": int(relaxed_join_config.event_year_tolerance_years),
+            "enable_global_nearest_fallback": bool(relaxed_join_config.enable_global_nearest_fallback),
+            "allow_duplicate_outcome_matches": bool(relaxed_join_config.allow_duplicate_outcome_matches),
+            "address_token_overlap_min": float(relaxed_join_config.address_token_overlap_min),
+        }
+        if len(fallback_pass["joined_rows"]) >= len(primary_pass["joined_rows"]):
+            selected_pass = fallback_pass
+            join_config = relaxed_join_config
+            retention_fallback_summary["used"] = True
+            retention_fallback_summary["active_pass"] = "retention_fallback_relaxed"
+        else:
+            retention_fallback_summary["active_pass"] = "primary"
 
-    joined_rows.sort(key=lambda row: str(row.get("property_event_id") or ""))
+    joined_rows = list(selected_pass["joined_rows"])
+    excluded_rows = list(selected_pass["excluded_rows"])
+    leakage_warnings = list(selected_pass["leakage_warnings"])
+    join_method_counts = dict(selected_pass["join_method_counts"])
+    join_tier_counts = dict(selected_pass["join_tier_counts"])
+    match_tier_counts = dict(selected_pass["match_tier_counts"])
+    join_tier_distance_values = dict(selected_pass["join_tier_distance_values"])
+    join_tier_examples = dict(selected_pass["join_tier_examples"])
+    feature_coordinate_modes = dict(selected_pass["feature_coordinate_modes"])
+    outcome_coordinate_modes = dict(selected_pass["outcome_coordinate_modes"])
+    duplicate_outcome_match_prevented_count = int(selected_pass["duplicate_outcome_match_prevented_count"])
+    candidate_match_attempt_count = int(selected_pass["candidate_match_attempt_count"])
+    matched_candidate_count_before_filters = int(selected_pass["matched_candidate_count_before_filters"])
+    soft_flag_counts = dict(selected_pass["soft_flag_counts"])
+    by_event_counts = dict(selected_pass["by_event_counts"])
+    by_label_counts = dict(selected_pass["by_label_counts"])
+    unmatched_feature_rows_by_event_counts = dict(selected_pass["unmatched_feature_rows_by_event_counts"])
+    low_confidence_join_count = int(selected_pass["low_confidence_join_count"])
     join_rate = round(len(joined_rows) / float(len(feature_rows)), 4) if feature_rows else 0.0
     join_distances = [
         float((row.get("join_metadata") or {}).get("join_distance_m"))
@@ -2079,6 +2197,10 @@ def build_public_outcome_evaluation_dataset(
         "outcome_load_diagnostics": outcome_load_diagnostics,
         "feature_load_diagnostics": feature_load_diagnostics,
         "soft_flag_counts": dict(sorted(soft_flag_counts.items())),
+        "retention_fallback": retention_fallback_summary,
+        "retention_fallback_triggered": bool(retention_fallback_summary.get("triggered")),
+        "retention_fallback_used": bool(retention_fallback_summary.get("used")),
+        "retention_min_records_target": int(retention_target),
         "warning_thresholds": {
             "high_average_distance_m": round(float(join_config.medium_confidence_distance_m), 3),
         },
@@ -2123,6 +2245,9 @@ def build_public_outcome_evaluation_dataset(
         "filter_reason_counts": dict(sorted(filter_reason_counts.items())),
         "filter_reason_percentages": dict(sorted(filter_reason_percentages.items())),
         "soft_flag_counts": dict(sorted(soft_flag_counts.items())),
+        "retention_fallback_triggered": bool(retention_fallback_summary.get("triggered")),
+        "retention_fallback_used": bool(retention_fallback_summary.get("used")),
+        "retention_min_records_target": int(retention_target),
         "accounting": accounting,
         "no_silent_data_loss_guarantee": bool(accounting.get("matches_attempts_accounted")),
     }
@@ -2185,6 +2310,8 @@ def build_public_outcome_evaluation_dataset(
                 "allow_duplicate_outcome_matches": bool(join_config.allow_duplicate_outcome_matches),
                 "address_token_overlap_min": float(join_config.address_token_overlap_min),
             },
+            "min_retained_records": int(retention_target),
+            "auto_relax_for_min_retention": bool(auto_relax_for_min_retention),
             "auto_score_missing": bool(auto_score_missing),
         },
         "artifacts": {
@@ -2209,6 +2336,8 @@ def build_public_outcome_evaluation_dataset(
             "score_backfilled_records": int(score_backfill.get("backfilled_record_count") or 0),
             "remaining_missing_scores": int(score_backfill.get("remaining_missing_score_record_count") or 0),
             "no_silent_data_loss_guarantee": bool(filter_summary.get("no_silent_data_loss_guarantee")),
+            "retention_fallback_triggered": bool(retention_fallback_summary.get("triggered")),
+            "retention_fallback_used": bool(retention_fallback_summary.get("used")),
         },
         "caveat": (
             "Public observed outcomes are directional validation signals and not equivalent to insurer claims truth."
@@ -2375,6 +2504,21 @@ def main() -> int:
         help="Minimum token-overlap ratio for approximate event+address joins.",
     )
     parser.add_argument(
+        "--min-retained-records",
+        type=int,
+        default=20,
+        help=(
+            "Minimum target for joined records. If the primary join returns fewer rows and "
+            "--auto-relax-for-min-retention is enabled, a relaxed fallback pass is attempted."
+        ),
+    )
+    parser.add_argument(
+        "--auto-relax-for-min-retention",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Enable/disable automatic relaxed fallback matching when joined rows are below --min-retained-records.",
+    )
+    parser.add_argument(
         "--auto-score-missing",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -2460,6 +2604,8 @@ def main() -> int:
         enable_global_nearest_fallback=bool(args.enable_global_nearest_fallback),
         allow_duplicate_outcome_matches=allow_duplicate_outcome_matches,
         address_token_overlap_min=float(args.address_token_overlap_min),
+        min_retained_records=int(args.min_retained_records),
+        auto_relax_for_min_retention=bool(args.auto_relax_for_min_retention),
         auto_score_missing=bool(args.auto_score_missing),
         overwrite=bool(args.overwrite),
     )
@@ -2487,6 +2633,23 @@ def main() -> int:
         accounting = filter_summary.get("accounting") if isinstance(filter_summary.get("accounting"), dict) else {}
         if accounting:
             print(f"[public-eval-ds] Filter accounting: {accounting}")
+    retention_fallback = join_report.get("retention_fallback") if isinstance(join_report.get("retention_fallback"), dict) else {}
+    if retention_fallback:
+        print(
+            "[public-eval-ds] Minimum-retention fallback: "
+            f"enabled={retention_fallback.get('enabled')} "
+            f"triggered={retention_fallback.get('triggered')} "
+            f"used={retention_fallback.get('used')} "
+            f"target={retention_fallback.get('target_min_records')} "
+            f"primary_joined={retention_fallback.get('primary_joined_records')} "
+            f"fallback_joined={retention_fallback.get('fallback_joined_records')} "
+            f"active_pass={retention_fallback.get('active_pass')}"
+        )
+        if retention_fallback.get("triggered"):
+            print(
+                "[public-eval-ds] WARNING: minimum-retention fallback mode triggered; lower-confidence matches "
+                "were included and are explicitly flagged in `evaluation.soft_filter_flags`."
+            )
     print(
         f"[public-eval-ds] Matched rows={join_report.get('total_joined_records')} "
         f"excluded={join_report.get('excluded_row_count')} "

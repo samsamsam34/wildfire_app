@@ -410,6 +410,71 @@ def test_orchestration_writes_bundle_for_insufficient_dataset(tmp_path: Path) ->
     assert "Insufficient usable labeled rows" in " ".join((metrics.get("guardrails") or {}).get("warnings") or [])
 
 
+def test_validation_propagates_retention_fallback_warning_from_dataset_join_report(tmp_path: Path) -> None:
+    dataset_root = tmp_path / "eval_ds"
+    run_dir = dataset_root / "tiny_run"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    dataset_path = run_dir / "evaluation_dataset.jsonl"
+    rows = [
+        {
+            "event": {"event_id": "evt-a", "event_name": "Event A", "event_date": "2021-08-01"},
+            "feature": {"record_id": "f1", "source_record_id": "1"},
+            "outcome": {"record_id": "o1", "damage_label": "destroyed", "damage_severity_class": "destroyed", "structure_loss_or_major_damage": 1},
+            "scores": {"wildfire_risk_score": 88.0},
+            "join_metadata": {"join_confidence_tier": "low", "join_confidence_score": 0.42},
+            "evaluation": {"row_confidence_tier": "low-confidence", "soft_filter_flags": ["retention_fallback_mode"]},
+        },
+        {
+            "event": {"event_id": "evt-a", "event_name": "Event A", "event_date": "2021-08-01"},
+            "feature": {"record_id": "f2", "source_record_id": "2"},
+            "outcome": {"record_id": "o2", "damage_label": "no_damage", "damage_severity_class": "none", "structure_loss_or_major_damage": 0},
+            "scores": {"wildfire_risk_score": 22.0},
+            "join_metadata": {"join_confidence_tier": "low", "join_confidence_score": 0.39},
+            "evaluation": {"row_confidence_tier": "low-confidence", "soft_filter_flags": ["retention_fallback_mode"]},
+        },
+    ]
+    dataset_path.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
+    (run_dir / "join_quality_report.json").write_text(
+        json.dumps(
+            {
+                "total_outcomes_loaded": 2,
+                "total_feature_rows_loaded": 2,
+                "total_joined_records": 2,
+                "excluded_row_count": 0,
+                "join_rate": 1.0,
+                "retention_fallback_triggered": True,
+                "retention_fallback_used": True,
+                "retention_fallback": {
+                    "enabled": True,
+                    "triggered": True,
+                    "used": True,
+                    "target_min_records": 20,
+                    "primary_joined_records": 0,
+                    "fallback_joined_records": 2,
+                    "active_pass": "retention_fallback_relaxed",
+                },
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    output_root = tmp_path / "validation_out"
+    result = run_public_outcome_validation(
+        evaluation_dataset=dataset_path,
+        output_root=output_root,
+        run_id="retention_flag_validation",
+        min_labeled_rows=1,
+        overwrite=True,
+    )
+    metrics = json.loads(Path(result["validation_metrics_path"]).read_text(encoding="utf-8"))
+    pipeline = metrics.get("pipeline_stage_counts") or {}
+    assert pipeline.get("retention_fallback_triggered") is True
+    assert pipeline.get("retention_fallback_used") is True
+    warnings = (metrics.get("guardrails") or {}).get("warnings") or []
+    assert any("minimum-retention fallback mode was triggered" in str(item) for item in warnings)
+
+
 def test_proxy_validation_stream_available_when_proxy_features_present(tmp_path: Path) -> None:
     rows = []
     for idx, (score, label, burn, hazard, dist, slope) in enumerate(

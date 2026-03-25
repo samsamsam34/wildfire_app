@@ -153,6 +153,9 @@ def _dataset_join_stage_counts(dataset_path: Path) -> dict[str, Any]:
         "join_rate": payload.get("join_rate"),
         "excluded_rows": int(payload.get("excluded_row_count") or 0),
         "score_backfill": payload.get("score_backfill") if isinstance(payload.get("score_backfill"), dict) else {},
+        "retention_fallback": payload.get("retention_fallback") if isinstance(payload.get("retention_fallback"), dict) else {},
+        "retention_fallback_triggered": bool(payload.get("retention_fallback_triggered")),
+        "retention_fallback_used": bool(payload.get("retention_fallback_used")),
     }
 
 
@@ -828,6 +831,11 @@ def run_public_outcome_validation(
                 f"backfilled={score_backfill.get('backfilled_record_count')} "
                 f"remaining_missing={score_backfill.get('remaining_missing_score_record_count')}"
             )
+        if bool(join_stage_counts.get("retention_fallback_triggered")):
+            print(
+                "[public-validation] WARNING: evaluation dataset minimum-retention fallback was triggered; "
+                "metrics include lower-confidence joins (see retention_fallback metadata)."
+            )
     print(
         f"[public-validation] Loaded {dataset_flow.get('loaded_rows')} dataset rows "
         f"from {dataset_flow.get('dataset_path')}"
@@ -873,12 +881,31 @@ def run_public_outcome_validation(
             "feature_rows_loaded": int(join_stage_counts.get("feature_rows_loaded") or 0),
             "joined_rows": int(join_stage_counts.get("joined_rows") or 0),
             "join_excluded_rows": int(join_stage_counts.get("excluded_rows") or 0),
+            "retention_fallback_triggered": bool(join_stage_counts.get("retention_fallback_triggered")),
+            "retention_fallback_used": bool(join_stage_counts.get("retention_fallback_used")),
+            "retention_fallback": (
+                join_stage_counts.get("retention_fallback")
+                if isinstance(join_stage_counts.get("retention_fallback"), dict)
+                else {}
+            ),
             "loaded_rows": int(dataset_flow.get("loaded_rows") or 0),
             "prepared_rows": int(dataset_flow.get("prepared_rows") or 0),
             "retained_rows": int(dataset_flow.get("retained_rows") or 0),
             "unusable_rows": int(dataset_flow.get("unusable_rows") or 0),
             "dropped_rows": int(dataset_flow.get("dropped_rows") or 0),
         }
+        if bool(join_stage_counts.get("retention_fallback_triggered")):
+            guardrails = report.get("guardrails") if isinstance(report.get("guardrails"), dict) else {}
+            guardrail_warnings = guardrails.get("warnings") if isinstance(guardrails.get("warnings"), list) else []
+            guardrail_warnings = list(guardrail_warnings)
+            warning_text = (
+                "Evaluation dataset minimum-retention fallback mode was triggered; "
+                "lower-confidence joins were included to avoid near-zero sample collapse."
+            )
+            if warning_text not in guardrail_warnings:
+                guardrail_warnings.append(warning_text)
+            guardrails["warnings"] = guardrail_warnings
+            report["guardrails"] = guardrails
         subset_metrics = report.get("subset_metrics") if isinstance(report.get("subset_metrics"), dict) else {}
         if subset_metrics:
             print(

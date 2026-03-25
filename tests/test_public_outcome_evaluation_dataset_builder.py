@@ -830,3 +830,80 @@ def test_resolve_all_normalized_outcomes_returns_all_runs(tmp_path: Path) -> Non
 
     resolved = _resolve_all_normalized_outcomes(tmp_path)
     assert [path.parent.name for path in resolved] == ["run_a", "run_b"]
+
+
+def test_min_retention_fallback_relaxes_matching_when_dataset_is_too_small(tmp_path: Path) -> None:
+    outcomes = tmp_path / "normalized_outcomes.json"
+    outcomes.write_text(
+        json.dumps(
+            {
+                "records": [
+                    {
+                        "record_id": "o-ret-1",
+                        "source_record_id": "RET-001",
+                        "source_name": "public_source",
+                        "event_id": "evt-a",
+                        "event_name": "Event A",
+                        "event_date": "2021-08-01",
+                        "event_year": 2021,
+                        "latitude": 39.1001,
+                        "longitude": -120.1001,
+                        "damage_label": "major_damage",
+                        "damage_severity_class": "major",
+                        "structure_loss_or_major_damage": 1,
+                    }
+                ]
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    features = tmp_path / "feature_artifact_retention.json"
+    features.write_text(
+        json.dumps(
+            {
+                "records": [
+                    {
+                        "event_id": "evt-a",
+                        "event_name": "Event A",
+                        "event_date": "2021-08-01",
+                        "record_id": "ret-1",
+                        "source_record_id": "UNKNOWN",
+                        "latitude": 39.1020,
+                        "longitude": -120.1001,
+                        "scores": {"wildfire_risk_score": 62.0},
+                    }
+                ]
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    result = build_public_outcome_evaluation_dataset(
+        outcomes_path=outcomes,
+        feature_artifacts=[features],
+        output_root=tmp_path / "out",
+        run_id="retention_fallback",
+        max_distance_m=50.0,
+        near_match_distance_m=30.0,
+        enable_global_nearest_fallback=False,
+        min_retained_records=20,
+        auto_relax_for_min_retention=True,
+        overwrite=True,
+    )
+    join_quality = json.loads(Path(result["join_quality_report_path"]).read_text(encoding="utf-8"))
+    retention = join_quality.get("retention_fallback") or {}
+    assert retention.get("triggered") is True
+    assert retention.get("used") is True
+    assert int(join_quality.get("total_joined_records") or 0) >= 1
+
+    rows = []
+    with (Path(result["run_dir"]) / "evaluation_dataset.jsonl").open("r", encoding="utf-8") as fh:
+        for line in fh:
+            rows.append(json.loads(line))
+    assert rows
+    assert any(
+        "retention_fallback_mode" in ((row.get("evaluation") or {}).get("soft_filter_flags") or [])
+        for row in rows
+    )
