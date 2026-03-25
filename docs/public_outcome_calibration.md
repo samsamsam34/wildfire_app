@@ -42,6 +42,7 @@ python scripts/fit_public_outcome_calibration.py \
 Supported fitting methods:
 - `logistic` (Platt-style)
 - `isotonic` (piecewise monotonic fit)
+- `binned` (bin-rate reliability table with smoothing)
 - `auto` (default): selects a cautious method using validation Brier comparison and data sufficiency checks
 
 If isotonic sample support is weak, the fitter falls back to logistic with warnings.
@@ -73,6 +74,10 @@ The fitter warns or skips fitting when:
 - positive/negative labels are too sparse
 - low-confidence / low-quality joins dominate
 - calibrated metrics degrade vs raw baseline
+
+Additional stability guardrail:
+- calibration is skipped if candidate Brier worsens beyond `--max-allowed-brier-worsening` (default `0.0`)
+- method diagnostics compare raw vs candidate Brier/ECE in `pre_vs_post_metrics.json` and `summary.md`
 
 Raw deterministic scores remain preserved and distinct from calibrated outputs.
 

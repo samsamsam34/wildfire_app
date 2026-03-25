@@ -338,6 +338,92 @@ def _predict_piecewise(scores: list[float], points: list[list[float]]) -> list[f
     return out
 
 
+def _fit_bin_rate_table(
+    scores: list[float],
+    labels: list[int],
+    *,
+    bin_count: int = 8,
+    smoothing_strength: float = 2.0,
+) -> list[dict[str, float | int]]:
+    pairs = sorted(zip(scores, labels), key=lambda item: item[0])
+    if not pairs:
+        return []
+    total = len(pairs)
+    global_rate = (sum(int(y) for _, y in pairs) / float(total)) if total > 0 else 0.5
+    bins: list[dict[str, float | int]] = []
+    bins_use = max(2, int(bin_count))
+    for idx in range(bins_use):
+        start = int((idx / bins_use) * total)
+        end = int(((idx + 1) / bins_use) * total)
+        if end <= start:
+            continue
+        bucket = pairs[start:end]
+        if not bucket:
+            continue
+        bucket_scores = [float(score) for score, _ in bucket]
+        positives = sum(int(label) for _, label in bucket)
+        count = len(bucket)
+        smoothed_rate = (
+            (float(positives) + (float(smoothing_strength) * float(global_rate)))
+            / (float(count) + float(smoothing_strength))
+        )
+        bins.append(
+            {
+                "bin": int(idx + 1),
+                "count": int(count),
+                "positives": int(positives),
+                "score_min": float(min(bucket_scores)),
+                "score_max": float(max(bucket_scores)),
+                "score_center": float(sum(bucket_scores) / float(count)),
+                "probability": float(max(0.0, min(1.0, smoothed_rate))),
+            }
+        )
+    if not bins:
+        return []
+    # Enforce monotonic non-decreasing probabilities to avoid erratic steps.
+    running = 0.0
+    for row in bins:
+        prob = float(row.get("probability") or 0.0)
+        running = max(running, prob)
+        row["probability"] = float(max(0.0, min(1.0, running)))
+    return bins
+
+
+def _predict_bin_rate_table(scores: list[float], bin_table: list[dict[str, Any]]) -> list[float]:
+    if not bin_table:
+        return [0.5 for _ in scores]
+    parsed: list[tuple[float, float, float]] = []
+    for row in bin_table:
+        if not isinstance(row, dict):
+            continue
+        s_min = _safe_float(row.get("score_min"))
+        s_max = _safe_float(row.get("score_max"))
+        prob = _safe_float(row.get("probability"))
+        if s_min is None or s_max is None or prob is None:
+            continue
+        lo = min(float(s_min), float(s_max))
+        hi = max(float(s_min), float(s_max))
+        parsed.append((lo, hi, max(0.0, min(1.0, float(prob)))))
+    if not parsed:
+        return [0.5 for _ in scores]
+    parsed.sort(key=lambda item: (item[0], item[1]))
+    out: list[float] = []
+    for score in scores:
+        matched = None
+        for lo, hi, prob in parsed:
+            if lo <= float(score) <= hi:
+                matched = prob
+                break
+        if matched is not None:
+            out.append(matched)
+            continue
+        if float(score) < parsed[0][0]:
+            out.append(parsed[0][2])
+            continue
+        out.append(parsed[-1][2])
+    return out
+
+
 def _mean(values: list[float]) -> float | None:
     if not values:
         return None
@@ -521,12 +607,18 @@ def _choose_method(
     method_preference: str,
     min_rows_for_isotonic: int,
     min_unique_scores_for_isotonic: int,
+    min_rows_for_binned: int,
+    min_unique_scores_for_binned: int,
+    binned_bin_count: int,
 ) -> tuple[dict[str, Any], list[str], dict[str, Any]]:
     warnings: list[str] = []
     train_scores = [sample.score for sample in train_samples]
     train_labels = [sample.label for sample in train_samples]
     val_base = validation_samples if validation_samples else train_samples
     val_scores = [sample.score for sample in val_base]
+    val_labels = [sample.label for sample in val_base]
+    val_raw_probs = [max(0.0, min(1.0, score / 100.0)) for score in val_scores]
+    raw_validation_metrics = _evaluate_candidate(val_base, val_raw_probs)
 
     logistic_intercept, logistic_slope = _fit_logistic(train_scores, train_labels)
     logistic_probs_val = _predict_logistic(val_scores, logistic_intercept, logistic_slope)
@@ -544,6 +636,14 @@ def _choose_method(
             "predictor": {"intercept": logistic_intercept, "slope": logistic_slope},
         }
     }
+    logistic_raw_spearman = _spearman(
+        [max(0.0, min(1.0, score / 100.0)) for score in train_scores],
+        [float(label) for label in train_labels],
+    )
+    if logistic_raw_spearman is not None and logistic_raw_spearman <= 0.05:
+        warnings.append(
+            "Logistic calibration assumption warning: score-to-label monotonic signal is weak in training data."
+        )
 
     unique_scores = len({round(score, 6) for score in train_scores})
     isotonic_allowed = (
@@ -568,41 +668,100 @@ def _choose_method(
             "Requested isotonic calibration but data volume/score diversity is insufficient; using logistic fallback."
         )
 
+    binned_allowed = (
+        method_preference in {"auto", "binned"}
+        and len(train_samples) >= int(min_rows_for_binned)
+        and unique_scores >= int(min_unique_scores_for_binned)
+    )
+    if binned_allowed:
+        bin_table = _fit_bin_rate_table(
+            train_scores,
+            train_labels,
+            bin_count=max(3, int(binned_bin_count)),
+            smoothing_strength=2.0,
+        )
+        binned_probs_val = _predict_bin_rate_table(val_scores, bin_table)
+        binned_eval = _evaluate_candidate(val_base, binned_probs_val)
+        candidates["binned"] = {
+            "method": "bin_rate_table",
+            "fit_family": "binned_reliability",
+            "parameters": {
+                "bin_count": max(3, int(binned_bin_count)),
+                "bin_table": bin_table,
+                "smoothing_strength": 2.0,
+            },
+            "validation_metrics": binned_eval,
+            "train_predictions": _predict_bin_rate_table(train_scores, bin_table),
+            "predictor": {"bin_table": bin_table},
+        }
+    elif method_preference == "binned":
+        warnings.append(
+            "Requested binned calibration but data volume/score diversity is insufficient; using logistic fallback."
+        )
+
     if method_preference == "logistic":
         selected_key = "logistic"
     elif method_preference == "isotonic" and "isotonic" in candidates:
         selected_key = "isotonic"
-    elif "isotonic" not in candidates:
-        selected_key = "logistic"
+    elif method_preference == "binned" and "binned" in candidates:
+        selected_key = "binned"
+    elif method_preference == "auto":
+        # Auto: prefer lower validation Brier, but require a margin to switch from logistic.
+        baseline = "logistic"
+        baseline_brier = _safe_float(
+            ((candidates[baseline].get("validation_metrics") or {}).get("brier_probability"))
+        )
+        selected_key = baseline
+        selected_brier = baseline_brier
+        for key in sorted(candidates.keys()):
+            metrics = candidates[key].get("validation_metrics") if isinstance(candidates[key], dict) else {}
+            brier = _safe_float((metrics or {}).get("brier_probability"))
+            if brier is None:
+                continue
+            if selected_brier is None:
+                selected_key = key
+                selected_brier = brier
+                continue
+            if key == baseline:
+                continue
+            # Cautious method switching: require material validation gain over logistic.
+            if baseline_brier is not None and brier + 0.002 < baseline_brier:
+                if selected_brier is None or brier < selected_brier:
+                    selected_key = key
+                    selected_brier = brier
     else:
-        # Auto: choose lower validation Brier, require small margin to switch from logistic.
-        logistic_brier = _safe_float(
-            ((candidates["logistic"].get("validation_metrics") or {}).get("brier_probability"))
-        )
-        isotonic_brier = _safe_float(
-            ((candidates["isotonic"].get("validation_metrics") or {}).get("brier_probability"))
-        )
-        if isotonic_brier is None or logistic_brier is None:
-            selected_key = "logistic"
-        elif isotonic_brier + 0.002 < logistic_brier:
-            selected_key = "isotonic"
-        else:
-            selected_key = "logistic"
+        selected_key = "logistic"
 
     selected = dict(candidates[selected_key])
     selected["selected_key"] = selected_key
+    selected["selection_reason"] = (
+        f"selected_{selected_key}_from_{','.join(sorted(candidates.keys()))}"
+    )
     diagnostics = {
+        "raw_validation_metrics": raw_validation_metrics,
         "candidate_methods": {
             key: {
                 "method": value.get("method"),
                 "fit_family": value.get("fit_family", key),
                 "validation_metrics": value.get("validation_metrics"),
+                "brier_delta_vs_raw": (
+                    _safe_float(((value.get("validation_metrics") or {}).get("brier_probability")))
+                    - _safe_float((raw_validation_metrics or {}).get("brier_probability"))
+                    if _safe_float(((value.get("validation_metrics") or {}).get("brier_probability"))) is not None
+                    and _safe_float((raw_validation_metrics or {}).get("brier_probability")) is not None
+                    else None
+                ),
             }
             for key, value in candidates.items()
         },
         "validation_split_used": bool(validation_samples),
         "train_row_count": len(train_samples),
         "validation_row_count": len(validation_samples),
+        "class_balance": {
+            "train_positive_rate": _mean([float(v) for v in train_labels]),
+            "validation_positive_rate": _mean([float(v) for v in val_labels]),
+        },
+        "selection_reason": selected.get("selection_reason"),
     }
     return selected, warnings, diagnostics
 
@@ -813,6 +972,7 @@ def _build_summary_markdown(
     artifact: dict[str, Any] | None,
     pre_post: dict[str, Any],
     warnings: list[str],
+    selection_diagnostics: dict[str, Any] | None = None,
 ) -> str:
     pre = pre_post.get("pre") if isinstance(pre_post.get("pre"), dict) else {}
     post = pre_post.get("post") if isinstance(pre_post.get("post"), dict) else {}
@@ -831,6 +991,9 @@ def _build_summary_markdown(
     if artifact:
         lines.append(f"- Method: `{artifact.get('method')}`")
         lines.append(f"- Calibrated field semantic: `{artifact.get('calibrated_semantic_name')}`")
+        guardrail_decision = artifact.get("guardrail_decision") if isinstance(artifact.get("guardrail_decision"), dict) else {}
+        if guardrail_decision:
+            lines.append(f"- Guardrail applied calibration: `{guardrail_decision.get('applied')}`")
     lines.extend(
         [
             "",
@@ -855,6 +1018,30 @@ def _build_summary_markdown(
             lines.append(f"- {warning}")
     else:
         lines.append("- No additional guardrail warnings.")
+    if isinstance(selection_diagnostics, dict) and selection_diagnostics:
+        candidate_methods = (
+            selection_diagnostics.get("candidate_methods")
+            if isinstance(selection_diagnostics.get("candidate_methods"), dict)
+            else {}
+        )
+        lines.append("")
+        lines.append("## Candidate Method Comparison")
+        raw_val = (
+            selection_diagnostics.get("raw_validation_metrics")
+            if isinstance(selection_diagnostics.get("raw_validation_metrics"), dict)
+            else {}
+        )
+        lines.append(f"- Raw validation Brier: `{raw_val.get('brier_probability')}`")
+        lines.append(f"- Validation split used: `{selection_diagnostics.get('validation_split_used')}`")
+        for key in sorted(candidate_methods.keys()):
+            detail = candidate_methods[key] if isinstance(candidate_methods[key], dict) else {}
+            vm = detail.get("validation_metrics") if isinstance(detail.get("validation_metrics"), dict) else {}
+            lines.append(
+                f"- `{key}` ({detail.get('method')}): "
+                f"brier={vm.get('brier_probability')}, "
+                f"ece={(vm.get('calibration') or {}).get('expected_calibration_error') if isinstance(vm.get('calibration'), dict) else None}, "
+                f"delta_vs_raw={detail.get('brier_delta_vs_raw')}"
+            )
     return "\n".join(lines) + "\n"
 
 
@@ -898,6 +1085,10 @@ def run_public_outcome_calibration(
     min_negative: int = 8,
     min_rows_for_isotonic: int = 80,
     min_unique_scores_for_isotonic: int = 25,
+    min_rows_for_binned: int = 60,
+    min_unique_scores_for_binned: int = 20,
+    binned_bin_count: int = 8,
+    max_allowed_brier_worsening: float = 0.0,
     baseline_run_id: str | None = None,
     overwrite: bool = False,
     export_artifact_path: Path | None = None,
@@ -947,6 +1138,9 @@ def run_public_outcome_calibration(
             method_preference=str(method).strip().lower(),
             min_rows_for_isotonic=int(min_rows_for_isotonic),
             min_unique_scores_for_isotonic=int(min_unique_scores_for_isotonic),
+            min_rows_for_binned=int(min_rows_for_binned),
+            min_unique_scores_for_binned=int(min_unique_scores_for_binned),
+            binned_bin_count=int(binned_bin_count),
         )
         warnings.extend(method_warnings)
         selection_diagnostics = diagnostics
@@ -958,6 +1152,13 @@ def run_public_outcome_calibration(
             calibrated_probs = _predict_logistic(scores, intercept, slope)
             artifact["method"] = "logistic"
             artifact["parameters"] = params
+        elif selected.get("method") == "bin_rate_table":
+            params = selected.get("parameters") if isinstance(selected.get("parameters"), dict) else {}
+            bin_table = params.get("bin_table") if isinstance(params.get("bin_table"), list) else []
+            calibrated_probs = _predict_bin_rate_table(scores, bin_table)
+            artifact["method"] = "bin_rate_table"
+            artifact["fit_family"] = "binned_reliability"
+            artifact["parameters"] = params
         else:
             params = selected.get("parameters") if isinstance(selected.get("parameters"), dict) else {}
             points = params.get("points") if isinstance(params.get("points"), list) else []
@@ -967,6 +1168,62 @@ def run_public_outcome_calibration(
             artifact["points"] = points
 
         fitted = True
+
+    candidate_pre_post: dict[str, Any] | None = None
+    if fitted:
+        candidate_pre_post = _pre_post_metrics(samples, calibrated_probs)
+        candidate_pre = candidate_pre_post.get("pre") if isinstance(candidate_pre_post.get("pre"), dict) else {}
+        candidate_post = candidate_pre_post.get("post") if isinstance(candidate_pre_post.get("post"), dict) else {}
+        candidate_pre_brier = _safe_float(candidate_pre.get("brier_probability"))
+        candidate_post_brier = _safe_float(candidate_post.get("brier_probability"))
+        raw_validation_metrics = (
+            selection_diagnostics.get("raw_validation_metrics")
+            if isinstance(selection_diagnostics.get("raw_validation_metrics"), dict)
+            else {}
+        ) if isinstance(selection_diagnostics, dict) else {}
+        raw_validation_brier = _safe_float(raw_validation_metrics.get("brier_probability"))
+        selected_key = str((selection_diagnostics.get("selection_reason") or "") if isinstance(selection_diagnostics, dict) else "")
+        selected_candidate_id = str((selected.get("selected_key") if isinstance(selected, dict) else "") or "")
+        selected_validation_metrics = (
+            (((selection_diagnostics.get("candidate_methods") or {}).get(selected_candidate_id) or {}).get("validation_metrics"))
+            if isinstance(selection_diagnostics, dict)
+            else {}
+        )
+        selected_validation_brier = _safe_float(
+            (selected_validation_metrics or {}).get("brier_probability")
+            if isinstance(selected_validation_metrics, dict)
+            else None
+        )
+        worsen_limit = float(max(0.0, max_allowed_brier_worsening))
+        degrade_train = (
+            candidate_pre_brier is not None
+            and candidate_post_brier is not None
+            and candidate_post_brier > candidate_pre_brier + worsen_limit
+        )
+        degrade_validation = (
+            raw_validation_brier is not None
+            and selected_validation_brier is not None
+            and selected_validation_brier > raw_validation_brier + worsen_limit
+        )
+        if degrade_train or degrade_validation:
+            fitted = False
+            calibrated_probs = list(pre_probs)
+            warnings.append(
+                "Calibration skipped by guardrail because candidate worsened Brier relative to raw baseline."
+            )
+            artifact.pop("method", None)
+            artifact.pop("parameters", None)
+            artifact.pop("fit_family", None)
+            artifact["guardrail_decision"] = {
+                "applied": False,
+                "reason": "brier_worsened_vs_raw",
+                "max_allowed_brier_worsening": worsen_limit,
+                "candidate_pre_brier": candidate_pre_brier,
+                "candidate_post_brier": candidate_post_brier,
+                "raw_validation_brier": raw_validation_brier,
+                "candidate_validation_brier": selected_validation_brier,
+                "selection_reason": selected_key,
+            }
 
     pre_post = _pre_post_metrics(samples, calibrated_probs)
     pre_brier = _safe_float(((pre_post.get("pre") or {}).get("brier_probability")))
@@ -978,6 +1235,12 @@ def run_public_outcome_calibration(
             "pre": pre_post.get("pre"),
             "post": pre_post.get("post"),
             "delta": pre_post.get("delta"),
+        }
+    elif candidate_pre_post is not None:
+        artifact["candidate_metrics_not_applied"] = {
+            "pre": candidate_pre_post.get("pre"),
+            "post_if_applied": candidate_pre_post.get("post"),
+            "delta_if_applied": candidate_pre_post.get("delta"),
         }
 
     artifact["limitations"] = sorted(set(warnings))
@@ -1028,6 +1291,7 @@ def run_public_outcome_calibration(
             artifact=artifact,
             pre_post=pre_post,
             warnings=sorted(set(warnings)),
+            selection_diagnostics=selection_diagnostics,
         ),
         encoding="utf-8",
     )
@@ -1093,6 +1357,10 @@ def run_public_outcome_calibration(
             "min_negative": int(min_negative),
             "min_rows_for_isotonic": int(min_rows_for_isotonic),
             "min_unique_scores_for_isotonic": int(min_unique_scores_for_isotonic),
+            "min_rows_for_binned": int(min_rows_for_binned),
+            "min_unique_scores_for_binned": int(min_unique_scores_for_binned),
+            "binned_bin_count": int(binned_bin_count),
+            "max_allowed_brier_worsening": float(max_allowed_brier_worsening),
             "baseline_run_id_requested": baseline_run_id,
         },
         "versions": {
@@ -1117,6 +1385,10 @@ def run_public_outcome_calibration(
                 "min_negative": int(min_negative),
                 "min_rows_for_isotonic": int(min_rows_for_isotonic),
                 "min_unique_scores_for_isotonic": int(min_unique_scores_for_isotonic),
+                "min_rows_for_binned": int(min_rows_for_binned),
+                "min_unique_scores_for_binned": int(min_unique_scores_for_binned),
+                "binned_bin_count": int(binned_bin_count),
+                "max_allowed_brier_worsening": float(max_allowed_brier_worsening),
                 "baseline_run_id": selected_baseline_run,
             },
         },
@@ -1218,7 +1490,7 @@ def main() -> int:
     parser.add_argument(
         "--method",
         default="auto",
-        choices=["auto", "logistic", "isotonic"],
+        choices=["auto", "logistic", "isotonic", "binned"],
         help="Calibration method preference.",
     )
     parser.add_argument("--min-rows", type=int, default=25)
@@ -1226,6 +1498,15 @@ def main() -> int:
     parser.add_argument("--min-negative", type=int, default=8)
     parser.add_argument("--min-rows-for-isotonic", type=int, default=80)
     parser.add_argument("--min-unique-scores-for-isotonic", type=int, default=25)
+    parser.add_argument("--min-rows-for-binned", type=int, default=60)
+    parser.add_argument("--min-unique-scores-for-binned", type=int, default=20)
+    parser.add_argument("--binned-bin-count", type=int, default=8)
+    parser.add_argument(
+        "--max-allowed-brier-worsening",
+        type=float,
+        default=0.0,
+        help="Guardrail: skip calibration if Brier worsens beyond this amount vs raw baseline.",
+    )
     parser.add_argument(
         "--baseline-run-id",
         default="",
@@ -1251,6 +1532,10 @@ def main() -> int:
         min_negative=max(1, int(args.min_negative)),
         min_rows_for_isotonic=max(10, int(args.min_rows_for_isotonic)),
         min_unique_scores_for_isotonic=max(5, int(args.min_unique_scores_for_isotonic)),
+        min_rows_for_binned=max(10, int(args.min_rows_for_binned)),
+        min_unique_scores_for_binned=max(5, int(args.min_unique_scores_for_binned)),
+        binned_bin_count=max(3, int(args.binned_bin_count)),
+        max_allowed_brier_worsening=max(0.0, float(args.max_allowed_brier_worsening)),
         baseline_run_id=(args.baseline_run_id or None),
         overwrite=bool(args.overwrite),
         export_artifact_path=(Path(args.output).expanduser() if args.output else None),

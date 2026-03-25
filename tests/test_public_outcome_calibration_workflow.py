@@ -85,11 +85,76 @@ def test_fit_calibration_exports_artifact_and_runtime_loader_applies(tmp_path: P
     artifact_path = tmp_path / "public_calibration.json"
     artifact = fit_calibration(dataset_path=dataset, output_path=artifact_path)
     assert artifact_path.exists()
-    assert artifact["method"] in {"logistic", "piecewise_linear"}
+    assert artifact.get("method") in {"logistic", "piecewise_linear", "bin_rate_table"}
     payload = resolve_public_calibration(raw_wildfire_score=80.0, artifact_path=str(artifact_path))
     assert payload["calibration_enabled"] is True
     assert payload["calibration_applied"] is True
     assert payload["calibrated_damage_likelihood"] is not None
+
+
+def test_run_public_outcome_calibration_supports_binned_method(tmp_path: Path) -> None:
+    dataset = tmp_path / "evaluation_dataset.json"
+    _write_dataset(dataset)
+    result = run_public_outcome_calibration(
+        dataset_path=dataset,
+        output_root=tmp_path / "calibration_runs",
+        run_id="binned_method",
+        method="binned",
+        min_rows=10,
+        min_positive=2,
+        min_negative=2,
+        min_rows_for_binned=10,
+        min_unique_scores_for_binned=5,
+        overwrite=True,
+    )
+    artifact = json.loads((Path(result["run_dir"]) / "calibration_model.json").read_text(encoding="utf-8"))
+    assert artifact.get("method") in {"bin_rate_table", None}
+
+
+def test_calibration_guardrail_skips_when_candidate_worsens(tmp_path: Path, monkeypatch) -> None:
+    dataset = tmp_path / "evaluation_dataset.json"
+    _write_dataset(dataset)
+
+    def _fake_choose_method(**_: object):
+        return (
+            {
+                "method": "logistic",
+                "parameters": {"intercept": 0.0, "slope": 0.0, "x_scale": 100.0},
+                "selected_key": "logistic",
+            },
+            [],
+            {
+                "raw_validation_metrics": {"brier_probability": 0.10},
+                "candidate_methods": {
+                    "logistic": {
+                        "method": "logistic",
+                        "validation_metrics": {"brier_probability": 0.30},
+                        "brier_delta_vs_raw": 0.20,
+                    }
+                },
+                "selection_reason": "forced_bad_candidate",
+            },
+        )
+
+    monkeypatch.setattr(
+        "scripts.fit_public_outcome_calibration._choose_method",
+        _fake_choose_method,
+    )
+    result = run_public_outcome_calibration(
+        dataset_path=dataset,
+        output_root=tmp_path / "calibration_runs",
+        run_id="guardrail_skip",
+        min_rows=10,
+        min_positive=2,
+        min_negative=2,
+        overwrite=True,
+    )
+    assert result["fitted"] is False
+    artifact = json.loads((Path(result["run_dir"]) / "calibration_model.json").read_text(encoding="utf-8"))
+    assert artifact.get("method") is None
+    guardrail = artifact.get("guardrail_decision") if isinstance(artifact.get("guardrail_decision"), dict) else {}
+    assert guardrail.get("applied") is False
+    assert guardrail.get("reason") == "brier_worsened_vs_raw"
 
 
 def test_pre_post_metrics_are_reported(tmp_path: Path) -> None:

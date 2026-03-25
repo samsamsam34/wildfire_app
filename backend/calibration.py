@@ -90,6 +90,38 @@ def _apply_piecewise(score: float, artifact: dict[str, Any]) -> float | None:
     return None
 
 
+def _apply_bin_rate_table(score: float, artifact: dict[str, Any]) -> float | None:
+    params = artifact.get("parameters")
+    table = None
+    if isinstance(params, dict) and isinstance(params.get("bin_table"), list):
+        table = params.get("bin_table")
+    elif isinstance(artifact.get("bin_table"), list):
+        table = artifact.get("bin_table")
+    if not isinstance(table, list) or not table:
+        return None
+    parsed: list[tuple[float, float, float]] = []
+    for row in table:
+        if not isinstance(row, dict):
+            continue
+        s_min = _safe_float(row.get("score_min"))
+        s_max = _safe_float(row.get("score_max"))
+        prob = _safe_float(row.get("probability"))
+        if s_min is None or s_max is None or prob is None:
+            continue
+        lo = min(float(s_min), float(s_max))
+        hi = max(float(s_min), float(s_max))
+        parsed.append((lo, hi, max(0.0, min(1.0, float(prob)))))
+    if not parsed:
+        return None
+    parsed.sort(key=lambda item: (item[0], item[1]))
+    for lo, hi, prob in parsed:
+        if lo <= float(score) <= hi:
+            return prob
+    if float(score) < parsed[0][0]:
+        return parsed[0][2]
+    return parsed[-1][2]
+
+
 def _scope_status(artifact: dict[str, Any], resolved_region_id: str | None) -> tuple[bool, str | None]:
     scope = artifact.get("scope")
     if not isinstance(scope, dict):
@@ -205,6 +237,8 @@ def resolve_public_calibration(
     base["calibration_method"] = method or None
     if method in {"logistic", "platt_logistic"}:
         calibrated = _apply_logistic(score, artifact)
+    elif method in {"bin_rate_table", "binned", "histogram_binned"}:
+        calibrated = _apply_bin_rate_table(score, artifact)
     elif method in {"piecewise_linear", "piecewise", "isotonic", "isotonic_piecewise"}:
         calibrated = _apply_piecewise(score, artifact)
     else:
