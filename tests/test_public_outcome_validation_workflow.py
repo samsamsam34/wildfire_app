@@ -164,6 +164,15 @@ def test_evaluate_public_outcome_dataset_reports_required_metrics(tmp_path: Path
     assert "feature_signal_diagnostics" in report
     assert (report["feature_signal_diagnostics"] or {}).get("available") is True
     assert isinstance((report["feature_signal_diagnostics"] or {}).get("top_predictive_features"), list)
+    assert "baseline_model_comparison" in report
+    baseline = report["baseline_model_comparison"] if isinstance(report.get("baseline_model_comparison"), dict) else {}
+    assert baseline.get("available") is True
+    assert "baselines" in baseline
+    baseline_models = baseline.get("baselines") if isinstance(baseline.get("baselines"), dict) else {}
+    assert "random" in baseline_models
+    assert "hazard_only" in baseline_models
+    assert "vegetation_only" in baseline_models
+    assert "comparison" in baseline
     assert "false_review_sets" in report
     assert "metric_stability" in report
     assert isinstance(rows, list) and rows
@@ -219,6 +228,7 @@ def test_public_outcome_validation_orchestration_is_deterministic_with_fixed_run
     assert (output_root / "fixed_validation_run" / "false_low_review_set.jsonl").exists()
     assert (output_root / "fixed_validation_run" / "false_high_review_set.jsonl").exists()
     assert (output_root / "fixed_validation_run" / "feature_diagnostics.json").exists()
+    assert (output_root / "fixed_validation_run" / "baseline_model_comparison.json").exists()
     assert (output_root / "fixed_validation_run" / "segment_metrics.json").exists()
     assert (output_root / "fixed_validation_run" / "segment_report.md").exists()
     assert (output_root / "fixed_validation_run" / "comparison_to_previous.json").exists()

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 import math
 import random
@@ -425,6 +426,40 @@ def _normalize_percent_like(value: float | None) -> float | None:
     return max(0.0, min(100.0, v))
 
 
+def _compute_hazard_signal_percent(row: dict[str, Any]) -> float | None:
+    hazard_score = _extract_score(row, "site_hazard_score")
+    if hazard_score is None:
+        hazard_score = _extract_feature_value(row, "wildfire_hazard")
+    if hazard_score is None:
+        burn_probability = _extract_feature_value(row, "burn_probability")
+        if burn_probability is not None:
+            hazard_score = _normalize_percent_like(burn_probability)
+    if hazard_score is None:
+        hazard_score = _extract_score(row, "wildfire_risk_score")
+    return _normalize_percent_like(hazard_score)
+
+
+def _compute_vegetation_density_index(row: dict[str, Any]) -> float | None:
+    weighted_terms: list[tuple[float, float]] = []
+    for key, weight in (
+        ("near_structure_vegetation_0_5_pct", 0.40),
+        ("ring_0_5_ft_vegetation_density", 0.35),
+        ("ring_5_30_ft_vegetation_density", 0.20),
+        ("canopy_adjacency_proxy_pct", 0.10),
+        ("vegetation_continuity_proxy_pct", 0.10),
+        ("canopy_cover", 0.10),
+    ):
+        value = _normalize_percent_like(_extract_feature_value(row, key))
+        if value is None:
+            continue
+        weighted_terms.append((value, weight))
+    if not weighted_terms:
+        return None
+    numerator = sum(value * weight for value, weight in weighted_terms)
+    denom = sum(weight for _, weight in weighted_terms)
+    return (numerator / denom) if denom > 0.0 else None
+
+
 def _bucketize_segment(
     *,
     value: float | None,
@@ -444,46 +479,153 @@ def _bucketize_segment(
 
 
 def _derive_hazard_level_segment(row: dict[str, Any]) -> str:
-    hazard_score = _extract_score(row, "site_hazard_score")
-    if hazard_score is None:
-        hazard_score = _extract_feature_value(row, "wildfire_hazard")
-    if hazard_score is None:
-        burn_probability = _extract_feature_value(row, "burn_probability")
-        if burn_probability is not None:
-            hazard_score = _normalize_percent_like(burn_probability)
-    if hazard_score is None:
-        hazard_score = _extract_score(row, "wildfire_risk_score")
+    hazard_score = _compute_hazard_signal_percent(row)
     return _bucketize_segment(
-        value=_normalize_percent_like(hazard_score),
+        value=hazard_score,
         thresholds=HAZARD_SEGMENT_THRESHOLDS,
         labels=("low", "moderate", "high", "severe"),
     )
 
 
 def _derive_vegetation_density_segment(row: dict[str, Any]) -> str:
-    weighted_terms: list[tuple[float, float]] = []
-    for key, weight in (
-        ("near_structure_vegetation_0_5_pct", 0.40),
-        ("ring_0_5_ft_vegetation_density", 0.35),
-        ("ring_5_30_ft_vegetation_density", 0.20),
-        ("canopy_adjacency_proxy_pct", 0.10),
-        ("vegetation_continuity_proxy_pct", 0.10),
-        ("canopy_cover", 0.10),
-    ):
-        value = _normalize_percent_like(_extract_feature_value(row, key))
-        if value is None:
-            continue
-        weighted_terms.append((value, weight))
-    density_index: float | None = None
-    if weighted_terms:
-        numerator = sum(value * weight for value, weight in weighted_terms)
-        denom = sum(weight for _, weight in weighted_terms)
-        density_index = (numerator / denom) if denom > 0.0 else None
+    density_index = _compute_vegetation_density_index(row)
     return _bucketize_segment(
         value=density_index,
         thresholds=VEGETATION_SEGMENT_THRESHOLDS,
         labels=("sparse", "moderate", "dense", "very_dense"),
     )
+
+
+def _deterministic_random_probability(row: dict[str, Any]) -> float:
+    key_parts = [
+        str(row.get("event_id") or ""),
+        str(row.get("record_id") or ""),
+        str(row.get("source_record_id") or ""),
+        str(row.get("address_text") or ""),
+        str(row.get("latitude") or ""),
+        str(row.get("longitude") or ""),
+    ]
+    text = "|".join(key_parts)
+    digest = hashlib.sha256(text.encode("utf-8")).digest()
+    # Deterministic pseudo-random in [0, 1).
+    integer = int.from_bytes(digest[:8], byteorder="big", signed=False)
+    return integer / float(2**64 - 1)
+
+
+def _impute_probability_series(values: list[float | None], *, fallback: float = 0.5) -> tuple[list[float], int]:
+    observed = [float(v) for v in values if isinstance(v, (int, float))]
+    fill = _mean(observed)
+    fill_value = float(fill) if isinstance(fill, (int, float)) else float(fallback)
+    imputed: list[float] = []
+    missing_count = 0
+    for value in values:
+        if isinstance(value, (int, float)):
+            imputed.append(max(0.0, min(1.0, float(value))))
+        else:
+            missing_count += 1
+            imputed.append(max(0.0, min(1.0, fill_value)))
+    return imputed, missing_count
+
+
+def _compute_simple_baseline_metrics(
+    *,
+    y_true: list[int],
+    usable_rows: list[dict[str, Any]],
+    full_model_auc: float | None,
+) -> dict[str, Any]:
+    if not y_true or not usable_rows or len(y_true) != len(usable_rows):
+        return {
+            "available": False,
+            "reason": "insufficient_rows",
+            "full_model_auc": full_model_auc,
+            "baselines": {},
+            "comparison": {
+                "beats_all_baselines_by_auc": None,
+                "best_baseline_name": None,
+                "best_baseline_auc": None,
+                "auc_margin_vs_best_baseline": None,
+                "baselines_compared_count": 0,
+            },
+            "caveat": (
+                "Baseline comparison is unavailable because labeled rows were insufficient. "
+                "These checks are directional only and not ground-truth carrier validation."
+            ),
+        }
+
+    random_probs = [_deterministic_random_probability(row) for row in usable_rows]
+    hazard_probs_raw: list[float | None] = []
+    vegetation_probs_raw: list[float | None] = []
+    for row in usable_rows:
+        hazard_signal = _compute_hazard_signal_percent(row)
+        vegetation_signal = _compute_vegetation_density_index(row)
+        hazard_probs_raw.append((hazard_signal / 100.0) if hazard_signal is not None else None)
+        vegetation_probs_raw.append((vegetation_signal / 100.0) if vegetation_signal is not None else None)
+    hazard_probs, hazard_missing = _impute_probability_series(hazard_probs_raw, fallback=0.5)
+    vegetation_probs, vegetation_missing = _impute_probability_series(vegetation_probs_raw, fallback=0.5)
+
+    baselines = {
+        "random": {
+            "description": "Deterministic pseudo-random baseline keyed by record identity.",
+            "auc": _roc_auc(y_true, random_probs),
+            "pr_auc": _pr_auc(y_true, random_probs),
+            "brier": _brier(y_true, random_probs),
+            "missing_signal_count": 0,
+        },
+        "hazard_only": {
+            "description": "Uses hazard signal only (site hazard / burn probability proxies).",
+            "auc": _roc_auc(y_true, hazard_probs),
+            "pr_auc": _pr_auc(y_true, hazard_probs),
+            "brier": _brier(y_true, hazard_probs),
+            "missing_signal_count": int(hazard_missing),
+        },
+        "vegetation_only": {
+            "description": "Uses near-structure vegetation density proxy only.",
+            "auc": _roc_auc(y_true, vegetation_probs),
+            "pr_auc": _pr_auc(y_true, vegetation_probs),
+            "brier": _brier(y_true, vegetation_probs),
+            "missing_signal_count": int(vegetation_missing),
+        },
+    }
+
+    comparable = [
+        (name, float(payload.get("auc")))
+        for name, payload in baselines.items()
+        if isinstance(payload, dict) and isinstance(payload.get("auc"), (int, float))
+    ]
+    best_baseline_name: str | None = None
+    best_baseline_auc: float | None = None
+    if comparable:
+        best_baseline_name, best_baseline_auc = max(comparable, key=lambda item: float(item[1]))
+    auc_margin = (
+        float(full_model_auc) - float(best_baseline_auc)
+        if isinstance(full_model_auc, (int, float)) and isinstance(best_baseline_auc, (int, float))
+        else None
+    )
+    beats_all = (
+        bool(isinstance(full_model_auc, (int, float)) and all(float(full_model_auc) > auc for _, auc in comparable))
+        if comparable
+        else None
+    )
+
+    return {
+        "available": True,
+        "full_model_auc": full_model_auc,
+        "baselines": baselines,
+        "comparison": {
+            "beats_all_baselines_by_auc": beats_all,
+            "best_baseline_name": best_baseline_name,
+            "best_baseline_auc": best_baseline_auc,
+            "auc_margin_vs_best_baseline": auc_margin,
+            "baselines_compared_count": len(comparable),
+            "complexity_justified_signal": (
+                "yes" if isinstance(auc_margin, float) and auc_margin > 0.0 else "no_or_inconclusive"
+            ),
+        },
+        "caveat": (
+            "Baseline comparison checks whether the full model outperforms simple directional baselines "
+            "on this public-outcome sample. It does not establish insurer-claims predictive truth."
+        ),
+    }
 
 
 def _derive_target_from_label(label: str) -> int | None:
@@ -2469,6 +2611,11 @@ def evaluate_public_outcome_dataset_rows(
 
     raw_auc = _roc_auc(y_true, raw_probs)
     raw_pr_auc = _pr_auc(y_true, raw_probs)
+    baseline_model_comparison = _compute_simple_baseline_metrics(
+        y_true=y_true,
+        usable_rows=usable_rows,
+        full_model_auc=raw_auc,
+    )
     auc_ci = _bootstrap_metric_ci(y_true=y_true, y_score=raw_probs, metric="auc")
     pr_auc_ci = _bootstrap_metric_ci(y_true=y_true, y_score=raw_probs, metric="pr_auc")
     brier_ci = _bootstrap_metric_ci(y_true=y_true, y_score=raw_probs, metric="brier")
@@ -2703,6 +2850,7 @@ def evaluate_public_outcome_dataset_rows(
         "directional_predictive_value": directional_predictive_value,
         "calibration_artifact_recommendation": calibration_recommendation,
         "feature_signal_diagnostics": feature_signal_diagnostics,
+        "baseline_model_comparison": baseline_model_comparison,
     }
     report["narrative_summary"] = _build_narrative_summary(
         raw_auc=raw_auc,

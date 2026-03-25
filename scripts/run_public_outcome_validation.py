@@ -290,6 +290,11 @@ def _build_summary_markdown(
         if isinstance(report.get("segment_performance_summary"), dict)
         else {}
     )
+    baseline_comparison = (
+        report.get("baseline_model_comparison")
+        if isinstance(report.get("baseline_model_comparison"), dict)
+        else {}
+    )
     feature_diag = (
         report.get("feature_signal_diagnostics")
         if isinstance(report.get("feature_signal_diagnostics"), dict)
@@ -327,6 +332,56 @@ def _build_summary_markdown(
         f"- Spearman rank correlation: `{_format_float(discrimination.get('wildfire_vs_outcome_rank_spearman'))}`",
         f"- Discrimination stability: `{discrimination.get('wildfire_discrimination_stability')}`",
         "",
+        "## Baseline Comparison",
+    ]
+
+    if baseline_comparison:
+        baseline_rows = (
+            baseline_comparison.get("baselines")
+            if isinstance(baseline_comparison.get("baselines"), dict)
+            else {}
+        )
+        comparison = (
+            baseline_comparison.get("comparison")
+            if isinstance(baseline_comparison.get("comparison"), dict)
+            else {}
+        )
+        lines.extend(
+            [
+                f"- Full model AUC: `{_format_float(baseline_comparison.get('full_model_auc'))}`",
+                f"- Beats all simple baselines by AUC: `{comparison.get('beats_all_baselines_by_auc')}`",
+                f"- Best baseline: `{comparison.get('best_baseline_name')}`",
+                f"- Best baseline AUC: `{_format_float(comparison.get('best_baseline_auc'))}`",
+                f"- AUC margin vs best baseline: `{_format_float(comparison.get('auc_margin_vs_best_baseline'))}`",
+                f"- Complexity justified signal: `{comparison.get('complexity_justified_signal')}`",
+            ]
+        )
+        if baseline_rows:
+            lines.append("- Baseline AUCs:")
+            for name in ("random", "hazard_only", "vegetation_only"):
+                payload = baseline_rows.get(name) if isinstance(baseline_rows.get(name), dict) else {}
+                if not payload:
+                    continue
+                lines.append(
+                    f"  - {name}: auc={_format_float(payload.get('auc'))}, "
+                    f"pr_auc={_format_float(payload.get('pr_auc'))}, "
+                    f"brier={_format_float(payload.get('brier'))}, "
+                    f"missing_signal_count={payload.get('missing_signal_count')}"
+                )
+        caveat = baseline_comparison.get("caveat")
+        if isinstance(caveat, str) and caveat.strip():
+            lines.append(f"- Caveat: {caveat}")
+        lines.append("")
+    else:
+        lines.extend(
+            [
+                "- Baseline comparison unavailable.",
+                "",
+            ]
+        )
+
+    lines.extend(
+        [
         "## Calibration",
         f"- Brier score (raw wildfire probability proxy): `{_format_float(brier.get('wildfire_probability_proxy'))}`",
         f"- Brier score 95% CI: `{_format_ci(brier.get('wildfire_probability_proxy_confidence_interval_95'))}`",
@@ -339,6 +394,7 @@ def _build_summary_markdown(
         "",
         "## Sliced Analysis Highlights",
     ]
+    )
 
     narrative_bullets = narrative.get("bullets") if isinstance(narrative.get("bullets"), list) else []
     if narrative_bullets:
@@ -1160,6 +1216,24 @@ def _insufficient_data_report(
             "feature_vs_outcome_curves": [],
             "key_feature_family_summary": {},
         },
+        "baseline_model_comparison": {
+            "available": False,
+            "reason": "insufficient_real_outcome_rows",
+            "full_model_auc": None,
+            "baselines": {},
+            "comparison": {
+                "beats_all_baselines_by_auc": None,
+                "best_baseline_name": None,
+                "best_baseline_auc": None,
+                "auc_margin_vs_best_baseline": None,
+                "baselines_compared_count": 0,
+                "complexity_justified_signal": "no_or_inconclusive",
+            },
+            "caveat": (
+                "Baseline comparison is unavailable because no usable labeled rows were retained. "
+                "Any baseline comparisons are directional only."
+            ),
+        },
         "false_review_sets": {
             "false_low_count": 0,
             "false_high_count": 0,
@@ -1438,6 +1512,36 @@ def run_public_outcome_validation(
     feature_diagnostics_path = output_dir / "feature_diagnostics.json"
     _write_json(feature_diagnostics_path, feature_diag_payload)
 
+    baseline_comparison_payload = {
+        "run_id": run_token,
+        "generated_at": generated_at,
+        "dataset_path": str(dataset_path),
+        "baseline_model_comparison": (
+            report.get("baseline_model_comparison")
+            if isinstance(report.get("baseline_model_comparison"), dict)
+            else {
+                "available": False,
+                "reason": "not_present_in_validation_report",
+                "full_model_auc": None,
+                "baselines": {},
+                "comparison": {
+                    "beats_all_baselines_by_auc": None,
+                    "best_baseline_name": None,
+                    "best_baseline_auc": None,
+                    "auc_margin_vs_best_baseline": None,
+                    "baselines_compared_count": 0,
+                    "complexity_justified_signal": "no_or_inconclusive",
+                },
+            }
+        ),
+        "caveat": (
+            "Baseline comparison is directional only and evaluates whether the full score "
+            "beats simple baseline signals on this public-outcome sample."
+        ),
+    }
+    baseline_comparison_path = output_dir / "baseline_model_comparison.json"
+    _write_json(baseline_comparison_path, baseline_comparison_payload)
+
     segment_metrics_payload = {
         "run_id": run_token,
         "generated_at": generated_at,
@@ -1619,6 +1723,7 @@ def run_public_outcome_validation(
             "false_high_review_set_jsonl": str(false_high_path),
             "evaluation_rows_csv": str(evaluated_rows_csv_path),
             "feature_diagnostics_json": str(feature_diagnostics_path),
+            "baseline_model_comparison_json": str(baseline_comparison_path),
             "segment_metrics_json": str(segment_metrics_path),
             "segment_report_markdown": str(segment_report_path),
             "comparison_to_previous_json": str(comparison_json_path),
@@ -1649,6 +1754,7 @@ def run_public_outcome_validation(
         "summary_path": str(summary_path),
         "validation_metrics_path": str(validation_metrics_path),
         "feature_diagnostics_path": str(feature_diagnostics_path),
+        "baseline_model_comparison_path": str(baseline_comparison_path),
         "comparison_json_path": str(comparison_json_path),
         "comparison_markdown_path": str(comparison_md_path),
         "segment_metrics_path": str(segment_metrics_path),
