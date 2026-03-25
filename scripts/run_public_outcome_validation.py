@@ -285,6 +285,11 @@ def _build_summary_markdown(
         if isinstance(report.get("confidence_tier_performance"), dict)
         else {}
     )
+    segment_summary = (
+        report.get("segment_performance_summary")
+        if isinstance(report.get("segment_performance_summary"), dict)
+        else {}
+    )
     feature_diag = (
         report.get("feature_signal_diagnostics")
         if isinstance(report.get("feature_signal_diagnostics"), dict)
@@ -451,6 +456,9 @@ def _build_summary_markdown(
     by_evidence = slice_metrics.get("by_evidence_group") if isinstance(slice_metrics.get("by_evidence_group"), dict) else {}
     by_confidence = slice_metrics.get("by_confidence_tier") if isinstance(slice_metrics.get("by_confidence_tier"), dict) else {}
     by_join = slice_metrics.get("by_join_confidence_tier") if isinstance(slice_metrics.get("by_join_confidence_tier"), dict) else {}
+    by_hazard = slice_metrics.get("by_hazard_level") if isinstance(slice_metrics.get("by_hazard_level"), dict) else {}
+    by_vegetation = slice_metrics.get("by_vegetation_density") if isinstance(slice_metrics.get("by_vegetation_density"), dict) else {}
+    by_region = slice_metrics.get("by_region") if isinstance(slice_metrics.get("by_region"), dict) else {}
     if by_evidence:
         lines.append("### By Evidence Group")
         for name in sorted(by_evidence):
@@ -486,6 +494,36 @@ def _build_summary_markdown(
         lines.append("### By Validation Confidence Tier")
         for name in sorted(by_validation_tier):
             detail = by_validation_tier[name] if isinstance(by_validation_tier[name], dict) else {}
+            lines.append(
+                f"- `{name}`: n={detail.get('count')}, "
+                f"auc={_format_float(detail.get('wildfire_risk_score_auc'))}, "
+                f"brier={_format_float(detail.get('wildfire_risk_score_brier'))}"
+            )
+    if by_hazard:
+        lines.append("")
+        lines.append("### By Hazard Level Segment")
+        for name in sorted(by_hazard):
+            detail = by_hazard[name] if isinstance(by_hazard[name], dict) else {}
+            lines.append(
+                f"- `{name}`: n={detail.get('count')}, "
+                f"auc={_format_float(detail.get('wildfire_risk_score_auc'))}, "
+                f"brier={_format_float(detail.get('wildfire_risk_score_brier'))}"
+            )
+    if by_vegetation:
+        lines.append("")
+        lines.append("### By Vegetation Density Segment")
+        for name in sorted(by_vegetation):
+            detail = by_vegetation[name] if isinstance(by_vegetation[name], dict) else {}
+            lines.append(
+                f"- `{name}`: n={detail.get('count')}, "
+                f"auc={_format_float(detail.get('wildfire_risk_score_auc'))}, "
+                f"brier={_format_float(detail.get('wildfire_risk_score_brier'))}"
+            )
+    if by_region:
+        lines.append("")
+        lines.append("### By Region Segment")
+        for name in sorted(by_region):
+            detail = by_region[name] if isinstance(by_region[name], dict) else {}
             lines.append(
                 f"- `{name}`: n={detail.get('count')}, "
                 f"auc={_format_float(detail.get('wildfire_risk_score_auc'))}, "
@@ -530,6 +568,42 @@ def _build_summary_markdown(
         if warnings_by_tier:
             for warning in warnings_by_tier:
                 lines.append(f"- Tier warning: {warning}")
+    if segment_summary:
+        highlights = (
+            segment_summary.get("highlights")
+            if isinstance(segment_summary.get("highlights"), list)
+            else []
+        )
+        strongest = (
+            segment_summary.get("strongest_segments")
+            if isinstance(segment_summary.get("strongest_segments"), list)
+            else []
+        )
+        weakest = (
+            segment_summary.get("weakest_segments")
+            if isinstance(segment_summary.get("weakest_segments"), list)
+            else []
+        )
+        lines.append("")
+        lines.append("### Segment Strengths and Weaknesses")
+        lines.append(
+            f"- Eligible segments (n >= {segment_summary.get('min_slice_size')}): "
+            f"`{segment_summary.get('eligible_segment_count')}`"
+        )
+        for item in highlights[:4]:
+            lines.append(f"- {item}")
+        if strongest:
+            top = strongest[0] if isinstance(strongest[0], dict) else {}
+            lines.append(
+                f"- Best segment: `{top.get('segment_family')}={top.get('segment_name')}` "
+                f"(auc={_format_float(top.get('auc'))}, brier={_format_float(top.get('brier'))}, n={top.get('count')})"
+            )
+        if weakest:
+            tail = weakest[0] if isinstance(weakest[0], dict) else {}
+            lines.append(
+                f"- Weakest segment: `{tail.get('segment_family')}={tail.get('segment_name')}` "
+                f"(auc={_format_float(tail.get('auc'))}, brier={_format_float(tail.get('brier'))}, n={tail.get('count')})"
+            )
 
     if feature_diag:
         top_features = (
@@ -638,6 +712,123 @@ def _build_summary_markdown(
     return "\n".join(lines) + "\n"
 
 
+def _build_segment_report_markdown(
+    *,
+    run_id: str,
+    generated_at: str,
+    report: dict[str, Any],
+) -> str:
+    slice_metrics = (
+        report.get("slice_metrics")
+        if isinstance(report.get("slice_metrics"), dict)
+        else {}
+    )
+    segment_summary = (
+        report.get("segment_performance_summary")
+        if isinstance(report.get("segment_performance_summary"), dict)
+        else {}
+    )
+    by_hazard = (
+        slice_metrics.get("by_hazard_level")
+        if isinstance(slice_metrics.get("by_hazard_level"), dict)
+        else {}
+    )
+    by_vegetation = (
+        slice_metrics.get("by_vegetation_density")
+        if isinstance(slice_metrics.get("by_vegetation_density"), dict)
+        else {}
+    )
+    by_confidence = (
+        slice_metrics.get("by_confidence_tier")
+        if isinstance(slice_metrics.get("by_confidence_tier"), dict)
+        else {}
+    )
+    by_region = (
+        slice_metrics.get("by_region")
+        if isinstance(slice_metrics.get("by_region"), dict)
+        else {}
+    )
+
+    lines = [
+        "# Segment Performance Report",
+        "",
+        "Segment-level validation against public observed outcomes.",
+        "This is directional performance analysis and does not establish carrier-claims truth.",
+        "",
+        f"- Run ID: `{run_id}`",
+        f"- Generated at: `{generated_at}`",
+        f"- Min segment size for stable interpretation: `{segment_summary.get('min_slice_size')}`",
+        "",
+    ]
+
+    def _append_segment_block(title: str, payload: dict[str, Any]) -> None:
+        if not payload:
+            return
+        lines.append(f"## {title}")
+        for name in sorted(payload.keys()):
+            detail = payload[name] if isinstance(payload[name], dict) else {}
+            lines.append(
+                f"- `{name}`: n={detail.get('count')}, "
+                f"auc={_format_float(detail.get('wildfire_risk_score_auc'))}, "
+                f"brier={_format_float(detail.get('wildfire_risk_score_brier'))}, "
+                f"small_sample_warning={detail.get('small_sample_warning')}"
+            )
+        lines.append("")
+
+    _append_segment_block("Hazard Level Segments", by_hazard)
+    _append_segment_block("Vegetation Density Segments", by_vegetation)
+    _append_segment_block("Confidence Tier Segments", by_confidence)
+    _append_segment_block("Region Segments", by_region)
+
+    strongest = (
+        segment_summary.get("strongest_segments")
+        if isinstance(segment_summary.get("strongest_segments"), list)
+        else []
+    )
+    weakest = (
+        segment_summary.get("weakest_segments")
+        if isinstance(segment_summary.get("weakest_segments"), list)
+        else []
+    )
+    highlights = (
+        segment_summary.get("highlights")
+        if isinstance(segment_summary.get("highlights"), list)
+        else []
+    )
+    lines.append("## Strengths and Weaknesses")
+    lines.append(
+        f"- Eligible segments: `{segment_summary.get('eligible_segment_count')}` "
+        f"of `{segment_summary.get('segment_count')}`"
+    )
+    for item in highlights[:6]:
+        lines.append(f"- {item}")
+    if strongest:
+        lines.append("- Strong segments:")
+        for row in strongest[:5]:
+            if not isinstance(row, dict):
+                continue
+            lines.append(
+                f"  - {row.get('segment_family')}={row.get('segment_name')} "
+                f"(auc={_format_float(row.get('auc'))}, brier={_format_float(row.get('brier'))}, n={row.get('count')})"
+            )
+    if weakest:
+        lines.append("- Weak segments:")
+        for row in weakest[:5]:
+            if not isinstance(row, dict):
+                continue
+            lines.append(
+                f"  - {row.get('segment_family')}={row.get('segment_name')} "
+                f"(auc={_format_float(row.get('auc'))}, brier={_format_float(row.get('brier'))}, n={row.get('count')})"
+            )
+    lines.append("")
+    lines.append("## Caveat")
+    lines.append(
+        "- Segment diagnostics help identify where the model appears stronger or weaker, "
+        "but they remain limited by sample size, join quality, and public-outcome coverage."
+    )
+    return "\n".join(lines) + "\n"
+
+
 def _insufficient_data_report(
     *,
     generated_at: str,
@@ -689,6 +880,21 @@ def _insufficient_data_report(
             "by_evidence_group": {},
             "by_join_confidence_tier": {},
             "by_validation_confidence_tier": {},
+            "by_hazard_level": {},
+            "by_vegetation_density": {},
+            "by_region": {},
+        },
+        "segment_performance_summary": {
+            "min_slice_size": 20,
+            "segment_count": 0,
+            "eligible_segment_count": 0,
+            "insufficient_segment_count": 0,
+            "strongest_segments": [],
+            "weakest_segments": [],
+            "insufficient_or_unstable_segments": [],
+            "highlights": [
+                "No segment-level evaluation is available because there are no usable labeled rows."
+            ],
         },
         "subset_metrics": {
             "full_dataset": {
@@ -1128,6 +1334,53 @@ def run_public_outcome_validation(
     feature_diagnostics_path = output_dir / "feature_diagnostics.json"
     _write_json(feature_diagnostics_path, feature_diag_payload)
 
+    segment_metrics_payload = {
+        "run_id": run_token,
+        "generated_at": generated_at,
+        "segment_performance_summary": (
+            report.get("segment_performance_summary")
+            if isinstance(report.get("segment_performance_summary"), dict)
+            else {}
+        ),
+        "segment_slice_metrics": {
+            "by_hazard_level": (
+                ((report.get("slice_metrics") or {}).get("by_hazard_level"))
+                if isinstance(report.get("slice_metrics"), dict)
+                else {}
+            ),
+            "by_vegetation_density": (
+                ((report.get("slice_metrics") or {}).get("by_vegetation_density"))
+                if isinstance(report.get("slice_metrics"), dict)
+                else {}
+            ),
+            "by_confidence_tier": (
+                ((report.get("slice_metrics") or {}).get("by_confidence_tier"))
+                if isinstance(report.get("slice_metrics"), dict)
+                else {}
+            ),
+            "by_region": (
+                ((report.get("slice_metrics") or {}).get("by_region"))
+                if isinstance(report.get("slice_metrics"), dict)
+                else {}
+            ),
+        },
+        "caveat": (
+            "Segment metrics are directional diagnostics from public observed outcomes. "
+            "They do not establish insurer-claims predictive truth."
+        ),
+    }
+    segment_metrics_path = output_dir / "segment_metrics.json"
+    _write_json(segment_metrics_path, segment_metrics_payload)
+    segment_report_path = output_dir / "segment_report.md"
+    segment_report_path.write_text(
+        _build_segment_report_markdown(
+            run_id=run_token,
+            generated_at=generated_at,
+            report=report,
+        ),
+        encoding="utf-8",
+    )
+
     summary_text = _build_summary_markdown(
         run_id=run_token,
         generated_at=generated_at,
@@ -1257,6 +1510,8 @@ def run_public_outcome_validation(
             "false_high_review_set_jsonl": str(false_high_path),
             "evaluation_rows_csv": str(evaluated_rows_csv_path),
             "feature_diagnostics_json": str(feature_diagnostics_path),
+            "segment_metrics_json": str(segment_metrics_path),
+            "segment_report_markdown": str(segment_report_path),
             "comparison_to_previous_json": str(comparison_json_path),
             "comparison_to_previous_markdown": str(comparison_md_path),
             "summary_markdown": str(summary_path),
@@ -1287,6 +1542,8 @@ def run_public_outcome_validation(
         "feature_diagnostics_path": str(feature_diagnostics_path),
         "comparison_json_path": str(comparison_json_path),
         "comparison_markdown_path": str(comparison_md_path),
+        "segment_metrics_path": str(segment_metrics_path),
+        "segment_report_path": str(segment_report_path),
     }
 
 

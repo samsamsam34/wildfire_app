@@ -72,6 +72,8 @@ Each run writes:
 Artifacts:
 - `validation_metrics.json`
 - `feature_diagnostics.json`
+- `segment_metrics.json`
+- `segment_report.md`
 - `calibration_table.json`
 - `threshold_metrics.json`
 - `false_low_review_set.jsonl`
@@ -143,6 +145,8 @@ These streams are explicitly separated from real-outcome validation and should b
 Sliced metrics include:
 - event
 - region (if available)
+- hazard-level segments
+- vegetation-density segments
 - confidence tier
 - validation confidence tier (`high-confidence`, `medium-confidence`, `low-confidence`)
 - evidence tier/group

@@ -49,6 +49,16 @@ PROXY_RISK_DOWN_FEATURE_KEYS = (
     "nearest_high_fuel_patch_distance_ft",
     "nearest_vegetation_distance_ft",
 )
+HAZARD_SEGMENT_THRESHOLDS = (35.0, 55.0, 75.0)
+VEGETATION_SEGMENT_THRESHOLDS = (25.0, 50.0, 75.0)
+VEGETATION_SEGMENT_FEATURE_KEYS = (
+    "near_structure_vegetation_0_5_pct",
+    "ring_0_5_ft_vegetation_density",
+    "ring_5_30_ft_vegetation_density",
+    "canopy_adjacency_proxy_pct",
+    "vegetation_continuity_proxy_pct",
+    "canopy_cover",
+)
 
 
 def _utc_now_iso() -> str:
@@ -390,6 +400,90 @@ def _extract_score(row: dict[str, Any], key: str) -> float | None:
     if key in scores:
         return _safe_float(scores.get(key))
     return _safe_float(row.get(key))
+
+
+def _extract_feature_value(row: dict[str, Any], key: str) -> float | None:
+    raw = row.get("raw_feature_vector") if isinstance(row.get("raw_feature_vector"), dict) else {}
+    transformed = (
+        row.get("transformed_feature_vector")
+        if isinstance(row.get("transformed_feature_vector"), dict)
+        else {}
+    )
+    if key in raw:
+        return _safe_float(raw.get(key))
+    if key in transformed:
+        return _safe_float(transformed.get(key))
+    return _safe_float(row.get(key))
+
+
+def _normalize_percent_like(value: float | None) -> float | None:
+    if value is None:
+        return None
+    v = float(value)
+    if v <= 1.0:
+        v *= 100.0
+    return max(0.0, min(100.0, v))
+
+
+def _bucketize_segment(
+    *,
+    value: float | None,
+    thresholds: tuple[float, float, float],
+    labels: tuple[str, str, str, str],
+) -> str:
+    if value is None:
+        return "unknown"
+    a, b, c = thresholds
+    if value < a:
+        return labels[0]
+    if value < b:
+        return labels[1]
+    if value < c:
+        return labels[2]
+    return labels[3]
+
+
+def _derive_hazard_level_segment(row: dict[str, Any]) -> str:
+    hazard_score = _extract_score(row, "site_hazard_score")
+    if hazard_score is None:
+        hazard_score = _extract_feature_value(row, "wildfire_hazard")
+    if hazard_score is None:
+        burn_probability = _extract_feature_value(row, "burn_probability")
+        if burn_probability is not None:
+            hazard_score = _normalize_percent_like(burn_probability)
+    if hazard_score is None:
+        hazard_score = _extract_score(row, "wildfire_risk_score")
+    return _bucketize_segment(
+        value=_normalize_percent_like(hazard_score),
+        thresholds=HAZARD_SEGMENT_THRESHOLDS,
+        labels=("low", "moderate", "high", "severe"),
+    )
+
+
+def _derive_vegetation_density_segment(row: dict[str, Any]) -> str:
+    weighted_terms: list[tuple[float, float]] = []
+    for key, weight in (
+        ("near_structure_vegetation_0_5_pct", 0.40),
+        ("ring_0_5_ft_vegetation_density", 0.35),
+        ("ring_5_30_ft_vegetation_density", 0.20),
+        ("canopy_adjacency_proxy_pct", 0.10),
+        ("vegetation_continuity_proxy_pct", 0.10),
+        ("canopy_cover", 0.10),
+    ):
+        value = _normalize_percent_like(_extract_feature_value(row, key))
+        if value is None:
+            continue
+        weighted_terms.append((value, weight))
+    density_index: float | None = None
+    if weighted_terms:
+        numerator = sum(value * weight for value, weight in weighted_terms)
+        denom = sum(weight for _, weight in weighted_terms)
+        density_index = (numerator / denom) if denom > 0.0 else None
+    return _bucketize_segment(
+        value=density_index,
+        thresholds=VEGETATION_SEGMENT_THRESHOLDS,
+        labels=("sparse", "moderate", "dense", "very_dense"),
+    )
 
 
 def _derive_target_from_label(label: str) -> int | None:
@@ -839,6 +933,114 @@ def _slice_metrics(
             "small_sample_warning": (len(bucket) < max(1, int(min_slice_size))),
         }
     return out
+
+
+def _build_segment_performance_summary(
+    *,
+    slice_metrics: dict[str, Any],
+    min_slice_size: int,
+) -> dict[str, Any]:
+    segment_specs = (
+        ("hazard_level", "by_hazard_level"),
+        ("vegetation_density", "by_vegetation_density"),
+        ("confidence_tier", "by_confidence_tier"),
+        ("region", "by_region"),
+    )
+    segment_rows: list[dict[str, Any]] = []
+    insufficient_rows: list[dict[str, Any]] = []
+
+    for segment_family, slice_key in segment_specs:
+        family_rows = (
+            slice_metrics.get(slice_key)
+            if isinstance(slice_metrics.get(slice_key), dict)
+            else {}
+        )
+        for segment_name in sorted(family_rows.keys()):
+            detail = (
+                family_rows.get(segment_name)
+                if isinstance(family_rows.get(segment_name), dict)
+                else {}
+            )
+            count = int(detail.get("count") or 0)
+            auc = _safe_float(detail.get("wildfire_risk_score_auc"))
+            brier = _safe_float(detail.get("wildfire_risk_score_brier"))
+            row = {
+                "segment_family": segment_family,
+                "segment_name": str(segment_name),
+                "count": count,
+                "auc": auc,
+                "brier": brier,
+                "positive_rate": _safe_float(detail.get("positive_rate")),
+                "small_sample_warning": bool(detail.get("small_sample_warning")),
+            }
+            segment_rows.append(row)
+            if count < max(1, int(min_slice_size)) or auc is None or brier is None:
+                insufficient_rows.append(row)
+
+    eligible = [
+        row
+        for row in segment_rows
+        if row["count"] >= max(1, int(min_slice_size))
+        and isinstance(row.get("auc"), float)
+        and isinstance(row.get("brier"), float)
+    ]
+    strongest = sorted(
+        eligible,
+        key=lambda row: (
+            -float(row.get("auc") or 0.0),
+            float(row.get("brier") or 1.0),
+            -int(row.get("count") or 0),
+            str(row.get("segment_family") or ""),
+            str(row.get("segment_name") or ""),
+        ),
+    )[:8]
+    weakest = sorted(
+        eligible,
+        key=lambda row: (
+            float(row.get("auc") or 0.0),
+            -float(row.get("brier") or 0.0),
+            -int(row.get("count") or 0),
+            str(row.get("segment_family") or ""),
+            str(row.get("segment_name") or ""),
+        ),
+    )[:8]
+
+    highlights: list[str] = []
+    if strongest:
+        top = strongest[0]
+        highlights.append(
+            "Strongest observed segment: "
+            f"{top.get('segment_family')}={top.get('segment_name')} "
+            f"(n={top.get('count')}, auc={top.get('auc')}, brier={top.get('brier')})."
+        )
+    if weakest:
+        tail = weakest[0]
+        highlights.append(
+            "Weakest observed segment: "
+            f"{tail.get('segment_family')}={tail.get('segment_name')} "
+            f"(n={tail.get('count')}, auc={tail.get('auc')}, brier={tail.get('brier')})."
+        )
+    if not eligible:
+        highlights.append(
+            "No segment has enough rows for stable AUC/Brier interpretation; inspect small-sample warnings."
+        )
+
+    return {
+        "min_slice_size": int(max(1, int(min_slice_size))),
+        "segment_count": len(segment_rows),
+        "eligible_segment_count": len(eligible),
+        "insufficient_segment_count": len(insufficient_rows),
+        "strongest_segments": strongest,
+        "weakest_segments": weakest,
+        "insufficient_or_unstable_segments": sorted(
+            insufficient_rows,
+            key=lambda row: (
+                str(row.get("segment_family") or ""),
+                str(row.get("segment_name") or ""),
+            ),
+        )[:50],
+        "highlights": highlights,
+    }
 
 
 def _detect_data_leakage_risks(rows: list[dict[str, Any]], wildfire_auc: float | None) -> dict[str, Any]:
@@ -1974,6 +2176,8 @@ def _prepare_rows(
             existing_row_tier=str(row.get("row_confidence_tier") or ""),
         )
         prepared_row["fallback_status"] = "fallback_heavy" if evidence_group == "fallback_heavy" else "not_fallback_heavy"
+        prepared_row["hazard_level_segment"] = _derive_hazard_level_segment(prepared_row)
+        prepared_row["vegetation_density_segment"] = _derive_vegetation_density_segment(prepared_row)
         prepared_row["low_confidence_join"] = low_confidence_join
         prepared_row["missing_features"] = missing_features
         prepared_row["fallback_heavy"] = fallback_heavy
@@ -2216,6 +2420,57 @@ def evaluate_public_outcome_dataset_rows(
         and len(usable_rows) >= 100
         else "not_recommended_yet"
     )
+    slice_metrics_data = {
+        "by_confidence_tier": _slice_metrics(
+            usable_rows,
+            slice_key="confidence_tier",
+            min_slice_size=min_slice_size,
+        ),
+        "by_evidence_quality_tier": _slice_metrics(
+            usable_rows,
+            slice_key="evidence_quality_tier",
+            min_slice_size=min_slice_size,
+        ),
+        "by_evidence_group": _slice_metrics(
+            usable_rows,
+            slice_key="evidence_group",
+            min_slice_size=min_slice_size,
+        ),
+        "by_join_confidence_tier": _slice_metrics(
+            usable_rows,
+            slice_key="join_confidence_tier",
+            min_slice_size=min_slice_size,
+        ),
+        "by_validation_confidence_tier": _slice_metrics(
+            usable_rows,
+            slice_key="validation_confidence_tier",
+            min_slice_size=min_slice_size,
+        ),
+        "by_fallback_status": _slice_metrics(
+            usable_rows,
+            slice_key="fallback_status",
+            min_slice_size=min_slice_size,
+        ),
+        "by_hazard_level": _slice_metrics(
+            usable_rows,
+            slice_key="hazard_level_segment",
+            min_slice_size=min_slice_size,
+        ),
+        "by_vegetation_density": _slice_metrics(
+            usable_rows,
+            slice_key="vegetation_density_segment",
+            min_slice_size=min_slice_size,
+        ),
+        "by_region": _slice_metrics(
+            usable_rows,
+            slice_key="region_id",
+            min_slice_size=min_slice_size,
+        ),
+    }
+    segment_performance_summary = _build_segment_performance_summary(
+        slice_metrics=slice_metrics_data,
+        min_slice_size=min_slice_size,
+    )
 
     report = {
         "schema_version": "1.1.0",
@@ -2306,38 +2561,8 @@ def evaluate_public_outcome_dataset_rows(
             },
         },
         "calibration_table_wildfire_risk_score": raw_bins,
-        "slice_metrics": {
-            "by_confidence_tier": _slice_metrics(
-                usable_rows,
-                slice_key="confidence_tier",
-                min_slice_size=min_slice_size,
-            ),
-            "by_evidence_quality_tier": _slice_metrics(
-                usable_rows,
-                slice_key="evidence_quality_tier",
-                min_slice_size=min_slice_size,
-            ),
-            "by_evidence_group": _slice_metrics(
-                usable_rows,
-                slice_key="evidence_group",
-                min_slice_size=min_slice_size,
-            ),
-            "by_join_confidence_tier": _slice_metrics(
-                usable_rows,
-                slice_key="join_confidence_tier",
-                min_slice_size=min_slice_size,
-            ),
-            "by_validation_confidence_tier": _slice_metrics(
-                usable_rows,
-                slice_key="validation_confidence_tier",
-                min_slice_size=min_slice_size,
-            ),
-            "by_fallback_status": _slice_metrics(
-                usable_rows,
-                slice_key="fallback_status",
-                min_slice_size=min_slice_size,
-            ),
-        },
+        "slice_metrics": slice_metrics_data,
+        "segment_performance_summary": segment_performance_summary,
         "subset_metrics": {
             "full_dataset": _compute_subset_metrics(usable_rows),
             "high_confidence_subset": _compute_subset_metrics(high_confidence_rows),
@@ -2483,6 +2708,8 @@ def write_evaluation_rows_csv(*, rows: list[dict[str, Any]], output_csv: Path) -
                 "join_confidence_tier",
                 "join_confidence_score",
                 "validation_confidence_tier",
+                "hazard_level_segment",
+                "vegetation_density_segment",
                 "join_method",
                 "row_usable_for_metrics",
                 "low_confidence_join",
@@ -2518,6 +2745,8 @@ def write_evaluation_rows_csv(*, rows: list[dict[str, Any]], output_csv: Path) -
                     "join_confidence_tier": row.get("join_confidence_tier"),
                     "join_confidence_score": row.get("join_confidence_score"),
                     "validation_confidence_tier": row.get("validation_confidence_tier"),
+                    "hazard_level_segment": row.get("hazard_level_segment"),
+                    "vegetation_density_segment": row.get("vegetation_density_segment"),
                     "join_method": row.get("join_method"),
                     "row_usable_for_metrics": row.get("row_usable_for_metrics"),
                     "low_confidence_join": row.get("low_confidence_join"),

@@ -130,6 +130,11 @@ def test_evaluate_public_outcome_dataset_reports_required_metrics(tmp_path: Path
     assert "by_confidence_tier" in (report["slice_metrics"] or {})
     assert "by_evidence_group" in (report["slice_metrics"] or {})
     assert "by_validation_confidence_tier" in (report["slice_metrics"] or {})
+    assert "by_hazard_level" in (report["slice_metrics"] or {})
+    assert "by_vegetation_density" in (report["slice_metrics"] or {})
+    assert "by_region" in (report["slice_metrics"] or {})
+    assert "segment_performance_summary" in report
+    assert "strongest_segments" in (report.get("segment_performance_summary") or {})
     assert "subset_metrics" in report
     assert report["subset_metrics"]["full_dataset"]["count"] == report["row_count_labeled"]
     assert "medium_confidence_subset" in report["subset_metrics"]
@@ -208,6 +213,8 @@ def test_public_outcome_validation_orchestration_is_deterministic_with_fixed_run
     assert (output_root / "fixed_validation_run" / "false_low_review_set.jsonl").exists()
     assert (output_root / "fixed_validation_run" / "false_high_review_set.jsonl").exists()
     assert (output_root / "fixed_validation_run" / "feature_diagnostics.json").exists()
+    assert (output_root / "fixed_validation_run" / "segment_metrics.json").exists()
+    assert (output_root / "fixed_validation_run" / "segment_report.md").exists()
     assert (output_root / "fixed_validation_run" / "comparison_to_previous.json").exists()
     assert (output_root / "fixed_validation_run" / "comparison_to_previous.md").exists()
 
@@ -272,6 +279,9 @@ def test_evaluation_jsonl_dataset_supports_join_confidence_slices(tmp_path: Path
     assert report["dataset_format"] == "jsonl"
     assert "by_join_confidence_tier" in (report["slice_metrics"] or {})
     assert "by_validation_confidence_tier" in (report["slice_metrics"] or {})
+    assert "by_hazard_level" in (report["slice_metrics"] or {})
+    assert "by_vegetation_density" in (report["slice_metrics"] or {})
+    assert "by_region" in (report["slice_metrics"] or {})
     assert "high" in (report["slice_metrics"]["by_join_confidence_tier"] or {})
     assert "moderate" in (report["slice_metrics"]["by_join_confidence_tier"] or {})
     assert "low" in (report["slice_metrics"]["by_join_confidence_tier"] or {})
