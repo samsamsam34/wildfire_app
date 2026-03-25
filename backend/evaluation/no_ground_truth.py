@@ -148,13 +148,25 @@ def _risk_bucket(score: float | None) -> str:
 
 def _fallback_group(snapshot: dict[str, Any]) -> str:
     metrics = snapshot.get("evidence_metrics") if isinstance(snapshot.get("evidence_metrics"), dict) else {}
-    fallback_weight = _safe_float(metrics.get("fallback_weight_fraction")) or 0.0
+    fallback_weight = _fallback_metric_value(metrics)
     observed_count = int((_safe_float(metrics.get("observed_feature_count")) or 0.0))
     if fallback_weight >= 0.45 or observed_count <= 2:
         return "fallback_heavy"
     if fallback_weight <= 0.2 and observed_count >= 6:
         return "high_evidence"
     return "mixed_evidence"
+
+
+def _fallback_metric_value(metrics: dict[str, Any]) -> float:
+    # Prefer feature-evidence fallback share when available. Contribution-weighted
+    # fallback shares can drift with scenario severity and are not pure evidence quality.
+    feature_fallback = _safe_float(metrics.get("fallback_evidence_fraction"))
+    if feature_fallback is not None:
+        return max(0.0, min(1.0, feature_fallback))
+    weighted_fallback = _safe_float(metrics.get("fallback_weight_fraction"))
+    if weighted_fallback is not None:
+        return max(0.0, min(1.0, weighted_fallback))
+    return 0.0
 
 
 def load_no_ground_truth_fixture(path: str | Path | None = None) -> dict[str, Any]:
@@ -846,7 +858,7 @@ def evaluate_confidence_diagnostics(
         group = _fallback_group(snap)
         fallback_group_counts[group] = fallback_group_counts.get(group, 0) + 1
         metrics = snap.get("evidence_metrics") if isinstance(snap.get("evidence_metrics"), dict) else {}
-        fallback_weight = _safe_float(metrics.get("fallback_weight_fraction")) or 0.0
+        fallback_weight = _fallback_metric_value(metrics)
         observed_features = _safe_float(metrics.get("observed_feature_count")) or 0.0
         missing_critical = _safe_float(_path_get(snap, "confidence.missing_critical_fields_count")) or 0.0
         inferred_fields = _safe_float(_path_get(snap, "confidence.inferred_fields_count")) or 0.0

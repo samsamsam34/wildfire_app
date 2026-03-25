@@ -88,6 +88,15 @@ def _compare_values(left: Any, op: str, right: Any) -> bool:
     raise ValueError(f"Unsupported operator: {op}")
 
 
+def _safe_float(value: Any) -> float | None:
+    try:
+        if value is None:
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def default_wildfire_context_dict() -> dict[str, Any]:
     return {
         "environmental_index": 50.0,
@@ -427,6 +436,18 @@ def _scenario_snapshot(
     result: AssessmentResult,
     debug_payload: dict[str, Any],
 ) -> dict[str, Any]:
+    coverage_debug = debug_payload.get("coverage", {}) if isinstance(debug_payload.get("coverage"), dict) else {}
+    observed_feature_count = int(result.observed_feature_count)
+    inferred_feature_count = int(result.inferred_feature_count)
+    fallback_feature_count = int(result.fallback_feature_count)
+    missing_feature_count = int(result.missing_feature_count)
+    feature_count_total = max(
+        1,
+        observed_feature_count + inferred_feature_count + fallback_feature_count + missing_feature_count,
+    )
+    fallback_evidence_fraction = _safe_float(coverage_debug.get("fallback_evidence_fraction"))
+    if fallback_evidence_fraction is None:
+        fallback_evidence_fraction = float(fallback_feature_count) / float(feature_count_total)
     suppressed_factor_count = 0
     fallback_factor_status_count = 0
     for row in (result.weighted_contributions or {}).values():
@@ -502,15 +523,16 @@ def _scenario_snapshot(
         "evidence_quality_summary": result.evidence_quality_summary.model_dump(),
         "score_evidence_ledger_summary": _ledger_contributions(result),
         "evidence_metrics": {
-            "observed_feature_count": int(result.observed_feature_count),
-            "inferred_feature_count": int(result.inferred_feature_count),
-            "fallback_feature_count": int(result.fallback_feature_count),
-            "missing_feature_count": int(result.missing_feature_count),
+            "observed_feature_count": observed_feature_count,
+            "inferred_feature_count": inferred_feature_count,
+            "fallback_feature_count": fallback_feature_count,
+            "missing_feature_count": missing_feature_count,
             "observed_factor_count": int(result.observed_factor_count),
             "fallback_factor_count": int(result.fallback_factor_count),
             "fallback_factor_status_count": int(fallback_factor_status_count),
             "suppressed_factor_count": int(suppressed_factor_count),
             "fallback_weight_fraction": float(result.fallback_weight_fraction),
+            "fallback_evidence_fraction": round(float(fallback_evidence_fraction), 4),
             "observed_weight_fraction": float(result.observed_weight_fraction),
             "geometry_quality_score": float(result.geometry_quality_score),
             "regional_context_coverage_score": float(result.regional_context_coverage_score),

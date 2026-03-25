@@ -2177,6 +2177,12 @@ def _build_feature_coverage_preflight(
     inferred_feature_count = int(bundle_metrics.get("inferred_feature_count") or 0)
     fallback_feature_count = int(bundle_metrics.get("fallback_feature_count") or 0)
     missing_feature_count = int(bundle_metrics.get("missing_feature_count") or 0)
+    feature_count_total = max(
+        1,
+        observed_feature_count + inferred_feature_count + fallback_feature_count + missing_feature_count,
+    )
+    fallback_evidence_fraction = float(fallback_feature_count) / float(feature_count_total)
+    observed_evidence_fraction = float(observed_feature_count) / float(feature_count_total)
     bundle_metrics_present = bool(bundle_metrics)
     observed_weight_fraction = float(bundle_metrics.get("observed_weight_fraction") or 0.0)
     fallback_dominance_ratio = float(bundle_metrics.get("fallback_dominance_ratio") or 0.0)
@@ -2268,6 +2274,12 @@ def _build_feature_coverage_preflight(
         "inferred_feature_count": inferred_feature_count,
         "fallback_feature_count": fallback_feature_count,
         "missing_feature_count": missing_feature_count,
+        "feature_count_total": feature_count_total,
+        "observed_evidence_fraction": round(observed_evidence_fraction, 3),
+        "fallback_evidence_fraction": round(fallback_evidence_fraction, 3),
+        # Confidence should use fallback share derived from evidence availability,
+        # not contribution-weighted fallback shares from risk composition.
+        "fallback_weight_fraction": round(fallback_evidence_fraction, 3),
         "observed_weight_fraction": round(observed_weight_fraction, 3),
         "fallback_dominance_ratio": round(fallback_dominance_ratio, 3),
         "structure_geometry_quality_score": round(geometry_quality_score, 3),
@@ -4845,7 +4857,7 @@ def _run_assessment(
         observed_weight_fraction=float(risk.observed_weight_fraction),
     )
     coverage_preflight["assessment_output_state"] = assessment_output_state
-    coverage_preflight["fallback_weight_fraction"] = float(risk.fallback_weight_fraction)
+    coverage_preflight["scoring_fallback_weight_fraction"] = float(risk.fallback_weight_fraction)
     coverage_preflight["adaptive_component_weights"] = dict(risk.component_weight_fractions or {})
     coverage_preflight["adaptive_component_scores"] = {
         "regional_context_score": float(risk.regional_context_score),
@@ -5904,6 +5916,20 @@ def _run_assessment(
             "inferred_feature_count": result.inferred_feature_count,
             "fallback_feature_count": result.fallback_feature_count,
             "missing_feature_count": result.missing_feature_count,
+            "fallback_evidence_fraction": round(
+                float(result.fallback_feature_count)
+                / float(
+                    max(
+                        1,
+                        int(result.observed_feature_count)
+                        + int(result.inferred_feature_count)
+                        + int(result.fallback_feature_count)
+                        + int(result.missing_feature_count),
+                    )
+                ),
+                4,
+            ),
+            "scoring_fallback_weight_fraction": result.fallback_weight_fraction,
             "geometry_quality_score": result.geometry_quality_score,
             "regional_context_coverage_score": result.regional_context_coverage_score,
             "property_specificity_score": result.property_specificity_score,

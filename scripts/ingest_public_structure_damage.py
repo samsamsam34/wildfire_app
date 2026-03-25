@@ -9,6 +9,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_SOURCE_DIR = REPO_ROOT / "benchmark" / "public_outcomes" / "sources"
+DEFAULT_INPUT_CANDIDATES = [
+    DEFAULT_SOURCE_DIR / "public_damage_fixture_event_x.csv",
+    DEFAULT_SOURCE_DIR / "public_damage_fixture_event_y.csv",
+]
+
 
 CANONICAL_LABELS = {
     "no_damage": {"none", "no damage", "undamaged", "no_known_damage", "affected_not_damaged"},
@@ -108,6 +115,28 @@ def _load_rows(path: Path) -> list[dict[str, Any]]:
     if suffix in {".json", ".geojson"}:
         return _load_json(path)
     raise ValueError(f"Unsupported input format for {path}; use CSV/JSON/GeoJSON.")
+
+
+def _resolve_default_input_path() -> Path:
+    for candidate in DEFAULT_INPUT_CANDIDATES:
+        if candidate.exists():
+            return candidate
+    if DEFAULT_SOURCE_DIR.exists():
+        for pattern in ("*.csv", "*.json", "*.geojson"):
+            for candidate in sorted(DEFAULT_SOURCE_DIR.glob(pattern)):
+                if candidate.is_file():
+                    return candidate
+    raise FileNotFoundError(
+        "No default public-structure-damage fixture found. "
+        "Provide --input explicitly, or stage a fixture under "
+        f"{DEFAULT_SOURCE_DIR}."
+    )
+
+
+def _resolve_input_path(raw_input: str) -> Path:
+    if str(raw_input or "").strip():
+        return Path(raw_input).expanduser().resolve()
+    return _resolve_default_input_path().resolve()
 
 
 def normalize_public_damage_rows(
@@ -212,7 +241,14 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description="Normalize public wildfire structure-damage records (DINS-style) into calibration-ready schema."
     )
-    parser.add_argument("--input", required=True, help="Input CSV/JSON/GeoJSON with structure damage outcomes.")
+    parser.add_argument(
+        "--input",
+        default="",
+        help=(
+            "Input CSV/JSON/GeoJSON with structure damage outcomes. "
+            "If omitted, the script auto-discovers a fixture under benchmark/public_outcomes/sources."
+        ),
+    )
     parser.add_argument(
         "--output-json",
         default="benchmark/calibration/public_structure_damage_normalized.json",
@@ -227,8 +263,16 @@ def main() -> int:
     parser.add_argument("--default-state", default="CA")
     args = parser.parse_args()
 
+    try:
+        input_path = _resolve_input_path(args.input)
+    except FileNotFoundError as exc:
+        parser.error(str(exc))
+
+    if not input_path.exists():
+        parser.error(f"Input file does not exist: {input_path}")
+
     payload = normalize_public_damage_rows(
-        input_path=Path(args.input).expanduser(),
+        input_path=input_path,
         source_name=(args.source_name or None),
         default_state=args.default_state,
     )
@@ -273,6 +317,7 @@ def main() -> int:
         json.dumps(
             {
                 "input": args.input,
+                "resolved_input": str(input_path),
                 "output_json": str(output_json),
                 "output_csv": str(Path(args.output_csv).expanduser()) if args.output_csv else None,
                 "record_count": payload.get("record_count"),

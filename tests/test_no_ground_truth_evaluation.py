@@ -244,6 +244,40 @@ def test_confidence_diagnostics_pass_when_confidence_tracks_evidence_quality() -
     assert not any("increases with inferred-field count" in row for row in diag["warnings"])
 
 
+def test_confidence_diagnostics_prefers_feature_fallback_fraction_over_weighted_fallback_fraction() -> None:
+    snapshots = {
+        "a": {
+            "confidence": {"confidence_score": 80.0, "confidence_tier": "low", "missing_critical_fields_count": 0, "inferred_fields_count": 0},
+            "evidence_metrics": {
+                "fallback_weight_fraction": 0.7,
+                "fallback_evidence_fraction": 0.1,
+                "observed_feature_count": 8,
+            },
+        },
+        "b": {
+            "confidence": {"confidence_score": 55.0, "confidence_tier": "low", "missing_critical_fields_count": 0, "inferred_fields_count": 0},
+            "evidence_metrics": {
+                "fallback_weight_fraction": 0.5,
+                "fallback_evidence_fraction": 0.4,
+                "observed_feature_count": 8,
+            },
+        },
+        "c": {
+            "confidence": {"confidence_score": 30.0, "confidence_tier": "preliminary", "missing_critical_fields_count": 1, "inferred_fields_count": 0},
+            "evidence_metrics": {
+                "fallback_weight_fraction": 0.1,
+                "fallback_evidence_fraction": 0.7,
+                "observed_feature_count": 8,
+            },
+        },
+    }
+    diag = evaluate_confidence_diagnostics(snapshots_by_id=snapshots)
+    assert not any("increases with fallback weight" in row for row in diag["warnings"])
+    corr = diag.get("confidence_vs_fallback_weight_spearman")
+    assert isinstance(corr, (int, float))
+    assert float(corr) <= 0.0
+
+
 def test_build_wildfire_context_syncs_property_ring_metrics_to_structure_ring_metrics() -> None:
     context = build_wildfire_context(
         {
