@@ -18,6 +18,7 @@ if str(REPO_ROOT) not in sys.path:
 
 SCHEMA_VERSION = "1.3.0"
 WGS84_COORD_DECIMALS = 6
+DISTANCE_TIEBREAK_DECIMALS = 6
 LEAKAGE_TOKENS = (
     "outcome",
     "damage",
@@ -286,6 +287,42 @@ def _as_feature_record(row: dict[str, Any], artifact_path: str) -> FeatureRecord
     )
 
 
+def _stable_outcome_sort_key(row: OutcomeRecord) -> tuple[Any, ...]:
+    return (
+        str(row.event_id or ""),
+        int(row.event_year or 0),
+        str(row.record_id or ""),
+        str(row.source_record_id or ""),
+        str(row.parcel_id or ""),
+        str(row.address_norm or ""),
+        float(row.latitude) if row.latitude is not None else float("inf"),
+        float(row.longitude) if row.longitude is not None else float("inf"),
+    )
+
+
+def _stable_feature_sort_key(row: FeatureRecord) -> tuple[Any, ...]:
+    return (
+        str(row.artifact_path or ""),
+        str(row.event_id or ""),
+        int(row.event_year or 0),
+        str(row.record_id or ""),
+        str(row.source_record_id or ""),
+        str(row.parcel_id or ""),
+        str(row.address_norm or ""),
+        float(row.latitude) if row.latitude is not None else float("inf"),
+        float(row.longitude) if row.longitude is not None else float("inf"),
+    )
+
+
+def _distance_sort_key(distance_m: float | None, outcome: OutcomeRecord) -> tuple[Any, ...]:
+    distance_token = round(float(distance_m or 0.0), DISTANCE_TIEBREAK_DECIMALS)
+    return (distance_token, *_stable_outcome_sort_key(outcome))
+
+
+def _sorted_outcomes(rows: list[OutcomeRecord]) -> list[OutcomeRecord]:
+    return sorted(rows, key=_stable_outcome_sort_key)
+
+
 def _derive_severity_and_binary(outcome: dict[str, Any]) -> tuple[str, int | None]:
     severity = str(outcome.get("damage_severity_class") or "").strip().lower()
     if not severity:
@@ -377,6 +414,8 @@ def _build_spatial_index(rows: list[OutcomeRecord], *, cell_size_deg: float = 0.
             continue
         key = _spatial_cell_key(row.latitude, row.longitude, cell_size_deg=cell_size_deg)
         index.setdefault(key, []).append(row)
+    for key, values in list(index.items()):
+        index[key] = _sorted_outcomes(values)
     return index
 
 
@@ -418,8 +457,8 @@ def _filter_unused_outcomes(
     excluded_outcome_keys: set[str] | None,
 ) -> list[OutcomeRecord]:
     if not excluded_outcome_keys:
-        return rows
-    return [row for row in rows if _outcome_identity_key(row) not in excluded_outcome_keys]
+        return _sorted_outcomes(rows)
+    return _sorted_outcomes([row for row in rows if _outcome_identity_key(row) not in excluded_outcome_keys])
 
 
 def _pick_nearest_within_radius(
@@ -446,7 +485,7 @@ def _pick_nearest_within_radius(
             within.append((row, d))
     if not within:
         return None, None, 0
-    within.sort(key=lambda item: item[1])
+    within.sort(key=lambda item: _distance_sort_key(item[1], item[0]))
     chosen, distance_m = within[0]
     return chosen, distance_m, len(within)
 
@@ -456,13 +495,16 @@ def _pick_nearest(feature: FeatureRecord, candidates: list[OutcomeRecord]) -> tu
         return None, None
     best: OutcomeRecord | None = None
     best_distance: float | None = None
+    best_key: tuple[Any, ...] | None = None
     for row in candidates:
         d = _haversine_m(feature.latitude, feature.longitude, row.latitude, row.longitude)
         if d is None:
             continue
-        if best is None or (best_distance is not None and d < best_distance) or best_distance is None:
+        candidate_key = _distance_sort_key(d, row)
+        if best is None or best_key is None or candidate_key < best_key:
             best = row
             best_distance = d
+            best_key = candidate_key
     return best, best_distance
 
 
@@ -596,6 +638,17 @@ def _build_indexes(outcomes: list[OutcomeRecord]) -> dict[str, Any]:
             by_event_name_year.setdefault(f"{row.event_name_norm}|{row.event_year}", []).append(row)
     for event_id, event_rows in by_event.items():
         spatial_by_event[event_id] = _build_spatial_index(event_rows)
+    for mapping in (
+        by_source_record,
+        by_event_record,
+        by_parcel_event,
+        by_address_event,
+        by_event,
+        by_event_name,
+        by_event_name_year,
+    ):
+        for key, values in list(mapping.items()):
+            mapping[key] = _sorted_outcomes(values)
     return {
         "by_source_record": by_source_record,
         "by_event_record": by_event_record,
@@ -705,11 +758,14 @@ def _choose_outcome(
         )
         best: OutcomeRecord | None = None
         best_overlap = 0.0
+        best_key: tuple[Any, ...] | None = None
         for row in candidates:
             overlap = _token_overlap_ratio(feature.address_norm, row.address_norm)
-            if overlap > best_overlap:
+            candidate_key = _stable_outcome_sort_key(row)
+            if overlap > best_overlap or (math.isclose(overlap, best_overlap) and (best_key is None or candidate_key < best_key)):
                 best_overlap = overlap
                 best = row
+                best_key = candidate_key
         if best is not None and best_overlap >= max(0.35, min(1.0, float(join_config.address_token_overlap_min))):
             score = min(0.9, max(0.55, 0.55 + 0.35 * best_overlap))
             distance_m = _haversine_m(feature.latitude, feature.longitude, best.latitude, best.longitude)
@@ -876,11 +932,14 @@ def _choose_outcome(
     if feature.address_norm:
         best: OutcomeRecord | None = None
         best_overlap = 0.0
+        best_key: tuple[Any, ...] | None = None
         for row in _filter_unused_outcomes(indexes["all"], excluded_outcome_keys=excluded_outcome_keys):
             overlap = _token_overlap_ratio(feature.address_norm, row.address_norm)
-            if overlap > best_overlap:
+            candidate_key = _stable_outcome_sort_key(row)
+            if overlap > best_overlap or (math.isclose(overlap, best_overlap) and (best_key is None or candidate_key < best_key)):
                 best_overlap = overlap
                 best = row
+                best_key = candidate_key
         overlap_threshold = max(0.45, min(1.0, float(join_config.address_token_overlap_min)))
         if best is not None and best_overlap >= overlap_threshold:
             score = min(0.72, max(0.38, 0.35 + 0.45 * best_overlap))
@@ -952,7 +1011,7 @@ def _outcome_dedupe_key(row: OutcomeRecord) -> str:
 def _load_outcomes_from_paths(paths: list[Path]) -> tuple[list[OutcomeRecord], dict[str, int]]:
     deduped: dict[str, OutcomeRecord] = {}
     per_source_loaded: dict[str, int] = {}
-    for path in paths:
+    for path in sorted({Path(path).expanduser() for path in paths}, key=lambda token: str(token)):
         p = Path(path).expanduser()
         rows = _load_outcomes(p)
         per_source_loaded[str(p)] = len(rows)
@@ -968,7 +1027,7 @@ def _load_outcomes_from_paths(paths: list[Path]) -> tuple[list[OutcomeRecord], d
 def _load_feature_records(paths: list[Path]) -> tuple[list[FeatureRecord], list[dict[str, Any]]]:
     records: list[FeatureRecord] = []
     missing_artifacts: list[dict[str, Any]] = []
-    for path in paths:
+    for path in sorted({Path(path).expanduser() for path in paths}, key=lambda token: str(token)):
         p = Path(path).expanduser()
         if not p.exists():
             missing_artifacts.append({"feature_artifact_path": str(p), "reason": "missing_feature_artifact"})
@@ -977,7 +1036,8 @@ def _load_feature_records(paths: list[Path]) -> tuple[list[FeatureRecord], list[
         rows = _iter_feature_rows(payload)
         for row in rows:
             records.append(_as_feature_record(row, str(p)))
-    return records, missing_artifacts
+    records.sort(key=_stable_feature_sort_key)
+    return records, sorted(missing_artifacts, key=lambda item: (str(item.get("feature_artifact_path") or ""), str(item.get("reason") or "")))
 
 
 def _resolve_latest_normalized_outcomes(root: Path) -> list[Path]:
@@ -1287,11 +1347,15 @@ def _build_markdown_summary(
         f"- Run ID: `{run_id}`",
         f"- Generated at: `{generated_at}`",
         f"- Outcomes loaded: `{quality.get('total_outcomes_loaded')}`",
+        f"- Candidate match attempts: `{quality.get('candidate_match_attempt_count')}`",
+        f"- Matched before filters: `{quality.get('matched_candidate_count_before_filters')}`",
         f"- Outcome source files: `{quality.get('outcomes_loaded_by_source_path')}`",
         f"- Outcomes by event: `{quality.get('outcomes_by_event_counts')}`",
         f"- Feature rows loaded: `{quality.get('total_feature_rows_loaded')}`",
         f"- Feature rows by event: `{quality.get('feature_rows_by_event_counts')}`",
         f"- Joined rows: `{quality.get('total_joined_records')}`",
+        f"- Filtered records: `{quality.get('filtered_records_count')}`",
+        f"- Final dataset size: `{quality.get('final_dataset_size')}`",
         f"- Join rate: `{quality.get('join_rate')}`",
         f"- Match rate (%): `{quality.get('match_rate_percent')}`",
         "",
@@ -1458,7 +1522,10 @@ def build_public_outcome_evaluation_dataset(
         raise ValueError(f"Output run directory already exists: {run_dir}. Use --overwrite to replace it.")
     run_dir.mkdir(parents=True, exist_ok=True)
 
-    configured_outcome_paths = [Path(path).expanduser() for path in (outcomes_paths or []) if str(path).strip()]
+    configured_outcome_paths = sorted(
+        {Path(path).expanduser() for path in (outcomes_paths or []) if str(path).strip()},
+        key=lambda token: str(token),
+    )
     if not configured_outcome_paths and outcomes_path is not None:
         configured_outcome_paths = [Path(outcomes_path).expanduser()]
     if not configured_outcome_paths:
@@ -1474,6 +1541,7 @@ def build_public_outcome_evaluation_dataset(
         outcomes_by_event_counts[event_key] = outcomes_by_event_counts.get(event_key, 0) + 1
         year_key = str(outcome.event_year or "unknown")
         outcomes_by_year_counts[year_key] = outcomes_by_year_counts.get(year_key, 0) + 1
+    feature_artifacts = sorted({Path(path).expanduser() for path in feature_artifacts}, key=lambda token: str(token))
     feature_rows, missing_feature_artifacts = _load_feature_records(feature_artifacts)
     if not feature_rows:
         raise ValueError("No feature rows were loaded from provided feature artifacts.")
@@ -1515,13 +1583,16 @@ def build_public_outcome_evaluation_dataset(
     feature_coordinate_modes: dict[str, int] = {}
     outcome_coordinate_modes: dict[str, int] = {}
     duplicate_outcome_match_prevented_count = 0
+    candidate_match_attempt_count = 0
+    matched_candidate_count_before_filters = 0
     used_outcome_keys: set[str] = set()
     by_event_counts: dict[str, int] = {}
     by_label_counts: dict[str, int] = {}
     unmatched_feature_rows_by_event_counts: dict[str, int] = {}
     low_confidence_join_count = 0
 
-    for feature in sorted(feature_rows, key=lambda row: (row.artifact_path, row.event_id, row.record_id)):
+    for feature in sorted(feature_rows, key=_stable_feature_sort_key):
+        candidate_match_attempt_count += 1
         feature_coord_mode = str(feature.payload.get("_coordinate_normalization_mode") or "unknown")
         feature_coordinate_modes[feature_coord_mode] = feature_coordinate_modes.get(feature_coord_mode, 0) + 1
         matched, join_meta = _choose_outcome(
@@ -1545,6 +1616,7 @@ def build_public_outcome_evaluation_dataset(
                 }
             )
             continue
+        matched_candidate_count_before_filters += 1
         matched_key = _outcome_identity_key(matched)
         if not join_config.allow_duplicate_outcome_matches:
             if matched_key in used_outcome_keys:
@@ -1817,6 +1889,8 @@ def build_public_outcome_evaluation_dataset(
         "outcomes_by_event_counts": dict(sorted(outcomes_by_event_counts.items())),
         "outcomes_by_year_counts": dict(sorted(outcomes_by_year_counts.items())),
         "total_feature_rows_loaded": len(feature_rows),
+        "candidate_match_attempt_count": candidate_match_attempt_count,
+        "matched_candidate_count_before_filters": matched_candidate_count_before_filters,
         "feature_rows_by_event_counts": dict(sorted(feature_rows_by_event_counts.items())),
         "feature_rows_by_year_counts": dict(sorted(feature_rows_by_year_counts.items())),
         "total_joined_records": len(joined_rows),
@@ -1865,6 +1939,8 @@ def build_public_outcome_evaluation_dataset(
         "by_label_join_counts": dict(sorted(by_label_counts.items())),
         "unmatched_feature_rows_by_event_counts": dict(sorted(unmatched_feature_rows_by_event_counts.items())),
         "excluded_row_count": len(excluded_rows),
+        "filtered_records_count": len(excluded_rows),
+        "final_dataset_size": len(joined_rows),
         "excluded_reason_counts": dict(sorted(excluded_reason_counts.items())),
         "excluded_rows": excluded_rows[:200],
         "leakage_warnings": sorted(set(leakage_warnings)),
@@ -2197,6 +2273,13 @@ def main() -> int:
     print(
         f"[public-eval-ds] Loaded outcomes={join_report.get('total_outcomes_loaded')} "
         f"feature_rows={join_report.get('total_feature_rows_loaded')}"
+    )
+    print(
+        f"[public-eval-ds] Stage counts: "
+        f"candidate_attempts={join_report.get('candidate_match_attempt_count')} "
+        f"matched_before_filters={join_report.get('matched_candidate_count_before_filters')} "
+        f"filtered={join_report.get('filtered_records_count')} "
+        f"final_dataset_size={join_report.get('final_dataset_size')}"
     )
     print(
         f"[public-eval-ds] Matched rows={join_report.get('total_joined_records')} "

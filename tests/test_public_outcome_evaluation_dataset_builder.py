@@ -303,6 +303,122 @@ def test_deterministic_with_fixed_run_id(tmp_path: Path) -> None:
     assert m1 == m2
 
 
+def test_consecutive_runs_are_stable_with_different_run_ids(tmp_path: Path) -> None:
+    outcomes = tmp_path / "normalized_outcomes.json"
+    features = tmp_path / "event_backtest.json"
+    _write_outcomes(outcomes)
+    _write_feature_artifact(features)
+    root = tmp_path / "out"
+
+    run_a = build_public_outcome_evaluation_dataset(
+        outcomes_path=outcomes,
+        feature_artifacts=[features],
+        output_root=root,
+        run_id="deterministic_eval_ds_a",
+        overwrite=True,
+    )
+    run_b = build_public_outcome_evaluation_dataset(
+        outcomes_path=outcomes,
+        feature_artifacts=[features],
+        output_root=root,
+        run_id="deterministic_eval_ds_b",
+        overwrite=True,
+    )
+
+    dataset_a = Path(run_a["run_dir"]) / "evaluation_dataset.jsonl"
+    dataset_b = Path(run_b["run_dir"]) / "evaluation_dataset.jsonl"
+    assert dataset_a.read_text(encoding="utf-8") == dataset_b.read_text(encoding="utf-8")
+
+    metrics_a = json.loads(Path(run_a["join_quality_metrics_path"]).read_text(encoding="utf-8"))
+    metrics_b = json.loads(Path(run_b["join_quality_metrics_path"]).read_text(encoding="utf-8"))
+    metrics_a.pop("generated_at", None)
+    metrics_b.pop("generated_at", None)
+    assert metrics_a == metrics_b
+    assert metrics_a.get("candidate_match_attempt_count") == metrics_a.get("total_feature_rows_loaded")
+    assert metrics_a.get("final_dataset_size") == metrics_a.get("total_joined_records")
+
+
+def test_nearest_join_tie_break_is_deterministic(tmp_path: Path) -> None:
+    outcomes = tmp_path / "normalized_outcomes_tie.json"
+    features = tmp_path / "feature_artifact_tie.json"
+    outcomes.write_text(
+        json.dumps(
+            {
+                "records": [
+                    {
+                        "record_id": "z-row",
+                        "source_record_id": "SRC-Z",
+                        "source_name": "public_source",
+                        "event_id": "evt-a",
+                        "event_name": "Event A",
+                        "event_date": "2021-08-01",
+                        "event_year": 2021,
+                        "latitude": 39.1,
+                        "longitude": -120.1001,
+                        "damage_label": "destroyed",
+                        "damage_severity_class": "destroyed",
+                        "structure_loss_or_major_damage": 1,
+                    },
+                    {
+                        "record_id": "a-row",
+                        "source_record_id": "SRC-A",
+                        "source_name": "public_source",
+                        "event_id": "evt-a",
+                        "event_name": "Event A",
+                        "event_date": "2021-08-01",
+                        "event_year": 2021,
+                        "latitude": 39.1,
+                        "longitude": -120.0999,
+                        "damage_label": "no_damage",
+                        "damage_severity_class": "none",
+                        "structure_loss_or_major_damage": 0,
+                    },
+                ]
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    features.write_text(
+        json.dumps(
+            {
+                "records": [
+                    {
+                        "event_id": "evt-a",
+                        "event_name": "Event A",
+                        "event_date": "2021-08-01",
+                        "record_id": "f-tie",
+                        "source_record_id": "UNMATCHED",
+                        "latitude": 39.1,
+                        "longitude": -120.1,
+                        "address_text": "Unknown",
+                        "scores": {"wildfire_risk_score": 51.0},
+                    }
+                ]
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    result = build_public_outcome_evaluation_dataset(
+        outcomes_path=outcomes,
+        feature_artifacts=[features],
+        output_root=tmp_path / "out",
+        run_id="tie_break_determinism",
+        exact_match_distance_m=0.5,
+        near_match_distance_m=30.0,
+        max_distance_m=150.0,
+        overwrite=True,
+    )
+    rows = []
+    with (Path(result["run_dir"]) / "evaluation_dataset.jsonl").open("r", encoding="utf-8") as fh:
+        for line in fh:
+            rows.append(json.loads(line))
+    assert len(rows) == 1
+    assert ((rows[0].get("outcome") or {}).get("record_id")) == "a-row"
+
+
 def test_builder_backfills_missing_scores_via_event_backtest(monkeypatch, tmp_path: Path) -> None:
     outcomes = tmp_path / "normalized_outcomes.json"
     features = tmp_path / "event_backtest_unscored.json"
