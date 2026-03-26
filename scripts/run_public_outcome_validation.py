@@ -1556,23 +1556,25 @@ def run_public_outcome_validation(
     evaluated_rows_csv_path = output_dir / "evaluation_rows.csv"
     write_evaluation_rows_csv(rows=rows, output_csv=evaluated_rows_csv_path)
 
+    feature_signal_diagnostics = (
+        report.get("feature_signal_diagnostics")
+        if isinstance(report.get("feature_signal_diagnostics"), dict)
+        else {
+            "available": False,
+            "reason": "not_present_in_validation_report",
+            "top_predictive_features": [],
+            "weak_or_noisy_features": [],
+            "potentially_harmful_features": [],
+            "feature_vs_outcome_curves": [],
+            "key_feature_family_summary": {},
+        }
+    )
+
     feature_diag_payload = {
         "run_id": run_token,
         "generated_at": generated_at,
         "dataset_path": str(dataset_path),
-        "feature_signal_diagnostics": (
-            report.get("feature_signal_diagnostics")
-            if isinstance(report.get("feature_signal_diagnostics"), dict)
-            else {
-                "available": False,
-                "reason": "not_present_in_validation_report",
-                "top_predictive_features": [],
-                "weak_or_noisy_features": [],
-                "potentially_harmful_features": [],
-                "feature_vs_outcome_curves": [],
-                "key_feature_family_summary": {},
-            }
-        ),
+        "feature_signal_diagnostics": feature_signal_diagnostics,
         "caveat": (
             "Feature diagnostics describe directional signal/noise in this labeled sample. "
             "They are not causal inference and do not establish insurer-claims predictive truth."
@@ -1580,6 +1582,45 @@ def run_public_outcome_validation(
     }
     feature_diagnostics_path = output_dir / "feature_diagnostics.json"
     _write_json(feature_diagnostics_path, feature_diag_payload)
+
+    feature_signal_report_payload = {
+        "run_id": run_token,
+        "generated_at": generated_at,
+        "dataset_path": str(dataset_path),
+        "method": (
+            feature_signal_diagnostics.get("method")
+            if isinstance(feature_signal_diagnostics.get("method"), dict)
+            else {}
+        ),
+        "feature_count_evaluated": feature_signal_diagnostics.get("feature_count_evaluated"),
+        "row_count_used": feature_signal_diagnostics.get("row_count_used"),
+        "top_predictive_features": (
+            feature_signal_diagnostics.get("top_predictive_features")
+            if isinstance(feature_signal_diagnostics.get("top_predictive_features"), list)
+            else []
+        ),
+        "weak_or_noisy_features": (
+            feature_signal_diagnostics.get("weak_or_noisy_features")
+            if isinstance(feature_signal_diagnostics.get("weak_or_noisy_features"), list)
+            else []
+        ),
+        "potentially_harmful_features": (
+            feature_signal_diagnostics.get("potentially_harmful_features")
+            if isinstance(feature_signal_diagnostics.get("potentially_harmful_features"), list)
+            else []
+        ),
+        "feature_ranking_strongest_to_weakest": (
+            feature_signal_diagnostics.get("top_predictive_features")
+            if isinstance(feature_signal_diagnostics.get("top_predictive_features"), list)
+            else []
+        ),
+        "scoring_caveat": (
+            "Feature signal diagnostics are directional and sample-dependent. They do not establish "
+            "causal effects, insurer claims truth, or underwriting-grade predictive validity."
+        ),
+    }
+    feature_signal_report_path = output_dir / "feature_signal_report.json"
+    _write_json(feature_signal_report_path, feature_signal_report_payload)
 
     baseline_comparison_payload = {
         "run_id": run_token,
@@ -1792,6 +1833,7 @@ def run_public_outcome_validation(
             "false_high_review_set_jsonl": str(false_high_path),
             "evaluation_rows_csv": str(evaluated_rows_csv_path),
             "feature_diagnostics_json": str(feature_diagnostics_path),
+            "feature_signal_report_json": str(feature_signal_report_path),
             "baseline_model_comparison_json": str(baseline_comparison_path),
             "segment_metrics_json": str(segment_metrics_path),
             "segment_report_markdown": str(segment_report_path),
@@ -1828,6 +1870,7 @@ def run_public_outcome_validation(
         "summary_path": str(summary_path),
         "validation_metrics_path": str(validation_metrics_path),
         "feature_diagnostics_path": str(feature_diagnostics_path),
+        "feature_signal_report_path": str(feature_signal_report_path),
         "baseline_model_comparison_path": str(baseline_comparison_path),
         "comparison_json_path": str(comparison_json_path),
         "comparison_markdown_path": str(comparison_md_path),

@@ -238,11 +238,15 @@ def test_public_outcome_validation_orchestration_is_deterministic_with_fixed_run
     assert (output_root / "fixed_validation_run" / "false_low_review_set.jsonl").exists()
     assert (output_root / "fixed_validation_run" / "false_high_review_set.jsonl").exists()
     assert (output_root / "fixed_validation_run" / "feature_diagnostics.json").exists()
+    assert (output_root / "fixed_validation_run" / "feature_signal_report.json").exists()
     assert (output_root / "fixed_validation_run" / "baseline_model_comparison.json").exists()
     assert (output_root / "fixed_validation_run" / "segment_metrics.json").exists()
     assert (output_root / "fixed_validation_run" / "segment_report.md").exists()
     assert (output_root / "fixed_validation_run" / "comparison_to_previous.json").exists()
     assert (output_root / "fixed_validation_run" / "comparison_to_previous.md").exists()
+    feature_signal = json.loads((output_root / "fixed_validation_run" / "feature_signal_report.json").read_text(encoding="utf-8"))
+    assert "top_predictive_features" in feature_signal
+    assert "weak_or_noisy_features" in feature_signal
 
 
 def test_evaluation_jsonl_dataset_supports_join_confidence_slices(tmp_path: Path) -> None:
