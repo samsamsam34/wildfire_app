@@ -10,6 +10,15 @@ It is directional validation and does **not** establish carrier-claims truth, un
 python scripts/run_public_outcome_validation.py
 ```
 
+Directional dataset-viability check (logistic regression + shallow decision tree + random baseline):
+
+```bash
+python scripts/evaluate_dataset_model_viability.py \
+  --evaluation-dataset benchmark/public_outcomes/evaluation_dataset/<run_id>/evaluation_dataset.jsonl
+```
+
+This writes a separate bundle under `benchmark/public_outcomes/model_viability/<run_id>/` and answers whether the current labeled dataset appears usable for predictive modeling (with cautious caveats).
+
 Default behavior:
 - looks for the latest labeled dataset under `benchmark/public_outcomes/evaluation_dataset/<run_id>/evaluation_dataset.jsonl`
 - writes a new validation bundle under `benchmark/public_outcomes/validation/<run_id>/`

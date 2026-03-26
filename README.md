@@ -763,7 +763,11 @@ python scripts/build_public_outcome_evaluation_dataset.py \
 python scripts/run_public_outcome_validation.py \
   --evaluation-dataset benchmark/public_outcomes/evaluation_dataset/<run_id>/evaluation_dataset.jsonl
 
-# 4) Fit optional calibration artifact bundle
+# 4) Check whether the current dataset supports predictive modeling (directional viability)
+python scripts/evaluate_dataset_model_viability.py \
+  --evaluation-dataset benchmark/public_outcomes/evaluation_dataset/<run_id>/evaluation_dataset.jsonl
+
+# 5) Fit optional calibration artifact bundle
 python scripts/fit_public_outcome_calibration.py \
   --dataset benchmark/public_outcomes/evaluation_dataset/<run_id>/evaluation_dataset.jsonl \
   --output config/public_outcome_calibration.json
