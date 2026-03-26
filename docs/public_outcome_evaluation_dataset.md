@@ -176,6 +176,17 @@ The builder now preferentially consumes nested property-level context before der
 - `property_level_context.neighboring_structure_metrics.*`
 - `property_level_context.feature_sampling.*` (`raw_point_value`/`index` + `scope`)
 
+When available locally in the repo catalog, the builder also consumes external public geospatial assets:
+- `data/catalog/vectors/building_footprints/*.geojson`
+- `data/catalog/vectors/building_footprints_overture/*.geojson`
+- `data/catalog/vectors/parcel_polygons/*.geojson`
+
+These are used to derive per-property structure/parcel proxies such as:
+- `building_footprint_area_proxy_sqft`
+- `mean_nearby_footprint_area_sqft`
+- `lot_size_proxy_sqft`
+- `parcel_distance_ft`
+
 Each joined row includes `evaluation.fallback_usage` for per-row auditing:
 - factor counts (observed/inferred/fallback/missing)
 - coverage fallback/failed counts

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import glob
 import json
 import math
 import re
@@ -48,6 +49,10 @@ STRUCTURE_PROXY_FEATURE_KEYS: tuple[str, ...] = (
     "local_structure_clustering_index",
     "building_age_proxy_year",
     "building_age_material_proxy_risk",
+    "building_footprint_area_proxy_sqft",
+    "mean_nearby_footprint_area_sqft",
+    "lot_size_proxy_sqft",
+    "parcel_distance_ft",
 )
 
 NEAR_STRUCTURE_VEGETATION_FEATURE_KEYS: tuple[str, ...] = (
@@ -662,6 +667,189 @@ def _build_feature_spatial_context(feature_rows: list[FeatureRecord]) -> dict[tu
     return output
 
 
+_EXTERNAL_PROXY_CACHE: dict[str, list[dict[str, float]]] = {}
+
+
+def _iter_geometry_points(coords: Any) -> list[tuple[float, float]]:
+    out: list[tuple[float, float]] = []
+
+    def _walk(node: Any) -> None:
+        if isinstance(node, (list, tuple)):
+            if len(node) >= 2 and isinstance(node[0], (int, float)) and isinstance(node[1], (int, float)):
+                lon = float(node[0])
+                lat = float(node[1])
+                if -180.0 <= lon <= 180.0 and -90.0 <= lat <= 90.0:
+                    out.append((lon, lat))
+                return
+            for child in node:
+                _walk(child)
+
+    _walk(coords)
+    return out
+
+
+def _ring_area_sqm(ring: list[tuple[float, float]]) -> float:
+    if len(ring) < 3:
+        return 0.0
+    mean_lat = sum(lat for _, lat in ring) / float(len(ring))
+    cos_lat = max(0.2, math.cos(math.radians(mean_lat)))
+    xs = [lon * 111_320.0 * cos_lat for lon, _ in ring]
+    ys = [lat * 111_320.0 for _, lat in ring]
+    area2 = 0.0
+    for i in range(len(ring)):
+        j = (i + 1) % len(ring)
+        area2 += (xs[i] * ys[j]) - (xs[j] * ys[i])
+    return abs(area2) / 2.0
+
+
+def _geometry_centroid_and_area(geometry: dict[str, Any]) -> tuple[float | None, float | None, float | None]:
+    geom_type = str(geometry.get("type") or "").strip()
+    coords = geometry.get("coordinates")
+    if not geom_type or coords is None:
+        return None, None, None
+
+    points = _iter_geometry_points(coords)
+    if not points:
+        return None, None, None
+    lon = sum(pt[0] for pt in points) / float(len(points))
+    lat = sum(pt[1] for pt in points) / float(len(points))
+    area_sqm = None
+
+    if geom_type == "Polygon" and isinstance(coords, list):
+        ring_points = [_iter_geometry_points(ring) for ring in coords]
+        if ring_points:
+            outer = _ring_area_sqm(ring_points[0])
+            holes = sum(_ring_area_sqm(ring) for ring in ring_points[1:])
+            area_sqm = max(0.0, outer - holes)
+    elif geom_type == "MultiPolygon" and isinstance(coords, list):
+        total_area = 0.0
+        for poly in coords:
+            if not isinstance(poly, list) or not poly:
+                continue
+            ring_points = [_iter_geometry_points(ring) for ring in poly]
+            if not ring_points:
+                continue
+            outer = _ring_area_sqm(ring_points[0])
+            holes = sum(_ring_area_sqm(ring) for ring in ring_points[1:])
+            total_area += max(0.0, outer - holes)
+        area_sqm = max(0.0, total_area)
+    return (round(lat, 6), round(lon, 6), (round(area_sqm, 3) if area_sqm is not None else None))
+
+
+def _load_external_proxy_points(*, kind: str, patterns: list[str]) -> list[dict[str, float]]:
+    cache_key = f"{kind}::{';'.join(sorted(patterns))}"
+    cached = _EXTERNAL_PROXY_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
+    points: list[dict[str, float]] = []
+    seen: set[tuple[float, float, float]] = set()
+    for pattern in patterns:
+        for path_str in sorted(glob.glob(pattern)):
+            path = Path(path_str)
+            if not path.is_file():
+                continue
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            features = payload.get("features") if isinstance(payload, dict) else None
+            if not isinstance(features, list):
+                continue
+            for feature in features:
+                if not isinstance(feature, dict):
+                    continue
+                geom = feature.get("geometry") if isinstance(feature.get("geometry"), dict) else {}
+                lat, lon, area_sqm = _geometry_centroid_and_area(geom)
+                if lat is None or lon is None:
+                    continue
+                key = (round(lat, 6), round(lon, 6), round(float(area_sqm or 0.0), 2))
+                if key in seen:
+                    continue
+                seen.add(key)
+                row: dict[str, float] = {"lat": float(lat), "lon": float(lon)}
+                if area_sqm is not None:
+                    row["area_sqm"] = float(area_sqm)
+                points.append(row)
+    points = sorted(points, key=lambda item: (float(item.get("lat") or 0.0), float(item.get("lon") or 0.0), float(item.get("area_sqm") or 0.0)))
+    _EXTERNAL_PROXY_CACHE[cache_key] = points
+    return points
+
+
+def _build_external_structure_context(feature_rows: list[FeatureRecord]) -> dict[tuple[str, str, str, str, str], dict[str, float | None]]:
+    building_patterns = [
+        str(REPO_ROOT / "data/catalog/vectors/building_footprints/*.geojson"),
+        str(REPO_ROOT / "data/catalog/vectors/building_footprints_overture/*.geojson"),
+        str(REPO_ROOT / "data/regions/*/building_footprints.geojson"),
+    ]
+    parcel_patterns = [
+        str(REPO_ROOT / "data/catalog/vectors/parcel_polygons/*.geojson"),
+        str(REPO_ROOT / "data/regions/*/parcel_polygons.geojson"),
+    ]
+    structure_points = _load_external_proxy_points(kind="building", patterns=building_patterns)
+    parcel_points = _load_external_proxy_points(kind="parcel", patterns=parcel_patterns)
+    if not structure_points and not parcel_points:
+        return {}
+
+    context: dict[tuple[str, str, str, str, str], dict[str, float | None]] = {}
+    for row in feature_rows:
+        if row.latitude is None or row.longitude is None:
+            continue
+        identity = _feature_identity_key(row)
+        out: dict[str, float | None] = {}
+        structure_distances_ft: list[float] = []
+        structure_area_pairs: list[tuple[float, float | None]] = []
+        for point in structure_points:
+            d_m = _haversine_m(row.latitude, row.longitude, point.get("lat"), point.get("lon"))
+            if d_m is None:
+                continue
+            d_ft = float(d_m) * 3.28084
+            if d_ft <= 2000.0:
+                structure_distances_ft.append(d_ft)
+                structure_area_pairs.append((d_ft, _safe_float(point.get("area_sqm"))))
+        if structure_distances_ft:
+            structure_distances_ft.sort()
+            nearby_100 = sum(1 for d in structure_distances_ft if d <= 100.0)
+            nearby_300 = sum(1 for d in structure_distances_ft if d <= 300.0)
+            nearest_ft = structure_distances_ft[0]
+            proximity_index = _clamp(100.0 - ((nearest_ft / 300.0) * 100.0), 0.0, 100.0)
+            structure_density_index = _clamp(((min(float(nearby_100), 8.0) / 8.0) * 70.0) + ((min(float(nearby_300), 24.0) / 24.0) * 30.0), 0.0, 100.0)
+            clustering = _clamp((0.70 * structure_density_index) + (0.30 * proximity_index), 0.0, 100.0)
+            out["nearby_structure_count_100_ft"] = round(float(nearby_100), 4)
+            out["nearby_structure_count_300_ft"] = round(float(nearby_300), 4)
+            out["nearest_structure_distance_ft"] = round(float(nearest_ft), 4)
+            out["distance_to_nearest_structure_ft"] = round(float(nearest_ft), 4)
+            out["structure_density"] = round(float(structure_density_index), 4)
+            out["structure_density_proxy"] = round(float(structure_density_index), 4)
+            out["clustering_index"] = round(float(clustering), 4)
+            out["local_structure_clustering_index"] = round(float(clustering), 4)
+            structure_area_pairs.sort(key=lambda item: item[0])
+            nearest_area_sqm = next((area for _, area in structure_area_pairs if area is not None), None)
+            nearby_footprint_areas = [float(area) for dist, area in structure_area_pairs if area is not None and dist <= 300.0]
+            if nearest_area_sqm is not None:
+                out["building_footprint_area_proxy_sqft"] = round(float(nearest_area_sqm) * 10.7639, 3)
+            if nearby_footprint_areas:
+                out["mean_nearby_footprint_area_sqft"] = round((sum(nearby_footprint_areas) / float(len(nearby_footprint_areas))) * 10.7639, 3)
+
+        parcel_pairs: list[tuple[float, float | None]] = []
+        for point in parcel_points:
+            d_m = _haversine_m(row.latitude, row.longitude, point.get("lat"), point.get("lon"))
+            if d_m is None:
+                continue
+            d_ft = float(d_m) * 3.28084
+            if d_ft <= 4000.0:
+                parcel_pairs.append((d_ft, _safe_float(point.get("area_sqm"))))
+        if parcel_pairs:
+            parcel_pairs.sort(key=lambda item: item[0])
+            out["parcel_distance_ft"] = round(float(parcel_pairs[0][0]), 4)
+            parcel_area_sqm = next((area for _, area in parcel_pairs if area is not None), None)
+            if parcel_area_sqm is not None:
+                out["lot_size_proxy_sqft"] = round(float(parcel_area_sqm) * 10.7639, 3)
+        if out:
+            context[identity] = out
+    return context
+
+
 def _extract_proxy_build_year(
     *,
     feature: FeatureRecord,
@@ -724,6 +912,7 @@ def _enrich_feature_vectors_with_property_proxies(
     raw_feature_vector: dict[str, Any],
     transformed_feature_vector: dict[str, Any],
     spatial_context: dict[str, float | None] | None,
+    external_structure_context: dict[str, float | None] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
     raw = dict(raw_feature_vector or {})
     transformed = dict(transformed_feature_vector or {})
@@ -915,6 +1104,7 @@ def _enrich_feature_vectors_with_property_proxies(
         return _clamp((float(value) / 40.0) * 100.0, 0.0, 100.0)
 
     spatial = dict(spatial_context or {})
+    external_structure = dict(external_structure_context or {})
 
     for key in (
         "nearby_structure_count_100_ft",
@@ -925,6 +1115,10 @@ def _enrich_feature_vectors_with_property_proxies(
         "structure_density_proxy",
         "clustering_index",
         "local_structure_clustering_index",
+        "building_footprint_area_proxy_sqft",
+        "mean_nearby_footprint_area_sqft",
+        "lot_size_proxy_sqft",
+        "parcel_distance_ft",
     ):
         observed = _observed(key)
         if observed is not None:
@@ -933,6 +1127,10 @@ def _enrich_feature_vectors_with_property_proxies(
                 observed,
                 source=str(source_by_feature.get(key) or "observed"),
             )
+            continue
+        external_value = _safe_float(external_structure.get(key))
+        if external_value is not None:
+            _set_value(key, external_value, source="observed_external_public_dataset")
             continue
         spatial_value = _safe_float(spatial.get(key))
         _set_value(key, spatial_value, source=("spatial_proxy" if spatial_value is not None else "missing"))
@@ -2342,6 +2540,10 @@ def _compute_feature_variation_diagnostics(rows: list[dict[str, Any]]) -> dict[s
         "structure_density",
         "distance_to_nearest_structure_ft",
         "clustering_index",
+        "building_footprint_area_proxy_sqft",
+        "mean_nearby_footprint_area_sqft",
+        "lot_size_proxy_sqft",
+        "parcel_distance_ft",
         "building_age_material_proxy_risk",
     ]
     key_feature_stddev: dict[str, float | None] = {}
@@ -2368,6 +2570,10 @@ def _compute_feature_variation_diagnostics(rows: list[dict[str, Any]]) -> dict[s
         "structure_density",
         "distance_to_nearest_structure_ft",
         "clustering_index",
+        "building_footprint_area_proxy_sqft",
+        "mean_nearby_footprint_area_sqft",
+        "lot_size_proxy_sqft",
+        "parcel_distance_ft",
         "building_age_proxy_year",
         "building_age_material_proxy_risk",
         "slope",
@@ -3442,6 +3648,7 @@ def build_public_outcome_evaluation_dataset(
         address_token_overlap_min=max(0.35, min(1.0, float(address_token_overlap_min))),
     )
     feature_spatial_context_by_identity = _build_feature_spatial_context(feature_rows)
+    external_structure_context_by_identity = _build_external_structure_context(feature_rows)
     def _run_join_pass(*, pass_name: str, pass_join_config: JoinConfig, retention_fallback_mode: bool) -> dict[str, Any]:
         joined_rows_pass: list[dict[str, Any]] = []
         excluded_rows_pass: list[dict[str, Any]] = list(missing_feature_artifacts)
@@ -3599,6 +3806,7 @@ def build_public_outcome_evaluation_dataset(
                     raw_feature_vector=raw_feature_vector,
                     transformed_feature_vector=transformed_feature_vector,
                     spatial_context=feature_spatial_context_by_identity.get(_feature_identity_key(feature)),
+                    external_structure_context=external_structure_context_by_identity.get(_feature_identity_key(feature)),
                 )
             )
 
@@ -3635,6 +3843,13 @@ def build_public_outcome_evaluation_dataset(
                 soft_flags.append("retention_fallback_mode")
             if int(feature_observation_summary.get("inferred_count") or 0) > 0:
                 soft_flags.append("inferred_structure_or_vegetation_proxies")
+            source_by_feature = (
+                feature_observation_summary.get("source_by_feature")
+                if isinstance(feature_observation_summary.get("source_by_feature"), dict)
+                else {}
+            )
+            if any(str(value) == "observed_external_public_dataset" for value in source_by_feature.values()):
+                soft_flags.append("external_public_structure_parcel_proxies")
             if int(feature_observation_summary.get("fallback_count") or 0) > 0:
                 soft_flags.append("fallback_structure_or_vegetation_inputs")
             if int(feature_observation_summary.get("missing_count") or 0) > 0:
@@ -3647,6 +3862,8 @@ def build_public_outcome_evaluation_dataset(
                 caveat_flags.append("elevated_fallback_usage")
             if int(feature_observation_summary.get("inferred_count") or 0) > 0:
                 caveat_flags.append("inferred_structure_or_vegetation_features")
+            if any(str(value) == "observed_external_public_dataset" for value in source_by_feature.values()):
+                caveat_flags.append("external_public_structure_parcel_proxies_used")
             if int(feature_observation_summary.get("fallback_count") or 0) > 0:
                 caveat_flags.append("fallback_structure_or_vegetation_inputs")
             if int(feature_observation_summary.get("missing_count") or 0) > 0:
