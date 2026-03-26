@@ -365,6 +365,7 @@ def _derive_context_overrides_from_vectors(raw: dict[str, Any]) -> dict[str, Any
         property_level.setdefault("fallback_mode", "footprint")
     for key in (
         "near_structure_vegetation_0_5_pct",
+        "near_structure_connectivity_index",
         "canopy_adjacency_proxy_pct",
         "vegetation_continuity_proxy_pct",
         "nearest_high_fuel_patch_distance_ft",

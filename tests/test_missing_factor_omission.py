@@ -533,3 +533,56 @@ def test_home_vulnerability_clearing_has_diminishing_returns():
     extra_clear_delta = medium_home - low_home
     assert high_home > medium_home > low_home
     assert first_clear_delta > extra_clear_delta + 1.0
+
+
+def test_extreme_0_5_ft_vegetation_materially_increases_near_structure_submodels() -> None:
+    engine = RiskEngine(load_scoring_config())
+    attrs = PropertyAttributes(
+        roof_type="class a",
+        vent_type="ember-resistant",
+        defensible_space_ft=24.0,
+        construction_year=2008,
+    )
+    low_context = _context(
+        ring_metrics={
+            "ring_0_5_ft": {"vegetation_density": 18.0},
+            "ring_5_30_ft": {"vegetation_density": 44.0},
+            "ring_30_100_ft": {"vegetation_density": 52.0},
+        }
+    )
+    high_context = _context(
+        ring_metrics={
+            "ring_0_5_ft": {"vegetation_density": 88.0},
+            "ring_5_30_ft": {"vegetation_density": 44.0},
+            "ring_30_100_ft": {"vegetation_density": 52.0},
+        }
+    )
+    low_context.property_level_context.update(
+        {
+            "near_structure_vegetation_0_5_pct": 18.0,
+            "near_structure_connectivity_index": 42.0,
+        }
+    )
+    high_context.property_level_context.update(
+        {
+            "near_structure_vegetation_0_5_pct": 88.0,
+            "near_structure_connectivity_index": 42.0,
+        }
+    )
+
+    low_risk = engine.score(attrs, lat=0.0, lon=0.0, context=low_context)
+    high_risk = engine.score(attrs, lat=0.0, lon=0.0, context=high_context)
+
+    low_flame = low_risk.submodel_scores["flame_contact_risk"].score
+    high_flame = high_risk.submodel_scores["flame_contact_risk"].score
+    low_defensible = low_risk.submodel_scores["defensible_space_risk"].score
+    high_defensible = high_risk.submodel_scores["defensible_space_risk"].score
+    low_veg = low_risk.submodel_scores["vegetation_intensity_risk"].score
+    high_veg = high_risk.submodel_scores["vegetation_intensity_risk"].score
+
+    assert high_flame > low_flame
+    assert high_defensible > low_defensible
+    assert high_veg > low_veg
+    assert (high_flame - low_flame) >= 8.0
+    assert (high_defensible - low_defensible) >= 8.0
+    assert (high_veg - low_veg) >= 10.0

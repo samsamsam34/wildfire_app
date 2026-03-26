@@ -191,8 +191,31 @@ class RiskEngine:
             except (TypeError, ValueError):
                 return None
 
+        def _clamp_percent(value: float | None) -> float | None:
+            if value is None:
+                return None
+            return max(0.0, min(100.0, float(value)))
+
+        def _nonlinear_close_in_vegetation_penalty(value: float | None) -> float | None:
+            """Apply a stronger monotonic penalty for 0-5 ft vegetation loading."""
+            clamped = _clamp_percent(value)
+            if clamped is None:
+                return None
+            if clamped <= 20.0:
+                transformed = clamped * 0.60
+            elif clamped <= 40.0:
+                transformed = 12.0 + ((clamped - 20.0) * 1.35)
+            elif clamped <= 65.0:
+                transformed = 39.0 + ((clamped - 40.0) * 1.55)
+            else:
+                transformed = 77.75 + ((clamped - 65.0) * 0.90)
+            return round(max(0.0, min(100.0, transformed)), 1)
+
         near_structure_vegetation_0_5_pct = _to_float(
             (context.property_level_context or {}).get("near_structure_vegetation_0_5_pct")
+        )
+        near_structure_connectivity_index = _to_float(
+            (context.property_level_context or {}).get("near_structure_connectivity_index")
         )
         canopy_adjacency_proxy_pct = _to_float(
             (context.property_level_context or {}).get("canopy_adjacency_proxy_pct")
@@ -279,6 +302,53 @@ class RiskEngine:
                 max(0.0, min(100.0, (0.70 * float(structure_density_proxy_index)) + (0.30 * float(prox)))),
                 1,
             )
+
+        if near_structure_connectivity_index is None:
+            continuity_base = _clamp_percent(ring_5_30_continuity)
+            if continuity_base is None:
+                continuity_base = _clamp_percent(vegetation_continuity_proxy_pct)
+            density_bridge_terms = [v for v in (_clamp_percent(ring_0_5_density), _clamp_percent(ring_5_30_density)) if v is not None]
+            density_bridge = (sum(density_bridge_terms) / len(density_bridge_terms)) if density_bridge_terms else None
+            canopy_bridge = _clamp_percent(canopy_adjacency_proxy_pct)
+            if canopy_bridge is None:
+                canopy_bridge = _clamp_percent(ring_0_5_canopy_proxy)
+            if continuity_base is not None and density_bridge is not None:
+                near_structure_connectivity_index = round(
+                    max(
+                        0.0,
+                        min(
+                            100.0,
+                            (0.55 * continuity_base)
+                            + (0.30 * density_bridge)
+                            + (0.15 * (canopy_bridge if canopy_bridge is not None else density_bridge)),
+                        ),
+                    ),
+                    1,
+                )
+            elif continuity_base is not None:
+                near_structure_connectivity_index = round(
+                    max(
+                        0.0,
+                        min(
+                            100.0,
+                            (0.78 * continuity_base)
+                            + (0.22 * (canopy_bridge if canopy_bridge is not None else continuity_base)),
+                        ),
+                    ),
+                    1,
+                )
+            elif density_bridge is not None:
+                near_structure_connectivity_index = round(
+                    max(
+                        0.0,
+                        min(
+                            100.0,
+                            (0.72 * density_bridge)
+                            + (0.28 * (canopy_bridge if canopy_bridge is not None else density_bridge)),
+                        ),
+                    ),
+                    1,
+                )
 
         available_ring_densities = [
             density
@@ -382,10 +452,15 @@ class RiskEngine:
         )
         zone1_veg_pressure = ring_5_30_density if ring_5_30_density is not None else fuel_index
         near_structure_continuity = (
-            ring_5_30_continuity
-            if ring_5_30_continuity is not None
-            else vegetation_continuity_proxy_pct
+            near_structure_connectivity_index
+            if near_structure_connectivity_index is not None
+            else (
+                ring_5_30_continuity
+                if ring_5_30_continuity is not None
+                else vegetation_continuity_proxy_pct
+            )
         )
+        close_in_zone_nonlinear_penalty = _nonlinear_close_in_vegetation_penalty(close_in_veg_pressure)
         defensible_component = (
             max(0.0, min(100.0, 100.0 - defensible_ft * 2.2))
             if attrs.defensible_space_ft is not None
@@ -393,16 +468,16 @@ class RiskEngine:
         )
         near_ring_component = None
         near_terms: list[tuple[float, float]] = []
-        if close_in_veg_pressure is not None:
-            near_terms.append((0.45, close_in_veg_pressure))
+        if close_in_zone_nonlinear_penalty is not None:
+            near_terms.append((0.56, close_in_zone_nonlinear_penalty))
         if zone1_veg_pressure is not None:
-            near_terms.append((0.22, zone1_veg_pressure))
-        if canopy_adjacency_proxy_pct is not None:
-            near_terms.append((0.18, canopy_adjacency_proxy_pct))
-        elif ring_0_5_canopy_proxy is not None:
-            near_terms.append((0.18, ring_0_5_canopy_proxy))
+            near_terms.append((0.18, zone1_veg_pressure))
         if near_structure_continuity is not None:
-            near_terms.append((0.15, near_structure_continuity))
+            near_terms.append((0.16, near_structure_continuity))
+        if canopy_adjacency_proxy_pct is not None:
+            near_terms.append((0.10, canopy_adjacency_proxy_pct))
+        elif ring_0_5_canopy_proxy is not None:
+            near_terms.append((0.10, ring_0_5_canopy_proxy))
         if near_terms:
             num = sum(weight * value for weight, value in near_terms)
             den = sum(weight for weight, _ in near_terms)
@@ -410,11 +485,11 @@ class RiskEngine:
 
         flame_score = weighted_score(
             [
-                (0.20, fuel_index, "Fuel model unavailable for flame-contact model."),
-                (0.14, wildland_distance_index, "Wildland distance unavailable for flame-contact model."),
-                (0.16, defensible_component, "Defensible space unavailable for flame-contact model."),
-                (0.40, near_ring_component, "Near-structure vegetation unavailable for flame-contact model."),
-                (0.10, nearest_high_fuel_patch_index, "Nearest high-fuel patch proxy unavailable for flame-contact model."),
+                (0.14, fuel_index, "Fuel model unavailable for flame-contact model."),
+                (0.10, wildland_distance_index, "Wildland distance unavailable for flame-contact model."),
+                (0.12, defensible_component, "Defensible space unavailable for flame-contact model."),
+                (0.56, near_ring_component, "Near-structure vegetation unavailable for flame-contact model."),
+                (0.08, nearest_high_fuel_patch_index, "Nearest high-fuel patch proxy unavailable for flame-contact model."),
             ],
             flame_assumptions,
         )
@@ -430,7 +505,9 @@ class RiskEngine:
                 "ring_5_30_ft_vegetation_density": ring_5_30_density,
                 "ring_30_100_ft_vegetation_density": ring_30_100_density,
                 "near_structure_vegetation_0_5_pct": near_structure_vegetation_0_5_pct,
+                "ring_0_5_nonlinear_penalty_index": close_in_zone_nonlinear_penalty,
                 "canopy_adjacency_proxy_pct": canopy_adjacency_proxy_pct,
+                "near_structure_connectivity_index": near_structure_connectivity_index,
                 "vegetation_continuity_proxy_pct": near_structure_continuity,
                 "nearest_high_fuel_patch_index": nearest_high_fuel_patch_index,
                 "nearest_vegetation_distance_ft": nearest_vegetation_distance_ft,
@@ -509,29 +586,50 @@ class RiskEngine:
             vegetation_assumptions.append(
                 "Structure-ring vegetation metrics unavailable; vegetation intensity used 100m point-neighborhood context."
             )
-        structure_ring_veg = ring_density_average if ring_density_average is not None else canopy_index
-        continuity_pressure = (
-            vegetation_continuity_proxy_pct
-            if vegetation_continuity_proxy_pct is not None
-            else ring_5_30_continuity
+        near_structure_specific_available = any(
+            value is not None
+            for value in (
+                ring_0_5_density,
+                ring_5_30_density,
+                near_structure_vegetation_0_5_pct,
+                near_structure_connectivity_index,
+            )
         )
+        if near_structure_specific_available:
+            vegetation_assumptions.append(
+                "Near-structure vegetation signals were prioritized over coarse regional canopy/fuel averages."
+            )
+        structure_ring_veg = ring_density_average if ring_density_average is not None else canopy_index
+        continuity_pressure = near_structure_continuity
         local_percentile_pressure = (
             ring_0_5_local_percentile
             if ring_0_5_local_percentile is not None
             else ring_5_30_local_percentile
         )
-        vegetation_score = weighted_score(
-            [
-                (0.18, fuel_index, "Fuel model unavailable for vegetation intensity model."),
-                (0.12, canopy_index, "Canopy cover unavailable for vegetation intensity model."),
-                (0.11, moisture_index, "Moisture input unavailable for vegetation intensity model."),
-                (0.23, structure_ring_veg, "Ring vegetation unavailable for vegetation intensity model."),
-                (0.20, ring_0_5_density, "Immediate ring density unavailable for vegetation intensity model."),
-                (0.09, continuity_pressure, "Vegetation continuity proxy unavailable for vegetation intensity model."),
-                (0.07, local_percentile_pressure, "Local vegetation percentile unavailable for vegetation intensity model."),
-            ],
-            vegetation_assumptions,
-        )
+        if near_structure_specific_available:
+            vegetation_score = weighted_score(
+                [
+                    (0.45, close_in_zone_nonlinear_penalty, "Immediate 0-5 ft vegetation unavailable for vegetation intensity model."),
+                    (0.26, zone1_veg_pressure, "5-30 ft vegetation unavailable for vegetation intensity model."),
+                    (0.15, continuity_pressure, "Near-structure connectivity unavailable for vegetation intensity model."),
+                    (0.08, local_percentile_pressure, "Local vegetation percentile unavailable for vegetation intensity model."),
+                    (0.04, moisture_index, "Moisture input unavailable for vegetation intensity model."),
+                    (0.02, fuel_index, "Fuel model unavailable for vegetation intensity model."),
+                ],
+                vegetation_assumptions,
+            )
+        else:
+            vegetation_score = weighted_score(
+                [
+                    (0.20, fuel_index, "Fuel model unavailable for vegetation intensity model."),
+                    (0.16, canopy_index, "Canopy cover unavailable for vegetation intensity model."),
+                    (0.16, moisture_index, "Moisture input unavailable for vegetation intensity model."),
+                    (0.28, structure_ring_veg, "Ring vegetation unavailable for vegetation intensity model."),
+                    (0.12, continuity_pressure, "Vegetation continuity proxy unavailable for vegetation intensity model."),
+                    (0.08, local_percentile_pressure, "Local vegetation percentile unavailable for vegetation intensity model."),
+                ],
+                vegetation_assumptions,
+            )
         vegetation_clamped = clamp_score(vegetation_score)
         submodels["vegetation_intensity_risk"] = SubmodelResult(
             score=vegetation_clamped,
@@ -542,6 +640,9 @@ class RiskEngine:
                 "moisture_index": moisture_index,
                 "ring_vegetation_density_avg": ring_density_average,
                 "ring_0_5_ft_vegetation_density": ring_0_5_density,
+                "ring_5_30_ft_vegetation_density": ring_5_30_density,
+                "ring_0_5_nonlinear_penalty_index": close_in_zone_nonlinear_penalty,
+                "near_structure_connectivity_index": near_structure_connectivity_index,
                 "vegetation_continuity_proxy_pct": continuity_pressure,
                 "ring_0_5_vegetation_local_percentile": local_percentile_pressure,
             },
@@ -663,12 +764,10 @@ class RiskEngine:
                 "Structure-ring vegetation metrics unavailable; defensible-space pressure used fuel index proxy."
             )
 
-        # Immediate-zone fuels (0-5 ft) are intentionally emphasized because
-        # this zone is most directly tied to structure ignition potential.
-        if ring_0_5_density is not None and ring_5_30_density is not None:
-            immediate_zone_pressure = round((ring_0_5_density * 0.72) + (ring_5_30_density * 0.28), 1)
+        if close_in_zone_nonlinear_penalty is not None:
+            immediate_zone_pressure = close_in_zone_nonlinear_penalty
         elif ring_0_5_density is not None:
-            immediate_zone_pressure = ring_0_5_density
+            immediate_zone_pressure = _nonlinear_close_in_vegetation_penalty(ring_0_5_density)
         elif ring_5_30_density is not None:
             immediate_zone_pressure = round(ring_5_30_density * 0.92, 1)
         else:
@@ -679,11 +778,7 @@ class RiskEngine:
             if ring_5_30_density is not None
             else (ring_30_100_density if ring_30_100_density is not None else fuel_index)
         )
-        canopy_close_pressure = (
-            canopy_adjacency_proxy_pct
-            if canopy_adjacency_proxy_pct is not None
-            else ring_0_5_canopy_proxy
-        )
+        canopy_close_pressure = near_structure_continuity
         defensible_clearance_component = (
             max(0.0, min(100.0, 95.0 - defensible_ft * 2.6))
             if attrs.defensible_space_ft is not None
@@ -691,11 +786,11 @@ class RiskEngine:
         )
         defensible_score = weighted_score(
             [
-                (0.36, defensible_clearance_component, "Defensible space value unavailable for defensible-space model."),
-                (0.12, fuel_index, "Fuel model unavailable for defensible-space model."),
-                (0.26, immediate_zone_pressure, "Immediate-zone pressure unavailable for defensible-space model."),
-                (0.14, intermediate_zone_pressure, "5-30 ft vegetation pressure unavailable for defensible-space model."),
-                (0.12, canopy_close_pressure, "Close-in canopy adjacency proxy unavailable for defensible-space model."),
+                (0.33, defensible_clearance_component, "Defensible space value unavailable for defensible-space model."),
+                (0.07, fuel_index, "Fuel model unavailable for defensible-space model."),
+                (0.36, immediate_zone_pressure, "Immediate-zone pressure unavailable for defensible-space model."),
+                (0.16, intermediate_zone_pressure, "5-30 ft vegetation pressure unavailable for defensible-space model."),
+                (0.08, canopy_close_pressure, "Near-structure connectivity proxy unavailable for defensible-space model."),
             ],
             defensible_assumptions,
         )
@@ -710,8 +805,10 @@ class RiskEngine:
                 "ring_5_30_ft_vegetation_density": ring_5_30_density,
                 "ring_30_100_ft_vegetation_density": ring_30_100_density,
                 "immediate_zone_pressure": immediate_zone_pressure,
+                "ring_0_5_nonlinear_penalty_index": close_in_zone_nonlinear_penalty,
                 "intermediate_zone_pressure": intermediate_zone_pressure,
                 "canopy_adjacency_proxy_pct": canopy_close_pressure,
+                "near_structure_connectivity_index": near_structure_connectivity_index,
                 "nearest_high_fuel_patch_distance_ft": nearest_high_fuel_patch_distance_ft,
                 "nearest_vegetation_distance_ft": nearest_vegetation_distance_ft,
             },

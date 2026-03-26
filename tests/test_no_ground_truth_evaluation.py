@@ -314,5 +314,8 @@ def test_build_wildfire_context_location_specific_structure_proxy_fields_vary() 
         "clustering_index",
         "building_age_proxy_year",
         "building_age_material_proxy_risk",
+        "near_structure_connectivity_index",
+        "near_structure_vegetation_0_5_pct",
+        "canopy_adjacency_proxy_pct",
     )
     assert any((plc_a.get(field) != plc_b.get(field)) for field in varying_fields)

@@ -164,6 +164,17 @@ def _location_specific_context_update(latitude: float | None, longitude: float |
         _clamp((ring_30_100 * 0.5) + (ring_100_300 * 0.35) + (continuity_mix * 15.0), 0.0, 100.0),
         1,
     )
+    near_structure_connectivity_pct = round(
+        _clamp(
+            (ring_0_5 * 0.34)
+            + (ring_5_30 * 0.31)
+            + (canopy_adjacency_pct * 0.20)
+            + ((continuity_mix * 100.0) * 0.15),
+            0.0,
+            100.0,
+        ),
+        1,
+    )
     nearest_high_fuel_patch_distance_ft = round(_clamp(20.0 + ((1.0 - continuity_mix) * 620.0), 0.0, 1000.0), 1)
     nearby_structure_count_100_ft = round(
         _clamp((structure_density_mix * 7.5) + (structure_cluster_mix * 1.5), 0.0, 10.0),
@@ -235,6 +246,7 @@ def _location_specific_context_update(latitude: float | None, longitude: float |
             "near_structure_vegetation_0_5_pct": near_structure_pct,
             "canopy_adjacency_proxy_pct": canopy_adjacency_pct,
             "vegetation_continuity_proxy_pct": continuity_pct,
+            "near_structure_connectivity_index": near_structure_connectivity_pct,
             "nearest_high_fuel_patch_distance_ft": nearest_high_fuel_patch_distance_ft,
             "neighboring_structure_metrics": {
                 "nearby_structure_count_100_ft": nearby_structure_count_100_ft,
@@ -304,6 +316,10 @@ def default_wildfire_context_dict(
                 "ring_30_100_ft": {"vegetation_density": 50.0},
                 "ring_100_300_ft": {"vegetation_density": 55.0},
             },
+            "near_structure_vegetation_0_5_pct": 34.0,
+            "canopy_adjacency_proxy_pct": 44.0,
+            "vegetation_continuity_proxy_pct": 49.0,
+            "near_structure_connectivity_index": 42.0,
             "neighboring_structure_metrics": {
                 "nearby_structure_count_100_ft": 2.0,
                 "nearby_structure_count_300_ft": 9.0,

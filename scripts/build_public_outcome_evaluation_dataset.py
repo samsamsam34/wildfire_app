@@ -1521,6 +1521,7 @@ def _compute_feature_variation_diagnostics(rows: list[dict[str, Any]]) -> dict[s
         "canopy_cover",
         "ring_0_5_ft_vegetation_density",
         "ring_5_30_ft_vegetation_density",
+        "near_structure_connectivity_index",
         "ring_30_100_ft_vegetation_density",
         "structure_density",
         "distance_to_nearest_structure_ft",
@@ -1541,6 +1542,7 @@ def _compute_feature_variation_diagnostics(rows: list[dict[str, Any]]) -> dict[s
 
     class_key_features = [
         "near_structure_vegetation_0_5_pct",
+        "near_structure_connectivity_index",
         "ring_0_5_ft_vegetation_density",
         "ring_5_30_ft_vegetation_density",
         "structure_density",

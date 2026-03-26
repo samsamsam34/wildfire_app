@@ -4204,6 +4204,7 @@ def _build_score_variance_diagnostics(
         "ring_100_300_ft_vegetation_density": _safe_float((ring_metrics.get("ring_100_300_ft") or {}).get("vegetation_density")),
         "nearest_vegetation_distance_ft": _safe_float((property_level_context or {}).get("nearest_vegetation_distance_ft")),
         "near_structure_vegetation_0_5_pct": _safe_float((property_level_context or {}).get("near_structure_vegetation_0_5_pct")),
+        "near_structure_connectivity_index": _safe_float((property_level_context or {}).get("near_structure_connectivity_index")),
         "canopy_adjacency_proxy_pct": _safe_float((property_level_context or {}).get("canopy_adjacency_proxy_pct")),
         "vegetation_continuity_proxy_pct": _safe_float((property_level_context or {}).get("vegetation_continuity_proxy_pct")),
         "nearest_high_fuel_patch_distance_ft": _safe_float((property_level_context or {}).get("nearest_high_fuel_patch_distance_ft")),
@@ -4320,6 +4321,8 @@ def _build_score_variance_diagnostics(
         compression_flags.append("near_structure_ring_metrics_missing")
     if raw_feature_vector["near_structure_vegetation_0_5_pct"] is None and raw_feature_vector["vegetation_continuity_proxy_pct"] is None:
         compression_flags.append("imagery_feature_signal_missing")
+    if raw_feature_vector["near_structure_connectivity_index"] is None:
+        compression_flags.append("near_structure_connectivity_missing")
     if risk.observed_weight_fraction < 0.70:
         compression_flags.append("low_observed_weight_fraction")
     if risk.fallback_dominance_ratio >= 0.60:
@@ -4338,6 +4341,8 @@ def _build_score_variance_diagnostics(
         compression_analysis_summary.append("Few property-specific factors are active; neighborhood/regional context is dominating.")
     if "imagery_feature_signal_missing" in compression_flags:
         compression_analysis_summary.append("Imagery-derived near-structure features were unavailable, reducing parcel-level discrimination.")
+    if "near_structure_connectivity_missing" in compression_flags:
+        compression_analysis_summary.append("Near-structure vegetation connectivity was unavailable, reducing structure-level ignition sensitivity.")
     if "low_observed_weight_fraction" in compression_flags:
         compression_analysis_summary.append("A low fraction of score weight is backed by observed evidence; omitted factors reduced specificity.")
     if "fallback_dominance_high" in compression_flags:

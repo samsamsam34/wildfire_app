@@ -40,6 +40,7 @@ PROXY_RISK_UP_FEATURE_KEYS = (
     "slope",
     "canopy_adjacency_proxy_pct",
     "vegetation_continuity_proxy_pct",
+    "near_structure_connectivity_index",
     "near_structure_vegetation_0_5_pct",
     "ring_0_5_ft_vegetation_density",
     "ring_5_30_ft_vegetation_density",
@@ -61,6 +62,7 @@ VEGETATION_SEGMENT_FEATURE_KEYS = (
     "near_structure_vegetation_0_5_pct",
     "ring_0_5_ft_vegetation_density",
     "ring_5_30_ft_vegetation_density",
+    "near_structure_connectivity_index",
     "canopy_adjacency_proxy_pct",
     "vegetation_continuity_proxy_pct",
     "canopy_cover",
@@ -447,12 +449,13 @@ def _compute_hazard_signal_percent(row: dict[str, Any]) -> float | None:
 def _compute_vegetation_density_index(row: dict[str, Any]) -> float | None:
     weighted_terms: list[tuple[float, float]] = []
     for key, weight in (
-        ("near_structure_vegetation_0_5_pct", 0.40),
-        ("ring_0_5_ft_vegetation_density", 0.35),
-        ("ring_5_30_ft_vegetation_density", 0.20),
-        ("canopy_adjacency_proxy_pct", 0.10),
-        ("vegetation_continuity_proxy_pct", 0.10),
-        ("canopy_cover", 0.10),
+        ("near_structure_vegetation_0_5_pct", 0.46),
+        ("ring_0_5_ft_vegetation_density", 0.34),
+        ("ring_5_30_ft_vegetation_density", 0.24),
+        ("near_structure_connectivity_index", 0.18),
+        ("canopy_adjacency_proxy_pct", 0.09),
+        ("vegetation_continuity_proxy_pct", 0.09),
+        ("canopy_cover", 0.06),
     ):
         value = _normalize_percent_like(_extract_feature_value(row, key))
         if value is None:
