@@ -996,6 +996,30 @@ def _run_record_assessment(
     payload_dict["ruleset_id"] = str(payload_dict.get("ruleset_id") or ruleset_id or record.ruleset_id or "default")
     payload = AddressRequest.model_validate(payload_dict)
     resolved_ruleset = _resolve_ruleset(payload.ruleset_id)
+    trusted_geocode_resolution = app_main.GeocodeResolution(
+        raw_input=str(payload.address or record.address_text or ""),
+        normalized_address=str(app_main.normalize_address(str(payload.address or record.address_text or ""))),
+        geocode_status="ok",
+        candidate_count=1,
+        selected_candidate={
+            "latitude": float(record.latitude),
+            "longitude": float(record.longitude),
+            "source": str(record.geocode_source or "event-backtest"),
+        },
+        confidence_score=1.0,
+        latitude=float(record.latitude),
+        longitude=float(record.longitude),
+        geocode_source=str(record.geocode_source or "event-backtest"),
+        geocode_meta={
+            "provider": "event_backtest",
+            "geocode_provider": "event_backtest",
+            "geocode_precision": "provided_coordinates",
+            "trusted_override": True,
+        },
+        geocode_outcome="geocode_succeeded_trusted",
+        trusted_match_status="trusted",
+        rejection_reason=None,
+    )
     context_overrides = record.context_overrides if isinstance(record.context_overrides, dict) else {}
     should_use_runtime_context = bool(use_runtime_context_when_no_overrides and not context_overrides)
     if should_use_runtime_context:
@@ -1006,6 +1030,7 @@ def _run_record_assessment(
                 payload,
                 organization_id=record.organization_id,
                 ruleset=resolved_ruleset,
+                geocode_resolution=trusted_geocode_resolution,
             )
         finally:
             app_main.geocoder.geocode = original_geocode
@@ -1025,6 +1050,7 @@ def _run_record_assessment(
                 payload,
                 organization_id=record.organization_id,
                 ruleset=resolved_ruleset,
+                geocode_resolution=trusted_geocode_resolution,
             )
     return _record_snapshot(record, result, dataset_id="", debug_payload=debug_payload)
 

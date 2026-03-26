@@ -295,6 +295,9 @@ def _build_synthetic_event_records(base_rows: list[dict[str, Any]]) -> list[dict
                     "event_name": f"{event_name} Synthetic",
                     "event_date": event_date,
                     "source_name": "synthetic_sensitivity",
+                    # Use trusted local-authoritative source semantics so synthetic
+                    # backtests do not stall in repeated fallback geocode resolution.
+                    "geocode_source": "local_authoritative",
                     "record_id": record_id,
                     "latitude": float(lat),
                     "longitude": float(lon),
