@@ -163,9 +163,39 @@ def build_wildfire_context(overrides: dict[str, Any] | None = None) -> WildfireC
     property_level = payload.get("property_level_context") if isinstance(payload.get("property_level_context"), dict) else {}
     property_ring_metrics = property_level.get("ring_metrics") if isinstance(property_level.get("ring_metrics"), dict) else {}
     structure_ring_metrics = payload.get("structure_ring_metrics") if isinstance(payload.get("structure_ring_metrics"), dict) else {}
+    default_payload = default_wildfire_context_dict()
+    default_property_ring_metrics = (
+        (default_payload.get("property_level_context") or {}).get("ring_metrics")
+        if isinstance(default_payload.get("property_level_context"), dict)
+        else {}
+    )
+    default_structure_ring_metrics = (
+        default_payload.get("structure_ring_metrics")
+        if isinstance(default_payload.get("structure_ring_metrics"), dict)
+        else {}
+    )
+    property_is_default = bool(property_ring_metrics) and json.dumps(property_ring_metrics, sort_keys=True) == json.dumps(
+        default_property_ring_metrics,
+        sort_keys=True,
+    )
+    structure_is_default = bool(structure_ring_metrics) and json.dumps(
+        structure_ring_metrics,
+        sort_keys=True,
+    ) == json.dumps(
+        default_structure_ring_metrics,
+        sort_keys=True,
+    )
     # Keep ring metrics synchronized across both context locations so fixtures
     # can provide either form without silently falling back to defaults.
-    if property_ring_metrics:
+    # Prefer whichever side is non-default when the other still holds defaults.
+    if structure_ring_metrics and (property_is_default and not structure_is_default):
+        if isinstance(property_level, dict):
+            property_level["ring_metrics"] = structure_ring_metrics
+            payload["property_level_context"] = property_level
+        payload["structure_ring_metrics"] = structure_ring_metrics
+    elif property_ring_metrics and (structure_is_default and not property_is_default):
+        payload["structure_ring_metrics"] = property_ring_metrics
+    elif property_ring_metrics:
         payload["structure_ring_metrics"] = property_ring_metrics
     elif structure_ring_metrics and isinstance(property_level, dict):
         property_level["ring_metrics"] = structure_ring_metrics

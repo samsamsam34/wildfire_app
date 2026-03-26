@@ -1457,6 +1457,84 @@ def _extract_feature_scores(payload: dict[str, Any]) -> dict[str, float | None]:
     }
 
 
+def _population_stddev(values: list[float]) -> float | None:
+    if not values:
+        return None
+    if len(values) == 1:
+        return 0.0
+    mean_value = sum(values) / float(len(values))
+    variance = sum((value - mean_value) ** 2 for value in values) / float(len(values))
+    return math.sqrt(variance)
+
+
+def _compute_feature_variation_diagnostics(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    numeric_values: dict[str, list[float]] = {}
+    for row in rows:
+        feature_snapshot = row.get("feature_snapshot") if isinstance(row.get("feature_snapshot"), dict) else {}
+        for bag_name in ("raw_feature_vector", "transformed_feature_vector"):
+            bag = feature_snapshot.get(bag_name) if isinstance(feature_snapshot.get(bag_name), dict) else {}
+            for key, value in bag.items():
+                numeric = _safe_float(value)
+                if numeric is None:
+                    continue
+                numeric_values.setdefault(str(key), []).append(float(numeric))
+
+    per_feature: list[dict[str, Any]] = []
+    near_zero_variance_features: list[str] = []
+    for feature in sorted(numeric_values.keys()):
+        values = numeric_values[feature]
+        stddev = _population_stddev(values)
+        feature_row = {
+            "feature": feature,
+            "count": len(values),
+            "min": round(min(values), 6),
+            "max": round(max(values), 6),
+            "mean": round(sum(values) / float(len(values)), 6),
+            "stddev": (round(float(stddev), 9) if stddev is not None else None),
+        }
+        per_feature.append(feature_row)
+        if len(values) >= 2 and stddev is not None and float(stddev) <= 1e-9:
+            near_zero_variance_features.append(feature)
+
+    key_features = [
+        "burn_probability",
+        "wildfire_hazard",
+        "slope",
+        "fuel_model",
+        "canopy_cover",
+        "ring_0_5_ft_vegetation_density",
+        "ring_5_30_ft_vegetation_density",
+        "ring_30_100_ft_vegetation_density",
+    ]
+    key_feature_stddev: dict[str, float | None] = {}
+    key_feature_near_zero_variance: list[str] = []
+    for feature in key_features:
+        values = numeric_values.get(feature) or []
+        if len(values) < 2:
+            key_feature_stddev[feature] = None
+            continue
+        stddev = _population_stddev(values)
+        key_feature_stddev[feature] = round(float(stddev), 9) if stddev is not None else None
+        if stddev is not None and float(stddev) <= 1e-9:
+            key_feature_near_zero_variance.append(feature)
+
+    return {
+        "numeric_feature_count": len(numeric_values),
+        "features_with_variation_count": len(
+            [
+                item
+                for item in per_feature
+                if _safe_float(item.get("stddev")) is not None and float(item.get("stddev") or 0.0) > 1e-9
+            ]
+        ),
+        "near_zero_variance_feature_count": len(near_zero_variance_features),
+        "near_zero_variance_features": near_zero_variance_features[:100],
+        "key_feature_stddev": key_feature_stddev,
+        "key_feature_near_zero_variance": key_feature_near_zero_variance,
+        "feature_stats": per_feature[:300],
+    }
+
+
 def _build_scored_record_maps(rows: list[dict[str, Any]]) -> tuple[dict[tuple[str, str], dict[str, Any]], dict[str, dict[str, Any]]]:
     by_event_record: dict[tuple[str, str], dict[str, Any]] = {}
     by_record: dict[str, dict[str, Any]] = {}
@@ -1527,10 +1605,16 @@ def _backfill_missing_feature_scores(
         artifact = run_event_backtest(
             dataset_paths=artifact_paths,
             output_dir=rescoring_dir,
+            use_runtime_context_when_no_overrides=True,
         )
         diagnostics["rescoring_artifact_path"] = str(artifact.get("artifact_path") or "")
         scored_rows = artifact.get("records") if isinstance(artifact.get("records"), list) else []
         diagnostics["rescoring_record_count"] = len(scored_rows)
+        diagnostics["rescoring_runtime_context_mode_when_overrides_missing"] = (
+            artifact.get("runtime_context_mode_when_overrides_missing")
+            if isinstance(artifact, dict)
+            else None
+        )
         by_event_record, by_record = _build_scored_record_maps(scored_rows)
         patched = 0
         for row in rows_to_patch:
@@ -1721,6 +1805,7 @@ def _build_markdown_summary(
         f"- Join tier examples: `{quality.get('join_confidence_tier_examples')}`",
         f"- Duplicate rows removed by join tier: `{quality.get('duplicate_rows_removed_by_join_confidence_tier')}`",
         f"- Duplicate rows removed by join method: `{quality.get('duplicate_rows_removed_by_join_method')}`",
+        f"- Feature variation diagnostics: `{quality.get('feature_variation_diagnostics')}`",
         "",
         "## Coverage",
         f"- By event joined counts: `{quality.get('by_event_join_counts')}`",
@@ -1828,6 +1913,7 @@ def _build_pipeline_audit_markdown(
         f"- Distance histogram: `{quality.get('match_distance_histogram_m')}`",
         f"- High-confidence diagnostics: `{quality.get('high_confidence_threshold_diagnostics')}`",
         f"- Non-high reason counts: `{quality.get('join_confidence_non_high_reason_counts')}`",
+        f"- Feature variation diagnostics: `{quality.get('feature_variation_diagnostics')}`",
         "",
         "## Filtering",
         f"- Filter summary: `{filter_summary}`",
@@ -1905,6 +1991,20 @@ def _build_join_quality_warnings(*, quality: dict[str, Any]) -> list[str]:
         warnings.append(
             "Property-event dedupe removed duplicate joined rows; inspect duplication metrics for source artifact overlap."
         )
+    feature_variation = (
+        quality.get("feature_variation_diagnostics")
+        if isinstance(quality.get("feature_variation_diagnostics"), dict)
+        else {}
+    )
+    key_constant = (
+        feature_variation.get("key_feature_near_zero_variance")
+        if isinstance(feature_variation.get("key_feature_near_zero_variance"), list)
+        else []
+    )
+    if key_constant:
+        warnings.append(
+            f"Key features with near-zero variance detected: {key_constant}. Verify per-row spatial sampling and data coverage."
+        )
     return warnings
 
 
@@ -1947,6 +2047,7 @@ def _build_join_quality_report_markdown(
         f"- Confidence-tier counts: `{tier_counts}`",
         f"- Non-high confidence reasons: `{quality.get('join_confidence_non_high_reason_counts')}`",
         f"- High-confidence threshold diagnostics: `{quality.get('high_confidence_threshold_diagnostics')}`",
+        f"- Feature variation diagnostics: `{quality.get('feature_variation_diagnostics')}`",
         "",
         "## Distance Analysis",
         f"- Min distance (m): `{quality.get('min_join_distance_m')}`",
@@ -2594,6 +2695,7 @@ def build_public_outcome_evaluation_dataset(
     for row in excluded_rows:
         reason = str((row or {}).get("reason") or "unknown")
         excluded_reason_counts[reason] = excluded_reason_counts.get(reason, 0) + 1
+    feature_variation_diagnostics = _compute_feature_variation_diagnostics(joined_rows)
 
     join_quality = {
         "schema_version": SCHEMA_VERSION,
@@ -2675,6 +2777,7 @@ def build_public_outcome_evaluation_dataset(
             "feature_rows_by_mode": dict(sorted(feature_coordinate_modes.items())),
             "matched_outcomes_by_mode": dict(sorted(outcome_coordinate_modes.items())),
         },
+        "feature_variation_diagnostics": feature_variation_diagnostics,
         "by_event_join_counts": dict(sorted(by_event_counts.items())),
         "by_label_join_counts": dict(sorted(by_label_counts.items())),
         "unmatched_feature_rows_by_event_counts": dict(sorted(unmatched_feature_rows_by_event_counts.items())),
@@ -3334,6 +3437,10 @@ def main() -> int:
         f"join_tiers={join_report.get('join_confidence_tier_counts')} "
         f"row_confidence_tiers={join_report.get('row_confidence_tier_counts')} "
         f"match_tiers={join_report.get('match_tier_counts')}"
+    )
+    print(
+        "[public-eval-ds] Feature variation: "
+        f"{join_report.get('feature_variation_diagnostics')}"
     )
     print(
         "[public-eval-ds] Distance diagnostics: "

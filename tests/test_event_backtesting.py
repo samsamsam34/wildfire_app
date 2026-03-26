@@ -186,6 +186,10 @@ def test_event_dataset_derives_context_overrides_from_feature_vectors(tmp_path: 
     assert isinstance(ctx, dict)
     assert float(ctx.get("burn_probability_index") or 0.0) == 84.0
     assert float(ctx.get("fuel_index") or 0.0) == 79.0
+    assert float(ctx.get("burn_probability") or 0.0) > 0.0
+    assert float(ctx.get("wildfire_hazard") or 0.0) > 0.0
+    assert float(ctx.get("slope") or 0.0) > 0.0
+    assert float(ctx.get("fuel_model") or 0.0) > 0.0
     ring_metrics = ctx.get("structure_ring_metrics") if isinstance(ctx.get("structure_ring_metrics"), dict) else {}
     assert float(((ring_metrics.get("ring_0_5_ft") or {}).get("vegetation_density") or 0.0)) == 82.0
     property_level = ctx.get("property_level_context") if isinstance(ctx.get("property_level_context"), dict) else {}
@@ -234,6 +238,94 @@ def test_false_low_false_high_extraction_present(tmp_path: Path):
     assert isinstance(artifact["false_high_examples"], list)
     assert artifact["analysis"]["false_low_count"] == len(artifact["false_low_examples"])
     assert artifact["analysis"]["false_high_count"] == len(artifact["false_high_examples"])
+
+
+def test_run_event_backtest_allows_runtime_context_for_records_without_overrides(tmp_path: Path):
+    dataset_path = tmp_path / "event_dataset_no_overrides.json"
+    dataset_path.write_text(
+        json.dumps(
+            {
+                "dataset_id": "event_no_overrides",
+                "records": [
+                    {
+                        "event_id": "event_x",
+                        "event_name": "Event X",
+                        "event_date": "2021-01-01",
+                        "record_id": "x1",
+                        "latitude": 39.75,
+                        "longitude": -105.0,
+                        "address_text": "100 Main St, Denver, CO 80202",
+                        "outcome_label": "unknown",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    default_mode = run_event_backtest(dataset_paths=[dataset_path], output_dir=tmp_path / "artifacts_default")
+    assert default_mode.get("runtime_context_mode_when_overrides_missing") == "benchmark_default_context"
+
+    runtime_mode = run_event_backtest(
+        dataset_paths=[dataset_path],
+        output_dir=tmp_path / "artifacts_runtime",
+        use_runtime_context_when_no_overrides=True,
+    )
+    assert runtime_mode.get("runtime_context_mode_when_overrides_missing") == "runtime_collect_context"
+
+
+def test_run_event_backtest_uses_structure_ring_metric_overrides(tmp_path: Path):
+    dataset_path = tmp_path / "event_dataset_ring_override.json"
+    dataset_path.write_text(
+        json.dumps(
+            {
+                "dataset_id": "event_ring_override",
+                "records": [
+                    {
+                        "event_id": "event_r",
+                        "event_name": "Event R",
+                        "event_date": "2021-01-01",
+                        "record_id": "r1",
+                        "latitude": 39.75,
+                        "longitude": -105.0,
+                        "address_text": "100 Main St, Denver, CO 80202",
+                        "outcome_label": "unknown",
+                        "context_overrides": {
+                            "burn_probability_index": 75.0,
+                            "structure_ring_metrics": {
+                                "ring_0_5_ft": {"vegetation_density": 82.0},
+                                "ring_5_30_ft": {"vegetation_density": 74.0},
+                            },
+                        },
+                    },
+                    {
+                        "event_id": "event_r",
+                        "event_name": "Event R",
+                        "event_date": "2021-01-01",
+                        "record_id": "r2",
+                        "latitude": 39.76,
+                        "longitude": -105.01,
+                        "address_text": "200 Main St, Denver, CO 80202",
+                        "outcome_label": "unknown",
+                        "context_overrides": {
+                            "burn_probability_index": 40.0,
+                            "structure_ring_metrics": {
+                                "ring_0_5_ft": {"vegetation_density": 30.0},
+                                "ring_5_30_ft": {"vegetation_density": 28.0},
+                            },
+                        },
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    artifact = run_event_backtest(dataset_paths=[dataset_path], output_dir=tmp_path / "artifacts_ring_override")
+    by_id = {row["record_id"]: row for row in artifact["records"]}
+    r1_raw = by_id["r1"].get("raw_feature_vector") or {}
+    r2_raw = by_id["r2"].get("raw_feature_vector") or {}
+    assert float(r1_raw.get("ring_0_5_ft_vegetation_density") or 0.0) == 82.0
+    assert float(r2_raw.get("ring_0_5_ft_vegetation_density") or 0.0) == 30.0
 
 
 def test_run_event_backtest_script_exit_behavior(tmp_path: Path):

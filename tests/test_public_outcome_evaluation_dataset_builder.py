@@ -203,6 +203,8 @@ def test_builder_joins_rows_and_reports_join_quality(tmp_path: Path) -> None:
     assert join_quality["by_label_join_counts"]["major_damage"] == 1
     assert join_quality["row_confidence_tier_counts"]
     assert "excluded_reason_counts" in join_quality
+    assert isinstance(join_quality.get("feature_variation_diagnostics"), dict)
+    assert "near_zero_variance_features" in (join_quality.get("feature_variation_diagnostics") or {})
     assert join_quality.get("no_silent_data_loss_guarantee") is True
     filter_summary = join_quality.get("filter_summary") or {}
     assert isinstance(filter_summary.get("filter_reason_counts"), dict)
@@ -433,7 +435,15 @@ def test_builder_backfills_missing_scores_via_event_backtest(monkeypatch, tmp_pa
     _write_outcomes(outcomes)
     _write_unscored_feature_artifact(features)
 
-    def _fake_run_event_backtest(*, dataset_paths, output_dir, ruleset_id=None, reuse_existing_assessments=False):
+    def _fake_run_event_backtest(
+        *,
+        dataset_paths,
+        output_dir,
+        ruleset_id=None,
+        reuse_existing_assessments=False,
+        use_runtime_context_when_no_overrides=False,
+    ):
+        assert use_runtime_context_when_no_overrides is True
         return {
             "artifact_path": str(Path(output_dir) / "fake_event_backtest.json"),
             "records": [
@@ -508,7 +518,15 @@ def test_builder_auto_score_all_replaces_existing_scores(monkeypatch, tmp_path: 
         encoding="utf-8",
     )
 
-    def _fake_run_event_backtest(*, dataset_paths, output_dir, ruleset_id=None, reuse_existing_assessments=False):
+    def _fake_run_event_backtest(
+        *,
+        dataset_paths,
+        output_dir,
+        ruleset_id=None,
+        reuse_existing_assessments=False,
+        use_runtime_context_when_no_overrides=False,
+    ):
+        assert use_runtime_context_when_no_overrides is True
         return {
             "artifact_path": str(Path(output_dir) / "fake_event_backtest_all.json"),
             "records": [

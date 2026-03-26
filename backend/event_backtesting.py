@@ -158,6 +158,8 @@ def _derive_context_overrides_from_vectors(raw: dict[str, Any]) -> dict[str, Any
         if value is not None:
             overrides[target_key] = float(value)
 
+    _enrich_context_overrides_with_scalar_proxies(overrides)
+
     ring_key_map = {
         "ring_0_5_ft_vegetation_density": "ring_0_5_ft",
         "ring_5_30_ft_vegetation_density": "ring_5_30_ft",
@@ -196,6 +198,39 @@ def _derive_context_overrides_from_vectors(raw: dict[str, Any]) -> dict[str, Any
     return overrides
 
 
+def _enrich_context_overrides_with_scalar_proxies(overrides: dict[str, Any]) -> None:
+    # When only index fields are populated, derive coarse scalar proxies to
+    # avoid silently pinning raw environmental fields to default constants.
+    if "burn_probability" not in overrides:
+        burn_idx = _to_float(overrides.get("burn_probability_index"))
+        if burn_idx is not None:
+            overrides["burn_probability"] = max(0.0, min(1.0, float(burn_idx) / 100.0))
+    if "wildfire_hazard" not in overrides:
+        hazard_idx = _to_float(overrides.get("hazard_severity_index"))
+        if hazard_idx is not None:
+            overrides["wildfire_hazard"] = max(0.0, min(5.0, 1.0 + (float(hazard_idx) * 0.04)))
+    if "slope" not in overrides:
+        slope_idx = _to_float(overrides.get("slope_index"))
+        if slope_idx is not None:
+            overrides["slope"] = max(0.0, min(45.0, float(slope_idx) * 0.35))
+    if "fuel_model" not in overrides:
+        fuel_idx = _to_float(overrides.get("fuel_index"))
+        if fuel_idx is not None:
+            overrides["fuel_model"] = max(0.0, min(100.0, float(fuel_idx)))
+    if "canopy_cover" not in overrides:
+        canopy_idx = _to_float(overrides.get("canopy_index"))
+        if canopy_idx is not None:
+            overrides["canopy_cover"] = max(0.0, min(100.0, float(canopy_idx)))
+    if "historic_fire_distance" not in overrides:
+        historic_idx = _to_float(overrides.get("historic_fire_index"))
+        if historic_idx is not None:
+            overrides["historic_fire_distance"] = max(0.1, (100.0 - float(historic_idx)) / 10.0)
+    if "wildland_distance" not in overrides:
+        wildland_idx = _to_float(overrides.get("wildland_distance_index"))
+        if wildland_idx is not None:
+            overrides["wildland_distance"] = max(0.0, (100.0 - float(wildland_idx)) * 10.0)
+
+
 def _normalize_record(
     raw: dict[str, Any],
     *,
@@ -222,6 +257,8 @@ def _normalize_record(
         context_overrides = {}
     if not context_overrides:
         context_overrides = _derive_context_overrides_from_vectors(raw)
+    if context_overrides:
+        _enrich_context_overrides_with_scalar_proxies(context_overrides)
     geometry = raw.get("geometry") if isinstance(raw.get("geometry"), dict) else None
     return EventBacktestRecord(
         event_id=event_id,
@@ -715,6 +752,7 @@ def _run_record_assessment(
     *,
     ruleset_id: str | None = None,
     reuse_existing_assessments: bool = False,
+    use_runtime_context_when_no_overrides: bool = False,
 ) -> dict[str, Any]:
     import backend.main as app_main  # lazy import
 
@@ -735,18 +773,32 @@ def _run_record_assessment(
     payload_dict["ruleset_id"] = str(payload_dict.get("ruleset_id") or ruleset_id or record.ruleset_id or "default")
     payload = AddressRequest.model_validate(payload_dict)
     resolved_ruleset = _resolve_ruleset(payload.ruleset_id)
-    context = build_wildfire_context(record.context_overrides or {})
-    with patched_runtime_inputs(
-        latitude=record.latitude,
-        longitude=record.longitude,
-        geocode_source=record.geocode_source,
-        context=context,
-    ):
-        result, debug_payload = app_main._run_assessment(
-            payload,
-            organization_id=record.organization_id,
-            ruleset=resolved_ruleset,
-        )
+    context_overrides = record.context_overrides if isinstance(record.context_overrides, dict) else {}
+    should_use_runtime_context = bool(use_runtime_context_when_no_overrides and not context_overrides)
+    if should_use_runtime_context:
+        original_geocode = app_main.geocoder.geocode
+        app_main.geocoder.geocode = lambda _addr: (record.latitude, record.longitude, record.geocode_source)
+        try:
+            result, debug_payload = app_main._run_assessment(
+                payload,
+                organization_id=record.organization_id,
+                ruleset=resolved_ruleset,
+            )
+        finally:
+            app_main.geocoder.geocode = original_geocode
+    else:
+        context = build_wildfire_context(context_overrides)
+        with patched_runtime_inputs(
+            latitude=record.latitude,
+            longitude=record.longitude,
+            geocode_source=record.geocode_source,
+            context=context,
+        ):
+            result, debug_payload = app_main._run_assessment(
+                payload,
+                organization_id=record.organization_id,
+                ruleset=resolved_ruleset,
+            )
     return _record_snapshot(record, result, dataset_id="", debug_payload=debug_payload)
 
 
@@ -815,6 +867,7 @@ def run_event_backtest(
     output_dir: str | Path | None = None,
     ruleset_id: str | None = None,
     reuse_existing_assessments: bool = False,
+    use_runtime_context_when_no_overrides: bool = False,
 ) -> dict[str, Any]:
     paths = [Path(p).expanduser() for p in (dataset_paths or [DEFAULT_DATASET_PATH])]
     datasets = [load_event_backtest_dataset(p) for p in paths]
@@ -825,6 +878,7 @@ def run_event_backtest(
                 rec,
                 ruleset_id=ruleset_id,
                 reuse_existing_assessments=reuse_existing_assessments,
+                use_runtime_context_when_no_overrides=use_runtime_context_when_no_overrides,
             )
             row["dataset_id"] = ds.dataset_id
             records.append(row)
@@ -914,6 +968,9 @@ def run_event_backtest(
     artifact = {
         "generated_at": _now_iso(),
         "event_backtest_version": "1.0.0",
+        "runtime_context_mode_when_overrides_missing": (
+            "runtime_collect_context" if use_runtime_context_when_no_overrides else "benchmark_default_context"
+        ),
         "dataset_count": len(datasets),
         "datasets": [
             {
