@@ -92,6 +92,7 @@ Artifacts:
 - `validation_metrics.json`
 - `baseline_model_comparison.json`
 - `feature_diagnostics.json`
+- `feature_signal_report.json`
 - `segment_metrics.json`
 - `segment_report.md`
 - `calibration_table.json`
@@ -126,6 +127,7 @@ Feature signal diagnostics are also emitted from the labeled rows:
 - per-feature Pearson/Spearman correlations against adverse outcome label
 - univariate rank/AUC-style directional signal checks
 - plot-ready feature-vs-outcome quantile curves
+- dedicated artifact: `feature_signal_report.json`
 - ranked lists for:
   - `top_predictive_features`
   - `weak_or_noisy_features`

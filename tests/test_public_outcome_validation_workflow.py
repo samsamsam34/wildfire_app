@@ -225,9 +225,16 @@ def test_public_outcome_validation_orchestration_is_deterministic_with_fixed_run
     )
 
     assert first["manifest_path"] == second["manifest_path"]
+    assert "feature_signal_report_path" in first
+    assert first["feature_signal_report_path"].endswith("/feature_signal_report.json")
     manifest_text_1 = Path(first["manifest_path"]).read_text(encoding="utf-8")
     manifest_text_2 = Path(second["manifest_path"]).read_text(encoding="utf-8")
     assert manifest_text_1 == manifest_text_2
+    manifest_obj = json.loads(manifest_text_1)
+    assert (
+        ((manifest_obj.get("artifacts") or {}).get("feature_signal_report_json"))
+        == first["feature_signal_report_path"]
+    )
 
     evaluation_text_1 = Path(first["validation_metrics_path"]).read_text(encoding="utf-8")
     evaluation_text_2 = Path(second["validation_metrics_path"]).read_text(encoding="utf-8")
