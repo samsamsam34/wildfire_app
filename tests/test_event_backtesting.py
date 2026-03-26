@@ -197,6 +197,156 @@ def test_event_dataset_derives_context_overrides_from_feature_vectors(tmp_path: 
     assert bool(property_level.get("footprint_used")) is True
 
 
+def test_event_dataset_ignores_placeholder_raw_scalars_when_transformed_indices_present(tmp_path: Path):
+    payload = {
+        "dataset_id": "placeholder_suppression_dataset",
+        "records": [
+            {
+                "event_id": "event_a",
+                "event_name": "Event A",
+                "event_date": "2020-01-01",
+                "record_id": "derived_placeholder_1",
+                "latitude": 39.75,
+                "longitude": -105.0,
+                "outcome_label": "major_damage",
+                "raw_feature_vector": {
+                    "burn_probability": 0.5,
+                    "slope": 12.0,
+                    "fuel_model": 55.0,
+                    "canopy_cover": 45.0,
+                    "wildland_distance_m": 250.0,
+                    "ring_0_5_ft_vegetation_density": 35.0,
+                    "ring_5_30_ft_vegetation_density": 45.0,
+                    "ring_30_100_ft_vegetation_density": 50.0,
+                    "ring_100_300_ft_vegetation_density": 55.0,
+                },
+                "transformed_feature_vector": {
+                    "burn_probability_index": 84.0,
+                    "hazard_severity_index": 81.0,
+                    "slope_index": 66.0,
+                    "fuel_index": 79.0,
+                    "canopy_index": 74.0,
+                    "wildland_distance_index": 58.0,
+                    "historic_fire_index": 55.0,
+                },
+            }
+        ],
+    }
+    path = tmp_path / "placeholder_suppression_dataset.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    ds = load_event_backtest_dataset(path)
+    assert len(ds.records) == 1
+    ctx = ds.records[0].context_overrides
+    assert isinstance(ctx, dict)
+    assert float(ctx.get("burn_probability") or 0.0) != 0.5
+    assert float(ctx.get("slope") or 0.0) != 12.0
+    assert float(ctx.get("fuel_model") or 0.0) != 55.0
+    assert float(ctx.get("canopy_cover") or 0.0) != 45.0
+    assert float(ctx.get("wildland_distance") or 0.0) != 250.0
+    assert "structure_ring_metrics" not in ctx
+
+
+def test_event_dataset_ignores_placeholder_property_level_ring_metrics(tmp_path: Path):
+    payload = {
+        "dataset_id": "placeholder_property_level_ring_dataset",
+        "records": [
+            {
+                "event_id": "event_a",
+                "event_name": "Event A",
+                "event_date": "2020-01-01",
+                "record_id": "derived_placeholder_ring_1",
+                "latitude": 39.75,
+                "longitude": -105.0,
+                "outcome_label": "major_damage",
+                "property_level_context": {
+                    "ring_metrics": {
+                        "ring_0_5_ft": {"vegetation_density": 35.0},
+                        "ring_5_30_ft": {"vegetation_density": 45.0},
+                        "ring_30_100_ft": {"vegetation_density": 50.0},
+                        "ring_100_300_ft": {"vegetation_density": 55.0},
+                    }
+                },
+                "transformed_feature_vector": {
+                    "burn_probability_index": 84.0,
+                    "hazard_severity_index": 81.0,
+                    "slope_index": 66.0,
+                    "fuel_index": 79.0,
+                    "canopy_index": 74.0,
+                    "wildland_distance_index": 58.0,
+                    "historic_fire_index": 55.0,
+                },
+            }
+        ],
+    }
+    path = tmp_path / "placeholder_property_level_ring_dataset.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    ds = load_event_backtest_dataset(path)
+    assert len(ds.records) == 1
+    ctx = ds.records[0].context_overrides
+    assert isinstance(ctx, dict)
+    property_level = ctx.get("property_level_context") if isinstance(ctx.get("property_level_context"), dict) else {}
+    assert "ring_metrics" not in property_level
+
+
+def test_event_dataset_sanitizes_placeholder_values_in_explicit_context_overrides(tmp_path: Path):
+    payload = {
+        "dataset_id": "sanitize_explicit_context_dataset",
+        "records": [
+            {
+                "event_id": "event_a",
+                "event_name": "Event A",
+                "event_date": "2020-01-01",
+                "record_id": "explicit_ctx_1",
+                "latitude": 39.75,
+                "longitude": -105.0,
+                "outcome_label": "major_damage",
+                "context_overrides": {
+                    "burn_probability_index": 84.0,
+                    "hazard_severity_index": 81.0,
+                    "slope_index": 66.0,
+                    "fuel_index": 79.0,
+                    "canopy_index": 74.0,
+                    "wildland_distance_index": 58.0,
+                    "historic_fire_index": 55.0,
+                    "burn_probability": 0.5,
+                    "slope": 12.0,
+                    "fuel_model": 55.0,
+                    "canopy_cover": 45.0,
+                    "wildland_distance": 250.0,
+                    "structure_ring_metrics": {
+                        "ring_0_5_ft": {"vegetation_density": 35.0},
+                        "ring_5_30_ft": {"vegetation_density": 45.0},
+                        "ring_30_100_ft": {"vegetation_density": 50.0},
+                        "ring_100_300_ft": {"vegetation_density": 55.0},
+                    },
+                    "property_level_context": {
+                        "ring_metrics": {
+                            "ring_0_5_ft": {"vegetation_density": 35.0},
+                            "ring_5_30_ft": {"vegetation_density": 45.0},
+                            "ring_30_100_ft": {"vegetation_density": 50.0},
+                            "ring_100_300_ft": {"vegetation_density": 55.0},
+                        }
+                    },
+                },
+            }
+        ],
+    }
+    path = tmp_path / "sanitize_explicit_context_dataset.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    ds = load_event_backtest_dataset(path)
+    assert len(ds.records) == 1
+    ctx = ds.records[0].context_overrides
+    assert isinstance(ctx, dict)
+    assert float(ctx.get("burn_probability") or 0.0) != 0.5
+    assert float(ctx.get("slope") or 0.0) != 12.0
+    assert float(ctx.get("fuel_model") or 0.0) != 55.0
+    assert float(ctx.get("canopy_cover") or 0.0) != 45.0
+    assert float(ctx.get("wildland_distance") or 0.0) != 250.0
+    assert "structure_ring_metrics" not in ctx
+    property_level = ctx.get("property_level_context") if isinstance(ctx.get("property_level_context"), dict) else {}
+    assert "ring_metrics" not in property_level
+
+
 def test_rank_metric_helper():
     corr = spearman_rank_correlation([(10.0, 1.0), (20.0, 2.0), (30.0, 3.0), (40.0, 4.0)])
     assert isinstance(corr, float)

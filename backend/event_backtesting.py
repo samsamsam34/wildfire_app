@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from backend.benchmarking import build_wildfire_context, patched_runtime_inputs
+from backend.benchmarking import build_wildfire_context, default_wildfire_context_dict, patched_runtime_inputs
 from backend.models import AddressRequest, AssessmentResult, UnderwritingRuleset
 from backend.scoring_config import load_scoring_config
 from backend.version import (
@@ -37,6 +37,7 @@ OUTCOME_RANK_DEFAULTS = {
 DEFAULT_DATASET_PATH = Path("benchmark") / "event_backtest_sample_v1.json"
 DEFAULT_RESULTS_DIR = Path("benchmark") / "event_backtest_results"
 DEFAULT_SCORING_CONFIG = load_scoring_config()
+_BENCHMARK_PLACEHOLDER_CONTEXT = default_wildfire_context_dict()
 
 
 @dataclass
@@ -118,6 +119,166 @@ def _parse_jsonish(value: Any, default: Any) -> Any:
         return default
 
 
+def _approx_equal(left: float | None, right: float | None, *, tol: float = 1e-6) -> bool:
+    if left is None or right is None:
+        return False
+    return math.isclose(float(left), float(right), rel_tol=0.0, abs_tol=tol)
+
+
+def _is_placeholder_scalar(
+    *,
+    source_key: str,
+    value: float | None,
+    transformed: dict[str, Any],
+) -> bool:
+    if value is None:
+        return False
+    default_scalar_map = {
+        "burn_probability": _to_float(_BENCHMARK_PLACEHOLDER_CONTEXT.get("burn_probability")),
+        "wildfire_hazard": _to_float(_BENCHMARK_PLACEHOLDER_CONTEXT.get("wildfire_hazard")),
+        "slope": _to_float(_BENCHMARK_PLACEHOLDER_CONTEXT.get("slope")),
+        "fuel_model": _to_float(_BENCHMARK_PLACEHOLDER_CONTEXT.get("fuel_model")),
+        "canopy_cover": _to_float(_BENCHMARK_PLACEHOLDER_CONTEXT.get("canopy_cover")),
+        "historic_fire_distance_km": _to_float(_BENCHMARK_PLACEHOLDER_CONTEXT.get("historic_fire_distance")),
+        "wildland_distance_m": _to_float(_BENCHMARK_PLACEHOLDER_CONTEXT.get("wildland_distance")),
+    }
+    transformed_index_map = {
+        "burn_probability": "burn_probability_index",
+        "wildfire_hazard": "hazard_severity_index",
+        "slope": "slope_index",
+        "fuel_model": "fuel_index",
+        "canopy_cover": "canopy_index",
+        "historic_fire_distance_km": "historic_fire_index",
+        "wildland_distance_m": "wildland_distance_index",
+    }
+    index_key = transformed_index_map.get(source_key)
+    if not index_key:
+        return False
+    transformed_value = _to_float(transformed.get(index_key))
+    if transformed_value is None:
+        return False
+    default_value = default_scalar_map.get(source_key)
+    return _approx_equal(value, default_value)
+
+
+def _default_ring_density(ring_key: str) -> float | None:
+    ring_aliases = {
+        "zone_0_5_ft": "ring_0_5_ft",
+        "zone_5_30_ft": "ring_5_30_ft",
+        "zone_30_100_ft": "ring_30_100_ft",
+        "zone_100_300_ft": "ring_100_300_ft",
+    }
+    canonical_key = ring_aliases.get(str(ring_key), str(ring_key))
+    structure_ring = (
+        _BENCHMARK_PLACEHOLDER_CONTEXT.get("structure_ring_metrics")
+        if isinstance(_BENCHMARK_PLACEHOLDER_CONTEXT.get("structure_ring_metrics"), dict)
+        else {}
+    )
+    ring_payload = (
+        structure_ring.get(canonical_key)
+        if isinstance(structure_ring.get(canonical_key), dict)
+        else {}
+    )
+    return _to_float(ring_payload.get("vegetation_density"))
+
+
+def _is_placeholder_ring_bundle(ring_metrics: dict[str, dict[str, float]]) -> bool:
+    if not ring_metrics:
+        return False
+    checked = 0
+    for ring_key, payload in ring_metrics.items():
+        if not isinstance(payload, dict):
+            continue
+        value = _to_float(payload.get("vegetation_density"))
+        if value is None:
+            continue
+        default_value = _default_ring_density(ring_key)
+        if default_value is None:
+            # Ignore unknown ring keys so alias payloads do not block
+            # placeholder detection for canonical ring metrics.
+            continue
+        checked += 1
+        if not _approx_equal(value, default_value):
+            return False
+    return checked >= 2
+
+
+def _sanitize_context_overrides(overrides: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(overrides, dict):
+        return {}
+    cleaned = dict(overrides)
+    scalar_index_map = {
+        "burn_probability": "burn_probability_index",
+        "wildfire_hazard": "hazard_severity_index",
+        "slope": "slope_index",
+        "fuel_model": "fuel_index",
+        "canopy_cover": "canopy_index",
+        "historic_fire_distance": "historic_fire_index",
+        "wildland_distance": "wildland_distance_index",
+    }
+    default_scalar_map = {
+        "burn_probability": _to_float(_BENCHMARK_PLACEHOLDER_CONTEXT.get("burn_probability")),
+        "wildfire_hazard": _to_float(_BENCHMARK_PLACEHOLDER_CONTEXT.get("wildfire_hazard")),
+        "slope": _to_float(_BENCHMARK_PLACEHOLDER_CONTEXT.get("slope")),
+        "fuel_model": _to_float(_BENCHMARK_PLACEHOLDER_CONTEXT.get("fuel_model")),
+        "canopy_cover": _to_float(_BENCHMARK_PLACEHOLDER_CONTEXT.get("canopy_cover")),
+        "historic_fire_distance": _to_float(_BENCHMARK_PLACEHOLDER_CONTEXT.get("historic_fire_distance")),
+        "wildland_distance": _to_float(_BENCHMARK_PLACEHOLDER_CONTEXT.get("wildland_distance")),
+    }
+    for scalar_key, index_key in scalar_index_map.items():
+        scalar_value = _to_float(cleaned.get(scalar_key))
+        index_value = _to_float(cleaned.get(index_key))
+        default_value = default_scalar_map.get(scalar_key)
+        if scalar_value is None or index_value is None:
+            continue
+        if _approx_equal(scalar_value, default_value):
+            cleaned.pop(scalar_key, None)
+
+    structure_ring_metrics = (
+        cleaned.get("structure_ring_metrics")
+        if isinstance(cleaned.get("structure_ring_metrics"), dict)
+        else {}
+    )
+    normalized_structure_rings: dict[str, dict[str, float]] = {}
+    for ring_key, payload in structure_ring_metrics.items():
+        if not isinstance(payload, dict):
+            continue
+        density = _to_float(payload.get("vegetation_density"))
+        if density is None:
+            continue
+        normalized_structure_rings[str(ring_key)] = {"vegetation_density": float(density)}
+    if _is_placeholder_ring_bundle(normalized_structure_rings):
+        cleaned.pop("structure_ring_metrics", None)
+
+    property_level_context = (
+        cleaned.get("property_level_context")
+        if isinstance(cleaned.get("property_level_context"), dict)
+        else {}
+    )
+    property_ring_metrics = (
+        property_level_context.get("ring_metrics")
+        if isinstance(property_level_context.get("ring_metrics"), dict)
+        else {}
+    )
+    normalized_property_rings: dict[str, dict[str, float]] = {}
+    for ring_key, payload in property_ring_metrics.items():
+        if not isinstance(payload, dict):
+            continue
+        density = _to_float(payload.get("vegetation_density"))
+        if density is None:
+            continue
+        normalized_property_rings[str(ring_key)] = {"vegetation_density": float(density)}
+    if _is_placeholder_ring_bundle(normalized_property_rings):
+        property_level_context = dict(property_level_context)
+        property_level_context.pop("ring_metrics", None)
+        if property_level_context:
+            cleaned["property_level_context"] = property_level_context
+        else:
+            cleaned.pop("property_level_context", None)
+
+    return cleaned
+
+
 def _derive_context_overrides_from_vectors(raw: dict[str, Any]) -> dict[str, Any]:
     transformed = raw.get("transformed_feature_vector") if isinstance(raw.get("transformed_feature_vector"), dict) else {}
     raw_vector = raw.get("raw_feature_vector") if isinstance(raw.get("raw_feature_vector"), dict) else {}
@@ -155,6 +316,8 @@ def _derive_context_overrides_from_vectors(raw: dict[str, Any]) -> dict[str, Any
     }
     for source_key, target_key in scalar_map.items():
         value = _to_float(raw_vector.get(source_key))
+        if _is_placeholder_scalar(source_key=source_key, value=value, transformed=transformed):
+            continue
         if value is not None:
             overrides[target_key] = float(value)
 
@@ -172,10 +335,27 @@ def _derive_context_overrides_from_vectors(raw: dict[str, Any]) -> dict[str, Any
         if value is None:
             continue
         ring_metrics[ring_key] = {"vegetation_density": float(value)}
+    if _is_placeholder_ring_bundle(ring_metrics):
+        ring_metrics = {}
     if ring_metrics:
         overrides["structure_ring_metrics"] = ring_metrics
 
     property_level: dict[str, Any] = dict(property_level_raw) if property_level_raw else {}
+    existing_property_ring_metrics = (
+        property_level.get("ring_metrics")
+        if isinstance(property_level.get("ring_metrics"), dict)
+        else {}
+    )
+    normalized_existing_property_rings: dict[str, dict[str, float]] = {}
+    for ring_key, ring_payload in existing_property_ring_metrics.items():
+        if not isinstance(ring_payload, dict):
+            continue
+        ring_density = _to_float(ring_payload.get("vegetation_density"))
+        if ring_density is None:
+            continue
+        normalized_existing_property_rings[str(ring_key)] = {"vegetation_density": float(ring_density)}
+    if _is_placeholder_ring_bundle(normalized_existing_property_rings):
+        property_level.pop("ring_metrics", None)
     if ring_metrics:
         existing_ring_metrics = property_level.get("ring_metrics")
         if not isinstance(existing_ring_metrics, dict) or not existing_ring_metrics:
@@ -257,6 +437,8 @@ def _normalize_record(
         context_overrides = {}
     if not context_overrides:
         context_overrides = _derive_context_overrides_from_vectors(raw)
+    if context_overrides:
+        context_overrides = _sanitize_context_overrides(context_overrides)
     if context_overrides:
         _enrich_context_overrides_with_scalar_proxies(context_overrides)
     geometry = raw.get("geometry") if isinstance(raw.get("geometry"), dict) else None

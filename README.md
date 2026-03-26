@@ -769,6 +769,18 @@ python scripts/fit_public_outcome_calibration.py \
   --output config/public_outcome_calibration.json
 ```
 
+Synthetic sensitivity workflow (controlled variation, not ground truth):
+
+```bash
+python scripts/run_synthetic_sensitivity_evaluation.py \
+  --evaluation-dataset benchmark/public_outcomes/evaluation_dataset/<run_id>/evaluation_dataset.jsonl
+```
+
+This writes synthetic sensitivity artifacts under:
+- `benchmark/public_outcomes/synthetic_sensitivity/<run_id>/`
+- Includes synthetic scenario rows (`vegetation_up`, `slope_up`, `fuel_near`, `combined_high`, `mitigation_low`),
+  baseline-vs-synthetic metric comparison, and directionality pass/fail checks.
+
 Calibration bundles are written under:
 - `benchmark/public_outcomes/calibration/<run_id>/`
 - Includes `calibration_model.json`, `pre_vs_post_metrics.json`, `calibration_curve.json`, `summary.md`, and `manifest.json`
@@ -784,6 +796,7 @@ When enabled, `/risk/assess` and `/risk/debug` include calibration metadata (`ca
 See `docs/public_outcome_calibration.md` for details and caveats.
 See `docs/api_calibrated_outputs.md` for API opt-in behavior and response examples.
 See `docs/public_outcome_validation.md` for the v1 reproducible validation workflow and guardrails.
+See `docs/synthetic_sensitivity_evaluation.md` for synthetic variation sensitivity checks and caveats.
 See `docs/calibration_gap_analysis.md` for the empirical-gap rationale behind this calibration step.
 
 ## Model Tuning
