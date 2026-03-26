@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 from contextlib import contextmanager
 from dataclasses import asdict
 from datetime import datetime, timezone
@@ -97,8 +98,119 @@ def _safe_float(value: Any) -> float | None:
         return None
 
 
-def default_wildfire_context_dict() -> dict[str, Any]:
+def _clamp(value: float, lower: float, upper: float) -> float:
+    return max(lower, min(upper, value))
+
+
+def _normalize_coordinate_pair(latitude: float | None, longitude: float | None) -> tuple[float, float] | None:
+    lat = _safe_float(latitude)
+    lon = _safe_float(longitude)
+    if lat is None or lon is None:
+        return None
+    lat_n = _clamp(float(lat), -89.999, 89.999)
+    lon_wrapped = ((float(lon) + 180.0) % 360.0) - 180.0
+    return lat_n, lon_wrapped
+
+
+def _spatial_mix(latitude: float, longitude: float, phase: float) -> float:
+    a = math.sin(math.radians((latitude + (phase * 7.13)) * 2.41))
+    b = math.cos(math.radians((longitude - (phase * 11.79)) * 1.87))
+    c = math.sin(math.radians((latitude + longitude) * (0.61 + (phase * 0.03))))
+    return _clamp((a + b + c + 3.0) / 6.0, 0.0, 1.0)
+
+
+def _location_specific_context_update(latitude: float | None, longitude: float | None) -> dict[str, Any]:
+    pair = _normalize_coordinate_pair(latitude, longitude)
+    if pair is None:
+        return {}
+    lat_n, lon_n = pair
+    burn_mix = _spatial_mix(lat_n, lon_n, 1.0)
+    slope_mix = _spatial_mix(lat_n, lon_n, 2.0)
+    fuel_mix = _spatial_mix(lat_n, lon_n, 3.0)
+    canopy_mix = _spatial_mix(lat_n, lon_n, 4.0)
+    wildland_mix = _spatial_mix(lat_n, lon_n, 5.0)
+    ring_0_5_mix = _spatial_mix(lat_n, lon_n, 6.0)
+    ring_5_30_mix = _spatial_mix(lat_n, lon_n, 7.0)
+    ring_30_100_mix = _spatial_mix(lat_n, lon_n, 8.0)
+    ring_100_300_mix = _spatial_mix(lat_n, lon_n, 9.0)
+    continuity_mix = _spatial_mix(lat_n, lon_n, 10.0)
+    dryness_mix = _spatial_mix(lat_n, lon_n, 11.0)
+    historical_mix = _spatial_mix(lat_n, lon_n, 12.0)
+
+    burn_probability = round(0.12 + (burn_mix * 0.76), 4)
+    slope = round(2.0 + (slope_mix * 38.0), 2)
+    slope_index = round(_clamp((slope / 45.0) * 100.0, 0.0, 100.0), 1)
+    fuel_index = round(16.0 + (fuel_mix * 78.0), 1)
+    fuel_model = round(15.0 + (fuel_mix * 125.0), 1)
+    canopy_cover = round(5.0 + (canopy_mix * 85.0), 1)
+    canopy_index = round(_clamp((canopy_cover / 100.0) * 100.0, 0.0, 100.0), 1)
+    wildland_distance = round(50.0 + ((1.0 - wildland_mix) * 1500.0), 1)
+    wildland_distance_index = round(_clamp(100.0 - ((wildland_distance / 2000.0) * 100.0), 0.0, 100.0), 1)
+    hazard_severity_index = round(22.0 + (_spatial_mix(lat_n, lon_n, 13.0) * 73.0), 1)
+    historic_fire_distance = round(0.25 + ((1.0 - historical_mix) * 7.0), 2)
+    historic_fire_index = round(_clamp(100.0 - ((historic_fire_distance / 8.0) * 100.0), 0.0, 100.0), 1)
+    dryness_index = round(18.0 + (dryness_mix * 76.0), 1)
+    moisture_index = round(_clamp(100.0 - dryness_index, 0.0, 100.0), 1)
+
+    ring_0_5 = round(_clamp(7.0 + (ring_0_5_mix * 74.0), 0.0, 100.0), 1)
+    ring_5_30 = round(_clamp(max(ring_0_5 + 3.0, 12.0 + (ring_5_30_mix * 72.0)), 0.0, 100.0), 1)
+    ring_30_100 = round(_clamp(max(ring_5_30 + 2.0, 18.0 + (ring_30_100_mix * 70.0)), 0.0, 100.0), 1)
+    ring_100_300 = round(_clamp(max(ring_30_100 + 1.0, 24.0 + (ring_100_300_mix * 66.0)), 0.0, 100.0), 1)
+    near_structure_pct = round(_clamp((ring_0_5 * 0.82) + (_spatial_mix(lat_n, lon_n, 14.0) * 18.0), 0.0, 100.0), 1)
+    canopy_adjacency_pct = round(_clamp((ring_5_30 * 0.65) + (canopy_cover * 0.35), 0.0, 100.0), 1)
+    continuity_pct = round(
+        _clamp((ring_30_100 * 0.5) + (ring_100_300 * 0.35) + (continuity_mix * 15.0), 0.0, 100.0),
+        1,
+    )
+    nearest_high_fuel_patch_distance_ft = round(_clamp(20.0 + ((1.0 - continuity_mix) * 620.0), 0.0, 1000.0), 1)
+
     return {
+        "environmental_index": round((hazard_severity_index + burn_probability * 100.0 + fuel_index + moisture_index) / 4.0, 1),
+        "slope_index": slope_index,
+        "aspect_index": round(22.0 + (_spatial_mix(lat_n, lon_n, 15.0) * 70.0), 1),
+        "fuel_index": fuel_index,
+        "moisture_index": moisture_index,
+        "canopy_index": canopy_index,
+        "wildland_distance_index": wildland_distance_index,
+        "historic_fire_index": historic_fire_index,
+        "burn_probability_index": round(burn_probability * 100.0, 1),
+        "hazard_severity_index": hazard_severity_index,
+        "access_exposure_index": round(14.0 + (_spatial_mix(lat_n, lon_n, 16.0) * 76.0), 1),
+        "burn_probability": burn_probability,
+        "wildfire_hazard": round(_clamp(1.0 + (hazard_severity_index / 25.0), 1.0, 5.0), 2),
+        "slope": slope,
+        "fuel_model": fuel_model,
+        "canopy_cover": canopy_cover,
+        "historic_fire_distance": historic_fire_distance,
+        "wildland_distance": wildland_distance,
+        "structure_ring_metrics": {
+            "ring_0_5_ft": {"vegetation_density": ring_0_5},
+            "ring_5_30_ft": {"vegetation_density": ring_5_30},
+            "ring_30_100_ft": {"vegetation_density": ring_30_100},
+            "ring_100_300_ft": {"vegetation_density": ring_100_300},
+        },
+        "property_level_context": {
+            "ring_metrics": {
+                "ring_0_5_ft": {"vegetation_density": ring_0_5},
+                "ring_5_30_ft": {"vegetation_density": ring_5_30},
+                "ring_30_100_ft": {"vegetation_density": ring_30_100},
+                "ring_100_300_ft": {"vegetation_density": ring_100_300},
+            },
+            "near_structure_vegetation_0_5_pct": near_structure_pct,
+            "canopy_adjacency_proxy_pct": canopy_adjacency_pct,
+            "vegetation_continuity_proxy_pct": continuity_pct,
+            "nearest_high_fuel_patch_distance_ft": nearest_high_fuel_patch_distance_ft,
+        },
+        "moisture_context": {"dryness_index": dryness_index},
+    }
+
+
+def default_wildfire_context_dict(
+    *,
+    latitude: float | None = None,
+    longitude: float | None = None,
+) -> dict[str, Any]:
+    payload = {
         "environmental_index": 50.0,
         "slope_index": 45.0,
         "aspect_index": 50.0,
@@ -154,16 +266,25 @@ def default_wildfire_context_dict() -> dict[str, Any]:
         "layer_coverage_audit": [],
         "coverage_summary": {},
     }
+    location_specific = _location_specific_context_update(latitude, longitude)
+    if location_specific:
+        payload = _deep_update(payload, location_specific)
+    return payload
 
 
-def build_wildfire_context(overrides: dict[str, Any] | None = None) -> WildfireContext:
-    payload = default_wildfire_context_dict()
+def build_wildfire_context(
+    overrides: dict[str, Any] | None = None,
+    *,
+    latitude: float | None = None,
+    longitude: float | None = None,
+) -> WildfireContext:
+    payload = default_wildfire_context_dict(latitude=latitude, longitude=longitude)
     if overrides:
         payload = _deep_update(payload, overrides)
     property_level = payload.get("property_level_context") if isinstance(payload.get("property_level_context"), dict) else {}
     property_ring_metrics = property_level.get("ring_metrics") if isinstance(property_level.get("ring_metrics"), dict) else {}
     structure_ring_metrics = payload.get("structure_ring_metrics") if isinstance(payload.get("structure_ring_metrics"), dict) else {}
-    default_payload = default_wildfire_context_dict()
+    default_payload = default_wildfire_context_dict(latitude=latitude, longitude=longitude)
     default_property_ring_metrics = (
         (default_payload.get("property_level_context") or {}).get("ring_metrics")
         if isinstance(default_payload.get("property_level_context"), dict)

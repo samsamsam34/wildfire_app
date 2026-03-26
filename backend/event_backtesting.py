@@ -787,7 +787,11 @@ def _run_record_assessment(
         finally:
             app_main.geocoder.geocode = original_geocode
     else:
-        context = build_wildfire_context(context_overrides)
+        context = build_wildfire_context(
+            context_overrides,
+            latitude=record.latitude,
+            longitude=record.longitude,
+        )
         with patched_runtime_inputs(
             latitude=record.latitude,
             longitude=record.longitude,

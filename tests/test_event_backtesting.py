@@ -274,6 +274,89 @@ def test_run_event_backtest_allows_runtime_context_for_records_without_overrides
     assert runtime_mode.get("runtime_context_mode_when_overrides_missing") == "runtime_collect_context"
 
 
+def test_run_event_backtest_default_context_is_location_specific(tmp_path: Path):
+    dataset_path = tmp_path / "event_dataset_location_specific_defaults.json"
+    dataset_path.write_text(
+        json.dumps(
+            {
+                "dataset_id": "event_location_specific_defaults",
+                "records": [
+                    {
+                        "event_id": "event_ls",
+                        "event_name": "Event LS",
+                        "event_date": "2021-01-01",
+                        "record_id": "p1",
+                        "latitude": 34.081,
+                        "longitude": -118.212,
+                        "address_text": "100 Example St, Los Angeles, CA",
+                        "outcome_label": "destroyed",
+                    },
+                    {
+                        "event_id": "event_ls",
+                        "event_name": "Event LS",
+                        "event_date": "2021-01-01",
+                        "record_id": "p2",
+                        "latitude": 35.451,
+                        "longitude": -119.832,
+                        "address_text": "200 Example St, Bakersfield, CA",
+                        "outcome_label": "major_damage",
+                    },
+                    {
+                        "event_id": "event_ls",
+                        "event_name": "Event LS",
+                        "event_date": "2021-01-01",
+                        "record_id": "n1",
+                        "latitude": 47.611,
+                        "longitude": -122.335,
+                        "address_text": "300 Example St, Seattle, WA",
+                        "outcome_label": "no_known_damage",
+                    },
+                    {
+                        "event_id": "event_ls",
+                        "event_name": "Event LS",
+                        "event_date": "2021-01-01",
+                        "record_id": "n2",
+                        "latitude": 46.873,
+                        "longitude": -123.119,
+                        "address_text": "400 Example St, Olympia, WA",
+                        "outcome_label": "no_known_damage",
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    artifact = run_event_backtest(dataset_paths=[dataset_path], output_dir=tmp_path / "artifacts_location_specific_defaults")
+    by_id = {row["record_id"]: row for row in artifact["records"]}
+
+    feature_sources = {
+        "near_structure_vegetation_0_5_pct": "raw_feature_vector",
+        "ring_0_5_ft_vegetation_density": "raw_feature_vector",
+        "slope_index": "transformed_feature_vector",
+        "wildland_distance_index": "transformed_feature_vector",
+        "burn_probability_index": "transformed_feature_vector",
+    }
+    for feature, source_key in feature_sources.items():
+        values = []
+        for row in by_id.values():
+            bag = row.get(source_key) if isinstance(row.get(source_key), dict) else {}
+            value = bag.get(feature)
+            assert value is not None
+            values.append(round(float(value), 6))
+        assert len(set(values)) > 1, f"{feature} should vary across record locations"
+
+    positive_ids = ["p1", "p2"]
+    negative_ids = ["n1", "n2"]
+    separated_features = 0
+    for feature, source_key in feature_sources.items():
+        positive_mean = sum(float((by_id[item].get(source_key) or {}).get(feature) or 0.0) for item in positive_ids) / float(len(positive_ids))
+        negative_mean = sum(float((by_id[item].get(source_key) or {}).get(feature) or 0.0) for item in negative_ids) / float(len(negative_ids))
+        if abs(positive_mean - negative_mean) > 1e-6:
+            separated_features += 1
+    assert separated_features >= 3
+
+
 def test_run_event_backtest_uses_structure_ring_metric_overrides(tmp_path: Path):
     dataset_path = tmp_path / "event_dataset_ring_override.json"
     dataset_path.write_text(

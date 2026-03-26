@@ -1469,15 +1469,32 @@ def _population_stddev(values: list[float]) -> float | None:
 
 def _compute_feature_variation_diagnostics(rows: list[dict[str, Any]]) -> dict[str, Any]:
     numeric_values: dict[str, list[float]] = {}
+    class_numeric_values: dict[str, dict[str, list[float]]] = {"positive": {}, "negative": {}}
+    class_counts: dict[str, int] = {"positive": 0, "negative": 0, "unknown": 0}
     for row in rows:
         feature_snapshot = row.get("feature_snapshot") if isinstance(row.get("feature_snapshot"), dict) else {}
+        outcome_payload = row.get("outcome") if isinstance(row.get("outcome"), dict) else {}
+        adverse_outcome_binary = outcome_payload.get("adverse_outcome_binary")
+        if isinstance(adverse_outcome_binary, bool):
+            class_bucket = "positive" if adverse_outcome_binary else "negative"
+        elif adverse_outcome_binary in (0, 1):
+            class_bucket = "positive" if int(adverse_outcome_binary) == 1 else "negative"
+        else:
+            class_bucket = None
+        if class_bucket is None:
+            class_counts["unknown"] += 1
+        else:
+            class_counts[class_bucket] += 1
         for bag_name in ("raw_feature_vector", "transformed_feature_vector"):
             bag = feature_snapshot.get(bag_name) if isinstance(feature_snapshot.get(bag_name), dict) else {}
             for key, value in bag.items():
                 numeric = _safe_float(value)
                 if numeric is None:
                     continue
-                numeric_values.setdefault(str(key), []).append(float(numeric))
+                feature_key = str(key)
+                numeric_values.setdefault(feature_key, []).append(float(numeric))
+                if class_bucket:
+                    class_numeric_values[class_bucket].setdefault(feature_key, []).append(float(numeric))
 
     per_feature: list[dict[str, Any]] = []
     near_zero_variance_features: list[str] = []
@@ -1518,6 +1535,55 @@ def _compute_feature_variation_diagnostics(rows: list[dict[str, Any]]) -> dict[s
         if stddev is not None and float(stddev) <= 1e-9:
             key_feature_near_zero_variance.append(feature)
 
+    class_key_features = [
+        "near_structure_vegetation_0_5_pct",
+        "ring_0_5_ft_vegetation_density",
+        "ring_5_30_ft_vegetation_density",
+        "slope",
+        "slope_index",
+        "wildland_distance_index",
+        "burn_probability",
+        "burn_probability_index",
+    ]
+    class_feature_stats: dict[str, Any] = {}
+    class_separation_rows: list[dict[str, Any]] = []
+    for feature in class_key_features:
+        positive_values = class_numeric_values["positive"].get(feature) or []
+        negative_values = class_numeric_values["negative"].get(feature) or []
+        positive_mean = (sum(positive_values) / float(len(positive_values))) if positive_values else None
+        negative_mean = (sum(negative_values) / float(len(negative_values))) if negative_values else None
+        mean_delta = None
+        if positive_mean is not None and negative_mean is not None:
+            mean_delta = float(positive_mean) - float(negative_mean)
+            class_separation_rows.append(
+                {
+                    "feature": feature,
+                    "positive_mean": round(float(positive_mean), 6),
+                    "negative_mean": round(float(negative_mean), 6),
+                    "mean_delta_positive_minus_negative": round(float(mean_delta), 6),
+                    "absolute_mean_delta": round(abs(float(mean_delta)), 6),
+                }
+            )
+        class_feature_stats[feature] = {
+            "positive_count": len(positive_values),
+            "negative_count": len(negative_values),
+            "positive_mean": (round(float(positive_mean), 6) if positive_mean is not None else None),
+            "negative_mean": (round(float(negative_mean), 6) if negative_mean is not None else None),
+            "positive_stddev": (
+                round(float(_population_stddev(positive_values) or 0.0), 9) if len(positive_values) >= 2 else None
+            ),
+            "negative_stddev": (
+                round(float(_population_stddev(negative_values) or 0.0), 9) if len(negative_values) >= 2 else None
+            ),
+            "mean_delta_positive_minus_negative": (round(float(mean_delta), 6) if mean_delta is not None else None),
+        }
+    class_separation_rows.sort(
+        key=lambda item: (
+            -float(item.get("absolute_mean_delta") or 0.0),
+            str(item.get("feature") or ""),
+        )
+    )
+
     return {
         "numeric_feature_count": len(numeric_values),
         "features_with_variation_count": len(
@@ -1531,6 +1597,9 @@ def _compute_feature_variation_diagnostics(rows: list[dict[str, Any]]) -> dict[s
         "near_zero_variance_features": near_zero_variance_features[:100],
         "key_feature_stddev": key_feature_stddev,
         "key_feature_near_zero_variance": key_feature_near_zero_variance,
+        "class_counts": class_counts,
+        "class_key_feature_stats": class_feature_stats,
+        "class_key_feature_separation": class_separation_rows[:20],
         "feature_stats": per_feature[:300],
     }
 
