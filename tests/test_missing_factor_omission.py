@@ -164,6 +164,36 @@ def test_blended_score_compounds_high_hazard_with_high_near_structure_pressure()
     assert high_hazard_high_near > high_hazard_low_near + 3.0
 
 
+def test_blended_score_materially_changes_with_structure_vulnerability_at_fixed_hazard():
+    engine = RiskEngine(load_scoring_config())
+    low_structure_vulnerability = engine.compute_blended_wildfire_score(
+        site_hazard_score=62.0,
+        home_ignition_vulnerability_score=28.0,
+        insurance_readiness_score=62.0,
+    )
+    high_structure_vulnerability = engine.compute_blended_wildfire_score(
+        site_hazard_score=62.0,
+        home_ignition_vulnerability_score=74.0,
+        insurance_readiness_score=62.0,
+    )
+    assert high_structure_vulnerability > low_structure_vulnerability + 8.0
+
+
+def test_blended_score_penalizes_low_vulnerability_less_in_moderate_hazard_band():
+    engine = RiskEngine(load_scoring_config())
+    lower_vulnerability = engine.compute_blended_wildfire_score(
+        site_hazard_score=54.0,
+        home_ignition_vulnerability_score=38.0,
+        insurance_readiness_score=60.0,
+    )
+    moderate_vulnerability = engine.compute_blended_wildfire_score(
+        site_hazard_score=54.0,
+        home_ignition_vulnerability_score=48.0,
+        insurance_readiness_score=60.0,
+    )
+    assert moderate_vulnerability > lower_vulnerability + 2.0
+
+
 def test_blended_score_gives_credit_for_strong_readiness_in_low_hazard_conditions():
     engine = RiskEngine(load_scoring_config())
     strong_readiness = engine.compute_blended_wildfire_score(

@@ -1597,6 +1597,36 @@ def _build_score_evidence_ledger(
                     notes=["Weighted contribution of Home Ignition Vulnerability to blended wildfire score."],
                 )
             )
+        if site_hazard_score is not None and home_ignition_vulnerability_score is not None:
+            hazard_norm = max(0.0, min(1.0, float(site_hazard_score) / 100.0))
+            vulnerability_norm = max(0.0, min(1.0, float(home_ignition_vulnerability_score) / 100.0))
+            harmonic_core = (
+                (2.0 * hazard_norm * vulnerability_norm) / (hazard_norm + vulnerability_norm)
+                if (hazard_norm + vulnerability_norm) > 0.0
+                else 0.0
+            )
+            product_core = hazard_norm * vulnerability_norm
+            hazard_vulnerability_core = 100.0 * ((0.55 * harmonic_core) + (0.45 * product_core))
+            wildfire_entries.append(
+                ScoreEvidenceFactor(
+                    factor_key="hazard_vulnerability_interaction_core",
+                    display_name="Hazard-Structure Interaction Core",
+                    category="composite",
+                    raw_value=round(hazard_vulnerability_core, 2),
+                    normalized_value=round(hazard_vulnerability_core, 2),
+                    weight=0.42,
+                    contribution=round(hazard_vulnerability_core * 0.42, 2),
+                    direction="composes_score",
+                    evidence_status=_combine_evidence_status(
+                        [f.evidence_status for f in site_entries + home_entries]
+                    ),
+                    source_field="site_hazard_score+home_ignition_vulnerability_score",
+                    source_layer="derived_interaction",
+                    notes=[
+                        "Captures multiplicative overlap between landscape hazard and structure vulnerability."
+                    ],
+                )
+            )
         if readiness_score is not None and readiness_weight > 0:
             readiness_ratio = readiness_weight / denom
             readiness_risk_equivalent = max(0.0, min(100.0, 100.0 - float(readiness_score)))

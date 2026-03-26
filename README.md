@@ -880,7 +880,7 @@ Weighting is evidence-aware:
 - missing-factor submodels are omitted or downweighted instead of filled with broad numeric defaults
 - footprint/parcel gaps downweight structure-specific factors more aggressively
 - fallback-heavy runs surface both `fallback_dominance_ratio` and `fallback_weight_fraction`
-- blended wildfire risk applies a mild, explainable interaction term when hazard and vulnerability are jointly elevated
+- blended wildfire risk blends an additive core with an explicit hazard × structure-vulnerability interaction core
 - blended wildfire risk also applies a bounded contrast-expansion step to reduce mid-band score compression
 
 For diagnostics and QA, inspect:

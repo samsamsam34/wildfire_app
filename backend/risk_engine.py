@@ -1034,6 +1034,33 @@ class RiskEngine:
     def compute_home_ignition_vulnerability_score(self, risk: RiskComputation) -> float:
         base = self._group_score(risk, STRUCTURE_SUBMODELS)
 
+        # Keep structure vulnerability distinct from regional hazard by grounding
+        # the base in structure/near-structure submodels before ring penalties.
+        near_weights: dict[str, float] = {
+            "defensible_space_risk": 0.34,
+            "flame_contact_risk": 0.28,
+            "ember_exposure_risk": 0.18,
+            "fuel_proximity_risk": 0.12,
+            "vegetation_intensity_risk": 0.08,
+        }
+        near_num = 0.0
+        near_den = 0.0
+        for factor_key, factor_weight in near_weights.items():
+            factor_result = risk.submodel_scores.get(factor_key)
+            if factor_result is None:
+                continue
+            effective_weight = float((risk.weighted_contributions.get(factor_key) or {}).get("effective_weight") or 0.0)
+            if effective_weight <= 0.0:
+                continue
+            near_num += float(factor_result.score) * float(factor_weight)
+            near_den += float(factor_weight)
+        if near_den > 0.0:
+            near_structure_core = near_num / near_den
+            if base > 0.0:
+                base = (base * 0.66) + (near_structure_core * 0.34)
+            else:
+                base = near_structure_core
+
         def _to_float(value: object) -> float | None:
             try:
                 if value is None:
@@ -1184,6 +1211,17 @@ class RiskEngine:
             + readiness_risk_equivalent * max(0.0, readiness_weight)
         ) / denom
 
+        hazard_norm = max(0.0, min(1.0, float(site_hazard_score) / 100.0))
+        vulnerability_norm = max(0.0, min(1.0, float(home_ignition_vulnerability_score) / 100.0))
+        harmonic_core = (
+            (2.0 * hazard_norm * vulnerability_norm) / (hazard_norm + vulnerability_norm)
+            if (hazard_norm + vulnerability_norm) > 0.0
+            else 0.0
+        )
+        product_core = hazard_norm * vulnerability_norm
+        hazard_vulnerability_core = 100.0 * ((0.55 * harmonic_core) + (0.45 * product_core))
+        interaction_blended = (base_blended * 0.58) + (hazard_vulnerability_core * 0.42)
+
         near_structure_signal = float(home_ignition_vulnerability_score)
         vegetation_signal = float(home_ignition_vulnerability_score)
         slope_signal = float(site_hazard_score)
@@ -1274,8 +1312,14 @@ class RiskEngine:
                 )
                 hardening_dampen = min(hardening_dampen, 9.0)
 
+        low_vulnerability_dampen = 0.0
+        if home_ignition_vulnerability_score < 48.0:
+            vulnerability_gap = max(0.0, 48.0 - float(home_ignition_vulnerability_score))
+            hazard_gate = 1.0 if float(site_hazard_score) < 70.0 else 0.55
+            low_vulnerability_dampen = vulnerability_gap * 0.14 * hazard_gate * interaction_gate
+
         interaction_adjusted = (
-            base_blended
+            interaction_blended
             + high_risk_compound
             + hazard_near_compound
             + hazard_vegetation_compound
@@ -1285,6 +1329,7 @@ class RiskEngine:
             + readiness_drag
             - low_risk_credit
             - hardening_dampen
+            - low_vulnerability_dampen
         )
         contrast_adjusted = 50.0 + ((interaction_adjusted - 50.0) * 1.12)
         return round(max(0.0, min(100.0, contrast_adjusted)), 1)
@@ -1334,6 +1379,18 @@ class RiskEngine:
                 readiness_weight *= 0.60
             if risk.geometry_basis == "point" and risk.fallback_factor_count > max(1, risk.observed_factor_count):
                 readiness_weight *= 0.55
+            total_core = env_weight + struct_weight
+            if total_core > 0.0:
+                if risk.geometry_basis == "point":
+                    min_struct_share = 0.33
+                elif risk.geometry_basis == "parcel":
+                    min_struct_share = 0.37
+                else:
+                    min_struct_share = 0.42
+                current_struct_share = struct_weight / total_core
+                if current_struct_share < min_struct_share:
+                    target_struct_weight = (env_weight * min_struct_share) / max(1e-6, (1.0 - min_struct_share))
+                    struct_weight = max(struct_weight, target_struct_weight)
         if insurance_readiness_score is None:
             readiness_weight = 0.0
         return env_weight, struct_weight, max(0.0, readiness_weight)
