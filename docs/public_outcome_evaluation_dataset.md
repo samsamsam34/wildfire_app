@@ -209,6 +209,10 @@ Each joined row includes `evaluation.fallback_usage` for per-row auditing:
 - independent sample counts (`total_labeled_rows`, `unique_property_event_id_count`)
 - fallback-heavy fraction
 - structure and near-structure variation summaries
+- feature-set projection summary (`feature_set_projection_summary`) showing:
+  - `base_feature_keys` (configured minimal high-signal set)
+  - `active_feature_keys` (retained in this run)
+  - `deprecated_features` (removed for missing/near-zero variance)
 - minimal high-signal feature diagnostics (`high_signal_feature_diagnostics`) covering:
   - `ring_0_5_ft_vegetation_density`
   - `ring_5_30_ft_vegetation_density`
@@ -227,6 +231,7 @@ Row-level feature provenance is also exposed under:
 - `evaluation.feature_observation_summary.provenance_by_feature`
 - `evaluation.feature_observation_summary.high_signal_feature_provenance`
 with normalized provenance classes: `observed`, `proxy`, `inferred`, `missing`.
+Each row also carries `evaluation.feature_set_projection` with active/deprecated feature keys for the run.
 
 ## Graceful Degradation
 

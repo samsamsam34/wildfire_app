@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 from scripts.build_public_outcome_evaluation_dataset import (
+    MINIMAL_HIGH_SIGNAL_FEATURE_KEYS,
     _resolve_all_normalized_outcomes,
     build_public_outcome_evaluation_dataset,
 )
@@ -251,8 +252,8 @@ def test_builder_joins_rows_and_reports_join_quality(tmp_path: Path) -> None:
     assert int(class_counts.get("positive") or 0) >= 1
     assert int(class_counts.get("negative") or 0) >= 1
     class_stats = (join_quality.get("feature_variation_diagnostics") or {}).get("class_key_feature_stats") or {}
-    assert "burn_probability" in class_stats
-    assert "fuel_model" in class_stats
+    assert "ring_0_5_ft_vegetation_density" in class_stats
+    assert "structure_density" in class_stats
     class_sep_count = int(
         ((join_quality.get("feature_variation_diagnostics") or {}).get("class_features_with_separation_count") or 0)
     )
@@ -276,9 +277,13 @@ def test_builder_joins_rows_and_reports_join_quality(tmp_path: Path) -> None:
     assert "near_structure_vegetation_feature_variation" in dataset_quality
     assert "high_signal_feature_diagnostics" in dataset_quality
     high_signal = dataset_quality.get("high_signal_feature_diagnostics") or {}
-    assert int(high_signal.get("feature_count") or 0) >= 8
-    assert int(high_signal.get("non_zero_variance_feature_count") or 0) >= 8
+    assert int(high_signal.get("configured_feature_count") or 0) == len(MINIMAL_HIGH_SIGNAL_FEATURE_KEYS)
+    assert int(high_signal.get("feature_count") or 0) >= len(MINIMAL_HIGH_SIGNAL_FEATURE_KEYS)
+    assert int(high_signal.get("non_zero_variance_feature_count") or 0) >= len(MINIMAL_HIGH_SIGNAL_FEATURE_KEYS)
     assert int(high_signal.get("constant_or_missing_feature_count") or 0) == 0
+    projection = dataset_quality.get("feature_set_projection_summary") or {}
+    assert sorted(projection.get("active_feature_keys") or []) == sorted(MINIMAL_HIGH_SIGNAL_FEATURE_KEYS)
+    assert int(len(projection.get("deprecated_features") or [])) == 0
 
 
 def test_builder_join_quality_warnings_for_weak_spatial_matches(tmp_path: Path) -> None:
@@ -376,12 +381,11 @@ def test_builder_enriches_structure_and_near_structure_proxies(tmp_path: Path) -
     first = rows[0]
     raw = (((first.get("feature_snapshot") or {}).get("raw_feature_vector")) or {})
     observation = ((first.get("evaluation") or {}).get("feature_observation_summary") or {})
-    assert raw.get("structure_density") is not None
-    assert raw.get("distance_to_nearest_structure_ft") is not None
-    assert raw.get("ring_0_5_ft_vegetation_density") is not None
-    assert raw.get("ring_5_30_ft_vegetation_density") is not None
-    assert raw.get("near_structure_connectivity_index") is not None
-    assert raw.get("nearest_high_fuel_patch_distance_ft") is not None
+    assert set(raw.keys()).issubset(set(MINIMAL_HIGH_SIGNAL_FEATURE_KEYS))
+    union_keys = set()
+    for row in rows:
+        union_keys.update((((row.get("feature_snapshot") or {}).get("raw_feature_vector")) or {}).keys())
+    assert set(MINIMAL_HIGH_SIGNAL_FEATURE_KEYS).issubset(union_keys)
     assert isinstance(observation.get("inferred_fields"), list)
     assert isinstance(observation.get("provenance_by_feature"), dict)
     assert isinstance(observation.get("high_signal_feature_provenance"), dict)
@@ -463,19 +467,16 @@ def test_builder_uses_nested_property_context_as_observed_inputs(tmp_path: Path)
     source_by_feature = observation.get("source_by_feature") if isinstance(observation.get("source_by_feature"), dict) else {}
     provenance_by_feature = observation.get("provenance_by_feature") if isinstance(observation.get("provenance_by_feature"), dict) else {}
 
-    assert raw.get("nearby_structure_count_100_ft") == 4.0
-    assert raw.get("nearby_structure_count_300_ft") == 12.0
+    assert set(raw.keys()).issubset(set(MINIMAL_HIGH_SIGNAL_FEATURE_KEYS))
     assert raw.get("distance_to_nearest_structure_ft") == 88.0
     assert raw.get("ring_0_5_ft_vegetation_density") == 72.0
     assert raw.get("ring_5_30_ft_vegetation_density") == 63.0
-    assert raw.get("ring_30_100_ft_vegetation_density") == 52.0
-    assert raw.get("near_structure_vegetation_0_5_pct") == 71.5
-    assert raw.get("burn_probability") == 77.0
+    assert raw.get("slope") == 56.0
     assert source_by_feature.get("ring_0_5_ft_vegetation_density") == "observed_defensible_space_zone"
-    assert source_by_feature.get("nearby_structure_count_100_ft") == "observed_neighboring_structure_metrics"
-    assert source_by_feature.get("burn_probability") == "observed_feature_sampling_region_level"
+    assert source_by_feature.get("distance_to_nearest_structure_ft") == "observed_neighboring_structure_metrics"
+    assert source_by_feature.get("slope") == "observed_feature_sampling_region_level"
     assert provenance_by_feature.get("ring_0_5_ft_vegetation_density") == "observed"
-    assert provenance_by_feature.get("burn_probability") == "observed"
+    assert provenance_by_feature.get("slope") == "observed"
     assert isinstance(observation.get("fallback_fields"), list)
     assert int(observation.get("fallback_count") or 0) == 0
 

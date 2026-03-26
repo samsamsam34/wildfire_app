@@ -2615,6 +2615,176 @@ def _population_stddev(values: list[float]) -> float | None:
     return math.sqrt(variance)
 
 
+def _project_feature_observation_summary_to_keys(
+    summary: dict[str, Any],
+    *,
+    selected_keys: list[str],
+    raw_feature_vector: dict[str, Any],
+    transformed_feature_vector: dict[str, Any],
+    deprecated_features: list[dict[str, Any]],
+) -> dict[str, Any]:
+    source_by_feature = (
+        summary.get("source_by_feature")
+        if isinstance(summary.get("source_by_feature"), dict)
+        else {}
+    )
+    provenance_by_feature = (
+        summary.get("provenance_by_feature")
+        if isinstance(summary.get("provenance_by_feature"), dict)
+        else {}
+    )
+    projected_source_by_feature: dict[str, str] = {}
+    projected_provenance_by_feature: dict[str, str] = {}
+    for key in selected_keys:
+        source_token = str(source_by_feature.get(key) or "missing")
+        projected_source_by_feature[key] = source_token
+        projected_provenance_by_feature[key] = str(
+            provenance_by_feature.get(key) or _collapse_source_to_provenance(source_token)
+        )
+
+    observed_fields = sorted([key for key, token in projected_provenance_by_feature.items() if token == "observed"])
+    inferred_fields = sorted([key for key, token in projected_provenance_by_feature.items() if token == "inferred"])
+    proxy_fields = sorted([key for key, token in projected_provenance_by_feature.items() if token == "proxy"])
+    missing_fields = sorted([key for key, token in projected_provenance_by_feature.items() if token == "missing"])
+    fallback_fields = sorted(
+        [
+            key
+            for key, token in projected_source_by_feature.items()
+            if str(token).startswith("fallback")
+        ]
+    )
+
+    return {
+        "source_by_feature": projected_source_by_feature,
+        "provenance_by_feature": projected_provenance_by_feature,
+        "observed_fields": observed_fields,
+        "inferred_fields": inferred_fields + proxy_fields,
+        "fallback_fields": fallback_fields,
+        "missing_fields": missing_fields,
+        "observed_count": len(observed_fields),
+        "inferred_count": len(inferred_fields) + len(proxy_fields),
+        "fallback_count": len(fallback_fields),
+        "missing_count": len(missing_fields),
+        "selected_feature_keys": list(selected_keys),
+        "deprecated_high_signal_features": deprecated_features,
+        "high_signal_feature_provenance": {
+            key: {
+                "source": projected_source_by_feature.get(key) or "missing",
+                "provenance": projected_provenance_by_feature.get(key) or "missing",
+                "value": _coalesce_float(raw_feature_vector.get(key), transformed_feature_vector.get(key)),
+            }
+            for key in selected_keys
+        },
+    }
+
+
+def _apply_minimal_high_signal_feature_projection(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    if not rows:
+        return {
+            "base_feature_keys": list(MINIMAL_HIGH_SIGNAL_FEATURE_KEYS),
+            "active_feature_keys": [],
+            "deprecated_features": [],
+            "projection_applied": True,
+        }
+
+    base_keys = list(MINIMAL_HIGH_SIGNAL_FEATURE_KEYS)
+    values_by_feature: dict[str, list[float]] = {key: [] for key in base_keys}
+
+    for row in rows:
+        feature_snapshot = row.get("feature_snapshot") if isinstance(row.get("feature_snapshot"), dict) else {}
+        raw_vector = feature_snapshot.get("raw_feature_vector") if isinstance(feature_snapshot.get("raw_feature_vector"), dict) else {}
+        transformed_vector = (
+            feature_snapshot.get("transformed_feature_vector")
+            if isinstance(feature_snapshot.get("transformed_feature_vector"), dict)
+            else {}
+        )
+        projected_vector: dict[str, float] = {}
+        for key in base_keys:
+            value = _coalesce_float(raw_vector.get(key), transformed_vector.get(key))
+            if value is None:
+                continue
+            numeric = round(float(value), 4)
+            projected_vector[key] = numeric
+            values_by_feature[key].append(float(numeric))
+        feature_snapshot["raw_feature_vector"] = dict(sorted(projected_vector.items()))
+        feature_snapshot["transformed_feature_vector"] = dict(sorted(projected_vector.items()))
+        row["feature_snapshot"] = feature_snapshot
+
+    active_keys: list[str] = []
+    deprecated_features: list[dict[str, Any]] = []
+    for key in base_keys:
+        values = values_by_feature.get(key) or []
+        if len(values) >= 2:
+            stddev_value = _population_stddev(values) or 0.0
+            if float(stddev_value) > 1e-9:
+                active_keys.append(key)
+                continue
+            deprecated_features.append(
+                {
+                    "feature": key,
+                    "reason": "near_zero_variance",
+                    "count": len(values),
+                    "stddev": round(float(stddev_value), 9),
+                }
+            )
+            continue
+        if len(values) == 1:
+            active_keys.append(key)
+            continue
+        deprecated_features.append(
+            {
+                "feature": key,
+                "reason": "missing",
+                "count": 0,
+                "stddev": None,
+            }
+        )
+
+    active_set = set(active_keys)
+    deprecated_keys = {str(item.get("feature")) for item in deprecated_features}
+    for row in rows:
+        feature_snapshot = row.get("feature_snapshot") if isinstance(row.get("feature_snapshot"), dict) else {}
+        raw_vector = feature_snapshot.get("raw_feature_vector") if isinstance(feature_snapshot.get("raw_feature_vector"), dict) else {}
+        transformed_vector = (
+            feature_snapshot.get("transformed_feature_vector")
+            if isinstance(feature_snapshot.get("transformed_feature_vector"), dict)
+            else {}
+        )
+        projected_raw = {key: value for key, value in raw_vector.items() if key in active_set}
+        projected_transformed = {key: value for key, value in transformed_vector.items() if key in active_set}
+        feature_snapshot["raw_feature_vector"] = dict(sorted(projected_raw.items()))
+        feature_snapshot["transformed_feature_vector"] = dict(sorted(projected_transformed.items()))
+        row["feature_snapshot"] = feature_snapshot
+
+        evaluation_payload = row.get("evaluation") if isinstance(row.get("evaluation"), dict) else {}
+        observation_summary = (
+            evaluation_payload.get("feature_observation_summary")
+            if isinstance(evaluation_payload.get("feature_observation_summary"), dict)
+            else {}
+        )
+        evaluation_payload["feature_observation_summary"] = _project_feature_observation_summary_to_keys(
+            observation_summary,
+            selected_keys=active_keys,
+            raw_feature_vector=projected_raw,
+            transformed_feature_vector=projected_transformed,
+            deprecated_features=deprecated_features,
+        )
+        evaluation_payload["feature_set_projection"] = {
+            "base_feature_keys": base_keys,
+            "active_feature_keys": active_keys,
+            "deprecated_feature_keys": sorted(deprecated_keys),
+            "deprecated_features": deprecated_features,
+        }
+        row["evaluation"] = evaluation_payload
+
+    return {
+        "base_feature_keys": base_keys,
+        "active_feature_keys": active_keys,
+        "deprecated_features": deprecated_features,
+        "projection_applied": True,
+    }
+
+
 def _compute_feature_variation_diagnostics(rows: list[dict[str, Any]]) -> dict[str, Any]:
     numeric_values: dict[str, list[float]] = {}
     class_numeric_values: dict[str, dict[str, list[float]]] = {"positive": {}, "negative": {}}
@@ -2661,25 +2831,7 @@ def _compute_feature_variation_diagnostics(rows: list[dict[str, Any]]) -> dict[s
         if len(values) >= 2 and stddev is not None and float(stddev) <= 1e-9:
             near_zero_variance_features.append(feature)
 
-    key_features = [
-        "burn_probability",
-        "wildfire_hazard",
-        "slope",
-        "fuel_model",
-        "canopy_cover",
-        "ring_0_5_ft_vegetation_density",
-        "ring_5_30_ft_vegetation_density",
-        "near_structure_connectivity_index",
-        "ring_30_100_ft_vegetation_density",
-        "structure_density",
-        "distance_to_nearest_structure_ft",
-        "clustering_index",
-        "building_footprint_area_proxy_sqft",
-        "mean_nearby_footprint_area_sqft",
-        "lot_size_proxy_sqft",
-        "parcel_distance_ft",
-        "building_age_material_proxy_risk",
-    ]
+    key_features = list(MINIMAL_HIGH_SIGNAL_FEATURE_KEYS)
     key_feature_stddev: dict[str, float | None] = {}
     key_feature_near_zero_variance: list[str] = []
     for feature in key_features:
@@ -2692,32 +2844,7 @@ def _compute_feature_variation_diagnostics(rows: list[dict[str, Any]]) -> dict[s
         if stddev is not None and float(stddev) <= 1e-9:
             key_feature_near_zero_variance.append(feature)
 
-    class_key_features = [
-        "near_structure_vegetation_0_5_pct",
-        "near_structure_connectivity_index",
-        "ring_0_5_ft_vegetation_density",
-        "ring_5_30_ft_vegetation_density",
-        "ring_0_5_ft_vegetation_density_proxy_blend",
-        "ring_5_30_ft_vegetation_density_proxy_blend",
-        "near_structure_connectivity_index_proxy_blend",
-        "nearest_high_fuel_patch_distance_ft_proxy_blend",
-        "structure_density",
-        "distance_to_nearest_structure_ft",
-        "clustering_index",
-        "building_footprint_area_proxy_sqft",
-        "mean_nearby_footprint_area_sqft",
-        "lot_size_proxy_sqft",
-        "parcel_distance_ft",
-        "building_age_proxy_year",
-        "building_age_material_proxy_risk",
-        "slope",
-        "slope_index",
-        "fuel_model",
-        "fuel_index",
-        "wildland_distance_index",
-        "burn_probability",
-        "burn_probability_index",
-    ]
+    class_key_features = list(MINIMAL_HIGH_SIGNAL_FEATURE_KEYS)
     class_feature_stats: dict[str, Any] = {}
     class_separation_rows: list[dict[str, Any]] = []
     for feature in class_key_features:
@@ -2805,7 +2932,12 @@ def _compute_feature_variation_diagnostics(rows: list[dict[str, Any]]) -> dict[s
     near_structure_vegetation_variation = _feature_group_summary(NEAR_STRUCTURE_VEGETATION_FEATURE_KEYS)
     high_signal_rows: list[dict[str, Any]] = []
     non_zero_high_signal = 0
-    for feature_name in MINIMAL_HIGH_SIGNAL_FEATURE_KEYS:
+    active_high_signal_keys = [
+        feature_name
+        for feature_name in MINIMAL_HIGH_SIGNAL_FEATURE_KEYS
+        if int(feature_non_null_count.get(feature_name) or 0) > 0
+    ]
+    for feature_name in active_high_signal_keys:
         values = numeric_values.get(feature_name) or []
         if values:
             min_value = round(min(values), 6)
@@ -2826,26 +2958,20 @@ def _compute_feature_variation_diagnostics(rows: list[dict[str, Any]]) -> dict[s
                     "non_zero_variance": has_variation,
                 }
             )
-        else:
-            high_signal_rows.append(
-                {
-                    "feature": feature_name,
-                    "count": 0,
-                    "min": None,
-                    "max": None,
-                    "mean": None,
-                    "stddev": None,
-                    "non_zero_variance": False,
-                }
-            )
     high_signal_feature_diagnostics = {
-        "feature_count": len(MINIMAL_HIGH_SIGNAL_FEATURE_KEYS),
+        "configured_feature_count": len(MINIMAL_HIGH_SIGNAL_FEATURE_KEYS),
+        "feature_count": len(active_high_signal_keys),
         "non_zero_variance_feature_count": int(non_zero_high_signal),
-        "constant_or_missing_feature_count": int(len(MINIMAL_HIGH_SIGNAL_FEATURE_KEYS) - non_zero_high_signal),
+        "constant_or_missing_feature_count": int(len(active_high_signal_keys) - non_zero_high_signal),
         "constant_or_missing_features": [
             str(row.get("feature"))
             for row in high_signal_rows
             if not bool(row.get("non_zero_variance"))
+        ],
+        "inactive_or_deprecated_features": [
+            feature_name
+            for feature_name in MINIMAL_HIGH_SIGNAL_FEATURE_KEYS
+            if feature_name not in active_high_signal_keys
         ],
         "features": high_signal_rows,
     }
@@ -3309,6 +3435,7 @@ def _build_markdown_summary(
         f"- Join tier examples: `{quality.get('join_confidence_tier_examples')}`",
         f"- Duplicate rows removed by join tier: `{quality.get('duplicate_rows_removed_by_join_confidence_tier')}`",
         f"- Duplicate rows removed by join method: `{quality.get('duplicate_rows_removed_by_join_method')}`",
+        f"- Feature-set projection summary: `{quality.get('feature_set_projection_summary')}`",
         f"- Feature variation diagnostics: `{quality.get('feature_variation_diagnostics')}`",
         f"- Diversity spread diagnostics: `{quality.get('diversity_spread')}`",
         "",
@@ -3444,6 +3571,11 @@ def _build_dataset_quality_report(*, quality: dict[str, Any]) -> dict[str, Any]:
             if isinstance(variation.get("high_signal_feature_diagnostics"), dict)
             else {}
         ),
+        "feature_set_projection_summary": (
+            quality.get("feature_set_projection_summary")
+            if isinstance(quality.get("feature_set_projection_summary"), dict)
+            else {}
+        ),
         "top_discriminative_features": top_discriminative_features,
     }
 
@@ -3471,6 +3603,7 @@ def _build_dataset_quality_markdown(
         "",
         "## Feature Variation",
         f"- Summary: `{dataset_quality.get('feature_variation_summary')}`",
+        f"- Feature-set projection summary: `{dataset_quality.get('feature_set_projection_summary')}`",
         f"- High-signal feature diagnostics: `{dataset_quality.get('high_signal_feature_diagnostics')}`",
         f"- Structure feature variation: `{dataset_quality.get('structure_feature_variation')}`",
         f"- Near-structure vegetation variation: `{dataset_quality.get('near_structure_vegetation_feature_variation')}`",
@@ -3515,6 +3648,7 @@ def _build_pipeline_audit_markdown(
         f"- Distance histogram: `{quality.get('match_distance_histogram_m')}`",
         f"- High-confidence diagnostics: `{quality.get('high_confidence_threshold_diagnostics')}`",
         f"- Non-high reason counts: `{quality.get('join_confidence_non_high_reason_counts')}`",
+        f"- Feature-set projection summary: `{quality.get('feature_set_projection_summary')}`",
         f"- Feature variation diagnostics: `{quality.get('feature_variation_diagnostics')}`",
         "",
         "## Filtering",
@@ -3641,6 +3775,20 @@ def _build_join_quality_warnings(*, quality: dict[str, Any]) -> list[str]:
         warnings.append(
             f"Minimal high-signal features without variance: {constant_high_signal}."
         )
+    feature_projection = (
+        quality.get("feature_set_projection_summary")
+        if isinstance(quality.get("feature_set_projection_summary"), dict)
+        else {}
+    )
+    deprecated_projection_features = (
+        feature_projection.get("deprecated_features")
+        if isinstance(feature_projection.get("deprecated_features"), list)
+        else []
+    )
+    if deprecated_projection_features:
+        warnings.append(
+            f"Feature-set projection deprecated features for this run: {deprecated_projection_features}."
+        )
     class_counts = (
         feature_variation.get("class_counts")
         if isinstance(feature_variation.get("class_counts"), dict)
@@ -3733,6 +3881,7 @@ def _build_join_quality_report_markdown(
         f"- Confidence-tier counts: `{tier_counts}`",
         f"- Non-high confidence reasons: `{quality.get('join_confidence_non_high_reason_counts')}`",
         f"- High-confidence threshold diagnostics: `{quality.get('high_confidence_threshold_diagnostics')}`",
+        f"- Feature-set projection summary: `{quality.get('feature_set_projection_summary')}`",
         f"- Feature variation diagnostics: `{quality.get('feature_variation_diagnostics')}`",
         "",
         "## Distance Analysis",
@@ -4276,6 +4425,7 @@ def build_public_outcome_evaluation_dataset(
     joined_rows, dedupe_removed_rows, property_event_dedupe_stats = _dedupe_joined_rows_by_property_event_id(
         joined_rows_pre_property_event_dedupe
     )
+    feature_set_projection_summary = _apply_minimal_high_signal_feature_projection(joined_rows)
     excluded_rows = list(selected_pass["excluded_rows"]) + dedupe_removed_rows
     leakage_warnings = list(selected_pass["leakage_warnings"])
     join_method_counts: dict[str, int] = {}
@@ -4568,6 +4718,7 @@ def build_public_outcome_evaluation_dataset(
             "matched_outcomes_by_mode": dict(sorted(outcome_coordinate_modes.items())),
         },
         "feature_variation_diagnostics": feature_variation_diagnostics,
+        "feature_set_projection_summary": feature_set_projection_summary,
         "diversity_spread": diversity_spread,
         "by_event_join_counts": dict(sorted(by_event_counts.items())),
         "by_label_join_counts": dict(sorted(by_label_counts.items())),
