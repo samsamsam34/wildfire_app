@@ -199,7 +199,7 @@
         }
       },
       "expected": {
-        "risk_band": "high",
+        "risk_band": "severe",
         "assessment_status_in": ["fully_scored", "partially_scored"]
       },
       "notes": "Used with mitigation_after to verify directional improvements."
@@ -237,7 +237,7 @@
         }
       },
       "expected": {
-        "risk_band": "moderate",
+        "risk_band": "low",
         "assessment_status_in": ["fully_scored", "partially_scored"]
       },
       "notes": "Mitigation improvements should reduce vulnerability/risk and improve readiness."
