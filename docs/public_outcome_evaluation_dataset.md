@@ -133,6 +133,8 @@ Artifacts:
 - join confidence tier counts
 - match tier counts
 - row confidence tier counts
+- fallback usage summary (`high_evidence` / `mixed_evidence` / `fallback_heavy`)
+- fallback-heavy reason counts and fallback-weight summary stats
 - join confidence score stats (min/mean/max)
 - join confidence distance stats by tier
 - join confidence examples by tier
@@ -154,6 +156,12 @@ Artifacts:
 - excluded rows and reasons
 - leakage warnings
 - score-backfill diagnostics (attempted/backfilled/remaining-missing)
+
+Each joined row includes `evaluation.fallback_usage` for per-row auditing:
+- factor counts (observed/inferred/fallback/missing)
+- coverage fallback/failed counts
+- fallback weight fraction and ratios
+- classification + reason codes used to classify `fallback_heavy`
 
 `join_quality_report.md` is a concise operator-facing summary with:
 - total outcomes, matched rows, and match rate

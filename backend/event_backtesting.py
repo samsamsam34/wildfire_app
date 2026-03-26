@@ -752,10 +752,27 @@ def _evidence_group(record: dict[str, Any]) -> str:
     inferred = int(evidence.get("inferred_factor_count") or 0)
     missing = int(evidence.get("missing_factor_count") or 0)
     fallback = int(evidence.get("fallback_factor_count") or 0)
+    fallback_weight_fraction = float(evidence.get("fallback_weight_fraction") or 0.0)
     failed_layers = int(coverage.get("failed_count") or 0)
-    if failed_layers > 0 or fallback > observed or (missing + fallback) >= max(2, observed):
+    coverage_fallback_count = int(coverage.get("fallback_count") or 0)
+    total = max(1, observed + inferred + missing + fallback)
+    fallback_ratio = float(fallback) / float(total)
+    missing_ratio = float(missing) / float(total)
+    if (
+        failed_layers > 0
+        or fallback_weight_fraction >= 0.65
+        or (fallback >= 2 and fallback_ratio >= 0.60)
+        or (coverage_fallback_count >= 2 and fallback_weight_fraction >= 0.45)
+        or (missing >= 3 and missing_ratio >= 0.50)
+    ):
         return "fallback_heavy"
-    if fallback == 0 and missing <= 1 and observed >= max(3, inferred + missing):
+    if (
+        fallback == 0
+        and missing <= 1
+        and failed_layers == 0
+        and fallback_weight_fraction < 0.35
+        and observed >= max(3, inferred + 1)
+    ):
         return "high_evidence"
     return "mixed_evidence"
 

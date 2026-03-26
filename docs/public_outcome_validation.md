@@ -229,6 +229,8 @@ Rows below metric usability thresholds are retained (unless `--no-retain-unusabl
 - `row_usable_for_metrics`
 - `exclusion_reasons`
 
+`fallback_heavy` is intentionally thresholded. A single fallback signal (for example one optional layer fallback) does not automatically force fallback-heavy classification; rows are classified as fallback-heavy when fallback dominance is material (high fallback-weight share, repeated layer fallback, high missing/fallback factor ratios, or explicit low/preliminary evidence tier).
+
 ## Run-to-run Governance
 
 Each validation `manifest.json` now includes:

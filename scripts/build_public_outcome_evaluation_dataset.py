@@ -23,6 +23,11 @@ DEFAULT_HIGH_CONFIDENCE_DISTANCE_M = 30.0
 HIGH_CONFIDENCE_DISTANCE_NEAR_MISS_MARGIN_M = 10.0
 HIGH_CONFIDENCE_SCORE_THRESHOLD = 0.9
 HIGH_CONFIDENCE_SCORE_NEAR_MISS_MARGIN = 0.05
+FALLBACK_HEAVY_WEIGHT_THRESHOLD = 0.65
+FALLBACK_HEAVY_ELEVATED_WEIGHT_THRESHOLD = 0.45
+FALLBACK_HEAVY_FACTOR_RATIO_THRESHOLD = 0.60
+FALLBACK_HEAVY_MISSING_RATIO_THRESHOLD = 0.50
+FALLBACK_HEAVY_COVERAGE_FALLBACK_COUNT_THRESHOLD = 2
 LEAKAGE_TOKENS = (
     "outcome",
     "damage",
@@ -831,6 +836,93 @@ def _derive_row_confidence_tier(
     if model_tier in {"low", "preliminary"} or evidence_tier in {"low", "preliminary"}:
         return "low-confidence"
     return "medium-confidence"
+
+
+def _derive_fallback_usage(
+    *,
+    evidence_summary: dict[str, Any] | None,
+    coverage_summary: dict[str, Any] | None,
+    evidence_tier: str,
+) -> dict[str, Any]:
+    evidence_summary = evidence_summary if isinstance(evidence_summary, dict) else {}
+    coverage_summary = coverage_summary if isinstance(coverage_summary, dict) else {}
+
+    observed_factor_count = int(_safe_float(evidence_summary.get("observed_factor_count")) or 0)
+    inferred_factor_count = int(_safe_float(evidence_summary.get("inferred_factor_count")) or 0)
+    fallback_factor_count = int(_safe_float(evidence_summary.get("fallback_factor_count")) or 0)
+    missing_factor_count = int(_safe_float(evidence_summary.get("missing_factor_count")) or 0)
+    coverage_failed_count = int(_safe_float(coverage_summary.get("failed_count")) or 0)
+    coverage_fallback_count = int(_safe_float(coverage_summary.get("fallback_count")) or 0)
+    fallback_weight_fraction = float(_safe_float(evidence_summary.get("fallback_weight_fraction")) or 0.0)
+
+    total_factor_count = max(
+        1,
+        observed_factor_count + inferred_factor_count + fallback_factor_count + missing_factor_count,
+    )
+    fallback_factor_ratio = float(fallback_factor_count) / float(total_factor_count)
+    missing_factor_ratio = float(missing_factor_count) / float(total_factor_count)
+    evidence_tier_norm = str(evidence_tier or "").strip().lower()
+
+    fallback_heavy_reasons: list[str] = []
+    if evidence_tier_norm in {"low", "preliminary", "fallback_heavy"}:
+        fallback_heavy_reasons.append("low_evidence_tier")
+    if coverage_failed_count > 0:
+        fallback_heavy_reasons.append("coverage_failed")
+    if fallback_weight_fraction >= FALLBACK_HEAVY_WEIGHT_THRESHOLD:
+        fallback_heavy_reasons.append("high_fallback_weight_fraction")
+    if (
+        fallback_factor_count >= 2
+        and fallback_factor_ratio >= FALLBACK_HEAVY_FACTOR_RATIO_THRESHOLD
+    ):
+        fallback_heavy_reasons.append("high_fallback_factor_ratio")
+    if (
+        coverage_fallback_count >= FALLBACK_HEAVY_COVERAGE_FALLBACK_COUNT_THRESHOLD
+        and fallback_weight_fraction >= FALLBACK_HEAVY_ELEVATED_WEIGHT_THRESHOLD
+    ):
+        fallback_heavy_reasons.append("multi_layer_fallback_with_elevated_weight")
+    if (
+        missing_factor_count >= 3
+        and missing_factor_ratio >= FALLBACK_HEAVY_MISSING_RATIO_THRESHOLD
+    ):
+        fallback_heavy_reasons.append("high_missing_factor_ratio")
+
+    fallback_heavy = bool(fallback_heavy_reasons)
+    if fallback_heavy:
+        classification = "fallback_heavy"
+    elif (
+        (
+            fallback_factor_count == 0
+            and missing_factor_count <= 1
+            and coverage_failed_count == 0
+            and fallback_weight_fraction < 0.35
+            and observed_factor_count >= max(3, inferred_factor_count + 1)
+        )
+        or (
+            evidence_tier_norm == "high"
+            and fallback_factor_count <= 1
+            and missing_factor_count <= 1
+            and coverage_failed_count == 0
+            and fallback_weight_fraction < FALLBACK_HEAVY_ELEVATED_WEIGHT_THRESHOLD
+        )
+    ):
+        classification = "high_evidence"
+    else:
+        classification = "mixed_evidence"
+
+    return {
+        "classification": classification,
+        "fallback_heavy": fallback_heavy,
+        "fallback_heavy_reasons": sorted(set(fallback_heavy_reasons)),
+        "observed_factor_count": observed_factor_count,
+        "inferred_factor_count": inferred_factor_count,
+        "fallback_factor_count": fallback_factor_count,
+        "missing_factor_count": missing_factor_count,
+        "coverage_failed_count": coverage_failed_count,
+        "coverage_fallback_count": coverage_fallback_count,
+        "fallback_weight_fraction": round(fallback_weight_fraction, 4),
+        "fallback_factor_ratio": round(fallback_factor_ratio, 4),
+        "missing_factor_ratio": round(missing_factor_ratio, 4),
+    }
 
 
 def _detect_leakage_flags(feature_row: dict[str, Any], event_date: Any) -> list[str]:
@@ -1887,6 +1979,7 @@ def _build_markdown_summary(
         f"- Join confidence tier counts: `{quality.get('join_confidence_tier_counts')}`",
         f"- Match tier counts: `{quality.get('match_tier_counts')}`",
         f"- Row confidence tier counts: `{quality.get('row_confidence_tier_counts')}`",
+        f"- Fallback usage summary: `{quality.get('fallback_usage_summary')}`",
         f"- Join confidence score stats: `{quality.get('join_confidence_score_stats')}`",
         f"- Join confidence distance stats by tier: `{quality.get('join_confidence_tier_distance_stats')}`",
         f"- Retention fallback: `{quality.get('retention_fallback')}`",
@@ -2444,16 +2537,13 @@ def build_public_outcome_evaluation_dataset(
                     if value is None
                 ]
             )
-            fallback_count = int(_safe_float((coverage_summary or {}).get("fallback_count")) or 0)
-            failed_count = int(_safe_float((coverage_summary or {}).get("failed_count")) or 0)
             evidence_tier = str((evidence_summary or {}).get("evidence_tier") or "").strip().lower()
-            fallback_weight_fraction = _safe_float((evidence_summary or {}).get("fallback_weight_fraction"))
-            fallback_heavy = (
-                evidence_tier == "fallback_heavy"
-                or fallback_count > 0
-                or failed_count > 0
-                or (fallback_weight_fraction is not None and float(fallback_weight_fraction) >= 0.5)
+            fallback_usage = _derive_fallback_usage(
+                evidence_summary=evidence_summary,
+                coverage_summary=coverage_summary,
+                evidence_tier=evidence_tier,
             )
+            fallback_heavy = bool(fallback_usage.get("fallback_heavy"))
             soft_flags: list[str] = []
             if tier == "low":
                 soft_flags.append("low_confidence_join")
@@ -2465,6 +2555,10 @@ def build_public_outcome_evaluation_dataset(
                 soft_flags.append("retention_fallback_mode")
             for flag in soft_flags:
                 soft_flag_counts_pass[flag] = soft_flag_counts_pass.get(flag, 0) + 1
+            if fallback_heavy:
+                caveat_flags.append("fallback_heavy_evidence")
+            elif float(fallback_usage.get("fallback_weight_fraction") or 0.0) >= FALLBACK_HEAVY_ELEVATED_WEIGHT_THRESHOLD:
+                caveat_flags.append("elevated_fallback_usage")
             row_confidence_tier = _derive_row_confidence_tier(
                 join_confidence_tier=str(join_meta.get("join_confidence_tier") or "low"),
                 model_confidence_tier=str(confidence_payload.get("confidence_tier") or feature.payload.get("confidence_tier") or "unknown"),
@@ -2565,6 +2659,7 @@ def build_public_outcome_evaluation_dataset(
                     "soft_filter_flags": soft_flags,
                     "missing_feature_fields": missing_feature_fields,
                     "fallback_heavy": bool(fallback_heavy),
+                    "fallback_usage": fallback_usage,
                 },
                 "provenance": {
                     "model_governance": (
@@ -2694,6 +2789,11 @@ def build_public_outcome_evaluation_dataset(
     by_label_counts: dict[str, int] = {}
     unmatched_feature_rows_by_event_counts = dict(selected_pass["unmatched_feature_rows_by_event_counts"])
     low_confidence_join_count = 0
+    fallback_usage_classification_counts: dict[str, int] = {}
+    fallback_usage_reason_counts: dict[str, int] = {}
+    fallback_weight_values: list[float] = []
+    rows_with_any_fallback_inputs = 0
+    rows_with_elevated_fallback_weight = 0
     for row in joined_rows:
         join_meta = row.get("join_metadata") if isinstance(row.get("join_metadata"), dict) else {}
         method = str(join_meta.get("join_method") or "unknown")
@@ -2736,6 +2836,22 @@ def build_public_outcome_evaluation_dataset(
             )
         for flag in ((row.get("evaluation") or {}).get("soft_filter_flags") or []):
             soft_flag_counts[str(flag)] = soft_flag_counts.get(str(flag), 0) + 1
+        fallback_usage = ((row.get("evaluation") or {}).get("fallback_usage"))
+        fallback_usage = fallback_usage if isinstance(fallback_usage, dict) else {}
+        fallback_class = str(fallback_usage.get("classification") or "unknown")
+        fallback_usage_classification_counts[fallback_class] = fallback_usage_classification_counts.get(fallback_class, 0) + 1
+        fallback_weight = _safe_float(fallback_usage.get("fallback_weight_fraction"))
+        if fallback_weight is not None:
+            fallback_weight_values.append(float(fallback_weight))
+            if float(fallback_weight) >= FALLBACK_HEAVY_ELEVATED_WEIGHT_THRESHOLD:
+                rows_with_elevated_fallback_weight += 1
+        fallback_factor_count = int(_safe_float(fallback_usage.get("fallback_factor_count")) or 0)
+        coverage_fallback_count = int(_safe_float(fallback_usage.get("coverage_fallback_count")) or 0)
+        if fallback_factor_count > 0 or coverage_fallback_count > 0:
+            rows_with_any_fallback_inputs += 1
+        for reason in (fallback_usage.get("fallback_heavy_reasons") if isinstance(fallback_usage.get("fallback_heavy_reasons"), list) else []):
+            token = str(reason)
+            fallback_usage_reason_counts[token] = fallback_usage_reason_counts.get(token, 0) + 1
         event_key = str((row.get("event") or {}).get("event_id") or "unknown_event")
         by_event_counts[event_key] = by_event_counts.get(event_key, 0) + 1
         label_key = str((row.get("outcome") or {}).get("damage_label") or "unknown")
@@ -2812,6 +2928,17 @@ def build_public_outcome_evaluation_dataset(
         for row in joined_rows
     ]
     confidence_scores = [value for value in confidence_scores if value is not None]
+    fallback_weight_values_sorted = sorted(fallback_weight_values)
+    fallback_weight_median = None
+    if fallback_weight_values_sorted:
+        midpoint = len(fallback_weight_values_sorted) // 2
+        if len(fallback_weight_values_sorted) % 2 == 1:
+            fallback_weight_median = fallback_weight_values_sorted[midpoint]
+        else:
+            fallback_weight_median = (
+                fallback_weight_values_sorted[midpoint - 1]
+                + fallback_weight_values_sorted[midpoint]
+            ) / 2.0
     row_confidence_tiers: dict[str, int] = {}
     for row in joined_rows:
         tier = str(((row.get("evaluation") or {}).get("row_confidence_tier")) or "unknown")
@@ -2889,6 +3016,35 @@ def build_public_outcome_evaluation_dataset(
         "join_confidence_tier_examples": dict(sorted(join_tier_examples.items())),
         "match_tier_counts": dict(sorted(match_tier_counts.items())),
         "row_confidence_tier_counts": dict(sorted(row_confidence_tiers.items())),
+        "fallback_usage_summary": {
+            "classification_counts": dict(sorted(fallback_usage_classification_counts.items())),
+            "fallback_heavy_count": int(fallback_usage_classification_counts.get("fallback_heavy") or 0),
+            "fallback_heavy_fraction": (
+                round(float(fallback_usage_classification_counts.get("fallback_heavy") or 0) / float(len(joined_rows)), 4)
+                if joined_rows
+                else 0.0
+            ),
+            "rows_with_any_fallback_inputs": int(rows_with_any_fallback_inputs),
+            "rows_with_elevated_fallback_weight": int(rows_with_elevated_fallback_weight),
+            "mean_fallback_weight_fraction": (
+                round(sum(fallback_weight_values) / float(len(fallback_weight_values)), 4)
+                if fallback_weight_values
+                else None
+            ),
+            "median_fallback_weight_fraction": (
+                round(float(fallback_weight_median), 4)
+                if fallback_weight_median is not None
+                else None
+            ),
+            "fallback_heavy_reason_counts": dict(sorted(fallback_usage_reason_counts.items())),
+            "thresholds": {
+                "fallback_heavy_weight_threshold": FALLBACK_HEAVY_WEIGHT_THRESHOLD,
+                "fallback_heavy_elevated_weight_threshold": FALLBACK_HEAVY_ELEVATED_WEIGHT_THRESHOLD,
+                "fallback_heavy_factor_ratio_threshold": FALLBACK_HEAVY_FACTOR_RATIO_THRESHOLD,
+                "fallback_heavy_missing_ratio_threshold": FALLBACK_HEAVY_MISSING_RATIO_THRESHOLD,
+                "fallback_heavy_coverage_fallback_count_threshold": FALLBACK_HEAVY_COVERAGE_FALLBACK_COUNT_THRESHOLD,
+            },
+        },
         "join_confidence_score_stats": {
             "mean": (round(sum(confidence_scores) / float(len(confidence_scores)), 4) if confidence_scores else None),
             "min": (round(min(confidence_scores), 4) if confidence_scores else None),
@@ -3566,6 +3722,10 @@ def main() -> int:
     print(
         "[public-eval-ds] Feature variation: "
         f"{join_report.get('feature_variation_diagnostics')}"
+    )
+    print(
+        "[public-eval-ds] Fallback usage: "
+        f"{join_report.get('fallback_usage_summary')}"
     )
     print(
         "[public-eval-ds] Distance diagnostics: "

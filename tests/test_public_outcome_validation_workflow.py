@@ -157,6 +157,9 @@ def test_evaluate_public_outcome_dataset_reports_required_metrics(tmp_path: Path
     assert "data_sufficiency_indicator" in report
     assert report["data_sufficiency_indicator"]["total_dataset"]["tier"] == "insufficient"
     assert report["data_sufficiency_indicator"]["high_confidence_subset"]["tier"] == "insufficient"
+    fallback_diagnostics = report.get("fallback_diagnostics") if isinstance(report.get("fallback_diagnostics"), dict) else {}
+    assert 0.0 <= float(fallback_diagnostics.get("fallback_heavy_fraction") or 0.0) < 1.0
+    assert "rows_with_elevated_fallback_weight" in fallback_diagnostics
     assert "narrative_summary" in report
     assert "proxy_validation" in report
     assert "synthetic_validation" in report

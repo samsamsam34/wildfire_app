@@ -195,6 +195,9 @@ def test_builder_joins_rows_and_reports_join_quality(tmp_path: Path) -> None:
     assert join_quality["feature_rows_by_event_counts"]
     assert join_quality["join_method_counts"]
     assert join_quality["join_confidence_tier_counts"]
+    assert "fallback_usage_summary" in join_quality
+    fallback_usage_summary = join_quality.get("fallback_usage_summary") if isinstance(join_quality.get("fallback_usage_summary"), dict) else {}
+    assert "classification_counts" in fallback_usage_summary
     assert "join_quality_warnings" in join_quality
     assert join_quality["by_event_join_counts"]["evt-a"] == 2
     assert join_quality["by_event_join_counts"]["evt-b"] == 1
@@ -299,10 +302,64 @@ def test_join_confidence_and_leakage_flags_are_exposed(tmp_path: Path) -> None:
     assert all((row.get("evaluation") or {}).get("row_confidence_tier") in {"high-confidence", "medium-confidence", "low-confidence"} for row in rows)
     assert all(isinstance((row.get("evaluation") or {}).get("soft_filter_flags"), list) for row in rows)
     assert any("missing_features" in ((row.get("evaluation") or {}).get("soft_filter_flags") or []) for row in rows)
+    assert all(isinstance(((row.get("evaluation") or {}).get("fallback_usage") or {}), dict) for row in rows)
     # second row includes leakage token in raw feature vector key.
     leaked = [row for row in rows if row["feature"]["record_id"] == "f2"][0]
     assert "potential_outcome_leakage_token_in_raw_feature_vector" in leaked["leakage_flags"]
     assert (leaked.get("evaluation") or {}).get("row_confidence_tier") == "high-confidence"
+
+
+def test_single_fallback_signal_is_not_auto_classified_fallback_heavy(tmp_path: Path) -> None:
+    outcomes = tmp_path / "normalized_outcomes.json"
+    features = tmp_path / "feature_artifact.json"
+    _write_outcomes(outcomes)
+    features.write_text(
+        json.dumps(
+            {
+                "records": [
+                    {
+                        "event_id": "evt-a",
+                        "event_name": "Event A",
+                        "event_date": "2021-08-01",
+                        "record_id": "f1",
+                        "source_record_id": "SRC-001",
+                        "latitude": 39.1001,
+                        "longitude": -120.1001,
+                        "scores": {"wildfire_risk_score": 61.0},
+                        "confidence": {"confidence_tier": "moderate", "confidence_score": 58.0},
+                        "evidence_quality_summary": {
+                            "evidence_tier": "moderate",
+                            "observed_factor_count": 5,
+                            "inferred_factor_count": 1,
+                            "fallback_factor_count": 1,
+                            "missing_factor_count": 1,
+                            "fallback_weight_fraction": 0.24,
+                        },
+                        "coverage_summary": {"failed_count": 0, "fallback_count": 1},
+                    }
+                ]
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    result = build_public_outcome_evaluation_dataset(
+        outcomes_path=outcomes,
+        feature_artifacts=[features],
+        output_root=tmp_path / "out",
+        run_id="single_fallback_not_heavy",
+        overwrite=True,
+    )
+    rows: list[dict] = []
+    with (Path(result["run_dir"]) / "evaluation_dataset.jsonl").open("r", encoding="utf-8") as fh:
+        for line in fh:
+            rows.append(json.loads(line))
+    assert len(rows) == 1
+    evaluation = rows[0].get("evaluation") if isinstance(rows[0].get("evaluation"), dict) else {}
+    fallback_usage = evaluation.get("fallback_usage") if isinstance(evaluation.get("fallback_usage"), dict) else {}
+    assert fallback_usage.get("classification") == "mixed_evidence"
+    assert bool(evaluation.get("fallback_heavy")) is False
+    assert "fallback_heavy" not in (evaluation.get("soft_filter_flags") or [])
 
 
 def test_deterministic_with_fixed_run_id(tmp_path: Path) -> None:
