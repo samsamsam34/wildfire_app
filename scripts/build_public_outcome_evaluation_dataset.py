@@ -55,6 +55,17 @@ STRUCTURE_PROXY_FEATURE_KEYS: tuple[str, ...] = (
     "parcel_distance_ft",
 )
 
+MINIMAL_HIGH_SIGNAL_FEATURE_KEYS: tuple[str, ...] = (
+    "ring_0_5_ft_vegetation_density",
+    "ring_5_30_ft_vegetation_density",
+    "nearest_high_fuel_patch_distance_ft",
+    "distance_to_nearest_structure_ft",
+    "structure_density",
+    "slope",
+    "canopy_adjacency_proxy_pct",
+    "building_age_proxy_year",
+)
+
 NEAR_STRUCTURE_VEGETATION_FEATURE_KEYS: tuple[str, ...] = (
     "near_structure_vegetation_0_5_pct",
     "ring_0_5_ft_vegetation_density",
@@ -879,6 +890,48 @@ def _extract_proxy_build_year(
     return None
 
 
+def _infer_proxy_build_year_from_local_signals(
+    *,
+    feature: FeatureRecord,
+    nearest_structure_ft: float | None,
+    structure_density: float | None,
+    clustering_index: float | None,
+    slope_pct: float | None,
+    canopy_pct: float | None,
+    ring_0_5_pct: float | None,
+    ring_5_30_pct: float | None,
+) -> float | None:
+    signal_weights: tuple[tuple[float | None, float], ...] = (
+        (ring_0_5_pct, 0.24),
+        (ring_5_30_pct, 0.16),
+        (canopy_pct, 0.14),
+        (structure_density, 0.16),
+        (clustering_index, 0.10),
+        (slope_pct, 0.12),
+    )
+    weighted_total = 0.0
+    weight_sum = 0.0
+    for value, weight in signal_weights:
+        if value is None:
+            continue
+        weighted_total += _clamp(float(value), 0.0, 100.0) * weight
+        weight_sum += weight
+    if nearest_structure_ft is not None:
+        proximity_score = _clamp(100.0 - ((float(nearest_structure_ft) / 450.0) * 100.0), 0.0, 100.0)
+        weighted_total += proximity_score * 0.08
+        weight_sum += 0.08
+    if weight_sum <= 0.0:
+        return None
+
+    normalized_signal = _clamp(weighted_total / weight_sum, 0.0, 100.0)
+    # Map local signal to plausible building age in years: higher-risk context implies older proxy stock.
+    inferred_age_years = _clamp(14.0 + (normalized_signal * 0.82), 8.0, 96.0)
+    event_year = feature.event_year or _parse_year(feature.payload.get("event_date")) or 2026
+    inferred_build_year = float(event_year) - float(inferred_age_years)
+    inferred_build_year = _clamp(inferred_build_year, 1900.0, float(event_year))
+    return round(float(inferred_build_year), 1)
+
+
 def _nested_float(payload: dict[str, Any], *path: str) -> float | None:
     current: Any = payload
     for key in path:
@@ -904,6 +957,19 @@ def _resolve_sampling_value(
     if scope == "region_level":
         return value, "observed_feature_sampling_region_level"
     return value, "observed_feature_sampling_unknown_scope"
+
+
+def _collapse_source_to_provenance(source_tag: str) -> str:
+    token = str(source_tag or "").strip().lower()
+    if token in {"", "missing"}:
+        return "missing"
+    if token in {"spatial_proxy", "derived_proxy"}:
+        return "proxy"
+    if token.startswith("fallback"):
+        return "inferred"
+    if token.startswith("observed"):
+        return "observed"
+    return "inferred"
 
 
 def _enrich_feature_vectors_with_property_proxies(
@@ -1153,40 +1219,6 @@ def _enrich_feature_vectors_with_property_proxies(
         else:
             source_by_feature.setdefault(raw_key, "missing")
 
-    build_year = _extract_proxy_build_year(
-        feature=feature,
-        raw_feature_vector=raw,
-        transformed_feature_vector=transformed,
-    )
-    if build_year is not None:
-        _set_value(
-            "building_age_proxy_year",
-            build_year,
-            source=(
-                str(source_by_feature.get("building_age_proxy_year") or "observed")
-                if _observed("building_age_proxy_year") is not None
-                else "derived_proxy"
-            ),
-            mirrored_transformed=False,
-        )
-    else:
-        source_by_feature.setdefault("building_age_proxy_year", "missing")
-
-    material_proxy = _observed("building_age_material_proxy_risk")
-    if material_proxy is None and build_year is not None:
-        event_year = feature.event_year or _parse_year(feature.payload.get("event_date")) or 2026
-        building_age = max(0.0, float(event_year) - float(build_year))
-        material_proxy = _clamp((building_age / 90.0) * 100.0, 0.0, 100.0)
-        _set_value("building_age_material_proxy_risk", material_proxy, source="derived_proxy")
-    elif material_proxy is not None:
-        _set_value(
-            "building_age_material_proxy_risk",
-            material_proxy,
-            source=str(source_by_feature.get("building_age_material_proxy_risk") or "observed"),
-        )
-    else:
-        source_by_feature.setdefault("building_age_material_proxy_risk", "missing")
-
     canopy_pct = _coalesce_float(raw.get("canopy_cover"), transformed.get("canopy_index"), property_context.get("canopy_cover"))
     fuel_pct = _coalesce_float(
         _fuel_to_percent(_coalesce_float(raw.get("fuel_model"), transformed.get("fuel_index"))),
@@ -1195,6 +1227,50 @@ def _enrich_feature_vectors_with_property_proxies(
     structure_density = _coalesce_float(raw.get("structure_density"), transformed.get("structure_density"))
     clustering = _coalesce_float(raw.get("clustering_index"), transformed.get("clustering_index"))
     nearest_structure_ft = _coalesce_float(raw.get("distance_to_nearest_structure_ft"), raw.get("nearest_structure_distance_ft"))
+    nearby_100_count = _coalesce_float(raw.get("nearby_structure_count_100_ft"), raw.get("nearby_structure_count_100"))
+    nearby_300_count = _coalesce_float(raw.get("nearby_structure_count_300_ft"), raw.get("nearby_structure_count_300"))
+    if structure_density is None or float(structure_density) <= 0.0:
+        density_from_counts = None
+        if nearby_100_count is not None or nearby_300_count is not None:
+            density_from_counts = _clamp(
+                ((min(float(nearby_100_count or 0.0), 8.0) / 8.0) * 70.0)
+                + ((min(float(nearby_300_count or 0.0), 24.0) / 24.0) * 30.0),
+                0.0,
+                100.0,
+            )
+        density_from_distance = None
+        if nearest_structure_ft is not None:
+            density_from_distance = _clamp(100.0 - ((float(nearest_structure_ft) / 6000.0) * 100.0), 0.0, 100.0)
+        inferred_density = None
+        if density_from_counts is not None and float(density_from_counts) > 0.0:
+            inferred_density = float(density_from_counts)
+        elif density_from_distance is not None:
+            inferred_density = float(density_from_distance)
+        elif density_from_counts is not None:
+            inferred_density = float(density_from_counts)
+        if inferred_density is not None:
+            structure_density = float(inferred_density)
+            _set_value("structure_density", structure_density, source="derived_proxy")
+            _set_value("structure_density_proxy", structure_density, source="derived_proxy")
+            if clustering is None or float(clustering) <= 0.0:
+                clustering = _clamp(
+                    (0.72 * float(structure_density))
+                    + (0.18 * float(density_from_distance if density_from_distance is not None else structure_density))
+                    + (
+                        0.10
+                        * float(
+                            _clamp(
+                                ((min(float(nearby_100_count or 0.0), 8.0) / 8.0) * 100.0),
+                                0.0,
+                                100.0,
+                            )
+                        )
+                    ),
+                    0.0,
+                    100.0,
+                )
+                _set_value("clustering_index", clustering, source="derived_proxy")
+                _set_value("local_structure_clustering_index", clustering, source="derived_proxy")
     proximity_index = (
         _clamp(100.0 - ((float(nearest_structure_ft) / 300.0) * 100.0), 0.0, 100.0)
         if nearest_structure_ft is not None
@@ -1276,6 +1352,51 @@ def _enrich_feature_vectors_with_property_proxies(
         source="derived_proxy",
         mirrored_transformed=False,
     )
+
+    build_year = _extract_proxy_build_year(
+        feature=feature,
+        raw_feature_vector=raw,
+        transformed_feature_vector=transformed,
+    )
+    if build_year is None:
+        build_year = _infer_proxy_build_year_from_local_signals(
+            feature=feature,
+            nearest_structure_ft=nearest_structure_ft,
+            structure_density=structure_density,
+            clustering_index=clustering,
+            slope_pct=_coalesce_float(raw.get("slope"), transformed.get("slope_index")),
+            canopy_pct=canopy_pct,
+            ring_0_5_pct=ring_0_5,
+            ring_5_30_pct=ring_5_30,
+        )
+    if build_year is not None:
+        _set_value(
+            "building_age_proxy_year",
+            build_year,
+            source=(
+                str(source_by_feature.get("building_age_proxy_year") or "observed")
+                if _observed("building_age_proxy_year") is not None
+                else "derived_proxy"
+            ),
+            mirrored_transformed=False,
+        )
+    else:
+        source_by_feature.setdefault("building_age_proxy_year", "missing")
+
+    material_proxy = _observed("building_age_material_proxy_risk")
+    if material_proxy is None and build_year is not None:
+        event_year = feature.event_year or _parse_year(feature.payload.get("event_date")) or 2026
+        building_age = max(0.0, float(event_year) - float(build_year))
+        material_proxy = _clamp((building_age / 90.0) * 100.0, 0.0, 100.0)
+        _set_value("building_age_material_proxy_risk", material_proxy, source="derived_proxy")
+    elif material_proxy is not None:
+        _set_value(
+            "building_age_material_proxy_risk",
+            material_proxy,
+            source=str(source_by_feature.get("building_age_material_proxy_risk") or "observed"),
+        )
+    else:
+        source_by_feature.setdefault("building_age_material_proxy_risk", "missing")
 
     canopy_adj = _observed("canopy_adjacency_proxy_pct")
     if canopy_adj is None:
@@ -1410,8 +1531,13 @@ def _enrich_feature_vectors_with_property_proxies(
         ]
     )
     missing_fields = sorted([key for key, source in source_by_feature.items() if source == "missing"])
+    provenance_by_feature = {
+        key: _collapse_source_to_provenance(str(source))
+        for key, source in sorted(source_by_feature.items())
+    }
     feature_observation_summary = {
         "source_by_feature": dict(sorted(source_by_feature.items())),
+        "provenance_by_feature": provenance_by_feature,
         "observed_fields": observed_fields,
         "inferred_fields": inferred_fields,
         "fallback_fields": fallback_fields,
@@ -1420,6 +1546,14 @@ def _enrich_feature_vectors_with_property_proxies(
         "inferred_count": len(inferred_fields),
         "fallback_count": len(fallback_fields),
         "missing_count": len(missing_fields),
+        "high_signal_feature_provenance": {
+            key: {
+                "source": str(source_by_feature.get(key) or "missing"),
+                "provenance": _collapse_source_to_provenance(str(source_by_feature.get(key) or "missing")),
+                "value": _coalesce_float(raw.get(key), transformed.get(key)),
+            }
+            for key in MINIMAL_HIGH_SIGNAL_FEATURE_KEYS
+        },
     }
     return raw, transformed, feature_observation_summary
 
@@ -2669,6 +2803,52 @@ def _compute_feature_variation_diagnostics(rows: list[dict[str, Any]]) -> dict[s
 
     structure_feature_variation = _feature_group_summary(STRUCTURE_PROXY_FEATURE_KEYS)
     near_structure_vegetation_variation = _feature_group_summary(NEAR_STRUCTURE_VEGETATION_FEATURE_KEYS)
+    high_signal_rows: list[dict[str, Any]] = []
+    non_zero_high_signal = 0
+    for feature_name in MINIMAL_HIGH_SIGNAL_FEATURE_KEYS:
+        values = numeric_values.get(feature_name) or []
+        if values:
+            min_value = round(min(values), 6)
+            max_value = round(max(values), 6)
+            stddev_value = _population_stddev(values)
+            stddev_rounded = (round(float(stddev_value), 9) if stddev_value is not None else None)
+            has_variation = bool(stddev_value is not None and float(stddev_value) > 1e-9)
+            if has_variation:
+                non_zero_high_signal += 1
+            high_signal_rows.append(
+                {
+                    "feature": feature_name,
+                    "count": len(values),
+                    "min": min_value,
+                    "max": max_value,
+                    "mean": round(sum(values) / float(len(values)), 6),
+                    "stddev": stddev_rounded,
+                    "non_zero_variance": has_variation,
+                }
+            )
+        else:
+            high_signal_rows.append(
+                {
+                    "feature": feature_name,
+                    "count": 0,
+                    "min": None,
+                    "max": None,
+                    "mean": None,
+                    "stddev": None,
+                    "non_zero_variance": False,
+                }
+            )
+    high_signal_feature_diagnostics = {
+        "feature_count": len(MINIMAL_HIGH_SIGNAL_FEATURE_KEYS),
+        "non_zero_variance_feature_count": int(non_zero_high_signal),
+        "constant_or_missing_feature_count": int(len(MINIMAL_HIGH_SIGNAL_FEATURE_KEYS) - non_zero_high_signal),
+        "constant_or_missing_features": [
+            str(row.get("feature"))
+            for row in high_signal_rows
+            if not bool(row.get("non_zero_variance"))
+        ],
+        "features": high_signal_rows,
+    }
 
     return {
         "numeric_feature_count": len(numeric_values),
@@ -2690,6 +2870,7 @@ def _compute_feature_variation_diagnostics(rows: list[dict[str, Any]]) -> dict[s
         "class_features_without_separation": class_features_without_separation,
         "structure_feature_variation": structure_feature_variation,
         "near_structure_vegetation_feature_variation": near_structure_vegetation_variation,
+        "high_signal_feature_diagnostics": high_signal_feature_diagnostics,
         "feature_stats": per_feature[:300],
     }
 
@@ -3258,6 +3439,11 @@ def _build_dataset_quality_report(*, quality: dict[str, Any]) -> dict[str, Any]:
             if isinstance(variation.get("near_structure_vegetation_feature_variation"), dict)
             else {}
         ),
+        "high_signal_feature_diagnostics": (
+            variation.get("high_signal_feature_diagnostics")
+            if isinstance(variation.get("high_signal_feature_diagnostics"), dict)
+            else {}
+        ),
         "top_discriminative_features": top_discriminative_features,
     }
 
@@ -3285,6 +3471,7 @@ def _build_dataset_quality_markdown(
         "",
         "## Feature Variation",
         f"- Summary: `{dataset_quality.get('feature_variation_summary')}`",
+        f"- High-signal feature diagnostics: `{dataset_quality.get('high_signal_feature_diagnostics')}`",
         f"- Structure feature variation: `{dataset_quality.get('structure_feature_variation')}`",
         f"- Near-structure vegetation variation: `{dataset_quality.get('near_structure_vegetation_feature_variation')}`",
         f"- Top discriminative features (mean delta): `{dataset_quality.get('top_discriminative_features')}`",
@@ -3439,6 +3626,20 @@ def _build_join_quality_warnings(*, quality: dict[str, Any]) -> list[str]:
     if near_veg_non_zero <= 0:
         warnings.append(
             "Near-structure vegetation proxy features show zero non-zero-variance coverage; near-home sensitivity will remain limited."
+        )
+    high_signal_diag = (
+        feature_variation.get("high_signal_feature_diagnostics")
+        if isinstance(feature_variation.get("high_signal_feature_diagnostics"), dict)
+        else {}
+    )
+    constant_high_signal = (
+        high_signal_diag.get("constant_or_missing_features")
+        if isinstance(high_signal_diag.get("constant_or_missing_features"), list)
+        else []
+    )
+    if constant_high_signal:
+        warnings.append(
+            f"Minimal high-signal features without variance: {constant_high_signal}."
         )
     class_counts = (
         feature_variation.get("class_counts")

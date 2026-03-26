@@ -95,8 +95,20 @@ def _write_feature_artifact(path: Path) -> None:
                 "evidence_quality_summary": {"evidence_tier": "high"},
                 "coverage_summary": {"failed_count": 0, "fallback_count": 0},
                 "raw_feature_vector": {"burn_probability": 0.82},
-                "transformed_feature_vector": {"burn_probability_index": 82.0},
+                "transformed_feature_vector": {
+                    "burn_probability_index": 82.0,
+                    "slope_index": 31.0,
+                },
                 "factor_contribution_breakdown": {"fuel_proximity_risk": {"contribution": 12.3}},
+                "property_level_context": {
+                    "ring_0_5_ft_vegetation_density": 74.0,
+                    "ring_5_30_ft_vegetation_density": 69.0,
+                    "nearest_high_fuel_patch_distance_ft": 36.0,
+                    "distance_to_nearest_structure_ft": 24.0,
+                    "structure_density": 85.0,
+                    "canopy_adjacency_proxy_pct": 77.0,
+                    "building_age_proxy_year": 1966.0,
+                },
             },
             {
                 "event_id": "evt-a",
@@ -108,8 +120,18 @@ def _write_feature_artifact(path: Path) -> None:
                 "longitude": -120.10049,
                 "address_text": "101 Main St, Town, CA 90001",
                 "scores": {"wildfire_risk_score": 26.0},
-                "raw_feature_vector": {"damage_hint": 1.0},
-                "transformed_feature_vector": {"fuel_index": 22.0},
+                "raw_feature_vector": {
+                    "damage_hint": 1.0,
+                    "ring_0_5_ft_vegetation_density": 18.0,
+                    "ring_5_30_ft_vegetation_density": 29.0,
+                    "nearest_high_fuel_patch_distance_ft": 190.0,
+                    "distance_to_nearest_structure_ft": 132.0,
+                    "structure_density": 36.0,
+                    "slope": 8.0,
+                    "canopy_adjacency_proxy_pct": 34.0,
+                    "building_age_proxy_year": 2008.0,
+                },
+                "transformed_feature_vector": {"fuel_index": 22.0, "slope_index": 8.0},
                 "factor_contribution_breakdown": {"defensible_space_risk": {"contribution": 2.1}},
             },
             {
@@ -125,6 +147,16 @@ def _write_feature_artifact(path: Path) -> None:
                 "confidence": {"confidence_tier": "moderate", "confidence_score": 61.0},
                 "evidence_quality_summary": {"evidence_tier": "moderate"},
                 "coverage_summary": {"failed_count": 0, "fallback_count": 0},
+                "property_level_context": {
+                    "ring_0_5_ft_vegetation_density": 48.0,
+                    "ring_5_30_ft_vegetation_density": 56.0,
+                    "nearest_high_fuel_patch_distance_ft": 82.0,
+                    "distance_to_nearest_structure_ft": 54.0,
+                    "structure_density": 63.0,
+                    "slope": 17.0,
+                    "canopy_adjacency_proxy_pct": 59.0,
+                    "building_age_proxy_year": 1988.0,
+                },
             },
             {
                 "event_id": "evt-z",
@@ -242,6 +274,11 @@ def test_builder_joins_rows_and_reports_join_quality(tmp_path: Path) -> None:
     assert dataset_quality["unique_property_event_id_count"] == 3
     assert "structure_feature_variation" in dataset_quality
     assert "near_structure_vegetation_feature_variation" in dataset_quality
+    assert "high_signal_feature_diagnostics" in dataset_quality
+    high_signal = dataset_quality.get("high_signal_feature_diagnostics") or {}
+    assert int(high_signal.get("feature_count") or 0) >= 8
+    assert int(high_signal.get("non_zero_variance_feature_count") or 0) >= 8
+    assert int(high_signal.get("constant_or_missing_feature_count") or 0) == 0
 
 
 def test_builder_join_quality_warnings_for_weak_spatial_matches(tmp_path: Path) -> None:
@@ -346,6 +383,8 @@ def test_builder_enriches_structure_and_near_structure_proxies(tmp_path: Path) -
     assert raw.get("near_structure_connectivity_index") is not None
     assert raw.get("nearest_high_fuel_patch_distance_ft") is not None
     assert isinstance(observation.get("inferred_fields"), list)
+    assert isinstance(observation.get("provenance_by_feature"), dict)
+    assert isinstance(observation.get("high_signal_feature_provenance"), dict)
     assert int(observation.get("observed_count") or 0) + int(observation.get("inferred_count") or 0) > 0
 
 
@@ -422,6 +461,7 @@ def test_builder_uses_nested_property_context_as_observed_inputs(tmp_path: Path)
     raw = (((first.get("feature_snapshot") or {}).get("raw_feature_vector")) or {})
     observation = ((first.get("evaluation") or {}).get("feature_observation_summary") or {})
     source_by_feature = observation.get("source_by_feature") if isinstance(observation.get("source_by_feature"), dict) else {}
+    provenance_by_feature = observation.get("provenance_by_feature") if isinstance(observation.get("provenance_by_feature"), dict) else {}
 
     assert raw.get("nearby_structure_count_100_ft") == 4.0
     assert raw.get("nearby_structure_count_300_ft") == 12.0
@@ -434,6 +474,8 @@ def test_builder_uses_nested_property_context_as_observed_inputs(tmp_path: Path)
     assert source_by_feature.get("ring_0_5_ft_vegetation_density") == "observed_defensible_space_zone"
     assert source_by_feature.get("nearby_structure_count_100_ft") == "observed_neighboring_structure_metrics"
     assert source_by_feature.get("burn_probability") == "observed_feature_sampling_region_level"
+    assert provenance_by_feature.get("ring_0_5_ft_vegetation_density") == "observed"
+    assert provenance_by_feature.get("burn_probability") == "observed"
     assert isinstance(observation.get("fallback_fields"), list)
     assert int(observation.get("fallback_count") or 0) == 0
 

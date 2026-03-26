@@ -209,7 +209,24 @@ Each joined row includes `evaluation.fallback_usage` for per-row auditing:
 - independent sample counts (`total_labeled_rows`, `unique_property_event_id_count`)
 - fallback-heavy fraction
 - structure and near-structure variation summaries
+- minimal high-signal feature diagnostics (`high_signal_feature_diagnostics`) covering:
+  - `ring_0_5_ft_vegetation_density`
+  - `ring_5_30_ft_vegetation_density`
+  - `nearest_high_fuel_patch_distance_ft`
+  - `distance_to_nearest_structure_ft`
+  - `structure_density`
+  - `slope`
+  - `canopy_adjacency_proxy_pct`
+  - `building_age_proxy_year`
+  with per-feature `min`/`max`/`stddev` and non-zero-variance checks
+  (`building_age_proxy_year` is sourced from assessor/year-built fields when present,
+  otherwise inferred deterministically from local structure/vegetation/slope signals)
 - `top_discriminative_features` (top absolute positive-vs-negative mean deltas, directional only)
+
+Row-level feature provenance is also exposed under:
+- `evaluation.feature_observation_summary.provenance_by_feature`
+- `evaluation.feature_observation_summary.high_signal_feature_provenance`
+with normalized provenance classes: `observed`, `proxy`, `inferred`, `missing`.
 
 ## Graceful Degradation
 
