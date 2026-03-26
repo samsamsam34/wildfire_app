@@ -383,6 +383,62 @@ def _stable_feature_sort_key(row: FeatureRecord) -> tuple[Any, ...]:
     )
 
 
+def _feature_richness_sort_key(row: FeatureRecord) -> tuple[Any, ...]:
+    payload = row.payload if isinstance(row.payload, dict) else {}
+    property_context = payload.get("property_level_context") if isinstance(payload.get("property_level_context"), dict) else {}
+    neighboring = property_context.get("neighboring_structure_metrics") if isinstance(property_context.get("neighboring_structure_metrics"), dict) else {}
+    defensible = property_context.get("defensible_space_analysis") if isinstance(property_context.get("defensible_space_analysis"), dict) else {}
+    defensible_zones = defensible.get("zones") if isinstance(defensible.get("zones"), dict) else {}
+    sampling = property_context.get("feature_sampling") if isinstance(property_context.get("feature_sampling"), dict) else {}
+    raw_vector = payload.get("raw_feature_vector") if isinstance(payload.get("raw_feature_vector"), dict) else {}
+    transformed_vector = payload.get("transformed_feature_vector") if isinstance(payload.get("transformed_feature_vector"), dict) else {}
+
+    zone_density_count = 0
+    for zone_name in ("zone_0_5_ft", "zone_5_30_ft", "zone_30_100_ft", "zone_100_300_ft"):
+        node = defensible_zones.get(zone_name) if isinstance(defensible_zones.get(zone_name), dict) else {}
+        if _safe_float(node.get("vegetation_density")) is not None:
+            zone_density_count += 1
+
+    neighbor_metric_count = 0
+    for key in ("nearby_structure_count_100_ft", "nearby_structure_count_300_ft", "nearest_structure_distance_ft", "distance_to_nearest_structure_ft"):
+        if _safe_float(neighboring.get(key)) is not None:
+            neighbor_metric_count += 1
+
+    property_specific_sampling_count = 0
+    region_sampling_count = 0
+    fallback_sampling_count = 0
+    for value in sampling.values():
+        node = value if isinstance(value, dict) else {}
+        sampled = _coalesce_float(node.get("raw_point_value"), node.get("index"))
+        if sampled is None:
+            continue
+        scope = str(node.get("scope") or "").strip().lower()
+        if scope == "property_specific":
+            property_specific_sampling_count += 1
+        elif scope == "region_level":
+            region_sampling_count += 1
+        elif scope == "fallback":
+            fallback_sampling_count += 1
+
+    raw_non_null_count = sum(1 for value in raw_vector.values() if _safe_float(value) is not None)
+    transformed_non_null_count = sum(1 for value in transformed_vector.values() if _safe_float(value) is not None)
+    has_scores = 1 if _extract_feature_scores(payload).get("wildfire_risk_score") is not None else 0
+    artifact_penalty = 1 if "normalized" in str(row.artifact_path or "").lower() else 0
+
+    return (
+        -int(zone_density_count),
+        -int(property_specific_sampling_count),
+        -int(neighbor_metric_count),
+        -int(raw_non_null_count),
+        -int(transformed_non_null_count),
+        -int(region_sampling_count),
+        int(fallback_sampling_count),
+        -int(has_scores),
+        int(artifact_penalty),
+        *_stable_feature_sort_key(row),
+    )
+
+
 def _joined_row_sort_key(row: dict[str, Any]) -> tuple[Any, ...]:
     event_payload = row.get("event") if isinstance(row.get("event"), dict) else {}
     feature_payload = row.get("feature") if isinstance(row.get("feature"), dict) else {}
@@ -635,6 +691,33 @@ def _extract_proxy_build_year(
     return None
 
 
+def _nested_float(payload: dict[str, Any], *path: str) -> float | None:
+    current: Any = payload
+    for key in path:
+        if not isinstance(current, dict):
+            return None
+        current = current.get(key)
+    return _safe_float(current)
+
+
+def _resolve_sampling_value(
+    sampling_payload: dict[str, Any],
+    sample_key: str,
+) -> tuple[float | None, str | None]:
+    node = sampling_payload.get(sample_key) if isinstance(sampling_payload.get(sample_key), dict) else {}
+    value = _coalesce_float(node.get("raw_point_value"), node.get("index"))
+    if value is None:
+        return None, None
+    scope = str(node.get("scope") or "").strip().lower()
+    if scope == "fallback":
+        return value, "fallback_feature_sampling"
+    if scope == "property_specific":
+        return value, "observed_feature_sampling_property_specific"
+    if scope == "region_level":
+        return value, "observed_feature_sampling_region_level"
+    return value, "observed_feature_sampling_unknown_scope"
+
+
 def _enrich_feature_vectors_with_property_proxies(
     *,
     feature: FeatureRecord,
@@ -649,9 +732,29 @@ def _enrich_feature_vectors_with_property_proxies(
         if isinstance(feature.payload.get("property_level_context"), dict)
         else {}
     )
+    neighboring_structure_metrics = (
+        property_context.get("neighboring_structure_metrics")
+        if isinstance(property_context.get("neighboring_structure_metrics"), dict)
+        else {}
+    )
+    defensible_space_analysis = (
+        property_context.get("defensible_space_analysis")
+        if isinstance(property_context.get("defensible_space_analysis"), dict)
+        else {}
+    )
+    defensible_zones = (
+        defensible_space_analysis.get("zones")
+        if isinstance(defensible_space_analysis.get("zones"), dict)
+        else {}
+    )
+    feature_sampling = (
+        property_context.get("feature_sampling")
+        if isinstance(property_context.get("feature_sampling"), dict)
+        else {}
+    )
     source_by_feature: dict[str, str] = {}
 
-    def _observed(key: str) -> float | None:
+    def _observed_top_level(key: str) -> float | None:
         value = _coalesce_float(
             raw.get(key),
             transformed.get(key),
@@ -661,6 +764,132 @@ def _enrich_feature_vectors_with_property_proxies(
         if value is not None:
             source_by_feature[key] = "observed"
         return value
+
+    nested_source_paths: dict[str, list[tuple[str, tuple[str, ...]]]] = {
+        "nearby_structure_count_100_ft": [
+            ("observed_neighboring_structure_metrics", ("nearby_structure_count_100_ft",)),
+        ],
+        "nearby_structure_count_300_ft": [
+            ("observed_neighboring_structure_metrics", ("nearby_structure_count_300_ft",)),
+        ],
+        "nearest_structure_distance_ft": [
+            ("observed_neighboring_structure_metrics", ("nearest_structure_distance_ft",)),
+            ("observed_neighboring_structure_metrics", ("distance_to_nearest_structure_ft",)),
+            ("observed_property_context", ("distance_to_nearest_structure_ft",)),
+            ("observed_property_context", ("distance_to_nearest_structure",)),
+        ],
+        "distance_to_nearest_structure_ft": [
+            ("observed_neighboring_structure_metrics", ("distance_to_nearest_structure_ft",)),
+            ("observed_neighboring_structure_metrics", ("nearest_structure_distance_ft",)),
+            ("observed_property_context", ("distance_to_nearest_structure_ft",)),
+            ("observed_property_context", ("distance_to_nearest_structure",)),
+        ],
+        "structure_density": [
+            ("observed_property_context", ("structure_density",)),
+            ("observed_property_context", ("structure_density_proxy",)),
+        ],
+        "structure_density_proxy": [
+            ("observed_property_context", ("structure_density_proxy",)),
+            ("observed_property_context", ("structure_density",)),
+        ],
+        "clustering_index": [
+            ("observed_property_context", ("clustering_index",)),
+        ],
+        "local_structure_clustering_index": [
+            ("observed_property_context", ("clustering_index",)),
+        ],
+        "building_age_proxy_year": [
+            ("observed_property_context", ("building_age_proxy_year",)),
+        ],
+        "building_age_material_proxy_risk": [
+            ("observed_property_context", ("building_age_material_proxy_risk",)),
+        ],
+        "ring_0_5_ft_vegetation_density": [
+            ("observed_defensible_space_zone", ("zone_0_5_ft", "vegetation_density")),
+        ],
+        "ring_5_30_ft_vegetation_density": [
+            ("observed_defensible_space_zone", ("zone_5_30_ft", "vegetation_density")),
+        ],
+        "ring_30_100_ft_vegetation_density": [
+            ("observed_defensible_space_zone", ("zone_30_100_ft", "vegetation_density")),
+        ],
+        "ring_100_300_ft_vegetation_density": [
+            ("observed_defensible_space_zone", ("zone_100_300_ft", "vegetation_density")),
+        ],
+        "near_structure_vegetation_0_5_pct": [
+            ("observed_property_context", ("near_structure_vegetation_0_5_pct",)),
+            ("observed_defensible_space_zone", ("zone_0_5_ft", "vegetation_density")),
+        ],
+        "canopy_adjacency_proxy_pct": [
+            ("observed_property_context", ("canopy_adjacency_proxy_pct",)),
+        ],
+        "vegetation_continuity_proxy_pct": [
+            ("observed_property_context", ("vegetation_continuity_proxy_pct",)),
+        ],
+        "near_structure_connectivity_index": [
+            ("observed_property_context", ("near_structure_connectivity_index",)),
+        ],
+        "nearest_high_fuel_patch_distance_ft": [
+            ("observed_property_context", ("nearest_high_fuel_patch_distance_ft",)),
+        ],
+        "defensible_space_proxy_score": [
+            ("observed_property_context", ("defensible_space_proxy_score",)),
+        ],
+    }
+
+    feature_sampling_sources: dict[str, list[str]] = {
+        "burn_probability": ["burn_probability"],
+        "wildfire_hazard": ["hazard_severity"],
+        "slope": ["slope_topography"],
+        "fuel_model": ["vegetation_fuel", "fuel_proximity"],
+        "canopy_cover": ["canopy_density"],
+        "drought_index": ["drought_moisture"],
+        "historical_fire_recurrence": ["historical_fire_recurrence"],
+        "near_structure_vegetation_0_5_pct": ["near_structure_vegetation_0_5_pct"],
+        "canopy_adjacency_proxy_pct": ["canopy_adjacency_proxy_pct"],
+        "vegetation_continuity_proxy_pct": ["vegetation_continuity_proxy_pct"],
+        "nearest_high_fuel_patch_distance_ft": ["nearest_high_fuel_patch_distance_ft"],
+        "ring_0_5_ft_vegetation_density": ["zone_0_5_ft"],
+        "ring_5_30_ft_vegetation_density": ["zone_5_30_ft"],
+        "ring_30_100_ft_vegetation_density": ["zone_30_100_ft"],
+        "ring_100_300_ft_vegetation_density": ["zone_100_300_ft"],
+    }
+    sampling_preferred_keys = {
+        "near_structure_vegetation_0_5_pct",
+        "canopy_adjacency_proxy_pct",
+        "vegetation_continuity_proxy_pct",
+        "nearest_high_fuel_patch_distance_ft",
+    }
+
+    def _observed(key: str) -> float | None:
+        top_level = _observed_top_level(key)
+        if top_level is not None:
+            return top_level
+
+        if key in sampling_preferred_keys:
+            for sample_key in feature_sampling_sources.get(key, []):
+                sampled_value, sampled_source = _resolve_sampling_value(feature_sampling, sample_key)
+                if sampled_value is not None:
+                    source_by_feature[key] = str(sampled_source or "observed_feature_sampling_unknown_scope")
+                    return sampled_value
+
+        for source_label, path in nested_source_paths.get(key, []):
+            base = property_context
+            if source_label == "observed_neighboring_structure_metrics":
+                base = neighboring_structure_metrics
+            elif source_label == "observed_defensible_space_zone":
+                base = defensible_zones
+            value = _nested_float(base, *path)
+            if value is not None:
+                source_by_feature[key] = source_label
+                return value
+
+        for sample_key in feature_sampling_sources.get(key, []):
+            sampled_value, sampled_source = _resolve_sampling_value(feature_sampling, sample_key)
+            if sampled_value is not None:
+                source_by_feature[key] = str(sampled_source or "observed_feature_sampling_unknown_scope")
+                return sampled_value
+        return None
 
     def _set_value(
         key: str,
@@ -699,10 +928,32 @@ def _enrich_feature_vectors_with_property_proxies(
     ):
         observed = _observed(key)
         if observed is not None:
-            _set_value(key, observed, source="observed")
+            _set_value(
+                key,
+                observed,
+                source=str(source_by_feature.get(key) or "observed"),
+            )
             continue
         spatial_value = _safe_float(spatial.get(key))
         _set_value(key, spatial_value, source=("spatial_proxy" if spatial_value is not None else "missing"))
+
+    coarse_feature_sampling_backfills: dict[str, str] = {
+        "burn_probability": "burn_probability_index",
+        "wildfire_hazard": "hazard_severity_index",
+        "slope": "slope_index",
+        "fuel_model": "fuel_index",
+        "canopy_cover": "canopy_index",
+        "drought_index": "drought_moisture_index",
+        "historical_fire_recurrence": "historical_fire_recurrence_index",
+    }
+    for raw_key, transformed_key in coarse_feature_sampling_backfills.items():
+        observed = _observed(raw_key)
+        if observed is not None:
+            _set_value(raw_key, observed, source=str(source_by_feature.get(raw_key) or "observed"), mirrored_transformed=False)
+            if _safe_float(transformed.get(transformed_key)) is None:
+                transformed[transformed_key] = round(float(observed), 4)
+        else:
+            source_by_feature.setdefault(raw_key, "missing")
 
     build_year = _extract_proxy_build_year(
         feature=feature,
@@ -710,7 +961,16 @@ def _enrich_feature_vectors_with_property_proxies(
         transformed_feature_vector=transformed,
     )
     if build_year is not None:
-        _set_value("building_age_proxy_year", build_year, source=("observed" if _observed("building_age_proxy_year") is not None else "derived_proxy"), mirrored_transformed=False)
+        _set_value(
+            "building_age_proxy_year",
+            build_year,
+            source=(
+                str(source_by_feature.get("building_age_proxy_year") or "observed")
+                if _observed("building_age_proxy_year") is not None
+                else "derived_proxy"
+            ),
+            mirrored_transformed=False,
+        )
     else:
         source_by_feature.setdefault("building_age_proxy_year", "missing")
 
@@ -721,7 +981,11 @@ def _enrich_feature_vectors_with_property_proxies(
         material_proxy = _clamp((building_age / 90.0) * 100.0, 0.0, 100.0)
         _set_value("building_age_material_proxy_risk", material_proxy, source="derived_proxy")
     elif material_proxy is not None:
-        _set_value("building_age_material_proxy_risk", material_proxy, source="observed")
+        _set_value(
+            "building_age_material_proxy_risk",
+            material_proxy,
+            source=str(source_by_feature.get("building_age_material_proxy_risk") or "observed"),
+        )
     else:
         source_by_feature.setdefault("building_age_material_proxy_risk", "missing")
 
@@ -754,7 +1018,11 @@ def _enrich_feature_vectors_with_property_proxies(
         ring_0_5 = ring_0_5_estimate
         _set_value("ring_0_5_ft_vegetation_density", ring_0_5, source="derived_proxy")
     else:
-        _set_value("ring_0_5_ft_vegetation_density", ring_0_5, source="observed")
+        _set_value(
+            "ring_0_5_ft_vegetation_density",
+            ring_0_5,
+            source=str(source_by_feature.get("ring_0_5_ft_vegetation_density") or "observed"),
+        )
     _set_value(
         "ring_0_5_ft_vegetation_density_proxy_blend",
         _clamp((0.70 * float(ring_0_5)) + (0.30 * float(ring_0_5_estimate)), 0.0, 100.0),
@@ -766,7 +1034,11 @@ def _enrich_feature_vectors_with_property_proxies(
     if near_0_5 is None:
         _set_value("near_structure_vegetation_0_5_pct", ring_0_5, source="derived_proxy")
     else:
-        _set_value("near_structure_vegetation_0_5_pct", near_0_5, source="observed")
+        _set_value(
+            "near_structure_vegetation_0_5_pct",
+            near_0_5,
+            source=str(source_by_feature.get("near_structure_vegetation_0_5_pct") or "observed"),
+        )
 
     ring_5_30_estimate = _clamp(
         max(
@@ -784,7 +1056,22 @@ def _enrich_feature_vectors_with_property_proxies(
         ring_5_30 = ring_5_30_estimate
         _set_value("ring_5_30_ft_vegetation_density", ring_5_30, source="derived_proxy")
     else:
-        _set_value("ring_5_30_ft_vegetation_density", ring_5_30, source="observed")
+        _set_value(
+            "ring_5_30_ft_vegetation_density",
+            ring_5_30,
+            source=str(source_by_feature.get("ring_5_30_ft_vegetation_density") or "observed"),
+        )
+
+    ring_30_100 = _observed("ring_30_100_ft_vegetation_density")
+    if ring_30_100 is None:
+        ring_30_100 = _clamp((0.58 * float(ring_5_30)) + (0.42 * float(canopy_pct if canopy_pct is not None else 45.0)), 0.0, 100.0)
+        _set_value("ring_30_100_ft_vegetation_density", ring_30_100, source="derived_proxy")
+    else:
+        _set_value(
+            "ring_30_100_ft_vegetation_density",
+            ring_30_100,
+            source=str(source_by_feature.get("ring_30_100_ft_vegetation_density") or "observed"),
+        )
     _set_value(
         "ring_5_30_ft_vegetation_density_proxy_blend",
         _clamp((0.70 * float(ring_5_30)) + (0.30 * float(ring_5_30_estimate)), 0.0, 100.0),
@@ -802,7 +1089,11 @@ def _enrich_feature_vectors_with_property_proxies(
         )
         _set_value("canopy_adjacency_proxy_pct", canopy_adj, source="derived_proxy")
     else:
-        _set_value("canopy_adjacency_proxy_pct", canopy_adj, source="observed")
+        _set_value(
+            "canopy_adjacency_proxy_pct",
+            canopy_adj,
+            source=str(source_by_feature.get("canopy_adjacency_proxy_pct") or "observed"),
+        )
 
     continuity = _observed("vegetation_continuity_proxy_pct")
     if continuity is None:
@@ -815,7 +1106,11 @@ def _enrich_feature_vectors_with_property_proxies(
         )
         _set_value("vegetation_continuity_proxy_pct", continuity, source="derived_proxy")
     else:
-        _set_value("vegetation_continuity_proxy_pct", continuity, source="observed")
+        _set_value(
+            "vegetation_continuity_proxy_pct",
+            continuity,
+            source=str(source_by_feature.get("vegetation_continuity_proxy_pct") or "observed"),
+        )
 
     connectivity = _observed("near_structure_connectivity_index")
     if connectivity is None:
@@ -828,7 +1123,11 @@ def _enrich_feature_vectors_with_property_proxies(
         )
         _set_value("near_structure_connectivity_index", connectivity, source="derived_proxy")
     else:
-        _set_value("near_structure_connectivity_index", connectivity, source="observed")
+        _set_value(
+            "near_structure_connectivity_index",
+            connectivity,
+            source=str(source_by_feature.get("near_structure_connectivity_index") or "observed"),
+        )
     connectivity_proxy_blend = _clamp(
         (0.50 * float(connectivity or 0.0))
         + (0.30 * float(ring_5_30_estimate))
@@ -852,7 +1151,11 @@ def _enrich_feature_vectors_with_property_proxies(
         )
         _set_value("nearest_high_fuel_patch_distance_ft", high_fuel_dist, source="derived_proxy")
     else:
-        _set_value("nearest_high_fuel_patch_distance_ft", high_fuel_dist, source="observed")
+        _set_value(
+            "nearest_high_fuel_patch_distance_ft",
+            high_fuel_dist,
+            source=str(source_by_feature.get("nearest_high_fuel_patch_distance_ft") or "observed"),
+        )
     high_fuel_dist_proxy_blend = _clamp(
         25.0 + ((100.0 - float(max(connectivity_proxy_blend, ring_5_30_estimate))) * 7.5),
         0.0,
@@ -870,7 +1173,11 @@ def _enrich_feature_vectors_with_property_proxies(
         defensible_proxy = _clamp(100.0 - ((0.72 * float(ring_0_5 or 0.0)) + (0.28 * float(ring_5_30 or 0.0))), 0.0, 100.0)
         _set_value("defensible_space_proxy_score", defensible_proxy, source="derived_proxy")
     else:
-        _set_value("defensible_space_proxy_score", defensible_proxy, source="observed")
+        _set_value(
+            "defensible_space_proxy_score",
+            defensible_proxy,
+            source=str(source_by_feature.get("defensible_space_proxy_score") or "observed"),
+        )
     defensible_proxy_blend = _clamp(
         100.0 - ((0.72 * float(ring_0_5_estimate)) + (0.28 * float(ring_5_30_estimate))),
         0.0,
@@ -883,16 +1190,37 @@ def _enrich_feature_vectors_with_property_proxies(
         mirrored_transformed=False,
     )
 
-    observed_fields = sorted([key for key, source in source_by_feature.items() if source == "observed"])
-    inferred_fields = sorted([key for key, source in source_by_feature.items() if source in {"spatial_proxy", "derived_proxy"}])
+    observed_fields = sorted(
+        [
+            key
+            for key, source in source_by_feature.items()
+            if str(source).startswith("observed")
+        ]
+    )
+    inferred_fields = sorted(
+        [
+            key
+            for key, source in source_by_feature.items()
+            if source in {"spatial_proxy", "derived_proxy"}
+        ]
+    )
+    fallback_fields = sorted(
+        [
+            key
+            for key, source in source_by_feature.items()
+            if str(source).startswith("fallback_")
+        ]
+    )
     missing_fields = sorted([key for key, source in source_by_feature.items() if source == "missing"])
     feature_observation_summary = {
         "source_by_feature": dict(sorted(source_by_feature.items())),
         "observed_fields": observed_fields,
         "inferred_fields": inferred_fields,
+        "fallback_fields": fallback_fields,
         "missing_fields": missing_fields,
         "observed_count": len(observed_fields),
         "inferred_count": len(inferred_fields),
+        "fallback_count": len(fallback_fields),
         "missing_count": len(missing_fields),
     }
     return raw, transformed, feature_observation_summary
@@ -2678,6 +3006,23 @@ def _build_dataset_quality_report(*, quality: dict[str, Any]) -> dict[str, Any]:
         if isinstance(quality.get("fallback_usage_summary"), dict)
         else {}
     )
+    class_separation_rows = (
+        variation.get("class_key_feature_separation")
+        if isinstance(variation.get("class_key_feature_separation"), list)
+        else []
+    )
+    top_discriminative_features: list[dict[str, Any]] = []
+    for row in class_separation_rows[:10]:
+        if not isinstance(row, dict):
+            continue
+        top_discriminative_features.append(
+            {
+                "feature": row.get("feature"),
+                "absolute_mean_delta": row.get("absolute_mean_delta"),
+                "positive_mean": row.get("positive_mean"),
+                "negative_mean": row.get("negative_mean"),
+            }
+        )
     return {
         "total_labeled_rows": int(quality.get("total_joined_records") or 0),
         "unique_property_event_id_count": int(quality.get("unique_property_event_id_count") or 0),
@@ -2707,6 +3052,7 @@ def _build_dataset_quality_report(*, quality: dict[str, Any]) -> dict[str, Any]:
             if isinstance(variation.get("near_structure_vegetation_feature_variation"), dict)
             else {}
         ),
+        "top_discriminative_features": top_discriminative_features,
     }
 
 
@@ -2735,6 +3081,7 @@ def _build_dataset_quality_markdown(
         f"- Summary: `{dataset_quality.get('feature_variation_summary')}`",
         f"- Structure feature variation: `{dataset_quality.get('structure_feature_variation')}`",
         f"- Near-structure vegetation variation: `{dataset_quality.get('near_structure_vegetation_feature_variation')}`",
+        f"- Top discriminative features (mean delta): `{dataset_quality.get('top_discriminative_features')}`",
     ]
     return "\n".join(lines) + "\n"
 
@@ -3120,7 +3467,7 @@ def build_public_outcome_evaluation_dataset(
         unmatched_feature_rows_by_event_counts_pass: dict[str, int] = {}
         low_confidence_join_count_pass = 0
 
-        for feature in sorted(feature_rows, key=_stable_feature_sort_key):
+        for feature in sorted(feature_rows, key=_feature_richness_sort_key):
             candidate_match_attempt_count_pass += 1
             feature_coord_mode = str(feature.payload.get("_coordinate_normalization_mode") or "unknown")
             feature_coordinate_modes_pass[feature_coord_mode] = feature_coordinate_modes_pass.get(feature_coord_mode, 0) + 1
@@ -3288,6 +3635,8 @@ def build_public_outcome_evaluation_dataset(
                 soft_flags.append("retention_fallback_mode")
             if int(feature_observation_summary.get("inferred_count") or 0) > 0:
                 soft_flags.append("inferred_structure_or_vegetation_proxies")
+            if int(feature_observation_summary.get("fallback_count") or 0) > 0:
+                soft_flags.append("fallback_structure_or_vegetation_inputs")
             if int(feature_observation_summary.get("missing_count") or 0) > 0:
                 soft_flags.append("missing_structure_or_vegetation_proxies")
             for flag in soft_flags:
@@ -3298,6 +3647,8 @@ def build_public_outcome_evaluation_dataset(
                 caveat_flags.append("elevated_fallback_usage")
             if int(feature_observation_summary.get("inferred_count") or 0) > 0:
                 caveat_flags.append("inferred_structure_or_vegetation_features")
+            if int(feature_observation_summary.get("fallback_count") or 0) > 0:
+                caveat_flags.append("fallback_structure_or_vegetation_inputs")
             if int(feature_observation_summary.get("missing_count") or 0) > 0:
                 caveat_flags.append("missing_structure_or_vegetation_features")
             row_confidence_tier = _derive_row_confidence_tier(

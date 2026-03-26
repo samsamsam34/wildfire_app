@@ -167,8 +167,14 @@ Artifacts:
 Each joined row now also includes `evaluation.feature_observation_summary` with:
 - `observed_fields`
 - `inferred_fields`
+- `fallback_fields`
 - `missing_fields`
-- per-feature source tags (`observed`, `spatial_proxy`, `derived_proxy`, `missing`)
+- per-feature source tags (for example `observed_defensible_space_zone`, `observed_neighboring_structure_metrics`, `observed_feature_sampling_property_specific`, `observed_feature_sampling_region_level`, `fallback_feature_sampling`, `spatial_proxy`, `derived_proxy`, `missing`)
+
+The builder now preferentially consumes nested property-level context before deriving proxies, including:
+- `property_level_context.defensible_space_analysis.zones.*.vegetation_density`
+- `property_level_context.neighboring_structure_metrics.*`
+- `property_level_context.feature_sampling.*` (`raw_point_value`/`index` + `scope`)
 
 Each joined row includes `evaluation.fallback_usage` for per-row auditing:
 - factor counts (observed/inferred/fallback/missing)
@@ -187,6 +193,12 @@ Each joined row includes `evaluation.fallback_usage` for per-row auditing:
 - distance min/mean/max/median plus histogram
 - sample high-confidence and low-confidence joins
 - clear warning section for weak matching patterns
+
+`dataset_quality_report.json` includes:
+- independent sample counts (`total_labeled_rows`, `unique_property_event_id_count`)
+- fallback-heavy fraction
+- structure and near-structure variation summaries
+- `top_discriminative_features` (top absolute positive-vs-negative mean deltas, directional only)
 
 ## Graceful Degradation
 

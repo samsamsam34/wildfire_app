@@ -349,6 +349,95 @@ def test_builder_enriches_structure_and_near_structure_proxies(tmp_path: Path) -
     assert int(observation.get("observed_count") or 0) + int(observation.get("inferred_count") or 0) > 0
 
 
+def test_builder_uses_nested_property_context_as_observed_inputs(tmp_path: Path) -> None:
+    outcomes = tmp_path / "normalized_outcomes.json"
+    features = tmp_path / "event_backtest_nested_context.json"
+    _write_outcomes(outcomes)
+    features.write_text(
+        json.dumps(
+            {
+                "records": [
+                    {
+                        "event_id": "evt-a",
+                        "event_name": "Event A",
+                        "event_date": "2021-08-01",
+                        "record_id": "f1",
+                        "source_record_id": "SRC-001",
+                        "latitude": 39.10011,
+                        "longitude": -120.10011,
+                        "address_text": "100 Main Street, Town, CA 90001",
+                        "scores": {"wildfire_risk_score": 71.0},
+                        "confidence": {"confidence_tier": "high", "confidence_score": 77.0},
+                        "evidence_quality_summary": {"evidence_tier": "high"},
+                        "coverage_summary": {"failed_count": 0, "fallback_count": 0},
+                        "property_level_context": {
+                            "neighboring_structure_metrics": {
+                                "nearby_structure_count_100_ft": 4.0,
+                                "nearby_structure_count_300_ft": 12.0,
+                                "nearest_structure_distance_ft": 88.0,
+                            },
+                            "defensible_space_analysis": {
+                                "zones": {
+                                    "zone_0_5_ft": {"vegetation_density": 72.0},
+                                    "zone_5_30_ft": {"vegetation_density": 63.0},
+                                    "zone_30_100_ft": {"vegetation_density": 52.0},
+                                }
+                            },
+                            "feature_sampling": {
+                                "burn_probability": {"raw_point_value": 77.0, "scope": "region_level"},
+                                "slope_topography": {"raw_point_value": 56.0, "scope": "region_level"},
+                                "near_structure_vegetation_0_5_pct": {
+                                    "raw_point_value": 71.5,
+                                    "scope": "property_specific",
+                                },
+                                "canopy_adjacency_proxy_pct": {"raw_point_value": 58.0, "scope": "property_specific"},
+                                "vegetation_continuity_proxy_pct": {"raw_point_value": 49.0, "scope": "property_specific"},
+                                "nearest_high_fuel_patch_distance_ft": {
+                                    "raw_point_value": 340.0,
+                                    "scope": "property_specific",
+                                },
+                            },
+                        },
+                    }
+                ]
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    result = build_public_outcome_evaluation_dataset(
+        outcomes_path=outcomes,
+        feature_artifacts=[features],
+        output_root=tmp_path / "out",
+        run_id="nested_context_eval_ds",
+        overwrite=True,
+    )
+    rows = []
+    with (Path(result["run_dir"]) / "evaluation_dataset.jsonl").open("r", encoding="utf-8") as fh:
+        for line in fh:
+            rows.append(json.loads(line))
+    assert len(rows) == 1
+    first = rows[0]
+    raw = (((first.get("feature_snapshot") or {}).get("raw_feature_vector")) or {})
+    observation = ((first.get("evaluation") or {}).get("feature_observation_summary") or {})
+    source_by_feature = observation.get("source_by_feature") if isinstance(observation.get("source_by_feature"), dict) else {}
+
+    assert raw.get("nearby_structure_count_100_ft") == 4.0
+    assert raw.get("nearby_structure_count_300_ft") == 12.0
+    assert raw.get("distance_to_nearest_structure_ft") == 88.0
+    assert raw.get("ring_0_5_ft_vegetation_density") == 72.0
+    assert raw.get("ring_5_30_ft_vegetation_density") == 63.0
+    assert raw.get("ring_30_100_ft_vegetation_density") == 52.0
+    assert raw.get("near_structure_vegetation_0_5_pct") == 71.5
+    assert raw.get("burn_probability") == 77.0
+    assert source_by_feature.get("ring_0_5_ft_vegetation_density") == "observed_defensible_space_zone"
+    assert source_by_feature.get("nearby_structure_count_100_ft") == "observed_neighboring_structure_metrics"
+    assert source_by_feature.get("burn_probability") == "observed_feature_sampling_region_level"
+    assert isinstance(observation.get("fallback_fields"), list)
+    assert int(observation.get("fallback_count") or 0) == 0
+
+
 def test_single_fallback_signal_is_not_auto_classified_fallback_heavy(tmp_path: Path) -> None:
     outcomes = tmp_path / "normalized_outcomes.json"
     features = tmp_path / "feature_artifact.json"
