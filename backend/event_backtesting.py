@@ -369,6 +369,9 @@ def _derive_context_overrides_from_vectors(raw: dict[str, Any]) -> dict[str, Any
         "vegetation_continuity_proxy_pct",
         "nearest_high_fuel_patch_distance_ft",
         "nearest_vegetation_distance_ft",
+        "structure_density",
+        "structure_density_proxy",
+        "clustering_index",
         "building_age_proxy_year",
         "building_age_material_proxy_risk",
     ):
@@ -385,6 +388,7 @@ def _derive_context_overrides_from_vectors(raw: dict[str, Any]) -> dict[str, Any
         "nearby_structure_count_100_ft",
         "nearby_structure_count_300_ft",
         "nearest_structure_distance_ft",
+        "distance_to_nearest_structure_ft",
     ):
         value = _to_float(raw_vector.get(key))
         if value is None:

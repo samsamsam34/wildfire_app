@@ -217,8 +217,19 @@ class RiskEngine:
         )
         if nearest_structure_distance_ft is None:
             nearest_structure_distance_ft = _to_float(
+                (neighboring_structures or {}).get("distance_to_nearest_structure_ft")
+            )
+        if nearest_structure_distance_ft is None:
+            nearest_structure_distance_ft = _to_float(
                 (context.property_level_context or {}).get("nearest_structure_distance_ft")
             )
+        distance_to_nearest_structure_ft = _to_float(
+            (context.property_level_context or {}).get("distance_to_nearest_structure_ft")
+        )
+        if nearest_structure_distance_ft is None and distance_to_nearest_structure_ft is not None:
+            nearest_structure_distance_ft = distance_to_nearest_structure_ft
+        if distance_to_nearest_structure_ft is None and nearest_structure_distance_ft is not None:
+            distance_to_nearest_structure_ft = nearest_structure_distance_ft
         structure_to_structure_exposure_index = None
         if nearby_structure_count_100 is not None or nearby_structure_count_300 is not None:
             c100 = nearby_structure_count_100 or 0.0
@@ -228,6 +239,12 @@ class RiskEngine:
         if nearest_structure_distance_ft is not None:
             nearest_structure_proximity_index = round(
                 max(0.0, min(100.0, 100.0 - ((nearest_structure_distance_ft / 300.0) * 100.0))),
+                1,
+            )
+        nearest_structure_isolation_index = None
+        if nearest_structure_distance_ft is not None:
+            nearest_structure_isolation_index = round(
+                max(0.0, min(100.0, (nearest_structure_distance_ft / 300.0) * 100.0)),
                 1,
             )
         local_structure_density_index = None
@@ -241,6 +258,25 @@ class RiskEngine:
                     100.0,
                     ((min(c100, 8.0) / 8.0) * 70.0) + ((min(c300, 24.0) / 24.0) * 30.0),
                 ),
+                1,
+            )
+        structure_density_proxy_index = _to_float(
+            (context.property_level_context or {}).get("structure_density")
+        )
+        if structure_density_proxy_index is None:
+            structure_density_proxy_index = _to_float(
+                (context.property_level_context or {}).get("structure_density_proxy")
+            )
+        if structure_density_proxy_index is None:
+            structure_density_proxy_index = local_structure_density_index
+        if structure_density_proxy_index is not None:
+            structure_density_proxy_index = round(max(0.0, min(100.0, float(structure_density_proxy_index))), 1)
+
+        clustering_index = _to_float((context.property_level_context or {}).get("clustering_index"))
+        if clustering_index is None and structure_density_proxy_index is not None:
+            prox = nearest_structure_proximity_index if nearest_structure_proximity_index is not None else 0.0
+            clustering_index = round(
+                max(0.0, min(100.0, (0.70 * float(structure_density_proxy_index)) + (0.30 * float(prox)))),
                 1,
             )
 
@@ -559,12 +595,18 @@ class RiskEngine:
                     structure_assumptions.append(
                         "Construction year missing; using neighborhood age proxy year for material-era vulnerability."
                     )
-            elif local_structure_density_index is not None or nearest_structure_proximity_index is not None:
+            elif (
+                structure_density_proxy_index is not None
+                or nearest_structure_proximity_index is not None
+                or clustering_index is not None
+            ):
                 proxy_terms: list[tuple[float, float]] = []
-                if local_structure_density_index is not None:
-                    proxy_terms.append((0.58, 43.0 + (local_structure_density_index * 0.40)))
-                if nearest_structure_proximity_index is not None:
-                    proxy_terms.append((0.42, 39.0 + (nearest_structure_proximity_index * 0.36)))
+                if structure_density_proxy_index is not None:
+                    proxy_terms.append((0.52, 42.0 + (structure_density_proxy_index * 0.34)))
+                if nearest_structure_isolation_index is not None:
+                    proxy_terms.append((0.30, 36.0 + (nearest_structure_isolation_index * 0.30)))
+                if clustering_index is not None:
+                    proxy_terms.append((0.18, 40.0 + (clustering_index * 0.24)))
                 if proxy_terms:
                     proxy_num = sum(weight * value for weight, value in proxy_terms)
                     proxy_den = sum(weight for weight, _ in proxy_terms)
@@ -581,11 +623,12 @@ class RiskEngine:
 
         structure_score = weighted_score(
             [
-                (0.37, roof_ignition, "Roof type unavailable for structure vulnerability model."),
-                (0.29, vent_ignition, "Vent type unavailable for structure vulnerability model."),
-                (0.22, construction_risk, "Construction year and building-age proxy unavailable for structure vulnerability model."),
-                (0.07, local_structure_density_index, "Nearby structure density unavailable for structure vulnerability model."),
-                (0.05, nearest_structure_proximity_index, "Nearest-building distance unavailable for structure vulnerability model."),
+                (0.33, roof_ignition, "Roof type unavailable for structure vulnerability model."),
+                (0.25, vent_ignition, "Vent type unavailable for structure vulnerability model."),
+                (0.23, construction_risk, "Construction year and building-age proxy unavailable for structure vulnerability model."),
+                (0.08, structure_density_proxy_index, "Structure-density proxy unavailable for structure vulnerability model."),
+                (0.07, nearest_structure_isolation_index, "Nearest-structure isolation proxy unavailable for structure vulnerability model."),
+                (0.04, clustering_index, "Structure clustering proxy unavailable for structure vulnerability model."),
             ],
             structure_assumptions,
         )
@@ -599,9 +642,13 @@ class RiskEngine:
                 "construction_risk_proxy": construction_risk,
                 "building_age_proxy_year": building_age_proxy_year,
                 "building_age_material_proxy_risk": building_age_material_proxy_risk,
+                "structure_density_proxy_index": structure_density_proxy_index,
+                "distance_to_nearest_structure_ft": distance_to_nearest_structure_ft,
+                "clustering_index": clustering_index,
                 "local_structure_density_index": local_structure_density_index,
                 "nearest_structure_distance_ft": nearest_structure_distance_ft,
                 "nearest_structure_proximity_index": nearest_structure_proximity_index,
+                "nearest_structure_isolation_index": nearest_structure_isolation_index,
             },
             assumptions=structure_assumptions,
             raw_score=round(float(structure_score), 4),
@@ -1298,8 +1345,17 @@ class RiskEngine:
         slope_signal = float(site_hazard_score)
         fuel_signal = float(site_hazard_score)
         structure_vulnerability_signal = float(home_ignition_vulnerability_score)
+        structure_proxy_signal = float(home_ignition_vulnerability_score)
         interaction_gate = 1.0
         if risk is not None:
+            def _to_float_local(value: object) -> float | None:
+                try:
+                    if value is None:
+                        return None
+                    return float(value)
+                except (TypeError, ValueError):
+                    return None
+
             near_weights: dict[str, float] = {
                 "defensible_space_risk": 0.34,
                 "flame_contact_risk": 0.30,
@@ -1331,6 +1387,31 @@ class RiskEngine:
             structure_vulnerability_signal = float(
                 (risk.submodel_scores.get("structure_vulnerability_risk") or SubmodelResult(home_ignition_vulnerability_score, "", {})).score
             )
+            structure_inputs = (
+                risk.submodel_scores.get("structure_vulnerability_risk", SubmodelResult(structure_vulnerability_signal, "", {})).key_inputs
+                if isinstance(risk.submodel_scores.get("structure_vulnerability_risk"), SubmodelResult)
+                else {}
+            )
+            structure_density_proxy = _to_float_local((structure_inputs or {}).get("structure_density_proxy_index"))
+            clustering_proxy = _to_float_local((structure_inputs or {}).get("clustering_index"))
+            nearest_structure_proximity = _to_float_local((structure_inputs or {}).get("nearest_structure_proximity_index"))
+            nearest_structure_isolation = _to_float_local((structure_inputs or {}).get("nearest_structure_isolation_index"))
+            proxy_terms: list[tuple[float, float]] = []
+            if structure_density_proxy is not None:
+                proxy_terms.append((0.28, float(structure_density_proxy)))
+            if clustering_proxy is not None:
+                proxy_terms.append((0.18, float(clustering_proxy)))
+            if nearest_structure_proximity is not None:
+                proxy_terms.append((0.12, float(nearest_structure_proximity)))
+            if nearest_structure_isolation is not None:
+                proxy_terms.append((0.42, float(nearest_structure_isolation)))
+            if proxy_terms:
+                p_num = sum(weight * value for weight, value in proxy_terms)
+                p_den = sum(weight for weight, _ in proxy_terms)
+                if p_den > 0.0:
+                    structure_proxy_signal = p_num / p_den
+            else:
+                structure_proxy_signal = structure_vulnerability_signal
             geometry_gate = 0.55 + (0.45 * max(0.0, min(1.0, float(risk.geometry_quality_score))))
             evidence_gate = 0.50 + (0.50 * max(0.0, min(1.0, float(risk.observed_weight_fraction))))
             fallback_gate = 1.0 - min(0.35, max(0.0, float(risk.fallback_weight_fraction)) * 0.50)
@@ -1347,6 +1428,7 @@ class RiskEngine:
         slope_tail = max(0.0, slope_signal - 55.0)
         fuel_tail = max(0.0, fuel_signal - 55.0)
         vulnerability_tail = max(0.0, structure_vulnerability_signal - 50.0)
+        structure_proxy_tail = max(0.0, structure_proxy_signal - 48.0)
 
         overlap_high = max(0.0, min(float(site_hazard_score), float(near_structure_signal)) - 50.0)
         high_risk_compound = overlap_high * 0.14 * interaction_gate
@@ -1355,6 +1437,7 @@ class RiskEngine:
         hazard_slope_compound = ((max(0.0, float(site_hazard_score) - 58.0) * slope_tail) / 100.0) * 0.11 * interaction_gate
         vulnerability_vegetation_compound = ((vulnerability_tail * veg_tail) / 100.0) * 0.13 * interaction_gate
         hazard_fuel_compound = ((hazard_tail * fuel_tail) / 100.0) * 0.14 * interaction_gate
+        hazard_structure_proxy_compound = ((hazard_tail * structure_proxy_tail) / 100.0) * 0.10 * interaction_gate
         readiness_drag = 0.0
         low_risk_credit = 0.0
         hardening_dampen = 0.0
@@ -1397,6 +1480,7 @@ class RiskEngine:
             + hazard_slope_compound
             + vulnerability_vegetation_compound
             + hazard_fuel_compound
+            + hazard_structure_proxy_compound
             + readiness_drag
             - low_risk_credit
             - hardening_dampen

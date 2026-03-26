@@ -1522,6 +1522,10 @@ def _compute_feature_variation_diagnostics(rows: list[dict[str, Any]]) -> dict[s
         "ring_0_5_ft_vegetation_density",
         "ring_5_30_ft_vegetation_density",
         "ring_30_100_ft_vegetation_density",
+        "structure_density",
+        "distance_to_nearest_structure_ft",
+        "clustering_index",
+        "building_age_material_proxy_risk",
     ]
     key_feature_stddev: dict[str, float | None] = {}
     key_feature_near_zero_variance: list[str] = []
@@ -1539,6 +1543,11 @@ def _compute_feature_variation_diagnostics(rows: list[dict[str, Any]]) -> dict[s
         "near_structure_vegetation_0_5_pct",
         "ring_0_5_ft_vegetation_density",
         "ring_5_30_ft_vegetation_density",
+        "structure_density",
+        "distance_to_nearest_structure_ft",
+        "clustering_index",
+        "building_age_proxy_year",
+        "building_age_material_proxy_risk",
         "slope",
         "slope_index",
         "fuel_model",

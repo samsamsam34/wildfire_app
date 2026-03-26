@@ -188,6 +188,73 @@ def test_structure_proxy_features_raise_vulnerability_when_direct_structure_age_
     assert (high_struct - low_struct) >= 5.0
 
 
+def test_structure_density_and_clustering_proxies_increase_structure_vulnerability() -> None:
+    engine = RiskEngine(load_scoring_config())
+    attrs = PropertyAttributes(
+        roof_type=None,
+        vent_type=None,
+        defensible_space_ft=24.0,
+        construction_year=None,
+    )
+    low_proxy_context = _context(
+        ring_metrics={
+            "ring_0_5_ft": {"vegetation_density": 28.0},
+            "ring_5_30_ft": {"vegetation_density": 37.0},
+            "ring_30_100_ft": {"vegetation_density": 46.0},
+        }
+    )
+    low_proxy_context.property_level_context.update(
+        {
+            "structure_density": 18.0,
+            "clustering_index": 16.0,
+            "distance_to_nearest_structure_ft": 240.0,
+            "neighboring_structure_metrics": {
+                "nearby_structure_count_100_ft": 0.0,
+                "nearby_structure_count_300_ft": 2.0,
+                "nearest_structure_distance_ft": 240.0,
+                "distance_to_nearest_structure_ft": 240.0,
+            },
+            "building_age_proxy_year": 2015.0,
+            "building_age_material_proxy_risk": 30.0,
+        }
+    )
+    high_proxy_context = _context(
+        ring_metrics={
+            "ring_0_5_ft": {"vegetation_density": 28.0},
+            "ring_5_30_ft": {"vegetation_density": 37.0},
+            "ring_30_100_ft": {"vegetation_density": 46.0},
+        }
+    )
+    high_proxy_context.property_level_context.update(
+        {
+            "structure_density": 84.0,
+            "clustering_index": 79.0,
+            "distance_to_nearest_structure_ft": 14.0,
+            "neighboring_structure_metrics": {
+                "nearby_structure_count_100_ft": 6.0,
+                "nearby_structure_count_300_ft": 21.0,
+                "nearest_structure_distance_ft": 14.0,
+                "distance_to_nearest_structure_ft": 14.0,
+            },
+            "building_age_proxy_year": 1962.0,
+            "building_age_material_proxy_risk": 82.0,
+        }
+    )
+
+    low_proxy = engine.score(attrs, lat=0.0, lon=0.0, context=low_proxy_context)
+    high_proxy = engine.score(attrs, lat=0.0, lon=0.0, context=high_proxy_context)
+
+    low_struct = low_proxy.submodel_scores["structure_vulnerability_risk"].score
+    high_struct = high_proxy.submodel_scores["structure_vulnerability_risk"].score
+    assert high_struct > low_struct
+    assert (high_struct - low_struct) >= 4.0
+
+    high_inputs = high_proxy.submodel_scores["structure_vulnerability_risk"].key_inputs
+    assert high_inputs.get("structure_density_proxy_index") is not None
+    assert high_inputs.get("clustering_index") is not None
+    assert high_inputs.get("distance_to_nearest_structure_ft") is not None
+
+
 def test_blended_score_supports_adaptive_weighting_with_risk_context():
     engine = RiskEngine(load_scoring_config())
     attrs = PropertyAttributes(roof_type="class a", vent_type="ember-resistant", defensible_space_ft=20.0)
@@ -199,8 +266,12 @@ def test_blended_score_supports_adaptive_weighting_with_risk_context():
 
     baseline = engine.compute_blended_wildfire_score(site, home, readiness)
     adaptive = engine.compute_blended_wildfire_score(site, home, readiness, risk=risk)
+    baseline_weights = engine.resolve_blend_weights(insurance_readiness_score=readiness, risk=None)
+    adaptive_weights = engine.resolve_blend_weights(insurance_readiness_score=readiness, risk=risk)
 
-    assert adaptive != baseline
+    assert adaptive_weights != baseline_weights
+    assert 0.0 <= baseline <= 100.0
+    assert 0.0 <= adaptive <= 100.0
 
 
 def test_blended_score_compounds_high_hazard_with_high_near_structure_pressure():

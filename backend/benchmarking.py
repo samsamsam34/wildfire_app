@@ -136,6 +136,8 @@ def _location_specific_context_update(latitude: float | None, longitude: float |
     continuity_mix = _spatial_mix(lat_n, lon_n, 10.0)
     dryness_mix = _spatial_mix(lat_n, lon_n, 11.0)
     historical_mix = _spatial_mix(lat_n, lon_n, 12.0)
+    structure_density_mix = _spatial_mix(lat_n, lon_n, 17.0)
+    structure_cluster_mix = _spatial_mix(lat_n, lon_n, 18.0)
 
     burn_probability = round(0.12 + (burn_mix * 0.76), 4)
     slope = round(2.0 + (slope_mix * 38.0), 2)
@@ -163,6 +165,40 @@ def _location_specific_context_update(latitude: float | None, longitude: float |
         1,
     )
     nearest_high_fuel_patch_distance_ft = round(_clamp(20.0 + ((1.0 - continuity_mix) * 620.0), 0.0, 1000.0), 1)
+    nearby_structure_count_100_ft = round(
+        _clamp((structure_density_mix * 7.5) + (structure_cluster_mix * 1.5), 0.0, 10.0),
+        1,
+    )
+    nearby_structure_count_300_ft = round(
+        _clamp((structure_density_mix * 22.0) + (structure_cluster_mix * 6.0), 0.0, 30.0),
+        1,
+    )
+    distance_to_nearest_structure_ft = round(_clamp(12.0 + ((1.0 - structure_density_mix) * 320.0), 8.0, 420.0), 1)
+    structure_density_index = round(
+        _clamp(
+            ((min(nearby_structure_count_100_ft, 8.0) / 8.0) * 70.0)
+            + ((min(nearby_structure_count_300_ft, 24.0) / 24.0) * 30.0),
+            0.0,
+            100.0,
+        ),
+        1,
+    )
+    nearest_structure_proximity_index = round(
+        _clamp(100.0 - ((distance_to_nearest_structure_ft / 300.0) * 100.0), 0.0, 100.0),
+        1,
+    )
+    clustering_index = round(
+        _clamp((0.70 * structure_density_index) + (0.30 * nearest_structure_proximity_index), 0.0, 100.0),
+        1,
+    )
+    building_age_material_proxy_risk = round(
+        _clamp(24.0 + (structure_density_index * 0.46) + (clustering_index * 0.22), 18.0, 92.0),
+        1,
+    )
+    building_age_proxy_year = round(
+        _clamp(2020.0 - ((building_age_material_proxy_risk / 100.0) * 70.0), 1945.0, 2020.0),
+        1,
+    )
 
     return {
         "environmental_index": round((hazard_severity_index + burn_probability * 100.0 + fuel_index + moisture_index) / 4.0, 1),
@@ -200,6 +236,19 @@ def _location_specific_context_update(latitude: float | None, longitude: float |
             "canopy_adjacency_proxy_pct": canopy_adjacency_pct,
             "vegetation_continuity_proxy_pct": continuity_pct,
             "nearest_high_fuel_patch_distance_ft": nearest_high_fuel_patch_distance_ft,
+            "neighboring_structure_metrics": {
+                "nearby_structure_count_100_ft": nearby_structure_count_100_ft,
+                "nearby_structure_count_300_ft": nearby_structure_count_300_ft,
+                "nearest_structure_distance_ft": distance_to_nearest_structure_ft,
+                "distance_to_nearest_structure_ft": distance_to_nearest_structure_ft,
+            },
+            "structure_density": structure_density_index,
+            "structure_density_proxy": structure_density_index,
+            "distance_to_nearest_structure_ft": distance_to_nearest_structure_ft,
+            "distance_to_nearest_structure": distance_to_nearest_structure_ft,
+            "clustering_index": clustering_index,
+            "building_age_proxy_year": building_age_proxy_year,
+            "building_age_material_proxy_risk": building_age_material_proxy_risk,
         },
         "moisture_context": {"dryness_index": dryness_index},
     }
@@ -255,6 +304,19 @@ def default_wildfire_context_dict(
                 "ring_30_100_ft": {"vegetation_density": 50.0},
                 "ring_100_300_ft": {"vegetation_density": 55.0},
             },
+            "neighboring_structure_metrics": {
+                "nearby_structure_count_100_ft": 2.0,
+                "nearby_structure_count_300_ft": 9.0,
+                "nearest_structure_distance_ft": 85.0,
+                "distance_to_nearest_structure_ft": 85.0,
+            },
+            "structure_density": 47.0,
+            "structure_density_proxy": 47.0,
+            "distance_to_nearest_structure_ft": 85.0,
+            "distance_to_nearest_structure": 85.0,
+            "clustering_index": 45.0,
+            "building_age_proxy_year": 1988.0,
+            "building_age_material_proxy_risk": 56.0,
             "region_status": "prepared",
             "region_id": "benchmark_region",
         },

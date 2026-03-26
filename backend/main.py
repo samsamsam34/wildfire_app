@@ -4216,6 +4216,12 @@ def _build_score_variance_diagnostics(
         "nearest_structure_distance_ft": _safe_float(
             ((property_level_context or {}).get("neighboring_structure_metrics") or {}).get("nearest_structure_distance_ft")
         ),
+        "distance_to_nearest_structure_ft": _safe_float(
+            (property_level_context or {}).get("distance_to_nearest_structure_ft")
+            or ((property_level_context or {}).get("neighboring_structure_metrics") or {}).get("distance_to_nearest_structure_ft")
+        ),
+        "structure_density": _safe_float((property_level_context or {}).get("structure_density")),
+        "clustering_index": _safe_float((property_level_context or {}).get("clustering_index")),
         "building_age_proxy_year": _safe_float((property_level_context or {}).get("building_age_proxy_year")),
         "building_age_material_proxy_risk": _safe_float((property_level_context or {}).get("building_age_material_proxy_risk")),
     }

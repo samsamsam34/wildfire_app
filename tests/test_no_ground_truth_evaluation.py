@@ -291,3 +291,28 @@ def test_build_wildfire_context_syncs_property_ring_metrics_to_structure_ring_me
     )
     assert context.structure_ring_metrics["ring_0_5_ft"]["vegetation_density"] == 12.0
     assert context.structure_ring_metrics["ring_5_30_ft"]["vegetation_density"] == 28.0
+
+
+def test_build_wildfire_context_location_specific_structure_proxy_fields_vary() -> None:
+    ctx_a = build_wildfire_context(latitude=39.7392, longitude=-104.9903)
+    ctx_b = build_wildfire_context(latitude=47.6062, longitude=-122.3321)
+
+    plc_a = ctx_a.property_level_context
+    plc_b = ctx_b.property_level_context
+
+    assert isinstance(plc_a.get("neighboring_structure_metrics"), dict)
+    assert isinstance(plc_b.get("neighboring_structure_metrics"), dict)
+    assert plc_a.get("structure_density") is not None
+    assert plc_b.get("structure_density") is not None
+    assert plc_a.get("clustering_index") is not None
+    assert plc_b.get("clustering_index") is not None
+    assert plc_a.get("building_age_proxy_year") is not None
+    assert plc_b.get("building_age_proxy_year") is not None
+
+    varying_fields = (
+        "structure_density",
+        "clustering_index",
+        "building_age_proxy_year",
+        "building_age_material_proxy_risk",
+    )
+    assert any((plc_a.get(field) != plc_b.get(field)) for field in varying_fields)

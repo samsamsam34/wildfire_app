@@ -43,12 +43,17 @@ PROXY_RISK_UP_FEATURE_KEYS = (
     "near_structure_vegetation_0_5_pct",
     "ring_0_5_ft_vegetation_density",
     "ring_5_30_ft_vegetation_density",
+    "structure_density",
+    "clustering_index",
+    "building_age_material_proxy_risk",
 )
 PROXY_RISK_DOWN_FEATURE_KEYS = (
     "historic_fire_distance_km",
     "wildland_distance_m",
     "nearest_high_fuel_patch_distance_ft",
     "nearest_vegetation_distance_ft",
+    "distance_to_nearest_structure_ft",
+    "building_age_proxy_year",
 )
 HAZARD_SEGMENT_THRESHOLDS = (35.0, 55.0, 75.0)
 VEGETATION_SEGMENT_THRESHOLDS = (25.0, 50.0, 75.0)
