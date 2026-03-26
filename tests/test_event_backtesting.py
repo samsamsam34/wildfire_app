@@ -333,7 +333,9 @@ def test_run_event_backtest_default_context_is_location_specific(tmp_path: Path)
     feature_sources = {
         "near_structure_vegetation_0_5_pct": "raw_feature_vector",
         "ring_0_5_ft_vegetation_density": "raw_feature_vector",
+        "fuel_model": "raw_feature_vector",
         "slope_index": "transformed_feature_vector",
+        "fuel_index": "transformed_feature_vector",
         "wildland_distance_index": "transformed_feature_vector",
         "burn_probability_index": "transformed_feature_vector",
     }

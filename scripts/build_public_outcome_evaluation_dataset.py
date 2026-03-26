@@ -1541,6 +1541,8 @@ def _compute_feature_variation_diagnostics(rows: list[dict[str, Any]]) -> dict[s
         "ring_5_30_ft_vegetation_density",
         "slope",
         "slope_index",
+        "fuel_model",
+        "fuel_index",
         "wildland_distance_index",
         "burn_probability",
         "burn_probability_index",
@@ -1583,6 +1585,21 @@ def _compute_feature_variation_diagnostics(rows: list[dict[str, Any]]) -> dict[s
             str(item.get("feature") or ""),
         )
     )
+    class_features_without_separation = sorted(
+        [
+            feature
+            for feature, stats in class_feature_stats.items()
+            if int(stats.get("positive_count") or 0) > 0
+            and int(stats.get("negative_count") or 0) > 0
+            and (_safe_float(stats.get("mean_delta_positive_minus_negative")) is None or abs(float(stats.get("mean_delta_positive_minus_negative") or 0.0)) <= 1e-6)
+        ]
+    )
+    class_features_with_separation_count = sum(
+        1
+        for stats in class_feature_stats.values()
+        if _safe_float(stats.get("mean_delta_positive_minus_negative")) is not None
+        and abs(float(stats.get("mean_delta_positive_minus_negative") or 0.0)) > 1e-6
+    )
 
     return {
         "numeric_feature_count": len(numeric_values),
@@ -1600,6 +1617,8 @@ def _compute_feature_variation_diagnostics(rows: list[dict[str, Any]]) -> dict[s
         "class_counts": class_counts,
         "class_key_feature_stats": class_feature_stats,
         "class_key_feature_separation": class_separation_rows[:20],
+        "class_features_with_separation_count": class_features_with_separation_count,
+        "class_features_without_separation": class_features_without_separation,
         "feature_stats": per_feature[:300],
     }
 
@@ -2073,6 +2092,32 @@ def _build_join_quality_warnings(*, quality: dict[str, Any]) -> list[str]:
     if key_constant:
         warnings.append(
             f"Key features with near-zero variance detected: {key_constant}. Verify per-row spatial sampling and data coverage."
+        )
+    class_counts = (
+        feature_variation.get("class_counts")
+        if isinstance(feature_variation.get("class_counts"), dict)
+        else {}
+    )
+    positive_n = int(class_counts.get("positive") or 0)
+    negative_n = int(class_counts.get("negative") or 0)
+    if positive_n > 0 and negative_n > 0:
+        class_features_with_separation = int(feature_variation.get("class_features_with_separation_count") or 0)
+        if class_features_with_separation <= 0:
+            warnings.append(
+                "Outcome classes show no measurable separation across key features; predictive signal may remain weak."
+            )
+        class_without = (
+            feature_variation.get("class_features_without_separation")
+            if isinstance(feature_variation.get("class_features_without_separation"), list)
+            else []
+        )
+        if class_without:
+            warnings.append(
+                f"Key features without positive/negative class separation: {class_without[:8]}."
+            )
+    elif positive_n == 0 or negative_n == 0:
+        warnings.append(
+            "Class-separation diagnostics are limited because one or both outcome classes are absent in joined rows."
         )
     return warnings
 

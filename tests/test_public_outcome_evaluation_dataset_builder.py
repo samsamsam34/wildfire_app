@@ -210,6 +210,21 @@ def test_builder_joins_rows_and_reports_join_quality(tmp_path: Path) -> None:
     assert int(class_counts.get("negative") or 0) >= 1
     class_stats = (join_quality.get("feature_variation_diagnostics") or {}).get("class_key_feature_stats") or {}
     assert "burn_probability" in class_stats
+    assert "fuel_model" in class_stats
+    class_sep_count = int(
+        ((join_quality.get("feature_variation_diagnostics") or {}).get("class_features_with_separation_count") or 0)
+    )
+    assert class_sep_count >= 0
+    assert isinstance(
+        ((join_quality.get("feature_variation_diagnostics") or {}).get("class_features_without_separation") or []),
+        list,
+    )
+    warnings = join_quality.get("join_quality_warnings") or []
+    assert isinstance(warnings, list)
+    assert any(
+        ("class separation" in str(item).lower()) or ("outcome classes" in str(item).lower())
+        for item in warnings
+    )
     assert join_quality.get("no_silent_data_loss_guarantee") is True
     filter_summary = join_quality.get("filter_summary") or {}
     assert isinstance(filter_summary.get("filter_reason_counts"), dict)
