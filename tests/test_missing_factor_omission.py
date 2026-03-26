@@ -134,6 +134,60 @@ def test_weighted_contributions_include_basis_component_and_support_metadata():
     assert any(str(row.get("factor_evidence_status")) in {"fallback", "suppressed"} for row in rows)
 
 
+def test_structure_proxy_features_raise_vulnerability_when_direct_structure_age_missing():
+    engine = RiskEngine(load_scoring_config())
+    attrs = PropertyAttributes(
+        roof_type="class a",
+        vent_type="ember-resistant",
+        defensible_space_ft=30.0,
+        construction_year=None,
+    )
+    low_proxy_context = _context(
+        ring_metrics={
+            "ring_0_5_ft": {"vegetation_density": 24.0},
+            "ring_5_30_ft": {"vegetation_density": 31.0},
+            "ring_30_100_ft": {"vegetation_density": 42.0},
+        }
+    )
+    low_proxy_context.property_level_context.update(
+        {
+            "neighboring_structure_metrics": {
+                "nearby_structure_count_100_ft": 0.0,
+                "nearby_structure_count_300_ft": 3.0,
+                "nearest_structure_distance_ft": 180.0,
+            },
+            "building_age_proxy_year": 2016.0,
+            "building_age_material_proxy_risk": 28.0,
+        }
+    )
+    high_proxy_context = _context(
+        ring_metrics={
+            "ring_0_5_ft": {"vegetation_density": 24.0},
+            "ring_5_30_ft": {"vegetation_density": 31.0},
+            "ring_30_100_ft": {"vegetation_density": 42.0},
+        }
+    )
+    high_proxy_context.property_level_context.update(
+        {
+            "neighboring_structure_metrics": {
+                "nearby_structure_count_100_ft": 5.0,
+                "nearby_structure_count_300_ft": 18.0,
+                "nearest_structure_distance_ft": 12.0,
+            },
+            "building_age_proxy_year": 1965.0,
+            "building_age_material_proxy_risk": 76.0,
+        }
+    )
+
+    low_proxy = engine.score(attrs, lat=0.0, lon=0.0, context=low_proxy_context)
+    high_proxy = engine.score(attrs, lat=0.0, lon=0.0, context=high_proxy_context)
+
+    low_struct = low_proxy.submodel_scores["structure_vulnerability_risk"].score
+    high_struct = high_proxy.submodel_scores["structure_vulnerability_risk"].score
+    assert high_struct > low_struct
+    assert (high_struct - low_struct) >= 5.0
+
+
 def test_blended_score_supports_adaptive_weighting_with_risk_context():
     engine = RiskEngine(load_scoring_config())
     attrs = PropertyAttributes(roof_type="class a", vent_type="ember-resistant", defensible_space_ft=20.0)

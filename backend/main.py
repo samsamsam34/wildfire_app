@@ -1378,6 +1378,12 @@ def _map_key_input_to_source_field(key: str) -> str | None:
         return "zone_0_5_ft"
     if "vegetation_continuity_proxy" in k:
         return "zone_30_100_ft"
+    if "nearby_structure_count" in k or "structure_to_structure" in k:
+        return "zone_30_100_ft"
+    if "nearest_structure_distance" in k or "nearest_structure_proximity" in k:
+        return "zone_30_100_ft"
+    if "building_age_proxy" in k:
+        return "construction_year"
     if "nearest_high_fuel_patch" in k:
         return "wildland_distance"
     return None
@@ -4201,6 +4207,17 @@ def _build_score_variance_diagnostics(
         "canopy_adjacency_proxy_pct": _safe_float((property_level_context or {}).get("canopy_adjacency_proxy_pct")),
         "vegetation_continuity_proxy_pct": _safe_float((property_level_context or {}).get("vegetation_continuity_proxy_pct")),
         "nearest_high_fuel_patch_distance_ft": _safe_float((property_level_context or {}).get("nearest_high_fuel_patch_distance_ft")),
+        "nearby_structure_count_100_ft": _safe_float(
+            ((property_level_context or {}).get("neighboring_structure_metrics") or {}).get("nearby_structure_count_100_ft")
+        ),
+        "nearby_structure_count_300_ft": _safe_float(
+            ((property_level_context or {}).get("neighboring_structure_metrics") or {}).get("nearby_structure_count_300_ft")
+        ),
+        "nearest_structure_distance_ft": _safe_float(
+            ((property_level_context or {}).get("neighboring_structure_metrics") or {}).get("nearest_structure_distance_ft")
+        ),
+        "building_age_proxy_year": _safe_float((property_level_context or {}).get("building_age_proxy_year")),
+        "building_age_material_proxy_risk": _safe_float((property_level_context or {}).get("building_age_material_proxy_risk")),
     }
 
     transformed_feature_vector = {

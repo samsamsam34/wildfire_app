@@ -128,6 +128,19 @@ def _set_numeric(raw: dict[str, Any], key: str, delta: float, lo: float, hi: flo
     raw[key] = round(_clamp(float(current) + float(delta), lo, hi), digits)
 
 
+def _ensure_structure_proxy_defaults(raw: dict[str, Any], base_id: str) -> None:
+    if _safe_float(raw.get("nearby_structure_count_100_ft")) is None:
+        raw["nearby_structure_count_100_ft"] = round(_rng_offset(base_id, "proxy_n100", 0.0, 6.0), 3)
+    if _safe_float(raw.get("nearby_structure_count_300_ft")) is None:
+        raw["nearby_structure_count_300_ft"] = round(_rng_offset(base_id, "proxy_n300", 3.0, 20.0), 3)
+    if _safe_float(raw.get("nearest_structure_distance_ft")) is None:
+        raw["nearest_structure_distance_ft"] = round(_rng_offset(base_id, "proxy_nft", 8.0, 180.0), 3)
+    if _safe_float(raw.get("building_age_proxy_year")) is None:
+        raw["building_age_proxy_year"] = round(_rng_offset(base_id, "proxy_year", 1955.0, 2016.0), 1)
+    if _safe_float(raw.get("building_age_material_proxy_risk")) is None:
+        raw["building_age_material_proxy_risk"] = round(_rng_offset(base_id, "proxy_material", 30.0, 78.0), 3)
+
+
 def _sync_raw_transformed(raw: dict[str, Any], transformed: dict[str, Any]) -> None:
     burn = _safe_float(raw.get("burn_probability"))
     if burn is not None:
@@ -174,6 +187,7 @@ def apply_synthetic_profile(
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     raw = dict(raw_features)
     transformed = dict(transformed_features)
+    _ensure_structure_proxy_defaults(raw, base_id)
 
     if profile == "baseline_observed":
         _sync_raw_transformed(raw, transformed)
@@ -187,6 +201,12 @@ def apply_synthetic_profile(
         _set_percent(raw, "canopy_adjacency_proxy_pct", 6.0 + jitter)
         _set_percent(raw, "vegetation_continuity_proxy_pct", 6.0 + jitter)
         _set_distance(raw, "nearest_high_fuel_patch_distance_ft", -90.0)
+    if profile in {"vegetation_up", "slope_up", "fuel_near", "combined_high"}:
+        _set_numeric(raw, "nearby_structure_count_100_ft", 1.0 + (0.15 * jitter), 0.0, 12.0)
+        _set_numeric(raw, "nearby_structure_count_300_ft", 2.2 + (0.3 * jitter), 0.0, 40.0)
+        _set_distance(raw, "nearest_structure_distance_ft", -18.0, lo=0.0, hi=600.0)
+        _set_numeric(raw, "building_age_proxy_year", -4.0 + jitter, 1940.0, 2020.0, digits=1)
+        _set_numeric(raw, "building_age_material_proxy_risk", 6.0 + (0.5 * jitter), 0.0, 100.0)
     if profile in {"mitigation_low"}:
         _set_percent(raw, "ring_0_5_ft_vegetation_density", -10.0 + jitter)
         _set_percent(raw, "ring_5_30_ft_vegetation_density", -8.0 + jitter)
@@ -205,9 +225,19 @@ def apply_synthetic_profile(
     if profile in {"fuel_near", "combined_high"}:
         _set_numeric(raw, "fuel_model", 8.0 + jitter, 0.0, 100.0)
         _set_distance(raw, "wildland_distance_m", -140.0)
+        _set_numeric(raw, "nearby_structure_count_100_ft", 1.8 + (0.25 * jitter), 0.0, 12.0)
+        _set_numeric(raw, "nearby_structure_count_300_ft", 4.0 + (0.5 * jitter), 0.0, 40.0)
+        _set_distance(raw, "nearest_structure_distance_ft", -26.0, lo=0.0, hi=600.0)
+        _set_numeric(raw, "building_age_proxy_year", -6.0 + jitter, 1940.0, 2020.0, digits=1)
+        _set_numeric(raw, "building_age_material_proxy_risk", 8.0 + (0.8 * jitter), 0.0, 100.0)
     if profile in {"mitigation_low"}:
         _set_numeric(raw, "fuel_model", -9.0 + jitter, 0.0, 100.0)
         _set_distance(raw, "wildland_distance_m", +180.0)
+        _set_numeric(raw, "nearby_structure_count_100_ft", -1.6 + (0.2 * jitter), 0.0, 12.0)
+        _set_numeric(raw, "nearby_structure_count_300_ft", -3.2 + (0.4 * jitter), 0.0, 40.0)
+        _set_distance(raw, "nearest_structure_distance_ft", +36.0, lo=0.0, hi=600.0)
+        _set_numeric(raw, "building_age_proxy_year", 10.0 + jitter, 1940.0, 2020.0, digits=1)
+        _set_numeric(raw, "building_age_material_proxy_risk", -12.0 + (0.8 * jitter), 0.0, 100.0)
 
     _sync_raw_transformed(raw, transformed)
     return raw, transformed

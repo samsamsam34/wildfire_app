@@ -212,11 +212,37 @@ class RiskEngine:
         neighboring_structures = (context.property_level_context or {}).get("neighboring_structure_metrics") or {}
         nearby_structure_count_100 = _to_float((neighboring_structures or {}).get("nearby_structure_count_100_ft"))
         nearby_structure_count_300 = _to_float((neighboring_structures or {}).get("nearby_structure_count_300_ft"))
+        nearest_structure_distance_ft = _to_float(
+            (neighboring_structures or {}).get("nearest_structure_distance_ft")
+        )
+        if nearest_structure_distance_ft is None:
+            nearest_structure_distance_ft = _to_float(
+                (context.property_level_context or {}).get("nearest_structure_distance_ft")
+            )
         structure_to_structure_exposure_index = None
         if nearby_structure_count_100 is not None or nearby_structure_count_300 is not None:
             c100 = nearby_structure_count_100 or 0.0
             c300 = nearby_structure_count_300 or 0.0
             structure_to_structure_exposure_index = round(min(100.0, (c100 * 14.0) + (c300 * 2.5)), 1)
+        nearest_structure_proximity_index = None
+        if nearest_structure_distance_ft is not None:
+            nearest_structure_proximity_index = round(
+                max(0.0, min(100.0, 100.0 - ((nearest_structure_distance_ft / 300.0) * 100.0))),
+                1,
+            )
+        local_structure_density_index = None
+        if nearby_structure_count_100 is not None or nearby_structure_count_300 is not None:
+            c100 = nearby_structure_count_100 or 0.0
+            c300 = nearby_structure_count_300 or 0.0
+            # Normalize counts into an interpretable 0-100 proxy that can vary
+            # even when explicit structure attributes are missing.
+            local_structure_density_index = round(
+                min(
+                    100.0,
+                    ((min(c100, 8.0) / 8.0) * 70.0) + ((min(c300, 24.0) / 24.0) * 30.0),
+                ),
+                1,
+            )
 
         available_ring_densities = [
             density
@@ -504,22 +530,62 @@ class RiskEngine:
 
         structure_assumptions: List[str] = []
         construction_risk = None
-        if attrs.construction_year is None:
-            structure_assumptions.append("Construction year missing; structure vulnerability model excludes age contribution.")
-        elif attrs.construction_year >= 2015:
-            construction_risk = 30.0
-        elif attrs.construction_year >= 2008:
-            construction_risk = 42.0
-        else:
+        building_age_proxy_year = _to_float((context.property_level_context or {}).get("building_age_proxy_year"))
+        building_age_material_proxy_risk = _to_float(
+            (context.property_level_context or {}).get("building_age_material_proxy_risk")
+        )
+
+        def _construction_risk_from_year(year_value: int | float | None) -> float | None:
+            if year_value is None:
+                return None
+            year_int = int(max(1900, min(2028, round(float(year_value)))))
+            if year_int >= 2015:
+                return 30.0
+            if year_int >= 2008:
+                return 42.0
             # Continuous aging risk so older stock does not collapse into one bucket.
-            years_pre_2008 = max(0, 2008 - int(attrs.construction_year))
-            construction_risk = min(75.0, 50.0 + (years_pre_2008 * 0.55))
+            years_pre_2008 = max(0, 2008 - year_int)
+            return min(75.0, 50.0 + (years_pre_2008 * 0.55))
+
+        if attrs.construction_year is None:
+            if building_age_material_proxy_risk is not None:
+                construction_risk = max(0.0, min(100.0, float(building_age_material_proxy_risk)))
+                structure_assumptions.append(
+                    "Construction year missing; used proxy age/material risk estimate from local structure context."
+                )
+            elif building_age_proxy_year is not None:
+                construction_risk = _construction_risk_from_year(building_age_proxy_year)
+                if construction_risk is not None:
+                    structure_assumptions.append(
+                        "Construction year missing; using neighborhood age proxy year for material-era vulnerability."
+                    )
+            elif local_structure_density_index is not None or nearest_structure_proximity_index is not None:
+                proxy_terms: list[tuple[float, float]] = []
+                if local_structure_density_index is not None:
+                    proxy_terms.append((0.58, 43.0 + (local_structure_density_index * 0.40)))
+                if nearest_structure_proximity_index is not None:
+                    proxy_terms.append((0.42, 39.0 + (nearest_structure_proximity_index * 0.36)))
+                if proxy_terms:
+                    proxy_num = sum(weight * value for weight, value in proxy_terms)
+                    proxy_den = sum(weight for weight, _ in proxy_terms)
+                    construction_risk = max(0.0, min(100.0, proxy_num / max(proxy_den, 1e-6)))
+                    structure_assumptions.append(
+                        "Construction year missing; applied neighborhood building-pattern proxy for age/material risk."
+                    )
+            else:
+                structure_assumptions.append(
+                    "Construction year missing; structure vulnerability model excludes age contribution."
+                )
+        else:
+            construction_risk = _construction_risk_from_year(attrs.construction_year)
 
         structure_score = weighted_score(
             [
-                (0.45, roof_ignition, "Roof type unavailable for structure vulnerability model."),
-                (0.35, vent_ignition, "Vent type unavailable for structure vulnerability model."),
-                (0.20, construction_risk, "Construction year unavailable for structure vulnerability model."),
+                (0.37, roof_ignition, "Roof type unavailable for structure vulnerability model."),
+                (0.29, vent_ignition, "Vent type unavailable for structure vulnerability model."),
+                (0.22, construction_risk, "Construction year and building-age proxy unavailable for structure vulnerability model."),
+                (0.07, local_structure_density_index, "Nearby structure density unavailable for structure vulnerability model."),
+                (0.05, nearest_structure_proximity_index, "Nearest-building distance unavailable for structure vulnerability model."),
             ],
             structure_assumptions,
         )
@@ -531,6 +597,11 @@ class RiskEngine:
                 "roof_ignition_proxy": roof_ignition,
                 "vent_ignition_proxy": vent_ignition,
                 "construction_risk_proxy": construction_risk,
+                "building_age_proxy_year": building_age_proxy_year,
+                "building_age_material_proxy_risk": building_age_material_proxy_risk,
+                "local_structure_density_index": local_structure_density_index,
+                "nearest_structure_distance_ft": nearest_structure_distance_ft,
+                "nearest_structure_proximity_index": nearest_structure_proximity_index,
             },
             assumptions=structure_assumptions,
             raw_score=round(float(structure_score), 4),

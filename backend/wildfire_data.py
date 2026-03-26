@@ -1033,6 +1033,35 @@ class WildfireDataClient:
             query_lat, query_lon = user_selected_point_coords
             assumptions.append("Using user-selected map point for structure lookup and ring analysis.")
 
+        def _derive_age_material_proxy(
+            neighbor_metrics_payload: dict[str, Any] | None,
+        ) -> tuple[float | None, float | None]:
+            if not isinstance(neighbor_metrics_payload, dict):
+                return None, None
+            nearby_100 = self._coerce_float(neighbor_metrics_payload.get("nearby_structure_count_100_ft"))
+            nearby_300 = self._coerce_float(neighbor_metrics_payload.get("nearby_structure_count_300_ft"))
+            nearest_ft = self._coerce_float(neighbor_metrics_payload.get("nearest_structure_distance_ft"))
+            if nearby_100 is None and nearby_300 is None and nearest_ft is None:
+                return None, None
+            c100 = max(0.0, nearby_100 or 0.0)
+            c300 = max(0.0, nearby_300 or 0.0)
+            density_component = min(
+                100.0,
+                ((min(c100, 8.0) / 8.0) * 70.0) + ((min(c300, 24.0) / 24.0) * 30.0),
+            )
+            proximity_component = None
+            if nearest_ft is not None:
+                proximity_component = max(0.0, min(100.0, 100.0 - ((nearest_ft / 300.0) * 100.0)))
+            risk_terms: list[tuple[float, float]] = [(0.68, density_component)]
+            if proximity_component is not None:
+                risk_terms.append((0.32, proximity_component))
+            risk_num = sum(weight * value for weight, value in risk_terms)
+            risk_den = sum(weight for weight, _ in risk_terms)
+            proxy_risk = max(0.0, min(100.0, risk_num / max(risk_den, 1e-6)))
+            # Coarse "era" proxy used only when explicit construction-year data is missing.
+            proxy_year = max(1945.0, min(2018.0, 2018.0 - ((proxy_risk / 100.0) * 58.0)))
+            return round(proxy_year, 1), round(proxy_risk, 1)
+
         selected_geom: Any | None = None
         if normalized_geometry_source in {"user_selected", "user_modified"}:
             selected_geom, geometry_error = self._coerce_selected_structure_geometry(selected_structure_geometry)
@@ -1203,6 +1232,14 @@ class WildfireDataClient:
             ):
                 assumptions.append("Structure ring metrics were approximated from point-based annulus sampling.")
                 sources.append("Point-proxy ring vegetation summaries")
+            neighbor_metrics = footprint_client.get_neighbor_structure_metrics(
+                lat=query_lat,
+                lon=query_lon,
+                subject_footprint=None,
+                source_path=result.source,
+                radius_m=300.0 * 0.3048,
+            )
+            proxy_year, proxy_risk = _derive_age_material_proxy(neighbor_metrics)
             status = "not_found"
             assumptions_blob = " ".join(result.assumptions).lower()
             if "not configured" in assumptions_blob or "missing" in assumptions_blob:
@@ -1268,7 +1305,9 @@ class WildfireDataClient:
                 "fallback_mode": "point_based",
                 "ring_metrics": point_proxy_metrics if point_proxy_metrics else None,
                 "nearest_vegetation_distance_ft": nearest_vegetation_distance_ft,
-                "neighboring_structure_metrics": None,
+                "neighboring_structure_metrics": neighbor_metrics,
+                "building_age_proxy_year": proxy_year,
+                "building_age_material_proxy_risk": proxy_risk,
             }, assumptions, sources
 
         sources.append("Building footprint source")
@@ -1340,6 +1379,7 @@ class WildfireDataClient:
             source_path=result.source,
             radius_m=300.0 * 0.3048,
         )
+        proxy_year, proxy_risk = _derive_age_material_proxy(neighbor_metrics)
 
         if ring_metrics:
             sources.append("Structure ring vegetation summaries")
@@ -1436,6 +1476,8 @@ class WildfireDataClient:
             "ring_metrics": ring_metrics,
             "nearest_vegetation_distance_ft": nearest_vegetation_distance_ft,
             "neighboring_structure_metrics": neighbor_metrics,
+            "building_age_proxy_year": proxy_year,
+            "building_age_material_proxy_risk": proxy_risk,
             "footprint_centroid": {
                 "latitude": result.centroid[0] if result.centroid else None,
                 "longitude": result.centroid[1] if result.centroid else None,
@@ -2298,14 +2340,25 @@ class WildfireDataClient:
             ),
         )
         neighbor_metrics = ring_context.get("neighboring_structure_metrics")
+        neighbor_metrics_observed = bool(
+            isinstance(neighbor_metrics, dict)
+            and any(
+                self._coerce_float((neighbor_metrics or {}).get(field)) is not None
+                for field in (
+                    "nearby_structure_count_100_ft",
+                    "nearby_structure_count_300_ft",
+                    "nearest_structure_distance_ft",
+                )
+            )
+        )
         update_layer_audit(
             layer_audit,
             "neighbor_structures",
             sample_attempted=True,
-            sample_succeeded=isinstance(neighbor_metrics, dict) and neighbor_metrics.get("neighbor_count") is not None,
+            sample_succeeded=neighbor_metrics_observed,
             coverage_status=(
                 "observed"
-                if isinstance(neighbor_metrics, dict) and neighbor_metrics.get("neighbor_count") is not None
+                if neighbor_metrics_observed
                 else "fallback_used"
             ),
             raw_value_preview=neighbor_metrics if isinstance(neighbor_metrics, dict) else None,

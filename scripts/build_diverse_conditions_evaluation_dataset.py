@@ -365,6 +365,11 @@ def _feature_distribution(rows: list[dict[str, Any]]) -> dict[str, Any]:
         ("ring_0_5_ft_vegetation_density", lambda r: _safe_float(_raw_vector(r).get("ring_0_5_ft_vegetation_density"))),
         ("ring_5_30_ft_vegetation_density", lambda r: _safe_float(_raw_vector(r).get("ring_5_30_ft_vegetation_density"))),
         ("burn_probability", lambda r: _safe_float(_raw_vector(r).get("burn_probability"))),
+        ("nearby_structure_count_100_ft", lambda r: _safe_float(_raw_vector(r).get("nearby_structure_count_100_ft"))),
+        ("nearby_structure_count_300_ft", lambda r: _safe_float(_raw_vector(r).get("nearby_structure_count_300_ft"))),
+        ("nearest_structure_distance_ft", lambda r: _safe_float(_raw_vector(r).get("nearest_structure_distance_ft"))),
+        ("building_age_proxy_year", lambda r: _safe_float(_raw_vector(r).get("building_age_proxy_year"))),
+        ("building_age_material_proxy_risk", lambda r: _safe_float(_raw_vector(r).get("building_age_material_proxy_risk"))),
     ]
     out: dict[str, Any] = {}
     for key, extractor in keys:
