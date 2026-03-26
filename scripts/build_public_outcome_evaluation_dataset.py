@@ -37,6 +37,35 @@ LEAKAGE_TOKENS = (
     "label",
 )
 
+STRUCTURE_PROXY_FEATURE_KEYS: tuple[str, ...] = (
+    "nearby_structure_count_100_ft",
+    "nearby_structure_count_300_ft",
+    "nearest_structure_distance_ft",
+    "distance_to_nearest_structure_ft",
+    "structure_density",
+    "structure_density_proxy",
+    "clustering_index",
+    "local_structure_clustering_index",
+    "building_age_proxy_year",
+    "building_age_material_proxy_risk",
+)
+
+NEAR_STRUCTURE_VEGETATION_FEATURE_KEYS: tuple[str, ...] = (
+    "near_structure_vegetation_0_5_pct",
+    "ring_0_5_ft_vegetation_density",
+    "ring_5_30_ft_vegetation_density",
+    "ring_0_5_ft_vegetation_density_proxy_blend",
+    "ring_5_30_ft_vegetation_density_proxy_blend",
+    "canopy_adjacency_proxy_pct",
+    "vegetation_continuity_proxy_pct",
+    "near_structure_connectivity_index",
+    "near_structure_connectivity_index_proxy_blend",
+    "nearest_high_fuel_patch_distance_ft",
+    "nearest_high_fuel_patch_distance_ft_proxy_blend",
+    "defensible_space_proxy_score",
+    "defensible_space_proxy_score_blend",
+)
+
 
 @dataclass(frozen=True)
 class OutcomeRecord:
@@ -500,6 +529,373 @@ def _dedupe_joined_rows_by_property_event_id(
 def _distance_sort_key(distance_m: float | None, outcome: OutcomeRecord) -> tuple[Any, ...]:
     distance_token = round(float(distance_m or 0.0), DISTANCE_TIEBREAK_DECIMALS)
     return (distance_token, *_stable_outcome_sort_key(outcome))
+
+
+def _feature_identity_key(row: FeatureRecord) -> tuple[str, str, str, str, str]:
+    return (
+        str(row.artifact_path or ""),
+        str(row.event_id or ""),
+        str(row.record_id or ""),
+        str(row.source_record_id or ""),
+        str(row.address_norm or ""),
+    )
+
+
+def _clamp(value: float, lo: float, hi: float) -> float:
+    return max(float(lo), min(float(hi), float(value)))
+
+
+def _build_feature_spatial_context(feature_rows: list[FeatureRecord]) -> dict[tuple[str, str, str, str, str], dict[str, float | None]]:
+    by_event: dict[str, list[FeatureRecord]] = {}
+    all_rows_with_coords: list[FeatureRecord] = []
+    for row in feature_rows:
+        if row.latitude is None or row.longitude is None:
+            continue
+        event_key = str(row.event_id or "")
+        by_event.setdefault(event_key, []).append(row)
+        all_rows_with_coords.append(row)
+
+    for event_key in list(by_event.keys()):
+        by_event[event_key] = sorted(by_event[event_key], key=_stable_feature_sort_key)
+    all_rows_with_coords = sorted(all_rows_with_coords, key=_stable_feature_sort_key)
+
+    output: dict[tuple[str, str, str, str, str], dict[str, float | None]] = {}
+    for row in all_rows_with_coords:
+        identity = _feature_identity_key(row)
+        event_candidates = by_event.get(str(row.event_id or ""), [])
+        candidates = [candidate for candidate in event_candidates if _feature_identity_key(candidate) != identity]
+        if not candidates:
+            candidates = [candidate for candidate in all_rows_with_coords if _feature_identity_key(candidate) != identity]
+        distances_m: list[float] = []
+        for candidate in candidates:
+            d = _haversine_m(row.latitude, row.longitude, candidate.latitude, candidate.longitude)
+            if d is not None:
+                distances_m.append(float(d))
+        distances_m.sort()
+        nearest_m = distances_m[0] if distances_m else None
+        nearby_100 = sum(1 for d in distances_m if d <= 30.48)  # 100 ft
+        nearby_300 = sum(1 for d in distances_m if d <= 91.44)  # 300 ft
+        nearest_ft = float(nearest_m * 3.28084) if nearest_m is not None else None
+        nearest_proximity_index = (
+            _clamp(100.0 - ((float(nearest_ft) / 300.0) * 100.0), 0.0, 100.0)
+            if nearest_ft is not None
+            else None
+        )
+        structure_density_index = _clamp(
+            ((min(float(nearby_100), 8.0) / 8.0) * 70.0)
+            + ((min(float(nearby_300), 24.0) / 24.0) * 30.0),
+            0.0,
+            100.0,
+        )
+        clustering_index = (
+            _clamp((0.70 * structure_density_index) + (0.30 * float(nearest_proximity_index)), 0.0, 100.0)
+            if nearest_proximity_index is not None
+            else structure_density_index
+        )
+        output[identity] = {
+            "nearby_structure_count_100_ft": float(nearby_100),
+            "nearby_structure_count_300_ft": float(nearby_300),
+            "nearest_structure_distance_ft": (round(float(nearest_ft), 3) if nearest_ft is not None else None),
+            "distance_to_nearest_structure_ft": (round(float(nearest_ft), 3) if nearest_ft is not None else None),
+            "structure_density": round(float(structure_density_index), 3),
+            "structure_density_proxy": round(float(structure_density_index), 3),
+            "clustering_index": round(float(clustering_index), 3),
+            "local_structure_clustering_index": round(float(clustering_index), 3),
+            "spatial_neighbor_count": float(len(distances_m)),
+        }
+    return output
+
+
+def _extract_proxy_build_year(
+    *,
+    feature: FeatureRecord,
+    raw_feature_vector: dict[str, Any],
+    transformed_feature_vector: dict[str, Any],
+) -> float | None:
+    input_payload = feature.payload.get("input_payload") if isinstance(feature.payload.get("input_payload"), dict) else {}
+    attributes = input_payload.get("attributes") if isinstance(input_payload.get("attributes"), dict) else {}
+    candidate_values: list[Any] = [
+        raw_feature_vector.get("building_age_proxy_year"),
+        transformed_feature_vector.get("building_age_proxy_year"),
+        feature.payload.get("building_age_proxy_year"),
+        feature.payload.get("year_built"),
+        feature.payload.get("built_year"),
+        feature.payload.get("construction_year"),
+        feature.payload.get("structure_year_built"),
+        attributes.get("year_built"),
+        attributes.get("built_year"),
+        attributes.get("construction_year"),
+    ]
+    for value in candidate_values:
+        numeric = _safe_float(value)
+        if numeric is None:
+            continue
+        if 1800.0 <= float(numeric) <= 2100.0:
+            return round(float(numeric), 1)
+    return None
+
+
+def _enrich_feature_vectors_with_property_proxies(
+    *,
+    feature: FeatureRecord,
+    raw_feature_vector: dict[str, Any],
+    transformed_feature_vector: dict[str, Any],
+    spatial_context: dict[str, float | None] | None,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    raw = dict(raw_feature_vector or {})
+    transformed = dict(transformed_feature_vector or {})
+    property_context = (
+        feature.payload.get("property_level_context")
+        if isinstance(feature.payload.get("property_level_context"), dict)
+        else {}
+    )
+    source_by_feature: dict[str, str] = {}
+
+    def _observed(key: str) -> float | None:
+        value = _coalesce_float(
+            raw.get(key),
+            transformed.get(key),
+            property_context.get(key),
+            feature.payload.get(key),
+        )
+        if value is not None:
+            source_by_feature[key] = "observed"
+        return value
+
+    def _set_value(
+        key: str,
+        value: float | None,
+        *,
+        source: str,
+        mirrored_transformed: bool = True,
+    ) -> float | None:
+        if value is None:
+            source_by_feature.setdefault(key, "missing")
+            return None
+        numeric = round(float(value), 4)
+        raw[key] = numeric
+        if mirrored_transformed:
+            if _safe_float(transformed.get(key)) is None:
+                transformed[key] = numeric
+        source_by_feature[key] = source
+        return numeric
+
+    def _fuel_to_percent(value: float | None) -> float | None:
+        if value is None:
+            return None
+        return _clamp((float(value) / 40.0) * 100.0, 0.0, 100.0)
+
+    spatial = dict(spatial_context or {})
+
+    for key in (
+        "nearby_structure_count_100_ft",
+        "nearby_structure_count_300_ft",
+        "nearest_structure_distance_ft",
+        "distance_to_nearest_structure_ft",
+        "structure_density",
+        "structure_density_proxy",
+        "clustering_index",
+        "local_structure_clustering_index",
+    ):
+        observed = _observed(key)
+        if observed is not None:
+            _set_value(key, observed, source="observed")
+            continue
+        spatial_value = _safe_float(spatial.get(key))
+        _set_value(key, spatial_value, source=("spatial_proxy" if spatial_value is not None else "missing"))
+
+    build_year = _extract_proxy_build_year(
+        feature=feature,
+        raw_feature_vector=raw,
+        transformed_feature_vector=transformed,
+    )
+    if build_year is not None:
+        _set_value("building_age_proxy_year", build_year, source=("observed" if _observed("building_age_proxy_year") is not None else "derived_proxy"), mirrored_transformed=False)
+    else:
+        source_by_feature.setdefault("building_age_proxy_year", "missing")
+
+    material_proxy = _observed("building_age_material_proxy_risk")
+    if material_proxy is None and build_year is not None:
+        event_year = feature.event_year or _parse_year(feature.payload.get("event_date")) or 2026
+        building_age = max(0.0, float(event_year) - float(build_year))
+        material_proxy = _clamp((building_age / 90.0) * 100.0, 0.0, 100.0)
+        _set_value("building_age_material_proxy_risk", material_proxy, source="derived_proxy")
+    elif material_proxy is not None:
+        _set_value("building_age_material_proxy_risk", material_proxy, source="observed")
+    else:
+        source_by_feature.setdefault("building_age_material_proxy_risk", "missing")
+
+    canopy_pct = _coalesce_float(raw.get("canopy_cover"), transformed.get("canopy_index"), property_context.get("canopy_cover"))
+    fuel_pct = _coalesce_float(
+        _fuel_to_percent(_coalesce_float(raw.get("fuel_model"), transformed.get("fuel_index"))),
+        transformed.get("fuel_index"),
+    )
+    structure_density = _coalesce_float(raw.get("structure_density"), transformed.get("structure_density"))
+    clustering = _coalesce_float(raw.get("clustering_index"), transformed.get("clustering_index"))
+    nearest_structure_ft = _coalesce_float(raw.get("distance_to_nearest_structure_ft"), raw.get("nearest_structure_distance_ft"))
+    proximity_index = (
+        _clamp(100.0 - ((float(nearest_structure_ft) / 300.0) * 100.0), 0.0, 100.0)
+        if nearest_structure_ft is not None
+        else None
+    )
+
+    ring_0_5_estimate = _clamp(
+        (
+            (0.42 * float(canopy_pct if canopy_pct is not None else 45.0))
+            + (0.26 * float(fuel_pct if fuel_pct is not None else 45.0))
+            + (0.20 * float(proximity_index if proximity_index is not None else (structure_density or 45.0)))
+            + (0.12 * float(clustering if clustering is not None else (structure_density or 45.0)))
+        ),
+        0.0,
+        100.0,
+    )
+    ring_0_5 = _observed("ring_0_5_ft_vegetation_density")
+    if ring_0_5 is None:
+        ring_0_5 = ring_0_5_estimate
+        _set_value("ring_0_5_ft_vegetation_density", ring_0_5, source="derived_proxy")
+    else:
+        _set_value("ring_0_5_ft_vegetation_density", ring_0_5, source="observed")
+    _set_value(
+        "ring_0_5_ft_vegetation_density_proxy_blend",
+        _clamp((0.70 * float(ring_0_5)) + (0.30 * float(ring_0_5_estimate)), 0.0, 100.0),
+        source="derived_proxy",
+        mirrored_transformed=False,
+    )
+
+    near_0_5 = _observed("near_structure_vegetation_0_5_pct")
+    if near_0_5 is None:
+        _set_value("near_structure_vegetation_0_5_pct", ring_0_5, source="derived_proxy")
+    else:
+        _set_value("near_structure_vegetation_0_5_pct", near_0_5, source="observed")
+
+    ring_5_30_estimate = _clamp(
+        max(
+            float(ring_0_5 or 0.0) + 4.0,
+            (0.48 * float(canopy_pct if canopy_pct is not None else 45.0))
+            + (0.22 * float(fuel_pct if fuel_pct is not None else 45.0))
+            + (0.18 * float(structure_density if structure_density is not None else 45.0))
+            + (0.12 * float(clustering if clustering is not None else 45.0)),
+        ),
+        0.0,
+        100.0,
+    )
+    ring_5_30 = _observed("ring_5_30_ft_vegetation_density")
+    if ring_5_30 is None:
+        ring_5_30 = ring_5_30_estimate
+        _set_value("ring_5_30_ft_vegetation_density", ring_5_30, source="derived_proxy")
+    else:
+        _set_value("ring_5_30_ft_vegetation_density", ring_5_30, source="observed")
+    _set_value(
+        "ring_5_30_ft_vegetation_density_proxy_blend",
+        _clamp((0.70 * float(ring_5_30)) + (0.30 * float(ring_5_30_estimate)), 0.0, 100.0),
+        source="derived_proxy",
+        mirrored_transformed=False,
+    )
+
+    canopy_adj = _observed("canopy_adjacency_proxy_pct")
+    if canopy_adj is None:
+        canopy_adj = _clamp(
+            (0.55 * float(ring_0_5 or 0.0))
+            + (0.45 * float(structure_density if structure_density is not None else 45.0)),
+            0.0,
+            100.0,
+        )
+        _set_value("canopy_adjacency_proxy_pct", canopy_adj, source="derived_proxy")
+    else:
+        _set_value("canopy_adjacency_proxy_pct", canopy_adj, source="observed")
+
+    continuity = _observed("vegetation_continuity_proxy_pct")
+    if continuity is None:
+        continuity = _clamp(
+            (0.40 * float(ring_5_30 or 0.0))
+            + (0.35 * float(ring_0_5 or 0.0))
+            + (0.25 * float(canopy_adj or 0.0)),
+            0.0,
+            100.0,
+        )
+        _set_value("vegetation_continuity_proxy_pct", continuity, source="derived_proxy")
+    else:
+        _set_value("vegetation_continuity_proxy_pct", continuity, source="observed")
+
+    connectivity = _observed("near_structure_connectivity_index")
+    if connectivity is None:
+        connectivity = _clamp(
+            (0.45 * float(ring_0_5 or 0.0))
+            + (0.35 * float(ring_5_30 or 0.0))
+            + (0.20 * float(continuity or 0.0)),
+            0.0,
+            100.0,
+        )
+        _set_value("near_structure_connectivity_index", connectivity, source="derived_proxy")
+    else:
+        _set_value("near_structure_connectivity_index", connectivity, source="observed")
+    connectivity_proxy_blend = _clamp(
+        (0.50 * float(connectivity or 0.0))
+        + (0.30 * float(ring_5_30_estimate))
+        + (0.20 * float(ring_0_5_estimate)),
+        0.0,
+        100.0,
+    )
+    _set_value(
+        "near_structure_connectivity_index_proxy_blend",
+        connectivity_proxy_blend,
+        source="derived_proxy",
+        mirrored_transformed=False,
+    )
+
+    high_fuel_dist = _observed("nearest_high_fuel_patch_distance_ft")
+    if high_fuel_dist is None:
+        high_fuel_dist = _clamp(
+            25.0 + ((100.0 - float(max(connectivity or 0.0, ring_5_30 or 0.0))) * 7.5),
+            0.0,
+            1000.0,
+        )
+        _set_value("nearest_high_fuel_patch_distance_ft", high_fuel_dist, source="derived_proxy")
+    else:
+        _set_value("nearest_high_fuel_patch_distance_ft", high_fuel_dist, source="observed")
+    high_fuel_dist_proxy_blend = _clamp(
+        25.0 + ((100.0 - float(max(connectivity_proxy_blend, ring_5_30_estimate))) * 7.5),
+        0.0,
+        1000.0,
+    )
+    _set_value(
+        "nearest_high_fuel_patch_distance_ft_proxy_blend",
+        high_fuel_dist_proxy_blend,
+        source="derived_proxy",
+        mirrored_transformed=False,
+    )
+
+    defensible_proxy = _observed("defensible_space_proxy_score")
+    if defensible_proxy is None:
+        defensible_proxy = _clamp(100.0 - ((0.72 * float(ring_0_5 or 0.0)) + (0.28 * float(ring_5_30 or 0.0))), 0.0, 100.0)
+        _set_value("defensible_space_proxy_score", defensible_proxy, source="derived_proxy")
+    else:
+        _set_value("defensible_space_proxy_score", defensible_proxy, source="observed")
+    defensible_proxy_blend = _clamp(
+        100.0 - ((0.72 * float(ring_0_5_estimate)) + (0.28 * float(ring_5_30_estimate))),
+        0.0,
+        100.0,
+    )
+    _set_value(
+        "defensible_space_proxy_score_blend",
+        defensible_proxy_blend,
+        source="derived_proxy",
+        mirrored_transformed=False,
+    )
+
+    observed_fields = sorted([key for key, source in source_by_feature.items() if source == "observed"])
+    inferred_fields = sorted([key for key, source in source_by_feature.items() if source in {"spatial_proxy", "derived_proxy"}])
+    missing_fields = sorted([key for key, source in source_by_feature.items() if source == "missing"])
+    feature_observation_summary = {
+        "source_by_feature": dict(sorted(source_by_feature.items())),
+        "observed_fields": observed_fields,
+        "inferred_fields": inferred_fields,
+        "missing_fields": missing_fields,
+        "observed_count": len(observed_fields),
+        "inferred_count": len(inferred_fields),
+        "missing_count": len(missing_fields),
+    }
+    return raw, transformed, feature_observation_summary
 
 
 def _sorted_outcomes(rows: list[OutcomeRecord]) -> list[OutcomeRecord]:
@@ -1637,6 +2033,10 @@ def _compute_feature_variation_diagnostics(rows: list[dict[str, Any]]) -> dict[s
         "near_structure_connectivity_index",
         "ring_0_5_ft_vegetation_density",
         "ring_5_30_ft_vegetation_density",
+        "ring_0_5_ft_vegetation_density_proxy_blend",
+        "ring_5_30_ft_vegetation_density_proxy_blend",
+        "near_structure_connectivity_index_proxy_blend",
+        "nearest_high_fuel_patch_distance_ft_proxy_blend",
         "structure_density",
         "distance_to_nearest_structure_ft",
         "clustering_index",
@@ -1704,6 +2104,38 @@ def _compute_feature_variation_diagnostics(rows: list[dict[str, Any]]) -> dict[s
         and abs(float(stats.get("mean_delta_positive_minus_negative") or 0.0)) > 1e-6
     )
 
+    feature_stddev_by_name: dict[str, float | None] = {}
+    feature_non_null_count: dict[str, int] = {}
+    for feature_name, values in numeric_values.items():
+        feature_non_null_count[feature_name] = int(len(values))
+        stddev = _population_stddev(values)
+        feature_stddev_by_name[feature_name] = float(stddev) if stddev is not None else None
+
+    def _feature_group_summary(feature_names: tuple[str, ...]) -> dict[str, Any]:
+        available_count = 0
+        non_zero_variance_count = 0
+        stddev_map: dict[str, float | None] = {}
+        non_zero_variance_features: list[str] = []
+        for name in feature_names:
+            count = int(feature_non_null_count.get(name) or 0)
+            stddev = feature_stddev_by_name.get(name)
+            stddev_map[name] = (round(float(stddev), 9) if stddev is not None else None)
+            if count > 0:
+                available_count += 1
+            if count >= 2 and stddev is not None and float(stddev) > 1e-9:
+                non_zero_variance_count += 1
+                non_zero_variance_features.append(name)
+        return {
+            "feature_names": list(feature_names),
+            "available_feature_count": available_count,
+            "non_zero_variance_feature_count": non_zero_variance_count,
+            "non_zero_variance_features": non_zero_variance_features,
+            "feature_stddev": stddev_map,
+        }
+
+    structure_feature_variation = _feature_group_summary(STRUCTURE_PROXY_FEATURE_KEYS)
+    near_structure_vegetation_variation = _feature_group_summary(NEAR_STRUCTURE_VEGETATION_FEATURE_KEYS)
+
     return {
         "numeric_feature_count": len(numeric_values),
         "features_with_variation_count": len(
@@ -1722,6 +2154,8 @@ def _compute_feature_variation_diagnostics(rows: list[dict[str, Any]]) -> dict[s
         "class_key_feature_separation": class_separation_rows[:20],
         "class_features_with_separation_count": class_features_with_separation_count,
         "class_features_without_separation": class_features_without_separation,
+        "structure_feature_variation": structure_feature_variation,
+        "near_structure_vegetation_feature_variation": near_structure_vegetation_variation,
         "feature_stats": per_feature[:300],
     }
 
@@ -2233,6 +2667,78 @@ def _build_filter_summary_markdown(
     return "\n".join(lines) + "\n"
 
 
+def _build_dataset_quality_report(*, quality: dict[str, Any]) -> dict[str, Any]:
+    variation = (
+        quality.get("feature_variation_diagnostics")
+        if isinstance(quality.get("feature_variation_diagnostics"), dict)
+        else {}
+    )
+    fallback_summary = (
+        quality.get("fallback_usage_summary")
+        if isinstance(quality.get("fallback_usage_summary"), dict)
+        else {}
+    )
+    return {
+        "total_labeled_rows": int(quality.get("total_joined_records") or 0),
+        "unique_property_event_id_count": int(quality.get("unique_property_event_id_count") or 0),
+        "positive_label_count": int((quality.get("by_label_join_counts") or {}).get("destroyed", 0))
+        + int((quality.get("by_label_join_counts") or {}).get("major_damage", 0)),
+        "negative_label_count": int((quality.get("by_label_join_counts") or {}).get("no_damage", 0))
+        + int((quality.get("by_label_join_counts") or {}).get("minor_damage", 0)),
+        "unknown_label_count": int((quality.get("by_label_join_counts") or {}).get("unknown", 0)),
+        "fallback_heavy_fraction": _safe_float(fallback_summary.get("fallback_heavy_fraction")) or 0.0,
+        "feature_variation_summary": {
+            "numeric_feature_count": int(variation.get("numeric_feature_count") or 0),
+            "features_with_variation_count": int(variation.get("features_with_variation_count") or 0),
+            "near_zero_variance_feature_count": int(variation.get("near_zero_variance_feature_count") or 0),
+            "key_feature_near_zero_variance": (
+                variation.get("key_feature_near_zero_variance")
+                if isinstance(variation.get("key_feature_near_zero_variance"), list)
+                else []
+            ),
+        },
+        "structure_feature_variation": (
+            variation.get("structure_feature_variation")
+            if isinstance(variation.get("structure_feature_variation"), dict)
+            else {}
+        ),
+        "near_structure_vegetation_feature_variation": (
+            variation.get("near_structure_vegetation_feature_variation")
+            if isinstance(variation.get("near_structure_vegetation_feature_variation"), dict)
+            else {}
+        ),
+    }
+
+
+def _build_dataset_quality_markdown(
+    *,
+    run_id: str,
+    generated_at: str,
+    dataset_quality: dict[str, Any],
+) -> str:
+    lines = [
+        "# Evaluation Dataset Quality Report",
+        "",
+        "- Dataset-quality diagnostics for public-outcome validation inputs.",
+        "- Public observed outcomes remain directional validation signals, not insurer claims truth.",
+        "",
+        f"- Run ID: `{run_id}`",
+        f"- Generated at: `{generated_at}`",
+        f"- Total labeled rows: `{dataset_quality.get('total_labeled_rows')}`",
+        f"- Unique property_event_id rows: `{dataset_quality.get('unique_property_event_id_count')}`",
+        f"- Positive labels: `{dataset_quality.get('positive_label_count')}`",
+        f"- Negative labels: `{dataset_quality.get('negative_label_count')}`",
+        f"- Unknown labels: `{dataset_quality.get('unknown_label_count')}`",
+        f"- Fallback-heavy fraction: `{dataset_quality.get('fallback_heavy_fraction')}`",
+        "",
+        "## Feature Variation",
+        f"- Summary: `{dataset_quality.get('feature_variation_summary')}`",
+        f"- Structure feature variation: `{dataset_quality.get('structure_feature_variation')}`",
+        f"- Near-structure vegetation variation: `{dataset_quality.get('near_structure_vegetation_feature_variation')}`",
+    ]
+    return "\n".join(lines) + "\n"
+
+
 def _build_pipeline_audit_markdown(
     *,
     run_id: str,
@@ -2360,6 +2866,26 @@ def _build_join_quality_warnings(*, quality: dict[str, Any]) -> list[str]:
     if key_constant:
         warnings.append(
             f"Key features with near-zero variance detected: {key_constant}. Verify per-row spatial sampling and data coverage."
+        )
+    structure_variation = (
+        feature_variation.get("structure_feature_variation")
+        if isinstance(feature_variation.get("structure_feature_variation"), dict)
+        else {}
+    )
+    structure_non_zero = int(structure_variation.get("non_zero_variance_feature_count") or 0)
+    if structure_non_zero <= 0:
+        warnings.append(
+            "Structure-level proxy features show zero non-zero-variance coverage; structure-level discrimination will remain weak."
+        )
+    near_structure_vegetation_variation = (
+        feature_variation.get("near_structure_vegetation_feature_variation")
+        if isinstance(feature_variation.get("near_structure_vegetation_feature_variation"), dict)
+        else {}
+    )
+    near_veg_non_zero = int(near_structure_vegetation_variation.get("non_zero_variance_feature_count") or 0)
+    if near_veg_non_zero <= 0:
+        warnings.append(
+            "Near-structure vegetation proxy features show zero non-zero-variance coverage; near-home sensitivity will remain limited."
         )
     class_counts = (
         feature_variation.get("class_counts")
@@ -2568,6 +3094,7 @@ def build_public_outcome_evaluation_dataset(
         allow_duplicate_outcome_matches=bool(allow_duplicate_outcome_matches),
         address_token_overlap_min=max(0.35, min(1.0, float(address_token_overlap_min))),
     )
+    feature_spatial_context_by_identity = _build_feature_spatial_context(feature_rows)
     def _run_join_pass(*, pass_name: str, pass_join_config: JoinConfig, retention_fallback_mode: bool) -> dict[str, Any]:
         joined_rows_pass: list[dict[str, Any]] = []
         excluded_rows_pass: list[dict[str, Any]] = list(missing_feature_artifacts)
@@ -2709,6 +3236,24 @@ def build_public_outcome_evaluation_dataset(
             site_hazard = extracted_scores.get("site_hazard_score")
             home_vuln = extracted_scores.get("home_ignition_vulnerability_score")
             readiness = extracted_scores.get("insurance_readiness_score")
+            raw_feature_vector = (
+                feature.payload.get("raw_feature_vector")
+                if isinstance(feature.payload.get("raw_feature_vector"), dict)
+                else {}
+            )
+            transformed_feature_vector = (
+                feature.payload.get("transformed_feature_vector")
+                if isinstance(feature.payload.get("transformed_feature_vector"), dict)
+                else {}
+            )
+            enriched_raw_feature_vector, enriched_transformed_feature_vector, feature_observation_summary = (
+                _enrich_feature_vectors_with_property_proxies(
+                    feature=feature,
+                    raw_feature_vector=raw_feature_vector,
+                    transformed_feature_vector=transformed_feature_vector,
+                    spatial_context=feature_spatial_context_by_identity.get(_feature_identity_key(feature)),
+                )
+            )
 
             confidence_payload = feature.payload.get("confidence") if isinstance(feature.payload.get("confidence"), dict) else {}
             evidence_summary = feature.payload.get("evidence_quality_summary") if isinstance(feature.payload.get("evidence_quality_summary"), dict) else {}
@@ -2741,12 +3286,20 @@ def build_public_outcome_evaluation_dataset(
                 soft_flags.append("fallback_heavy")
             if retention_fallback_mode:
                 soft_flags.append("retention_fallback_mode")
+            if int(feature_observation_summary.get("inferred_count") or 0) > 0:
+                soft_flags.append("inferred_structure_or_vegetation_proxies")
+            if int(feature_observation_summary.get("missing_count") or 0) > 0:
+                soft_flags.append("missing_structure_or_vegetation_proxies")
             for flag in soft_flags:
                 soft_flag_counts_pass[flag] = soft_flag_counts_pass.get(flag, 0) + 1
             if fallback_heavy:
                 caveat_flags.append("fallback_heavy_evidence")
             elif float(fallback_usage.get("fallback_weight_fraction") or 0.0) >= FALLBACK_HEAVY_ELEVATED_WEIGHT_THRESHOLD:
                 caveat_flags.append("elevated_fallback_usage")
+            if int(feature_observation_summary.get("inferred_count") or 0) > 0:
+                caveat_flags.append("inferred_structure_or_vegetation_features")
+            if int(feature_observation_summary.get("missing_count") or 0) > 0:
+                caveat_flags.append("missing_structure_or_vegetation_features")
             row_confidence_tier = _derive_row_confidence_tier(
                 join_confidence_tier=str(join_meta.get("join_confidence_tier") or "low"),
                 model_confidence_tier=str(confidence_payload.get("confidence_tier") or feature.payload.get("confidence_tier") or "unknown"),
@@ -2771,6 +3324,11 @@ def build_public_outcome_evaluation_dataset(
                     "longitude": feature.longitude,
                     "coordinate_normalization_mode": feature.payload.get("_coordinate_normalization_mode"),
                     "parcel_identifier": feature.payload.get("parcel_identifier") or feature.payload.get("parcel_id"),
+                    "property_level_context": (
+                        feature.payload.get("property_level_context")
+                        if isinstance(feature.payload.get("property_level_context"), dict)
+                        else {}
+                    ),
                 },
                 "outcome": {
                     "record_id": matched.payload.get("record_id"),
@@ -2804,16 +3362,8 @@ def build_public_outcome_evaluation_dataset(
                     "coverage_summary": coverage_summary,
                 },
                 "feature_snapshot": {
-                    "raw_feature_vector": (
-                        feature.payload.get("raw_feature_vector")
-                        if isinstance(feature.payload.get("raw_feature_vector"), dict)
-                        else {}
-                    ),
-                    "transformed_feature_vector": (
-                        feature.payload.get("transformed_feature_vector")
-                        if isinstance(feature.payload.get("transformed_feature_vector"), dict)
-                        else {}
-                    ),
+                    "raw_feature_vector": enriched_raw_feature_vector,
+                    "transformed_feature_vector": enriched_transformed_feature_vector,
                     "factor_contribution_breakdown": (
                         feature.payload.get("factor_contribution_breakdown")
                         if isinstance(feature.payload.get("factor_contribution_breakdown"), dict)
@@ -2848,6 +3398,7 @@ def build_public_outcome_evaluation_dataset(
                     "missing_feature_fields": missing_feature_fields,
                     "fallback_heavy": bool(fallback_heavy),
                     "fallback_usage": fallback_usage,
+                    "feature_observation_summary": feature_observation_summary,
                 },
                 "provenance": {
                     "model_governance": (
@@ -3339,6 +3890,8 @@ def build_public_outcome_evaluation_dataset(
     join_quality["filter_summary"] = filter_summary
     join_quality["no_silent_data_loss_guarantee"] = bool(filter_summary.get("no_silent_data_loss_guarantee"))
     join_quality["join_quality_warnings"] = _build_join_quality_warnings(quality=join_quality)
+    dataset_quality_report = _build_dataset_quality_report(quality=join_quality)
+    join_quality["dataset_quality_report"] = dataset_quality_report
     join_confidence_debug_rows: list[dict[str, Any]] = []
     for row in joined_rows:
         join_meta = row.get("join_metadata") if isinstance(row.get("join_metadata"), dict) else {}
@@ -3398,6 +3951,17 @@ def build_public_outcome_evaluation_dataset(
             run_id=run_token,
             generated_at=generated_at,
             filter_summary=filter_summary,
+        ),
+        encoding="utf-8",
+    )
+    dataset_quality_path = run_dir / "dataset_quality_report.json"
+    dataset_quality_path.write_text(json.dumps(dataset_quality_report, indent=2, sort_keys=True), encoding="utf-8")
+    dataset_quality_md_path = run_dir / "dataset_quality_report.md"
+    dataset_quality_md_path.write_text(
+        _build_dataset_quality_markdown(
+            run_id=run_token,
+            generated_at=generated_at,
+            dataset_quality=dataset_quality_report,
         ),
         encoding="utf-8",
     )
@@ -3487,6 +4051,8 @@ def build_public_outcome_evaluation_dataset(
             "join_confidence_debug_jsonl": str(join_confidence_debug_path),
             "filter_summary_json": str(filter_summary_path),
             "filter_summary_markdown": str(filter_summary_md_path),
+            "dataset_quality_report_json": str(dataset_quality_path),
+            "dataset_quality_report_markdown": str(dataset_quality_md_path),
             "summary_markdown": str(summary_path),
             "pipeline_audit_report_markdown": (
                 str(pipeline_audit_report_path) if pipeline_audit_report_path is not None else None
@@ -3514,6 +4080,13 @@ def build_public_outcome_evaluation_dataset(
             "no_silent_data_loss_guarantee": bool(filter_summary.get("no_silent_data_loss_guarantee")),
             "retention_fallback_triggered": bool(retention_fallback_summary.get("triggered")),
             "retention_fallback_used": bool(retention_fallback_summary.get("used")),
+            "fallback_heavy_fraction": dataset_quality_report.get("fallback_heavy_fraction"),
+            "structure_features_non_zero_variance_count": (
+                ((dataset_quality_report.get("structure_feature_variation") or {}).get("non_zero_variance_feature_count"))
+            ),
+            "near_structure_vegetation_features_non_zero_variance_count": (
+                ((dataset_quality_report.get("near_structure_vegetation_feature_variation") or {}).get("non_zero_variance_feature_count"))
+            ),
         },
         "caveat": (
             "Public observed outcomes are directional validation signals and not equivalent to insurer claims truth."
@@ -3530,6 +4103,8 @@ def build_public_outcome_evaluation_dataset(
         "join_quality_report_path": str(join_report_path),
         "join_confidence_debug_path": str(join_confidence_debug_path),
         "filter_summary_path": str(filter_summary_path),
+        "dataset_quality_report_path": str(dataset_quality_path),
+        "dataset_quality_markdown_path": str(dataset_quality_md_path),
         "pipeline_audit_report_path": (
             str(pipeline_audit_report_path) if pipeline_audit_report_path is not None else None
         ),
@@ -3912,6 +4487,10 @@ def main() -> int:
     print(
         "[public-eval-ds] Feature variation: "
         f"{join_report.get('feature_variation_diagnostics')}"
+    )
+    print(
+        "[public-eval-ds] Dataset quality report: "
+        f"{join_report.get('dataset_quality_report')}"
     )
     print(
         "[public-eval-ds] Diversity spread: "

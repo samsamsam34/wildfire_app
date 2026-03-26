@@ -116,6 +116,8 @@ Artifacts:
 - `evaluation_dataset.csv`
 - `join_quality_metrics.json`
 - `join_quality_report.md`
+- `dataset_quality_report.json`
+- `dataset_quality_report.md`
 - `manifest.json`
 - `join_quality_report.json` (backward-compatible alias of `join_quality_metrics.json`)
 - `summary.md`
@@ -157,6 +159,16 @@ Artifacts:
 - excluded rows and reasons
 - leakage warnings
 - score-backfill diagnostics (attempted/backfilled/remaining-missing)
+- structure-feature and near-structure-vegetation variation diagnostics:
+  - non-zero-variance feature counts
+  - per-feature stddev maps
+  - available vs missing proxy-feature counts
+
+Each joined row now also includes `evaluation.feature_observation_summary` with:
+- `observed_fields`
+- `inferred_fields`
+- `missing_fields`
+- per-feature source tags (`observed`, `spatial_proxy`, `derived_proxy`, `missing`)
 
 Each joined row includes `evaluation.fallback_usage` for per-row auditing:
 - factor counts (observed/inferred/fallback/missing)

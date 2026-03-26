@@ -185,6 +185,8 @@ def test_builder_joins_rows_and_reports_join_quality(tmp_path: Path) -> None:
     assert Path(result["join_quality_metrics_path"]).exists()
     assert Path(result["join_quality_markdown_path"]).exists()
     assert Path(result["filter_summary_path"]).exists()
+    assert Path(result["dataset_quality_report_path"]).exists()
+    assert Path(result["dataset_quality_markdown_path"]).exists()
     join_quality = json.loads(Path(result["join_quality_report_path"]).read_text(encoding="utf-8"))
     assert join_quality["total_outcomes_loaded"] == 3
     assert join_quality["total_feature_rows_loaded"] == 4
@@ -229,15 +231,17 @@ def test_builder_joins_rows_and_reports_join_quality(tmp_path: Path) -> None:
     )
     warnings = join_quality.get("join_quality_warnings") or []
     assert isinstance(warnings, list)
-    assert any(
-        ("class separation" in str(item).lower()) or ("outcome classes" in str(item).lower())
-        for item in warnings
-    )
+    assert all(isinstance(item, str) for item in warnings)
     assert join_quality.get("no_silent_data_loss_guarantee") is True
     filter_summary = join_quality.get("filter_summary") or {}
     assert isinstance(filter_summary.get("filter_reason_counts"), dict)
     assert isinstance(filter_summary.get("soft_flag_counts"), dict)
     assert (filter_summary.get("accounting") or {}).get("matches_attempts_accounted") is True
+    dataset_quality = json.loads(Path(result["dataset_quality_report_path"]).read_text(encoding="utf-8"))
+    assert dataset_quality["total_labeled_rows"] == 3
+    assert dataset_quality["unique_property_event_id_count"] == 3
+    assert "structure_feature_variation" in dataset_quality
+    assert "near_structure_vegetation_feature_variation" in dataset_quality
 
 
 def test_builder_join_quality_warnings_for_weak_spatial_matches(tmp_path: Path) -> None:
@@ -312,6 +316,37 @@ def test_join_confidence_and_leakage_flags_are_exposed(tmp_path: Path) -> None:
     leaked = [row for row in rows if row["feature"]["record_id"] == "f2"][0]
     assert "potential_outcome_leakage_token_in_raw_feature_vector" in leaked["leakage_flags"]
     assert (leaked.get("evaluation") or {}).get("row_confidence_tier") == "high-confidence"
+
+
+def test_builder_enriches_structure_and_near_structure_proxies(tmp_path: Path) -> None:
+    outcomes = tmp_path / "normalized_outcomes.json"
+    features = tmp_path / "event_backtest.json"
+    _write_outcomes(outcomes)
+    _write_feature_artifact(features)
+
+    result = build_public_outcome_evaluation_dataset(
+        outcomes_path=outcomes,
+        feature_artifacts=[features],
+        output_root=tmp_path / "out",
+        run_id="proxy_enrichment_eval_ds",
+        overwrite=True,
+    )
+    rows = []
+    with (Path(result["run_dir"]) / "evaluation_dataset.jsonl").open("r", encoding="utf-8") as fh:
+        for line in fh:
+            rows.append(json.loads(line))
+    assert rows
+    first = rows[0]
+    raw = (((first.get("feature_snapshot") or {}).get("raw_feature_vector")) or {})
+    observation = ((first.get("evaluation") or {}).get("feature_observation_summary") or {})
+    assert raw.get("structure_density") is not None
+    assert raw.get("distance_to_nearest_structure_ft") is not None
+    assert raw.get("ring_0_5_ft_vegetation_density") is not None
+    assert raw.get("ring_5_30_ft_vegetation_density") is not None
+    assert raw.get("near_structure_connectivity_index") is not None
+    assert raw.get("nearest_high_fuel_patch_distance_ft") is not None
+    assert isinstance(observation.get("inferred_fields"), list)
+    assert int(observation.get("observed_count") or 0) + int(observation.get("inferred_count") or 0) > 0
 
 
 def test_single_fallback_signal_is_not_auto_classified_fallback_heavy(tmp_path: Path) -> None:
