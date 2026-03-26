@@ -1726,6 +1726,169 @@ def _compute_feature_variation_diagnostics(rows: list[dict[str, Any]]) -> dict[s
     }
 
 
+def _quantile_thresholds(values: list[float], *, lower_q: float = 1.0 / 3.0, upper_q: float = 2.0 / 3.0) -> tuple[float, float] | None:
+    if not values:
+        return None
+    sorted_values = sorted(float(v) for v in values)
+    if len(sorted_values) == 1:
+        single = float(sorted_values[0])
+        return (single, single)
+    low_idx = max(0, min(len(sorted_values) - 1, int(round(lower_q * (len(sorted_values) - 1)))))
+    high_idx = max(0, min(len(sorted_values) - 1, int(round(upper_q * (len(sorted_values) - 1)))))
+    low = float(sorted_values[low_idx])
+    high = float(sorted_values[high_idx])
+    if high < low:
+        high = low
+    return (low, high)
+
+
+def _tercile_bucket(value: float | None, thresholds: tuple[float, float] | None) -> str:
+    if value is None or thresholds is None:
+        return "unknown"
+    low, high = thresholds
+    numeric = float(value)
+    if numeric <= low:
+        return "low"
+    if numeric >= high:
+        return "high"
+    return "medium"
+
+
+def _extract_diversity_proxies(row: dict[str, Any]) -> dict[str, float | str | None]:
+    scores = row.get("scores") if isinstance(row.get("scores"), dict) else {}
+    event = row.get("event") if isinstance(row.get("event"), dict) else {}
+    feature = row.get("feature") if isinstance(row.get("feature"), dict) else {}
+    feature_snapshot = row.get("feature_snapshot") if isinstance(row.get("feature_snapshot"), dict) else {}
+    raw_vector = feature_snapshot.get("raw_feature_vector") if isinstance(feature_snapshot.get("raw_feature_vector"), dict) else {}
+    transformed_vector = (
+        feature_snapshot.get("transformed_feature_vector")
+        if isinstance(feature_snapshot.get("transformed_feature_vector"), dict)
+        else {}
+    )
+    property_context = feature.get("property_level_context") if isinstance(feature.get("property_level_context"), dict) else {}
+
+    hazard = _coalesce_float(
+        scores.get("site_hazard_score"),
+        transformed_vector.get("hazard_severity_index"),
+        transformed_vector.get("burn_probability_index"),
+        raw_vector.get("wildfire_hazard"),
+        raw_vector.get("burn_probability"),
+    )
+    vegetation = _coalesce_float(
+        transformed_vector.get("ring_0_5_ft_vegetation_density"),
+        transformed_vector.get("ring_5_30_ft_vegetation_density"),
+        transformed_vector.get("near_structure_vegetation_0_5_pct"),
+        transformed_vector.get("canopy_index"),
+        raw_vector.get("ring_0_5_ft_vegetation_density"),
+        raw_vector.get("ring_5_30_ft_vegetation_density"),
+        raw_vector.get("canopy_cover"),
+    )
+    terrain = _coalesce_float(
+        transformed_vector.get("slope_index"),
+        raw_vector.get("slope"),
+    )
+    region_key = (
+        str(property_context.get("resolved_region_id") or "").strip()
+        if isinstance(property_context, dict)
+        else ""
+    )
+    if not region_key:
+        region_key = str(event.get("event_id") or "unknown_event")
+    return {
+        "hazard_proxy": hazard,
+        "vegetation_proxy": vegetation,
+        "terrain_proxy": terrain,
+        "region_proxy": region_key,
+    }
+
+
+def _compute_diversity_spread(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    if not rows:
+        return {
+            "available": False,
+            "reason": "no_rows",
+        }
+    hazard_values: list[float] = []
+    vegetation_values: list[float] = []
+    terrain_values: list[float] = []
+    extracted: list[dict[str, Any]] = []
+    region_counts: dict[str, int] = {}
+    for row in rows:
+        proxies = _extract_diversity_proxies(row)
+        extracted.append(proxies)
+        region = str(proxies.get("region_proxy") or "unknown")
+        region_counts[region] = region_counts.get(region, 0) + 1
+        hv = _safe_float(proxies.get("hazard_proxy"))
+        vv = _safe_float(proxies.get("vegetation_proxy"))
+        tv = _safe_float(proxies.get("terrain_proxy"))
+        if hv is not None:
+            hazard_values.append(float(hv))
+        if vv is not None:
+            vegetation_values.append(float(vv))
+        if tv is not None:
+            terrain_values.append(float(tv))
+
+    hazard_thresholds = _quantile_thresholds(hazard_values)
+    vegetation_thresholds = _quantile_thresholds(vegetation_values)
+    terrain_thresholds = _quantile_thresholds(terrain_values)
+    hazard_bin_counts: dict[str, int] = {"low": 0, "medium": 0, "high": 0, "unknown": 0}
+    vegetation_bin_counts: dict[str, int] = {"low": 0, "medium": 0, "high": 0, "unknown": 0}
+    terrain_bin_counts: dict[str, int] = {"low": 0, "medium": 0, "high": 0, "unknown": 0}
+    combo_counts: dict[str, int] = {}
+    for proxies in extracted:
+        h_bin = _tercile_bucket(_safe_float(proxies.get("hazard_proxy")), hazard_thresholds)
+        v_bin = _tercile_bucket(_safe_float(proxies.get("vegetation_proxy")), vegetation_thresholds)
+        t_bin = _tercile_bucket(_safe_float(proxies.get("terrain_proxy")), terrain_thresholds)
+        hazard_bin_counts[h_bin] = hazard_bin_counts.get(h_bin, 0) + 1
+        vegetation_bin_counts[v_bin] = vegetation_bin_counts.get(v_bin, 0) + 1
+        terrain_bin_counts[t_bin] = terrain_bin_counts.get(t_bin, 0) + 1
+        combo = f"h:{h_bin}|v:{v_bin}|t:{t_bin}"
+        combo_counts[combo] = combo_counts.get(combo, 0) + 1
+
+    region_total = sum(region_counts.values())
+    max_region = max(region_counts.items(), key=lambda item: (item[1], item[0])) if region_counts else ("unknown", 0)
+    max_region_share = (float(max_region[1]) / float(region_total)) if region_total > 0 else 0.0
+
+    return {
+        "available": True,
+        "region_count": len(region_counts),
+        "region_counts": dict(sorted(region_counts.items())),
+        "max_region_key": str(max_region[0]),
+        "max_region_share": round(max_region_share, 4),
+        "hazard_proxy_thresholds": (
+            [round(float(hazard_thresholds[0]), 4), round(float(hazard_thresholds[1]), 4)]
+            if hazard_thresholds is not None
+            else None
+        ),
+        "vegetation_proxy_thresholds": (
+            [round(float(vegetation_thresholds[0]), 4), round(float(vegetation_thresholds[1]), 4)]
+            if vegetation_thresholds is not None
+            else None
+        ),
+        "terrain_proxy_thresholds": (
+            [round(float(terrain_thresholds[0]), 4), round(float(terrain_thresholds[1]), 4)]
+            if terrain_thresholds is not None
+            else None
+        ),
+        "hazard_bin_counts": hazard_bin_counts,
+        "vegetation_bin_counts": vegetation_bin_counts,
+        "terrain_bin_counts": terrain_bin_counts,
+        "non_empty_bins": {
+            "hazard": sum(1 for key in ("low", "medium", "high") if int(hazard_bin_counts.get(key) or 0) > 0),
+            "vegetation": sum(1 for key in ("low", "medium", "high") if int(vegetation_bin_counts.get(key) or 0) > 0),
+            "terrain": sum(1 for key in ("low", "medium", "high") if int(terrain_bin_counts.get(key) or 0) > 0),
+        },
+        "strata_combo_count": len(combo_counts),
+        "top_strata_combos": sorted(
+            [
+                {"strata": key, "count": value}
+                for key, value in combo_counts.items()
+            ],
+            key=lambda item: (-int(item.get("count") or 0), str(item.get("strata") or "")),
+        )[:20],
+    }
+
+
 def _build_scored_record_maps(rows: list[dict[str, Any]]) -> tuple[dict[tuple[str, str], dict[str, Any]], dict[str, dict[str, Any]]]:
     by_event_record: dict[tuple[str, str], dict[str, Any]] = {}
     by_record: dict[str, dict[str, Any]] = {}
@@ -1998,6 +2161,7 @@ def _build_markdown_summary(
         f"- Duplicate rows removed by join tier: `{quality.get('duplicate_rows_removed_by_join_confidence_tier')}`",
         f"- Duplicate rows removed by join method: `{quality.get('duplicate_rows_removed_by_join_method')}`",
         f"- Feature variation diagnostics: `{quality.get('feature_variation_diagnostics')}`",
+        f"- Diversity spread diagnostics: `{quality.get('diversity_spread')}`",
         "",
         "## Coverage",
         f"- By event joined counts: `{quality.get('by_event_join_counts')}`",
@@ -2223,6 +2387,30 @@ def _build_join_quality_warnings(*, quality: dict[str, Any]) -> list[str]:
         warnings.append(
             "Class-separation diagnostics are limited because one or both outcome classes are absent in joined rows."
         )
+    diversity_spread = (
+        quality.get("diversity_spread")
+        if isinstance(quality.get("diversity_spread"), dict)
+        else {}
+    )
+    if bool(diversity_spread.get("available")):
+        max_region_share = _safe_float(diversity_spread.get("max_region_share"))
+        if max_region_share is not None and float(max_region_share) > 0.75:
+            warnings.append(
+                f"Dataset appears region-clustered (max_region_share={round(float(max_region_share), 3)}); include more regions/events for better generalization checks."
+            )
+        non_empty_bins = (
+            diversity_spread.get("non_empty_bins")
+            if isinstance(diversity_spread.get("non_empty_bins"), dict)
+            else {}
+        )
+        for axis in ("hazard", "vegetation", "terrain"):
+            axis_bins = int(non_empty_bins.get(axis) or 0)
+            if axis_bins < 2:
+                warnings.append(
+                    f"Diversity spread is weak for {axis} (non_empty_bins={axis_bins}); add properties spanning low/medium/high {axis} conditions."
+                )
+    else:
+        warnings.append("Diversity spread diagnostics unavailable; verify joined rows include usable hazard/vegetation/terrain proxies.")
     return warnings
 
 
@@ -2948,6 +3136,7 @@ def build_public_outcome_evaluation_dataset(
         reason = str((row or {}).get("reason") or "unknown")
         excluded_reason_counts[reason] = excluded_reason_counts.get(reason, 0) + 1
     feature_variation_diagnostics = _compute_feature_variation_diagnostics(joined_rows)
+    diversity_spread = _compute_diversity_spread(joined_rows)
 
     join_quality = {
         "schema_version": SCHEMA_VERSION,
@@ -3059,6 +3248,7 @@ def build_public_outcome_evaluation_dataset(
             "matched_outcomes_by_mode": dict(sorted(outcome_coordinate_modes.items())),
         },
         "feature_variation_diagnostics": feature_variation_diagnostics,
+        "diversity_spread": diversity_spread,
         "by_event_join_counts": dict(sorted(by_event_counts.items())),
         "by_label_join_counts": dict(sorted(by_label_counts.items())),
         "unmatched_feature_rows_by_event_counts": dict(sorted(unmatched_feature_rows_by_event_counts.items())),
@@ -3608,7 +3798,7 @@ def main() -> int:
         sample_backtest = Path("benchmark/event_backtest_sample_v1.json")
         if sample_backtest.exists():
             feature_artifacts = sorted({*feature_artifacts, sample_backtest.expanduser()})
-    if bool(args.include_normalized_outcomes_as_feature_artifacts) or bool(args.rapid_max_coverage):
+    if bool(args.include_normalized_outcomes_as_feature_artifacts):
         feature_artifacts = sorted({*feature_artifacts, *outcomes_paths})
     if not feature_artifacts:
         raise ValueError(
@@ -3722,6 +3912,10 @@ def main() -> int:
     print(
         "[public-eval-ds] Feature variation: "
         f"{join_report.get('feature_variation_diagnostics')}"
+    )
+    print(
+        "[public-eval-ds] Diversity spread: "
+        f"{join_report.get('diversity_spread')}"
     )
     print(
         "[public-eval-ds] Fallback usage: "

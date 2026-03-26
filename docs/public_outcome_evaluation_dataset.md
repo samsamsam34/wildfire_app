@@ -135,6 +135,7 @@ Artifacts:
 - row confidence tier counts
 - fallback usage summary (`high_evidence` / `mixed_evidence` / `fallback_heavy`)
 - fallback-heavy reason counts and fallback-weight summary stats
+- diversity spread summary across hazard/vegetation/terrain terciles plus region share
 - join confidence score stats (min/mean/max)
 - join confidence distance stats by tier
 - join confidence examples by tier
@@ -162,6 +163,11 @@ Each joined row includes `evaluation.fallback_usage` for per-row auditing:
 - coverage fallback/failed counts
 - fallback weight fraction and ratios
 - classification + reason codes used to classify `fallback_heavy`
+
+`join_quality_metrics.json` also includes `diversity_spread`:
+- `hazard_bin_counts`, `vegetation_bin_counts`, `terrain_bin_counts` (`low` / `medium` / `high` / `unknown`)
+- `region_counts` and `max_region_share` to detect clustering in one region/event
+- `strata_combo_count` and top strata combinations
 
 `join_quality_report.md` is a concise operator-facing summary with:
 - total outcomes, matched rows, and match rate

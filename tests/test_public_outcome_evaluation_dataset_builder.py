@@ -198,6 +198,11 @@ def test_builder_joins_rows_and_reports_join_quality(tmp_path: Path) -> None:
     assert "fallback_usage_summary" in join_quality
     fallback_usage_summary = join_quality.get("fallback_usage_summary") if isinstance(join_quality.get("fallback_usage_summary"), dict) else {}
     assert "classification_counts" in fallback_usage_summary
+    diversity_spread = join_quality.get("diversity_spread") if isinstance(join_quality.get("diversity_spread"), dict) else {}
+    assert bool(diversity_spread.get("available")) is True
+    assert "hazard_bin_counts" in diversity_spread
+    assert "vegetation_bin_counts" in diversity_spread
+    assert "terrain_bin_counts" in diversity_spread
     assert "join_quality_warnings" in join_quality
     assert join_quality["by_event_join_counts"]["evt-a"] == 2
     assert join_quality["by_event_join_counts"]["evt-b"] == 1
