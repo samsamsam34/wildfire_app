@@ -19,6 +19,16 @@ python scripts/evaluate_dataset_model_viability.py \
 
 This writes a separate bundle under `benchmark/public_outcomes/model_viability/<run_id>/` and answers whether the current labeled dataset appears usable for predictive modeling (with cautious caveats).
 
+`run_public_outcome_validation.py` now also emits an automatic in-report viability guardrail (`modeling_viability`) using deterministic thresholds on:
+- independent sample count
+- feature variation
+- full-model AUC margin vs deterministic random baseline
+
+If the dataset fails these checks, the report explicitly marks:
+- `dataset_viable_for_predictive_modeling=false`
+- `classification=dataset_not_viable_for_predictive_modeling`
+- guardrail warning: “Dataset not viable for predictive modeling …”
+
 Default behavior:
 - looks for the latest labeled dataset under `benchmark/public_outcomes/evaluation_dataset/<run_id>/evaluation_dataset.jsonl`
 - writes a new validation bundle under `benchmark/public_outcomes/validation/<run_id>/`
@@ -207,6 +217,7 @@ The workflow warns when:
 - class balance is highly skewed
 - fallback-heavy rows dominate
 - leakage-like patterns are detected
+- independent sample count / feature variation / model-vs-random margin fails viability thresholds
 
 If the sample is small, the report still computes available metrics and avoids overstating precision.
 Small-sample runs include explicit stability metadata:

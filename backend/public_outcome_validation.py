@@ -72,6 +72,10 @@ FALLBACK_HEAVY_ELEVATED_WEIGHT_THRESHOLD = 0.45
 FALLBACK_HEAVY_FACTOR_RATIO_THRESHOLD = 0.60
 FALLBACK_HEAVY_MISSING_RATIO_THRESHOLD = 0.50
 FALLBACK_HEAVY_COVERAGE_FALLBACK_COUNT_THRESHOLD = 2
+VIABILITY_MIN_INDEPENDENT_SAMPLES = 30
+VIABILITY_MIN_FEATURES_WITH_VARIANCE = 5
+VIABILITY_MIN_FEATURE_VARIATION_RATIO = 0.25
+VIABILITY_MIN_AUC_MARGIN_VS_RANDOM = 0.05
 
 
 def _utc_now_iso() -> str:
@@ -393,6 +397,141 @@ def _build_metric_stability(
     }
 
 
+def _independent_row_id(row: dict[str, Any], index: int) -> str:
+    property_event_id = str(row.get("property_event_id") or "").strip()
+    if property_event_id:
+        return property_event_id
+    event_id = str(row.get("event_id") or "").strip()
+    source_record_id = str(row.get("source_record_id") or "").strip()
+    record_id = str(row.get("record_id") or "").strip()
+    if event_id and source_record_id:
+        return f"{event_id}::{source_record_id}"
+    if event_id and record_id:
+        return f"{event_id}::{record_id}"
+    return f"row::{index}"
+
+
+def _build_modeling_viability(
+    *,
+    prepared_rows: list[dict[str, Any]],
+    feature_signal_diagnostics: dict[str, Any],
+    baseline_model_comparison: dict[str, Any],
+) -> dict[str, Any]:
+    independent_ids = {
+        _independent_row_id(row, index)
+        for index, row in enumerate(prepared_rows)
+        if isinstance(row, dict)
+    }
+    independent_sample_count = len(independent_ids)
+    labeled_sample_count = len(prepared_rows)
+    duplication_factor = (
+        (float(labeled_sample_count) / float(independent_sample_count))
+        if independent_sample_count > 0
+        else None
+    )
+
+    feature_count = int(feature_signal_diagnostics.get("feature_count_evaluated") or 0)
+    near_zero_variance_count = int(feature_signal_diagnostics.get("near_zero_variance_feature_count") or 0)
+    features_with_variance_count = max(0, feature_count - near_zero_variance_count)
+    variation_ratio = (
+        (float(features_with_variance_count) / float(feature_count))
+        if feature_count > 0
+        else 0.0
+    )
+
+    comparison = (
+        baseline_model_comparison.get("comparison")
+        if isinstance(baseline_model_comparison.get("comparison"), dict)
+        else {}
+    )
+    full_model_auc = _safe_float(baseline_model_comparison.get("full_model_auc"))
+    random_baseline_auc = None
+    baselines = (
+        baseline_model_comparison.get("baselines")
+        if isinstance(baseline_model_comparison.get("baselines"), dict)
+        else {}
+    )
+    random_baseline = (
+        baselines.get("random")
+        if isinstance(baselines.get("random"), dict)
+        else {}
+    )
+    random_baseline_auc = _safe_float(random_baseline.get("auc"))
+    margin_vs_random = _safe_float(comparison.get("auc_margin_vs_random_baseline"))
+    if margin_vs_random is None and full_model_auc is not None and random_baseline_auc is not None:
+        margin_vs_random = float(full_model_auc) - float(random_baseline_auc)
+
+    checks = {
+        "independent_sample_size_ok": independent_sample_count >= VIABILITY_MIN_INDEPENDENT_SAMPLES,
+        "feature_variation_ok": (
+            features_with_variance_count >= VIABILITY_MIN_FEATURES_WITH_VARIANCE
+            and variation_ratio >= VIABILITY_MIN_FEATURE_VARIATION_RATIO
+        ),
+        "model_vs_random_auc_ok": (
+            margin_vs_random is not None and margin_vs_random >= VIABILITY_MIN_AUC_MARGIN_VS_RANDOM
+        ),
+    }
+    failed_checks = [name for name, ok in checks.items() if not bool(ok)]
+    viable = not failed_checks
+    if viable:
+        classification = "viable_for_directional_modeling"
+        reason = (
+            "Dataset passes minimum independent-sample, feature-variation, and model-vs-random AUC margin checks."
+        )
+    else:
+        classification = "dataset_not_viable_for_predictive_modeling"
+        reason_parts: list[str] = []
+        if "independent_sample_size_ok" in failed_checks:
+            reason_parts.append(
+                f"independent samples {independent_sample_count} < {VIABILITY_MIN_INDEPENDENT_SAMPLES}"
+            )
+        if "feature_variation_ok" in failed_checks:
+            reason_parts.append(
+                "feature variation is too low "
+                f"({features_with_variance_count}/{feature_count} varying, ratio {variation_ratio:.3f})"
+            )
+        if "model_vs_random_auc_ok" in failed_checks:
+            if margin_vs_random is None:
+                reason_parts.append("model-vs-random AUC margin unavailable")
+            else:
+                reason_parts.append(
+                    f"model-vs-random AUC margin {margin_vs_random:.4f} < {VIABILITY_MIN_AUC_MARGIN_VS_RANDOM:.2f}"
+                )
+        reason = "; ".join(reason_parts) if reason_parts else "one or more viability checks failed"
+
+    return {
+        "dataset_viable_for_predictive_modeling": viable,
+        "classification": classification,
+        "reason": reason,
+        "thresholds": {
+            "min_independent_samples": VIABILITY_MIN_INDEPENDENT_SAMPLES,
+            "min_features_with_variance": VIABILITY_MIN_FEATURES_WITH_VARIANCE,
+            "min_feature_variation_ratio": VIABILITY_MIN_FEATURE_VARIATION_RATIO,
+            "min_auc_margin_vs_random_baseline": VIABILITY_MIN_AUC_MARGIN_VS_RANDOM,
+        },
+        "checks": {
+            "independent_sample_count": independent_sample_count,
+            "labeled_sample_count": labeled_sample_count,
+            "duplication_factor": duplication_factor,
+            "feature_count_evaluated": feature_count,
+            "near_zero_variance_feature_count": near_zero_variance_count,
+            "features_with_variance_count": features_with_variance_count,
+            "feature_variation_ratio": variation_ratio,
+            "full_model_auc": full_model_auc,
+            "random_baseline_auc": random_baseline_auc,
+            "auc_margin_vs_random_baseline": margin_vs_random,
+            "independent_sample_size_ok": checks["independent_sample_size_ok"],
+            "feature_variation_ok": checks["feature_variation_ok"],
+            "model_vs_random_auc_ok": checks["model_vs_random_auc_ok"],
+        },
+        "failed_checks": failed_checks,
+        "caveat": (
+            "This viability check is a guardrail for directional public-outcome evaluation. "
+            "It does not establish insurer-claims predictive validity."
+        ),
+    }
+
+
 def _normalize_label(value: Any) -> str:
     text = str(value or "unknown").strip().lower()
     if text in OUTCOME_RANKS:
@@ -557,6 +696,7 @@ def _compute_simple_baseline_metrics(
                 "best_baseline_name": None,
                 "best_baseline_auc": None,
                 "auc_margin_vs_best_baseline": None,
+                "auc_margin_vs_random_baseline": None,
                 "baselines_compared_count": 0,
             },
             "caveat": (
@@ -629,6 +769,12 @@ def _compute_simple_baseline_metrics(
             "best_baseline_name": best_baseline_name,
             "best_baseline_auc": best_baseline_auc,
             "auc_margin_vs_best_baseline": auc_margin,
+            "auc_margin_vs_random_baseline": (
+                float(full_model_auc) - float((baselines.get("random") or {}).get("auc"))
+                if isinstance(full_model_auc, (int, float))
+                and isinstance((baselines.get("random") or {}).get("auc"), (int, float))
+                else None
+            ),
             "baselines_compared_count": len(comparable),
             "complexity_justified_signal": (
                 "yes" if isinstance(auc_margin, float) and auc_margin > 0.0 else "no_or_inconclusive"
@@ -1083,6 +1229,7 @@ def _flatten_joined_labeled_row(row: dict[str, Any]) -> dict[str, Any]:
     }
 
     return {
+        "property_event_id": row.get("property_event_id"),
         "event_id": event.get("event_id"),
         "event_name": event.get("event_name"),
         "event_date": event.get("event_date"),
@@ -1954,6 +2101,16 @@ def _build_feature_signal_diagnostics(
         "available": True,
         "row_count_used": total_rows,
         "feature_count_evaluated": len(evaluated),
+        "near_zero_variance_feature_count": sum(
+            1
+            for row in evaluated
+            if (_safe_float(row.get("feature_stddev")) is None) or (abs(float(_safe_float(row.get("feature_stddev")) or 0.0)) <= 1e-9)
+        ),
+        "features_with_variance_count": sum(
+            1
+            for row in evaluated
+            if (_safe_float(row.get("feature_stddev")) is not None) and (abs(float(_safe_float(row.get("feature_stddev")) or 0.0)) > 1e-9)
+        ),
         "method": {
             "signal_formula": (
                 "signal_score = coverage * (0.45*max(|pearson|,|spearman|) + "
@@ -2808,10 +2965,20 @@ def evaluate_public_outcome_dataset_rows(
         min_slice_size=min_slice_size,
     )
     feature_signal_diagnostics = _build_feature_signal_diagnostics(rows=usable_rows)
+    modeling_viability = _build_modeling_viability(
+        prepared_rows=usable_rows,
+        feature_signal_diagnostics=feature_signal_diagnostics,
+        baseline_model_comparison=baseline_model_comparison,
+    )
     if not high_confidence_rows:
         guardrail_warnings.append("No high-confidence rows in this run; prioritize stronger join/feature coverage before calibration decisions.")
     if not high_evidence_rows:
         guardrail_warnings.append("No high-evidence rows in this run; results are dominated by inferred/fallback-heavy evidence.")
+    if not bool(modeling_viability.get("dataset_viable_for_predictive_modeling")):
+        guardrail_warnings.append(
+            "Dataset not viable for predictive modeling in this run: "
+            + str(modeling_viability.get("reason") or "viability guardrail check failed.")
+        )
     guardrail_warnings.extend(list(confidence_tier_performance.get("warnings") or []))
     guardrail_warnings.extend(list(metric_stability.get("warnings") or []))
     guardrail_warnings = sorted(set(str(item) for item in guardrail_warnings if str(item).strip()))
@@ -2839,7 +3006,11 @@ def evaluate_public_outcome_dataset_rows(
         "high_confidence_subset": _data_sufficiency_indicator(len(high_confidence_rows)),
     }
 
-    directional_predictive_value = bool(raw_auc is not None and raw_auc >= 0.6)
+    directional_predictive_value = bool(
+        raw_auc is not None
+        and raw_auc >= 0.6
+        and bool(modeling_viability.get("dataset_viable_for_predictive_modeling"))
+    )
     calibration_recommendation = (
         "candidate"
         if directional_predictive_value
@@ -3016,6 +3187,7 @@ def evaluate_public_outcome_dataset_rows(
         "directional_predictive_value": directional_predictive_value,
         "calibration_artifact_recommendation": calibration_recommendation,
         "feature_signal_diagnostics": feature_signal_diagnostics,
+        "modeling_viability": modeling_viability,
         "baseline_model_comparison": baseline_model_comparison,
     }
     report["narrative_summary"] = _build_narrative_summary(

@@ -355,6 +355,9 @@ def test_internal_dashboard_public_outcome_governance_endpoint(monkeypatch, tmp_
     suff = (payload["validation"]["latest_summary"] or {}).get("data_sufficiency") or {}
     assert ((suff.get("total_dataset") or {}).get("tier")) == "limited"
     assert ((suff.get("high_confidence_subset") or {}).get("tier")) == "insufficient"
+    viability = (payload["validation"]["latest_summary"] or {}).get("modeling_viability") or {}
+    assert "dataset_viable_for_predictive_modeling" in viability
+    assert "classification" in viability
     assert payload["validation"]["comparison_to_previous"]["available"] is True
     assert payload["calibration"]["comparison_to_previous"]["available"] is True
 

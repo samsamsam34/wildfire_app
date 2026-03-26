@@ -157,6 +157,13 @@ def test_evaluate_public_outcome_dataset_reports_required_metrics(tmp_path: Path
     assert "data_sufficiency_indicator" in report
     assert report["data_sufficiency_indicator"]["total_dataset"]["tier"] == "insufficient"
     assert report["data_sufficiency_indicator"]["high_confidence_subset"]["tier"] == "insufficient"
+    assert "modeling_viability" in report
+    viability = report["modeling_viability"] if isinstance(report.get("modeling_viability"), dict) else {}
+    assert viability.get("dataset_viable_for_predictive_modeling") is False
+    assert viability.get("classification") == "dataset_not_viable_for_predictive_modeling"
+    checks = viability.get("checks") if isinstance(viability.get("checks"), dict) else {}
+    assert checks.get("independent_sample_count") == report["row_count_labeled"]
+    assert "feature_variation_ratio" in checks
     fallback_diagnostics = report.get("fallback_diagnostics") if isinstance(report.get("fallback_diagnostics"), dict) else {}
     assert 0.0 <= float(fallback_diagnostics.get("fallback_heavy_fraction") or 0.0) < 1.0
     assert "rows_with_elevated_fallback_weight" in fallback_diagnostics
@@ -434,6 +441,7 @@ def test_orchestration_writes_bundle_for_insufficient_dataset(tmp_path: Path) ->
     assert metrics["status"] == "insufficient_data"
     assert metrics["row_count_labeled"] == 0
     assert metrics["minimum_viable_metrics"]["available"] is False
+    assert (metrics.get("modeling_viability") or {}).get("dataset_viable_for_predictive_modeling") is False
     assert metrics["data_sufficiency_flags"]["flags"]["small_sample_size"] is True
     assert metrics["data_sufficiency_indicator"]["total_dataset"]["tier"] == "insufficient"
     assert metrics["data_sufficiency_indicator"]["high_confidence_subset"]["tier"] == "insufficient"

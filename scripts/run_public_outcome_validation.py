@@ -295,6 +295,11 @@ def _build_summary_markdown(
         if isinstance(report.get("baseline_model_comparison"), dict)
         else {}
     )
+    modeling_viability = (
+        report.get("modeling_viability")
+        if isinstance(report.get("modeling_viability"), dict)
+        else {}
+    )
     feature_diag = (
         report.get("feature_signal_diagnostics")
         if isinstance(report.get("feature_signal_diagnostics"), dict)
@@ -379,6 +384,35 @@ def _build_summary_markdown(
                 "",
             ]
         )
+
+    if modeling_viability:
+        checks = (
+            modeling_viability.get("checks")
+            if isinstance(modeling_viability.get("checks"), dict)
+            else {}
+        )
+        lines.extend(
+            [
+                "## Dataset Viability Guardrail",
+                f"- Dataset viable for predictive modeling: `{modeling_viability.get('dataset_viable_for_predictive_modeling')}`",
+                f"- Classification: `{modeling_viability.get('classification')}`",
+                f"- Reason: `{modeling_viability.get('reason')}`",
+                (
+                    f"- Independent samples: `{checks.get('independent_sample_count')}` "
+                    f"(labeled rows={checks.get('labeled_sample_count')}, duplication_factor={_format_float(checks.get('duplication_factor'))})"
+                ),
+                (
+                    f"- Feature variance: `{checks.get('features_with_variance_count')}` / "
+                    f"`{checks.get('feature_count_evaluated')}` varying "
+                    f"(ratio={_format_float(checks.get('feature_variation_ratio'))})"
+                ),
+                (
+                    f"- Model vs random AUC margin: `{_format_float(checks.get('auc_margin_vs_random_baseline'))}` "
+                    f"(full_auc={_format_float(checks.get('full_model_auc'))}, random_auc={_format_float(checks.get('random_baseline_auc'))})"
+                ),
+            ]
+        )
+        lines.append("")
 
     lines.extend(
         [
@@ -1216,6 +1250,41 @@ def _insufficient_data_report(
             "feature_vs_outcome_curves": [],
             "key_feature_family_summary": {},
         },
+        "modeling_viability": {
+            "dataset_viable_for_predictive_modeling": False,
+            "classification": "dataset_not_viable_for_predictive_modeling",
+            "reason": "No usable labeled rows were retained for independent-sample and feature-variation checks.",
+            "thresholds": {
+                "min_independent_samples": 30,
+                "min_features_with_variance": 5,
+                "min_feature_variation_ratio": 0.25,
+                "min_auc_margin_vs_random_baseline": 0.05,
+            },
+            "checks": {
+                "independent_sample_count": 0,
+                "labeled_sample_count": 0,
+                "duplication_factor": None,
+                "feature_count_evaluated": 0,
+                "near_zero_variance_feature_count": 0,
+                "features_with_variance_count": 0,
+                "feature_variation_ratio": 0.0,
+                "full_model_auc": None,
+                "random_baseline_auc": None,
+                "auc_margin_vs_random_baseline": None,
+                "independent_sample_size_ok": False,
+                "feature_variation_ok": False,
+                "model_vs_random_auc_ok": False,
+            },
+            "failed_checks": [
+                "independent_sample_size_ok",
+                "feature_variation_ok",
+                "model_vs_random_auc_ok",
+            ],
+            "caveat": (
+                "This viability check is a guardrail for directional public-outcome evaluation. "
+                "It does not establish insurer-claims predictive validity."
+            ),
+        },
         "baseline_model_comparison": {
             "available": False,
             "reason": "insufficient_real_outcome_rows",
@@ -1736,6 +1805,11 @@ def run_public_outcome_validation(
             "roc_auc": ((report.get("discrimination_metrics") or {}).get("wildfire_risk_score_auc") if isinstance(report.get("discrimination_metrics"), dict) else None),
             "pr_auc": ((report.get("discrimination_metrics") or {}).get("wildfire_risk_score_pr_auc") if isinstance(report.get("discrimination_metrics"), dict) else None),
             "brier": ((report.get("brier_scores") or {}).get("wildfire_probability_proxy") if isinstance(report.get("brier_scores"), dict) else None),
+            "dataset_viable_for_predictive_modeling": (
+                ((report.get("modeling_viability") or {}).get("dataset_viable_for_predictive_modeling"))
+                if isinstance(report.get("modeling_viability"), dict)
+                else None
+            ),
         },
         "comparison_to_previous": {
             "available": bool(comparison_payload.get("available")),

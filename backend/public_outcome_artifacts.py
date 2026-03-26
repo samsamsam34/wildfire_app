@@ -123,6 +123,11 @@ def _validation_summary(manifest: dict[str, Any], report: dict[str, Any]) -> dic
         if isinstance(report.get("baseline_model_comparison"), dict)
         else {}
     )
+    modeling_viability = (
+        report.get("modeling_viability")
+        if isinstance(report.get("modeling_viability"), dict)
+        else {}
+    )
     baseline_cmp_detail = (
         baseline_cmp.get("comparison")
         if isinstance(baseline_cmp.get("comparison"), dict)
@@ -160,6 +165,18 @@ def _validation_summary(manifest: dict[str, Any], report: dict[str, Any]) -> dic
             ),
             "complexity_justified_signal": baseline_cmp_detail.get(
                 "complexity_justified_signal"
+            ),
+        },
+        "modeling_viability": {
+            "dataset_viable_for_predictive_modeling": modeling_viability.get(
+                "dataset_viable_for_predictive_modeling"
+            ),
+            "classification": modeling_viability.get("classification"),
+            "reason": modeling_viability.get("reason"),
+            "failed_checks": (
+                modeling_viability.get("failed_checks")
+                if isinstance(modeling_viability.get("failed_checks"), list)
+                else []
             ),
         },
         "raw_vs_calibrated_within_run": (
