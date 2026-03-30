@@ -297,6 +297,8 @@ def test_homeowner_report_homeowner_focused_fields_across_confidence_tiers(monke
         patched.confidence_tier = tier
         patched.confidence_summary.missing_data = ["roof_type"] if tier in {"low", "preliminary"} else []
         patched.confidence_summary.fallback_assumptions = ["regional proxy"] if tier in {"low", "preliminary"} else []
+        patched.fallback_weight_fraction = 0.65 if tier in {"low", "preliminary"} else 0.0
+        patched.assessment_diagnostics.fallback_decisions = []
         patched.top_risk_drivers = [
             "dense vegetation close to the home",
             "high ember exposure",
@@ -315,6 +317,7 @@ def test_homeowner_report_homeowner_focused_fields_across_confidence_tiers(monke
         assert report["headline_risk_summary"]
         assert len(report.get("top_risk_drivers") or []) <= 4
         assert all("fuel model" not in str(row).lower() for row in (report.get("top_risk_drivers") or []))
+        assert isinstance((report.get("top_risk_drivers") or [None])[0], str)
         prioritized = report.get("prioritized_actions") or []
         assert 1 <= len(prioritized) <= 5
         first = prioritized[0]
@@ -334,10 +337,64 @@ def test_homeowner_report_homeowner_focused_fields_across_confidence_tiers(monke
         )
 
         if tier in {"low", "preliminary"}:
-            assert "appears to have" in report["headline_risk_summary"].lower()
+            assert "may have" in report["headline_risk_summary"].lower()
             assert "estimated" in report["limitations_notice"].lower() or "missing" in report["limitations_notice"].lower()
+            assert "may be contributing to risk" in str((report.get("top_risk_drivers") or [""])[0]).lower()
             assert "may help reduce" in str(first.get("why_this_matters")).lower()
+        if tier == "moderate":
+            assert "appears to have" in report["headline_risk_summary"].lower()
+            assert "appears to increase risk" in str((report.get("top_risk_drivers") or [""])[0]).lower()
+            assert "appears to help reduce" in str(first.get("why_this_matters")).lower()
         if tier == "high":
             assert report["headline_risk_summary"].startswith("Your home has ")
+            assert "is a major risk factor" in str((report.get("top_risk_drivers") or [""])[0]).lower()
             assert "helps reduce" in str(first.get("why_this_matters")).lower()
             assert "may help reduce" not in str(first.get("why_this_matters")).lower()
+
+
+def test_homeowner_report_degraded_data_produces_more_cautious_tone(monkeypatch, tmp_path: Path):
+    context = _ctx(env=61.0, wildland=58.0, historic=49.0)
+    _setup(monkeypatch, tmp_path, context)
+    assessed = _run_assessment("888 Tone Shift Ave, Missoula, MT 59802")
+    original = app_main.store.get(assessed["assessment_id"])
+    assert original is not None
+
+    high = original.model_copy(deep=True)
+    high.confidence_tier = "high"
+    high.confidence_summary.missing_data = []
+    high.confidence_summary.fallback_assumptions = []
+    high.fallback_weight_fraction = 0.0
+    high.assessment_diagnostics.fallback_decisions = []
+    high.top_risk_drivers = ["dense vegetation close to the home"]
+    high.prioritized_mitigation_actions = [
+        HomeownerPrioritizedAction(
+            action="Clear vegetation within 5 feet",
+            explanation="Creates a non-combustible area next to the home.",
+            impact_level="high",
+            effort_level="low",
+            estimated_cost_band="low",
+            timeline="now",
+            priority=1,
+        )
+    ]
+
+    low = high.model_copy(deep=True)
+    low.confidence_tier = "low"
+    low.confidence_summary.missing_data = ["roof_type", "vent_type", "defensible_space_ft", "structure_geometry"]
+    low.confidence_summary.fallback_assumptions = ["regional vegetation proxy", "structure proxy"]
+    low.fallback_weight_fraction = 0.75
+    low.assessment_diagnostics.fallback_decisions = [{"fallback_type": "derived_proxy"}]
+
+    monkeypatch.setattr(app_main.store, "get", lambda _assessment_id, _obj=high: _obj)
+    high_report = client.get(f"/report/{assessed['assessment_id']}/homeowner").json()
+
+    monkeypatch.setattr(app_main.store, "get", lambda _assessment_id, _obj=low: _obj)
+    low_report = client.get(f"/report/{assessed['assessment_id']}/homeowner").json()
+
+    assert "your home has" in str(high_report.get("headline_risk_summary", "")).lower()
+    assert "is a major risk factor" in str((high_report.get("top_risk_drivers") or [""])[0]).lower()
+    assert "helps reduce" in str(((high_report.get("prioritized_actions") or [{}])[0]).get("why_this_matters") or "").lower()
+
+    assert "your home may have" in str(low_report.get("headline_risk_summary", "")).lower()
+    assert "may be contributing to risk" in str((low_report.get("top_risk_drivers") or [""])[0]).lower()
+    assert "may help reduce" in str(((low_report.get("prioritized_actions") or [{}])[0]).get("why_this_matters") or "").lower()

@@ -92,35 +92,89 @@ def _de_jargonize(text: str) -> str:
     return lowered[0].upper() + lowered[1:]
 
 
-def _headline_risk_summary(result: AssessmentResult, risk_score: float | None) -> str:
+def _select_tone_level(result: AssessmentResult) -> str:
+    tier = str(result.confidence_tier or "").lower()
+    fallback_share = _to_float(getattr(result, "fallback_weight_fraction", None))
+    if fallback_share is None:
+        fallback_share = _to_float(getattr(result, "fallback_dominance_ratio", None))
+    fallback_share = float(fallback_share or 0.0)
+
+    missing_count = len(list(result.confidence_summary.missing_data or []))
+    fallback_assumption_count = len(list(result.confidence_summary.fallback_assumptions or []))
+    fallback_decision_count = len(list((result.assessment_diagnostics.fallback_decisions or [])))
+    fallback_count = fallback_assumption_count + fallback_decision_count
+
+    if tier in {"low", "preliminary"}:
+        return "advisory"
+    if fallback_share >= 0.50 or missing_count >= 4 or fallback_count >= 5:
+        return "advisory"
+    if tier == "high" and fallback_share <= 0.20 and missing_count == 0 and fallback_count == 0:
+        return "direct"
+    if tier in {"moderate", "medium"} and (fallback_share >= 0.35 or missing_count >= 2 or fallback_count >= 3):
+        return "advisory"
+    return "slightly_hedged"
+
+
+def _action_tone_level(base_tone: str, evidence_status: str | None) -> str:
+    evidence = str(evidence_status or "").lower()
+    if evidence not in {"inferred", "missing", "unknown"}:
+        return base_tone
+    if base_tone == "direct":
+        return "slightly_hedged"
+    return "advisory"
+
+
+def _headline_risk_summary(result: AssessmentResult, risk_score: float | None, *, tone_level: str) -> str:
     risk_band = _risk_band(risk_score)
     risk_label = "unknown" if risk_band == "unavailable" else ("low" if risk_band == "lower" else risk_band)
-    uncertain = bool(
-        (result.confidence_tier in {"low", "preliminary"})
-        or list(result.confidence_summary.missing_data or [])
-        or list(result.confidence_summary.fallback_assumptions or [])
-    )
     if risk_label == "unknown":
         return "We could not determine a reliable wildfire risk level from current data."
-    if uncertain:
+    if tone_level == "advisory":
         return (
-            f"Your home appears to have {risk_label} wildfire risk, but this estimate is uncertain because "
+            f"Your home may have {risk_label} wildfire risk, but this estimate is uncertain because "
             "some property details were estimated or missing."
         )
+    if tone_level == "slightly_hedged":
+        return f"Your home appears to have {risk_label} wildfire risk based on available property and regional evidence."
     return f"Your home has {risk_label} wildfire risk."
 
 
-def _summarize_top_risk_drivers(key_risk_drivers: list[str]) -> list[str]:
+def _risk_driver_from_text(driver_text: str, *, tone_level: str) -> str:
+    text = str(driver_text or "").strip().lower()
+    if not text:
+        base = "This condition near your home"
+    elif any(token in text for token in ("vegetation", "fuel", "tree cover", "brush", "wildland")):
+        base = "Vegetation near your home"
+    elif any(token in text for token in ("slope", "terrain", "topography")):
+        base = "Terrain near your home"
+    elif "defensible space" in text:
+        base = "Defensible space near your home"
+    elif "ember" in text:
+        base = "Wind-blown ember exposure"
+    elif any(token in text for token in ("hardening", "vulnerability", "structure")):
+        base = "Home hardening details"
+    else:
+        base = "This condition near your home"
+
+    if tone_level == "direct":
+        return f"{base} is a major risk factor."
+    if tone_level == "slightly_hedged":
+        return f"{base} appears to increase risk."
+    return f"{base} may be contributing to risk, but some details are estimated."
+
+
+def _summarize_top_risk_drivers(key_risk_drivers: list[str], *, tone_level: str) -> list[str]:
     cleaned = [_de_jargonize(_plain_driver(row)) for row in key_risk_drivers if str(row).strip()]
-    unique = list(dict.fromkeys([row for row in cleaned if row]))
+    cleaned = [row for row in cleaned if row]
+    unique = list(dict.fromkeys([_risk_driver_from_text(row, tone_level=tone_level) for row in cleaned if row]))
     if unique:
         return unique[:4]
     return ["We could not confirm property-specific risk drivers from current data."]
 
 
-def _estimated_benefit_phrase(impact_level: str, confidence_tier: str | None) -> str:
+def _estimated_benefit_phrase(impact_level: str, tone_level: str) -> str:
     impact = str(impact_level or "low").lower()
-    if confidence_tier in {"low", "preliminary"}:
+    if tone_level == "advisory":
         if impact == "high":
             phrase = "May help reduce wildfire risk meaningfully when completed and maintained."
         elif impact == "medium":
@@ -128,6 +182,12 @@ def _estimated_benefit_phrase(impact_level: str, confidence_tier: str | None) ->
         else:
             phrase = "May provide incremental wildfire protection."
         return phrase + " Benefit estimate is directional because some inputs were estimated."
+    if tone_level == "slightly_hedged":
+        if impact == "high":
+            return "Appears likely to reduce wildfire risk meaningfully when completed and maintained."
+        if impact == "medium":
+            return "Appears likely to reduce wildfire risk over time."
+        return "May provide incremental wildfire protection."
     if impact == "high":
         return "Likely to reduce wildfire risk meaningfully when completed and maintained."
     if impact == "medium":
@@ -142,14 +202,6 @@ def _expected_effect_from_impact(impact_level: str | None) -> str:
     if impact == "medium":
         return "moderate"
     return "small"
-
-
-def _is_weak_guidance_evidence(confidence_tier: str | None, evidence_status: str | None = None) -> bool:
-    if str(confidence_tier or "").lower() in {"low", "preliminary"}:
-        return True
-    if str(evidence_status or "").lower() in {"inferred", "missing", "unknown"}:
-        return True
-    return False
 
 
 def _infer_what_it_reduces(
@@ -176,28 +228,31 @@ def _infer_what_it_reduces(
     return "the chance that wildfire reaches and ignites your home"
 
 
-def _build_why_this_matters_sentence(*, action_text: str, what_it_reduces: str, weak_evidence: bool) -> str:
+def _build_why_this_matters_sentence(*, action_text: str, what_it_reduces: str, tone_level: str) -> str:
     action = str(action_text or "").strip().rstrip(".")
     if not action:
         action = "This action"
-    verb = "may help reduce" if weak_evidence else "helps reduce"
-    return f"{action} {verb} {what_it_reduces}."
+    if tone_level == "advisory":
+        return f"{action} may help reduce {what_it_reduces}, but some details are estimated."
+    if tone_level == "slightly_hedged":
+        return f"{action} appears to help reduce {what_it_reduces}."
+    return f"{action} helps reduce {what_it_reduces}."
 
 
 def _enrich_prioritized_action(
     action: HomeownerPrioritizedAction,
     *,
-    confidence_tier: str | None,
+    tone_level: str,
 ) -> HomeownerPrioritizedAction:
     what_it_reduces = str(action.what_it_reduces or "").strip() or _infer_what_it_reduces(
         action_text=str(action.action or ""),
         context_text=str(action.explanation or ""),
     )
-    weak_evidence = _is_weak_guidance_evidence(confidence_tier=confidence_tier)
+    action_tone = _action_tone_level(base_tone=tone_level, evidence_status=None)
     why_this_matters = str(action.why_this_matters or "").strip() or _build_why_this_matters_sentence(
         action_text=str(action.action or "This action"),
         what_it_reduces=what_it_reduces,
-        weak_evidence=weak_evidence,
+        tone_level=action_tone,
     )
     expected_effect = str(action.expected_effect or "").strip().lower()
     if expected_effect not in {"small", "moderate", "significant"}:
@@ -214,7 +269,7 @@ def _enrich_prioritized_action(
 def _summarize_prioritized_actions(
     prioritized_actions: list[HomeownerPrioritizedAction],
     *,
-    confidence_tier: str | None,
+    tone_level: str,
 ) -> list[dict[str, object]]:
     impact_rank = {"high": 0, "medium": 1, "low": 2}
     ordered = sorted(
@@ -233,11 +288,11 @@ def _summarize_prioritized_actions(
             action_text=action,
             context_text=str(row.explanation or ""),
         )
-        weak_evidence = _is_weak_guidance_evidence(confidence_tier=confidence_tier)
+        action_tone = _action_tone_level(base_tone=tone_level, evidence_status=None)
         why_this_matters = str(row.why_this_matters or "").strip() or _build_why_this_matters_sentence(
             action_text=action,
             what_it_reduces=what_it_reduces,
-            weak_evidence=weak_evidence,
+            tone_level=action_tone,
         )
         expected_effect = str(row.expected_effect or "").strip().lower()
         if expected_effect not in {"small", "moderate", "significant"}:
@@ -250,7 +305,7 @@ def _summarize_prioritized_actions(
                 "expected_effect": expected_effect,
                 "what_it_reduces": what_it_reduces,
                 "why_this_matters": why_this_matters,
-                "estimated_benefit": _estimated_benefit_phrase(str(row.impact_level or "low"), confidence_tier),
+                "estimated_benefit": _estimated_benefit_phrase(str(row.impact_level or "low"), action_tone),
                 "why_it_matters": str(row.explanation or "").strip(),
             }
         )
@@ -307,7 +362,7 @@ def _zone_findings(defensible_space_analysis: dict[str, Any]) -> list[dict[str, 
     return findings
 
 
-def _mitigation_actions(result: AssessmentResult) -> list[HomeownerReportAction]:
+def _mitigation_actions(result: AssessmentResult, *, tone_level: str) -> list[HomeownerReportAction]:
     actions: list[HomeownerReportAction] = []
     seen_titles: set[str] = set()
 
@@ -318,10 +373,7 @@ def _mitigation_actions(result: AssessmentResult) -> list[HomeownerReportAction]
         if not title or title.lower() in seen_titles:
             continue
         seen_titles.add(title.lower())
-        weak_evidence = _is_weak_guidance_evidence(
-            confidence_tier=result.confidence_tier,
-            evidence_status=action.evidence_status,
-        )
+        action_tone = _action_tone_level(base_tone=tone_level, evidence_status=action.evidence_status)
         what_it_reduces = _infer_what_it_reduces(
             action_text=title,
             context_text=str(action.why_it_matters or action.explanation or ""),
@@ -330,7 +382,7 @@ def _mitigation_actions(result: AssessmentResult) -> list[HomeownerReportAction]
         why_this_matters = _build_why_this_matters_sentence(
             action_text=title,
             what_it_reduces=what_it_reduces,
-            weak_evidence=weak_evidence,
+            tone_level=action_tone,
         )
         actions.append(
             HomeownerReportAction(
@@ -354,10 +406,7 @@ def _mitigation_actions(result: AssessmentResult) -> list[HomeownerReportAction]
         if not title or title.lower() in seen_titles:
             continue
         seen_titles.add(title.lower())
-        weak_evidence = _is_weak_guidance_evidence(
-            confidence_tier=result.confidence_tier,
-            evidence_status="observed",
-        )
+        action_tone = _action_tone_level(base_tone=tone_level, evidence_status="observed")
         what_it_reduces = _infer_what_it_reduces(
             action_text=title,
             context_text=str(mitigation.reason or ""),
@@ -366,7 +415,7 @@ def _mitigation_actions(result: AssessmentResult) -> list[HomeownerReportAction]
         why_this_matters = _build_why_this_matters_sentence(
             action_text=title,
             what_it_reduces=what_it_reduces,
-            weak_evidence=weak_evidence,
+            tone_level=action_tone,
         )
         actions.append(
             HomeownerReportAction(
@@ -388,6 +437,7 @@ def _mitigation_actions(result: AssessmentResult) -> list[HomeownerReportAction]
 
 
 def _prioritized_actions(result: AssessmentResult) -> list[HomeownerPrioritizedAction]:
+    tone_level = _select_tone_level(result)
     base: list[HomeownerPrioritizedAction] = []
     if result.prioritized_mitigation_actions:
         base = list(result.prioritized_mitigation_actions)[:5]
@@ -415,7 +465,7 @@ def _prioritized_actions(result: AssessmentResult) -> list[HomeownerPrioritizedA
         base = fallback
 
     return [
-        _enrich_prioritized_action(row, confidence_tier=result.confidence_tier)
+        _enrich_prioritized_action(row, tone_level=tone_level)
         for row in base
     ][:5]
 
@@ -499,17 +549,20 @@ def build_homeowner_report(
             "assessment_diagnostics": _dump_value(result.assessment_diagnostics),
         }
 
-    all_mitigation_actions = _mitigation_actions(result)
+    tone_level = _select_tone_level(result)
+
+    all_mitigation_actions = _mitigation_actions(result, tone_level=tone_level)
     top_recommended_actions = all_mitigation_actions[:3]
-    top_risk_drivers = _summarize_top_risk_drivers(key_risk_drivers)
+    top_risk_drivers = _summarize_top_risk_drivers(key_risk_drivers, tone_level=tone_level)
     prioritized_actions_summary = _summarize_prioritized_actions(
         prioritized_actions,
-        confidence_tier=result.confidence_tier,
+        tone_level=tone_level,
     )
     what_to_do_first = prioritized_actions_summary[0] if prioritized_actions_summary else {}
     headline_risk_summary = _headline_risk_summary(
         result,
         result.overall_wildfire_risk if result.overall_wildfire_risk is not None else result.wildfire_risk_score,
+        tone_level=tone_level,
     )
     limitations_notice = _limitations_notice(result, combined_limitations)
 

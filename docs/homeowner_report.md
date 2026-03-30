@@ -73,6 +73,16 @@ Mitigation phrasing is confidence-aware:
 - weak/inferred evidence uses hedged phrasing like "may help reduce"
 - mitigation effects are qualitative and directional (no unsupported percentage claims)
 
+Tone is selected deterministically from:
+- confidence tier
+- fallback usage
+- missing-data burden
+
+The same property with degraded evidence will render more cautious language in:
+- `headline_risk_summary`
+- `top_risk_drivers`
+- mitigation rationale fields (`why_this_matters`)
+
 ## Notes
 
 - The report is generated from a completed assessment result; it does not rerun scoring.
