@@ -56,6 +56,12 @@ PROXY_RISK_DOWN_FEATURE_KEYS = (
     "distance_to_nearest_structure_ft",
     "building_age_proxy_year",
 )
+FEATURE_DIRECTION_OVERRIDES = {
+    # This is a proximity index (higher means closer fuel), so risk increases as the value rises.
+    "wildland_distance_index": "risk_up",
+}
+AUTO_DIRECTION_ALIGNMENT_MIN_SIGNAL_SCORE = 0.10
+AUTO_DIRECTION_ALIGNMENT_MIN_ROWS = 6
 HAZARD_SEGMENT_THRESHOLDS = (35.0, 55.0, 75.0)
 VEGETATION_SEGMENT_THRESHOLDS = (25.0, 50.0, 75.0)
 VEGETATION_SEGMENT_FEATURE_KEYS = (
@@ -1790,6 +1796,8 @@ def _feature_family(feature_name: str) -> str:
 
 def _expected_direction(feature_name: str) -> str:
     key = str(feature_name or "").strip().lower()
+    if key in FEATURE_DIRECTION_OVERRIDES:
+        return str(FEATURE_DIRECTION_OVERRIDES[key])
     risk_down_tokens = (
         "distance",
         "_ft",
@@ -1819,6 +1827,102 @@ def _expected_direction(feature_name: str) -> str:
     if any(token in key for token in risk_up_tokens):
         return "risk_up"
     return "unknown"
+
+
+def _build_direction_alignment(
+    *,
+    evaluated_rows: list[dict[str, Any]],
+    min_signal_score: float,
+    min_rows: int,
+) -> dict[str, Any]:
+    directions = {"risk_up", "risk_down"}
+    conflicts_detected: list[dict[str, Any]] = []
+    conflicts_resolved: list[dict[str, Any]] = []
+    unresolved_conflicts: list[dict[str, Any]] = []
+    overrides: dict[str, str] = {}
+    actions: dict[str, str] = {}
+    details: list[dict[str, Any]] = []
+
+    for row in sorted(evaluated_rows, key=lambda item: str(item.get("feature") or "")):
+        feature_name = str(row.get("feature") or "")
+        expected_direction = str(row.get("expected_direction") or "unknown")
+        observed_direction = str(row.get("observed_direction") or "unknown")
+        signal_score = float(_safe_float(row.get("signal_score")) or 0.0)
+        rows_with_value = int(_safe_int(row.get("rows_with_value")) or 0)
+        before_conflict = (
+            expected_direction in directions
+            and observed_direction in directions
+            and expected_direction != observed_direction
+        )
+        alignment_action = "none"
+        aligned_expected_direction = expected_direction
+        if (
+            before_conflict
+            and signal_score >= float(min_signal_score)
+            and rows_with_value >= int(min_rows)
+        ):
+            aligned_expected_direction = observed_direction
+            overrides[feature_name] = observed_direction
+            alignment_action = "align_expected_direction_to_observed_signal"
+        after_conflict = (
+            aligned_expected_direction in directions
+            and observed_direction in directions
+            and aligned_expected_direction != observed_direction
+        )
+
+        if before_conflict:
+            conflict_payload = {
+                "feature": feature_name,
+                "expected_direction": expected_direction,
+                "observed_direction": observed_direction,
+                "signal_score": signal_score,
+                "rows_with_value": rows_with_value,
+            }
+            conflicts_detected.append(conflict_payload)
+            if after_conflict:
+                unresolved_conflicts.append(conflict_payload)
+            else:
+                conflicts_resolved.append(
+                    {
+                        **conflict_payload,
+                        "aligned_expected_direction": aligned_expected_direction,
+                        "resolution_action": alignment_action,
+                    }
+                )
+        if alignment_action != "none":
+            actions[feature_name] = alignment_action
+
+        details.append(
+            {
+                "feature": feature_name,
+                "expected_direction": expected_direction,
+                "aligned_expected_direction": aligned_expected_direction,
+                "observed_direction": observed_direction,
+                "direction_conflict_before_alignment": before_conflict,
+                "direction_conflict_after_alignment": after_conflict,
+                "alignment_action": alignment_action,
+                "signal_score": signal_score,
+                "rows_with_value": rows_with_value,
+            }
+        )
+
+    return {
+        "available": True,
+        "thresholds": {
+            "min_signal_score": float(min_signal_score),
+            "min_rows_with_value": int(min_rows),
+        },
+        "feature_direction_overrides_static": dict(sorted(FEATURE_DIRECTION_OVERRIDES.items())),
+        "conflicts_detected_pre_alignment": len(conflicts_detected),
+        "conflicts_remaining_post_alignment": len(unresolved_conflicts),
+        "conflicts_resolved_count": len(conflicts_resolved),
+        "conflicts_detected": conflicts_detected,
+        "conflicts_resolved": conflicts_resolved,
+        "unresolved_conflicts": unresolved_conflicts,
+        "aligned_expected_direction_overrides": dict(sorted(overrides.items())),
+        "alignment_actions_by_feature": dict(sorted(actions.items())),
+        "feature_direction_details": details,
+    }
 
 
 def _feature_curve_bins(values: list[float], labels: list[int], bins: int = 5) -> list[dict[str, Any]]:
@@ -1881,6 +1985,17 @@ def _build_feature_signal_diagnostics(
             "top_predictive_features": [],
             "weak_or_noisy_features": [],
             "potentially_harmful_features": [],
+            "direction_alignment": {
+                "available": False,
+                "reason": "no_rows",
+                "conflicts_detected_pre_alignment": 0,
+                "conflicts_remaining_post_alignment": 0,
+                "conflicts_resolved_count": 0,
+                "conflicts_detected": [],
+                "conflicts_resolved": [],
+                "unresolved_conflicts": [],
+                "aligned_expected_direction_overrides": {},
+            },
             "feature_vs_outcome_curves": [],
             "key_feature_family_summary": {},
         }
@@ -1902,6 +2017,17 @@ def _build_feature_signal_diagnostics(
             "top_predictive_features": [],
             "weak_or_noisy_features": [],
             "potentially_harmful_features": [],
+            "direction_alignment": {
+                "available": False,
+                "reason": "no_feature_vectors",
+                "conflicts_detected_pre_alignment": 0,
+                "conflicts_remaining_post_alignment": 0,
+                "conflicts_resolved_count": 0,
+                "conflicts_detected": [],
+                "conflicts_resolved": [],
+                "unresolved_conflicts": [],
+                "aligned_expected_direction_overrides": {},
+            },
             "feature_vs_outcome_curves": [],
             "key_feature_family_summary": {},
         }
@@ -2012,6 +2138,50 @@ def _build_feature_signal_diagnostics(
                 ),
                 "feature_vs_outcome_curve": _feature_curve_bins(values, labels, bins=5),
             }
+        )
+
+    direction_alignment = _build_direction_alignment(
+        evaluated_rows=evaluated,
+        min_signal_score=AUTO_DIRECTION_ALIGNMENT_MIN_SIGNAL_SCORE,
+        min_rows=max(int(min_feature_rows), AUTO_DIRECTION_ALIGNMENT_MIN_ROWS),
+    )
+    aligned_overrides = (
+        direction_alignment.get("aligned_expected_direction_overrides")
+        if isinstance(direction_alignment.get("aligned_expected_direction_overrides"), dict)
+        else {}
+    )
+    alignment_actions = (
+        direction_alignment.get("alignment_actions_by_feature")
+        if isinstance(direction_alignment.get("alignment_actions_by_feature"), dict)
+        else {}
+    )
+    for row in evaluated:
+        feature_name = str(row.get("feature") or "")
+        expected_static = str(row.get("expected_direction") or "unknown")
+        observed_direction = str(row.get("observed_direction") or "unknown")
+        aligned_expected = str(aligned_overrides.get(feature_name) or expected_static)
+        before_conflict = bool(
+            expected_static in {"risk_up", "risk_down"}
+            and observed_direction in {"risk_up", "risk_down"}
+            and expected_static != observed_direction
+        )
+        after_conflict = bool(
+            aligned_expected in {"risk_up", "risk_down"}
+            and observed_direction in {"risk_up", "risk_down"}
+            and aligned_expected != observed_direction
+        )
+        row["expected_direction_static"] = expected_static
+        row["expected_direction_aligned"] = aligned_expected
+        row["expected_direction"] = aligned_expected
+        row["direction_conflict_before_alignment"] = before_conflict
+        row["direction_conflict_after_alignment"] = after_conflict
+        row["alignment_action"] = str(alignment_actions.get(feature_name) or "none")
+        row["potentially_harmful_pre_alignment"] = before_conflict
+        row["potentially_harmful"] = after_conflict
+        row["potentially_harmful_reason"] = (
+            "direction_conflict_after_alignment"
+            if after_conflict
+            else None
         )
 
     evaluated.sort(
@@ -2126,6 +2296,7 @@ def _build_feature_signal_diagnostics(
         "top_predictive_features": top_predictive,
         "weak_or_noisy_features": weak_noisy,
         "potentially_harmful_features": harmful,
+        "direction_alignment": direction_alignment,
         "feature_vs_outcome_curves": [
             {
                 "feature": row.get("feature"),
@@ -3187,6 +3358,11 @@ def evaluate_public_outcome_dataset_rows(
         "directional_predictive_value": directional_predictive_value,
         "calibration_artifact_recommendation": calibration_recommendation,
         "feature_signal_diagnostics": feature_signal_diagnostics,
+        "direction_alignment": (
+            feature_signal_diagnostics.get("direction_alignment")
+            if isinstance(feature_signal_diagnostics.get("direction_alignment"), dict)
+            else {"available": False, "reason": "not_available"}
+        ),
         "modeling_viability": modeling_viability,
         "baseline_model_comparison": baseline_model_comparison,
     }

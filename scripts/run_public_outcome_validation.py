@@ -716,6 +716,11 @@ def _build_summary_markdown(
             if isinstance(feature_diag.get("key_feature_family_summary"), dict)
             else {}
         )
+        direction_alignment = (
+            feature_diag.get("direction_alignment")
+            if isinstance(feature_diag.get("direction_alignment"), dict)
+            else {}
+        )
         lines.append("")
         lines.append("## Feature Signal Diagnostics")
         lines.append(
@@ -753,6 +758,18 @@ def _build_summary_markdown(
                     f"observed={row.get('observed_direction')}, "
                     f"signal={_format_float(row.get('signal_score'))}"
                 )
+        if direction_alignment:
+            lines.append("")
+            lines.append("### Direction Alignment")
+            lines.append(
+                f"- Conflicts detected before alignment: `{direction_alignment.get('conflicts_detected_pre_alignment')}`"
+            )
+            lines.append(
+                f"- Conflicts remaining after alignment: `{direction_alignment.get('conflicts_remaining_post_alignment')}`"
+            )
+            lines.append(
+                f"- Conflicts resolved by alignment: `{direction_alignment.get('conflicts_resolved_count')}`"
+            )
         if family_summary:
             lines.append("")
             lines.append("### Key Feature Families")
@@ -1247,6 +1264,17 @@ def _insufficient_data_report(
             "top_predictive_features": [],
             "weak_or_noisy_features": [],
             "potentially_harmful_features": [],
+            "direction_alignment": {
+                "available": False,
+                "reason": "insufficient_real_outcome_rows",
+                "conflicts_detected_pre_alignment": 0,
+                "conflicts_remaining_post_alignment": 0,
+                "conflicts_resolved_count": 0,
+                "conflicts_detected": [],
+                "conflicts_resolved": [],
+                "unresolved_conflicts": [],
+                "aligned_expected_direction_overrides": {},
+            },
             "feature_vs_outcome_curves": [],
             "key_feature_family_summary": {},
         },
@@ -1565,6 +1593,17 @@ def run_public_outcome_validation(
             "top_predictive_features": [],
             "weak_or_noisy_features": [],
             "potentially_harmful_features": [],
+            "direction_alignment": {
+                "available": False,
+                "reason": "not_present_in_validation_report",
+                "conflicts_detected_pre_alignment": 0,
+                "conflicts_remaining_post_alignment": 0,
+                "conflicts_resolved_count": 0,
+                "conflicts_detected": [],
+                "conflicts_resolved": [],
+                "unresolved_conflicts": [],
+                "aligned_expected_direction_overrides": {},
+            },
             "feature_vs_outcome_curves": [],
             "key_feature_family_summary": {},
         }
@@ -1621,6 +1660,33 @@ def run_public_outcome_validation(
     }
     feature_signal_report_path = output_dir / "feature_signal_report.json"
     _write_json(feature_signal_report_path, feature_signal_report_payload)
+
+    direction_alignment_payload = {
+        "run_id": run_token,
+        "generated_at": generated_at,
+        "dataset_path": str(dataset_path),
+        "direction_alignment": (
+            feature_signal_diagnostics.get("direction_alignment")
+            if isinstance(feature_signal_diagnostics.get("direction_alignment"), dict)
+            else {
+                "available": False,
+                "reason": "not_present_in_feature_signal_diagnostics",
+                "conflicts_detected_pre_alignment": 0,
+                "conflicts_remaining_post_alignment": 0,
+                "conflicts_resolved_count": 0,
+                "conflicts_detected": [],
+                "conflicts_resolved": [],
+                "unresolved_conflicts": [],
+                "aligned_expected_direction_overrides": {},
+            }
+        ),
+        "caveat": (
+            "Direction alignment is a diagnostic harmonization against this labeled sample. "
+            "It does not establish causal directionality or claims-grade truth."
+        ),
+    }
+    direction_alignment_report_path = output_dir / "direction_alignment_report.json"
+    _write_json(direction_alignment_report_path, direction_alignment_payload)
 
     baseline_comparison_payload = {
         "run_id": run_token,
@@ -1834,6 +1900,7 @@ def run_public_outcome_validation(
             "evaluation_rows_csv": str(evaluated_rows_csv_path),
             "feature_diagnostics_json": str(feature_diagnostics_path),
             "feature_signal_report_json": str(feature_signal_report_path),
+            "direction_alignment_report_json": str(direction_alignment_report_path),
             "baseline_model_comparison_json": str(baseline_comparison_path),
             "segment_metrics_json": str(segment_metrics_path),
             "segment_report_markdown": str(segment_report_path),
@@ -1871,6 +1938,7 @@ def run_public_outcome_validation(
         "validation_metrics_path": str(validation_metrics_path),
         "feature_diagnostics_path": str(feature_diagnostics_path),
         "feature_signal_report_path": str(feature_signal_report_path),
+        "direction_alignment_report_path": str(direction_alignment_report_path),
         "baseline_model_comparison_path": str(baseline_comparison_path),
         "comparison_json_path": str(comparison_json_path),
         "comparison_markdown_path": str(comparison_md_path),

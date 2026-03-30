@@ -93,6 +93,7 @@ Artifacts:
 - `baseline_model_comparison.json`
 - `feature_diagnostics.json`
 - `feature_signal_report.json`
+- `direction_alignment_report.json`
 - `segment_metrics.json`
 - `segment_report.md`
 - `calibration_table.json`
@@ -128,6 +129,7 @@ Feature signal diagnostics are also emitted from the labeled rows:
 - univariate rank/AUC-style directional signal checks
 - plot-ready feature-vs-outcome quantile curves
 - dedicated artifact: `feature_signal_report.json`
+- dedicated artifact: `direction_alignment_report.json` (expected vs observed direction, auto-alignment actions, unresolved conflicts)
 - ranked lists for:
   - `top_predictive_features`
   - `weak_or_noisy_features`

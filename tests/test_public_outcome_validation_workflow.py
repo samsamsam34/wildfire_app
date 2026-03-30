@@ -246,6 +246,7 @@ def test_public_outcome_validation_orchestration_is_deterministic_with_fixed_run
     assert (output_root / "fixed_validation_run" / "false_high_review_set.jsonl").exists()
     assert (output_root / "fixed_validation_run" / "feature_diagnostics.json").exists()
     assert (output_root / "fixed_validation_run" / "feature_signal_report.json").exists()
+    assert (output_root / "fixed_validation_run" / "direction_alignment_report.json").exists()
     assert (output_root / "fixed_validation_run" / "baseline_model_comparison.json").exists()
     assert (output_root / "fixed_validation_run" / "segment_metrics.json").exists()
     assert (output_root / "fixed_validation_run" / "segment_report.md").exists()
@@ -254,6 +255,10 @@ def test_public_outcome_validation_orchestration_is_deterministic_with_fixed_run
     feature_signal = json.loads((output_root / "fixed_validation_run" / "feature_signal_report.json").read_text(encoding="utf-8"))
     assert "top_predictive_features" in feature_signal
     assert "weak_or_noisy_features" in feature_signal
+    direction_alignment = json.loads(
+        (output_root / "fixed_validation_run" / "direction_alignment_report.json").read_text(encoding="utf-8")
+    )
+    assert "direction_alignment" in direction_alignment
 
 
 def test_evaluation_jsonl_dataset_supports_join_confidence_slices(tmp_path: Path) -> None:
@@ -493,9 +498,13 @@ def test_feature_signal_diagnostics_flags_direction_conflict(tmp_path: Path) -> 
     dataset_path.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
     report, _ = evaluate_public_outcome_dataset_file(dataset_path=dataset_path, min_labeled_rows=1)
     diag = report.get("feature_signal_diagnostics") or {}
-    harmful = diag.get("potentially_harmful_features") or []
-    harmful_names = {str(row.get("feature")) for row in harmful if isinstance(row, dict)}
-    assert "nearest_vegetation_distance_ft" in harmful_names
+    alignment = diag.get("direction_alignment") or {}
+    conflicts_detected = alignment.get("conflicts_detected") or []
+    detected_names = {str(row.get("feature")) for row in conflicts_detected if isinstance(row, dict)}
+    assert "nearest_vegetation_distance_ft" in detected_names
+    assert int(alignment.get("conflicts_detected_pre_alignment") or 0) >= 1
+    assert int(alignment.get("conflicts_resolved_count") or 0) >= 1
+    assert int(alignment.get("conflicts_remaining_post_alignment") or 0) == 0
 
 
 def test_validation_propagates_retention_fallback_warning_from_dataset_join_report(tmp_path: Path) -> None:
