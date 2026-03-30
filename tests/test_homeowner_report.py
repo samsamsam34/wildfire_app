@@ -110,6 +110,8 @@ def test_homeowner_report_and_pdf_generate_for_complete_assessment(monkeypatch, 
         "headline_risk_summary",
         "top_risk_drivers",
         "prioritized_actions",
+        "ranked_actions",
+        "most_impactful_actions",
         "what_to_do_first",
         "limitations_notice",
         "report_header",
@@ -138,6 +140,11 @@ def test_homeowner_report_and_pdf_generate_for_complete_assessment(monkeypatch, 
     assert len(report["top_risk_drivers"]) <= 4
     assert isinstance(report["prioritized_actions"], list)
     assert len(report["prioritized_actions"]) <= 5
+    assert isinstance(report["ranked_actions"], list)
+    assert len(report["ranked_actions"]) <= 5
+    assert isinstance(report["most_impactful_actions"], list)
+    assert len(report["most_impactful_actions"]) <= 2
+    assert all(bool(row.get("most_impactful")) for row in report["most_impactful_actions"])
     assert isinstance(report["what_to_do_first"], dict)
     assert isinstance(report["limitations_notice"], str)
     assert isinstance(report["prioritized_mitigation_actions"], list)
@@ -152,6 +159,9 @@ def test_homeowner_report_and_pdf_generate_for_complete_assessment(monkeypatch, 
         assert isinstance(action.get("why_this_matters"), str)
         assert isinstance(action.get("what_it_reduces"), str)
         assert action.get("expected_effect") in {"small", "moderate", "significant"}
+    for action in report["ranked_actions"]:
+        assert isinstance(action.get("prioritization_score"), float)
+        assert isinstance(action.get("ranking_basis"), dict)
     assert "blockers" in report["home_hardening_readiness_summary"]
     assert "summary" in report["home_hardening_readiness_summary"]
     assert isinstance(report["defensible_space_summary"]["zone_findings"], list)
@@ -398,3 +408,83 @@ def test_homeowner_report_degraded_data_produces_more_cautious_tone(monkeypatch,
     assert "your home may have" in str(low_report.get("headline_risk_summary", "")).lower()
     assert "may be contributing to risk" in str((low_report.get("top_risk_drivers") or [""])[0]).lower()
     assert "may help reduce" in str(((low_report.get("prioritized_actions") or [{}])[0]).get("why_this_matters") or "").lower()
+
+
+def test_mitigation_ranking_prioritizes_near_structure_actions(monkeypatch, tmp_path: Path):
+    context = _ctx(env=57.0, wildland=46.0, historic=31.0)
+    _setup(monkeypatch, tmp_path, context)
+    assessed = _run_assessment("120 Proximity Rank Ct, Missoula, MT 59802")
+    original = app_main.store.get(assessed["assessment_id"])
+    assert original is not None
+
+    patched = original.model_copy(deep=True)
+    patched.confidence_tier = "high"
+    patched.confidence_summary.missing_data = []
+    patched.confidence_summary.fallback_assumptions = []
+    patched.fallback_weight_fraction = 0.0
+    patched.assessment_diagnostics.fallback_decisions = []
+    patched.prioritized_mitigation_actions = [
+        HomeownerPrioritizedAction(
+            action="Clear vegetation within 0-5 ft of the home",
+            explanation="Removes ignition pathways right next to the structure.",
+            impact_level="medium",
+            effort_level="low",
+            data_confidence="high",
+            priority=2,
+        ),
+        HomeownerPrioritizedAction(
+            action="Reduce vegetation around 50 ft from the home",
+            explanation="Lowers fuel farther from the structure.",
+            impact_level="medium",
+            effort_level="low",
+            data_confidence="high",
+            priority=1,
+        ),
+    ]
+
+    monkeypatch.setattr(app_main.store, "get", lambda _assessment_id, _obj=patched: _obj)
+    report = client.get(f"/report/{assessed['assessment_id']}/homeowner").json()
+    ranked = report.get("ranked_actions") or []
+    assert len(ranked) >= 2
+    assert "0-5" in str(ranked[0].get("action") or "")
+    assert float(ranked[0].get("proximity_score") or 0.0) > float(ranked[1].get("proximity_score") or 0.0)
+
+
+def test_mitigation_ranking_prefers_high_confidence_over_low_confidence(monkeypatch, tmp_path: Path):
+    context = _ctx(env=59.0, wildland=47.0, historic=33.0)
+    _setup(monkeypatch, tmp_path, context)
+    assessed = _run_assessment("121 Confidence Rank Ct, Missoula, MT 59802")
+    original = app_main.store.get(assessed["assessment_id"])
+    assert original is not None
+
+    patched = original.model_copy(deep=True)
+    patched.confidence_tier = "high"
+    patched.confidence_summary.missing_data = []
+    patched.confidence_summary.fallback_assumptions = []
+    patched.fallback_weight_fraction = 0.0
+    patched.assessment_diagnostics.fallback_decisions = []
+    patched.prioritized_mitigation_actions = [
+        HomeownerPrioritizedAction(
+            action="Improve defensible space within 30 ft",
+            explanation="Reduces flame exposure near the structure.",
+            impact_level="medium",
+            effort_level="low",
+            data_confidence="high",
+            priority=2,
+        ),
+        HomeownerPrioritizedAction(
+            action="Major fuel reduction in nearby area",
+            explanation="High-impact recommendation but based on limited local detail.",
+            impact_level="high",
+            effort_level="low",
+            data_confidence="low",
+            priority=1,
+        ),
+    ]
+
+    monkeypatch.setattr(app_main.store, "get", lambda _assessment_id, _obj=patched: _obj)
+    report = client.get(f"/report/{assessed['assessment_id']}/homeowner").json()
+    ranked = report.get("ranked_actions") or []
+    assert len(ranked) >= 2
+    assert "30 ft" in str(ranked[0].get("action") or "")
+    assert float(ranked[0].get("data_confidence_score") or 0.0) > float(ranked[1].get("data_confidence_score") or 0.0)

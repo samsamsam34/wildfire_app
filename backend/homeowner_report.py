@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import timezone
+import re
 import textwrap
 from typing import Any
 
@@ -257,13 +258,143 @@ def _enrich_prioritized_action(
     expected_effect = str(action.expected_effect or "").strip().lower()
     if expected_effect not in {"small", "moderate", "significant"}:
         expected_effect = _expected_effect_from_impact(str(action.impact_level or "low"))
+    data_confidence = str(action.data_confidence or "unknown").strip().lower()
+    if data_confidence not in {"high", "medium", "low", "unknown"}:
+        data_confidence = "unknown"
+    if data_confidence == "unknown":
+        if tone_level == "direct":
+            data_confidence = "high"
+        elif tone_level == "slightly_hedged":
+            data_confidence = "medium"
+        else:
+            data_confidence = "low"
     return action.model_copy(
         update={
             "why_this_matters": why_this_matters,
             "what_it_reduces": what_it_reduces,
             "expected_effect": expected_effect,
+            "data_confidence": data_confidence,
         }
     )
+
+
+def _parse_proximity_score(action_text: str, what_it_reduces: str) -> float:
+    text = f"{action_text} {what_it_reduces}".lower()
+    if any(token in text for token in ("0-5", "0 to 5", "within 5", "5 feet", "5 ft")):
+        return 1.0
+    if any(token in text for token in ("5-30", "5 to 30", "within 30", "30 feet", "30 ft")):
+        return 0.82
+    if any(token in text for token in ("30-100", "30 to 100", "within 100", "100 feet", "100 ft")):
+        return 0.55
+
+    distance_matches = re.findall(r"(\d+(?:\.\d+)?)\s*(?:ft|feet)", text)
+    if distance_matches:
+        try:
+            nearest = min(float(match) for match in distance_matches)
+        except Exception:
+            nearest = 9999.0
+        if nearest <= 10:
+            return 0.95
+        if nearest <= 30:
+            return 0.80
+        if nearest <= 60:
+            return 0.50
+        if nearest <= 100:
+            return 0.40
+        return 0.30
+    return 0.60
+
+
+def _rank_risk_contribution(impact_level: str) -> float:
+    value = str(impact_level or "low").lower()
+    if value == "high":
+        return 1.0
+    if value == "medium":
+        return 0.72
+    return 0.45
+
+
+def _rank_feasibility(effort_level: str) -> float:
+    value = str(effort_level or "medium").lower()
+    if value == "low":
+        return 1.0
+    if value == "medium":
+        return 0.75
+    if value == "high":
+        return 0.50
+    return 0.65
+
+
+def _rank_data_confidence(data_confidence: str) -> float:
+    value = str(data_confidence or "unknown").lower()
+    if value == "high":
+        return 1.0
+    if value == "medium":
+        return 0.70
+    if value == "low":
+        return 0.35
+    return 0.55
+
+
+def _rank_mitigation_actions(prioritized_actions: list[dict[str, object]]) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+    ranked: list[dict[str, object]] = []
+    for index, row in enumerate(prioritized_actions):
+        action = str(row.get("action") or "").strip()
+        if not action:
+            continue
+        impact_level = str(row.get("impact_level") or "low")
+        effort_level = str(row.get("effort_level") or "medium")
+        data_confidence = str(row.get("data_confidence") or "unknown")
+        what_it_reduces = str(row.get("what_it_reduces") or "")
+
+        risk_contribution_score = _rank_risk_contribution(impact_level)
+        proximity_score = _parse_proximity_score(action, what_it_reduces)
+        feasibility_score = _rank_feasibility(effort_level)
+        data_confidence_score = _rank_data_confidence(data_confidence)
+
+        # Explainable weighted blend emphasizing risk/proximity while ensuring
+        # low-confidence recommendations are not ranked above high-confidence peers.
+        prioritization_score = (
+            (0.30 * risk_contribution_score)
+            + (0.25 * proximity_score)
+            + (0.15 * feasibility_score)
+            + (0.30 * data_confidence_score)
+        )
+
+        row_with_rank = dict(row)
+        row_with_rank.update(
+            {
+                "risk_contribution_score": round(risk_contribution_score, 4),
+                "proximity_score": round(proximity_score, 4),
+                "feasibility_score": round(feasibility_score, 4),
+                "data_confidence_score": round(data_confidence_score, 4),
+                "prioritization_score": round(prioritization_score, 4),
+                "ranking_basis": {
+                    "risk_contribution_weight": 0.30,
+                    "proximity_weight": 0.25,
+                    "feasibility_weight": 0.15,
+                    "data_confidence_weight": 0.30,
+                },
+                "rank_order_source_index": index,
+            }
+        )
+        ranked.append(row_with_rank)
+
+    ranked.sort(
+        key=lambda row: (
+            -float(row.get("prioritization_score") or 0.0),
+            -float(row.get("proximity_score") or 0.0),
+            -float(row.get("data_confidence_score") or 0.0),
+            str(row.get("action") or "").lower(),
+        )
+    )
+    ranked = ranked[:5]
+    most_impactful: list[dict[str, object]] = []
+    for index, row in enumerate(ranked):
+        row["most_impactful"] = index < 2
+        if index < 2:
+            most_impactful.append(row)
+    return ranked, most_impactful
 
 
 def _summarize_prioritized_actions(
@@ -302,6 +433,7 @@ def _summarize_prioritized_actions(
                 "action": action,
                 "effort_level": effort,
                 "impact_level": str(row.impact_level or "low"),
+                "data_confidence": str(row.data_confidence or "unknown"),
                 "expected_effect": expected_effect,
                 "what_it_reduces": what_it_reduces,
                 "why_this_matters": why_this_matters,
@@ -558,7 +690,8 @@ def build_homeowner_report(
         prioritized_actions,
         tone_level=tone_level,
     )
-    what_to_do_first = prioritized_actions_summary[0] if prioritized_actions_summary else {}
+    ranked_actions, most_impactful_actions = _rank_mitigation_actions(prioritized_actions_summary)
+    what_to_do_first = ranked_actions[0] if ranked_actions else (prioritized_actions_summary[0] if prioritized_actions_summary else {})
     headline_risk_summary = _headline_risk_summary(
         result,
         result.overall_wildfire_risk if result.overall_wildfire_risk is not None else result.wildfire_risk_score,
@@ -572,6 +705,8 @@ def build_homeowner_report(
         headline_risk_summary=headline_risk_summary,
         top_risk_drivers=top_risk_drivers,
         prioritized_actions=prioritized_actions_summary,
+        ranked_actions=ranked_actions,
+        most_impactful_actions=most_impactful_actions,
         what_to_do_first=what_to_do_first,
         limitations_notice=limitations_notice,
         report_header={

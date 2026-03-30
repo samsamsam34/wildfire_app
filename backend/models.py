@@ -697,6 +697,7 @@ class HomeownerPrioritizedAction(BaseModel):
     why_this_matters: str = ""
     what_it_reduces: str = ""
     expected_effect: Literal["small", "moderate", "significant"] = "moderate"
+    data_confidence: Literal["high", "medium", "low", "unknown"] = "unknown"
     impact_level: Literal["high", "medium", "low"] = "low"
     effort_level: Literal["low", "medium", "high"] = "medium"
     estimated_cost_band: Literal["low", "medium", "high"] = "medium"
@@ -1150,6 +1151,8 @@ class HomeownerReport(BaseModel):
     headline_risk_summary: str = ""
     top_risk_drivers: List[str] = Field(default_factory=list)
     prioritized_actions: List[Dict[str, object]] = Field(default_factory=list)
+    ranked_actions: List[Dict[str, object]] = Field(default_factory=list)
+    most_impactful_actions: List[Dict[str, object]] = Field(default_factory=list)
     what_to_do_first: Dict[str, object] = Field(default_factory=dict)
     limitations_notice: str = ""
     report_header: Dict[str, object] = Field(default_factory=dict)

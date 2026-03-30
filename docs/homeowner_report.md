@@ -21,6 +21,8 @@ The report JSON includes:
 - `headline_risk_summary`
 - `top_risk_drivers` (plain-language, max 4)
 - `prioritized_actions` (impact-ordered, 3-5 when available)
+- `ranked_actions` (practical homeowner ranking)
+- `most_impactful_actions` (top 1-2 highlighted)
   - each action includes:
     - `why_this_matters`
     - `what_it_reduces`
@@ -82,6 +84,12 @@ The same property with degraded evidence will render more cautious language in:
 - `headline_risk_summary`
 - `top_risk_drivers`
 - mitigation rationale fields (`why_this_matters`)
+
+Action ranking is explainable and deterministic. It combines:
+- risk contribution (`impact_level`)
+- proximity to structure (near-home actions rank higher)
+- action feasibility (`effort_level`)
+- data confidence (`data_confidence` / evidence tone)
 
 ## Notes
 
