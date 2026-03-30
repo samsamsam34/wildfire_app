@@ -77,6 +77,8 @@ Core assessment:
 - `GET /health`
 - `POST /risk/assess` (`?include_diagnostics=true` for opt-in trust metadata, `?include_calibrated_outputs=true` for optional calibrated public-outcome metadata)
 - `POST /risk/reassess/{assessment_id}`
+- `GET /risk/improve/{assessment_id}` (homeowner input gap check + follow-up prompts)
+- `POST /risk/improve/{assessment_id}` (rerun with added homeowner details + before/after summary)
 - `POST /risk/simulate`
 - `POST /risk/debug`
 - `POST /risk/layer-diagnostics`

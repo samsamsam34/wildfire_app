@@ -40,6 +40,12 @@ from backend.homeowner_advisor import (
     build_simulator_explanations,
     prioritize_mitigation_actions,
 )
+from backend.homeowner_improvement import (
+    build_homeowner_improvement_options,
+    build_improvement_change_set,
+    defensible_space_ft_from_condition,
+    summarize_assessment_for_improvement,
+)
 from backend.homeowner_report import build_homeowner_report, render_homeowner_report_pdf
 from backend.internal_diagnostics_artifacts import (
     SECTION_FILES,
@@ -95,6 +101,9 @@ from backend.models import (
     GeocodeDebugRequest,
     GeocodingDetails,
     HomeownerReport,
+    HomeownerImprovementOptions,
+    HomeownerImprovementRunRequest,
+    HomeownerImprovementRunResponse,
     ModelGovernanceInfo,
     NearStructureAction,
     FactorBreakdown,
@@ -10746,6 +10755,150 @@ def reassess_risk(
         metadata={"source_assessment_id": assessment_id, "ruleset_id": ruleset.ruleset_id},
     )
     return result
+
+
+@app.get(
+    "/risk/improve/{assessment_id}",
+    response_model=HomeownerImprovementOptions,
+    dependencies=[Depends(require_api_key)],
+)
+def homeowner_improvement_options(
+    assessment_id: str,
+    ctx: ActorContext = Depends(get_actor_context),
+) -> HomeownerImprovementOptions:
+    existing = store.get(assessment_id)
+    if not existing:
+        raise HTTPException(status_code=404, detail="Assessment not found")
+    _enforce_org_scope(ctx, existing.organization_id)
+    return build_homeowner_improvement_options(existing)
+
+
+@app.post(
+    "/risk/improve/{assessment_id}",
+    response_model=HomeownerImprovementRunResponse,
+    dependencies=[Depends(require_api_key)],
+)
+def rerun_assessment_with_homeowner_inputs(
+    assessment_id: str,
+    payload: HomeownerImprovementRunRequest,
+    ctx: ActorContext = Depends(get_actor_context),
+) -> HomeownerImprovementRunResponse:
+    _require_role(ctx, WRITE_ROLES, "Viewer role cannot update assessments")
+
+    existing = store.get(assessment_id)
+    if not existing:
+        raise HTTPException(status_code=404, detail="Assessment not found")
+    _enforce_org_scope(ctx, existing.organization_id)
+
+    base_req = _payload_from_assessment(existing)
+    improvement_attrs = payload.attributes.model_copy(deep=True)
+    auto_confirmed_fields: list[str] = []
+    mapped_defensible_space_ft = defensible_space_ft_from_condition(payload.defensible_space_condition)
+    if mapped_defensible_space_ft is not None and improvement_attrs.defensible_space_ft is None:
+        improvement_attrs.defensible_space_ft = mapped_defensible_space_ft
+        auto_confirmed_fields.append("defensible_space_ft")
+
+    merged_attrs = _merge_attributes(base_req.attributes, improvement_attrs)
+    normalized_changes = normalized_attribute_changes(base_req.attributes, merged_attrs)
+    if (
+        not normalized_changes
+        and not payload.confirmed_fields
+        and mapped_defensible_space_ft is None
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "No property-detail updates were provided. Submit roof_type, vent_type, "
+                "defensible_space_ft, or defensible_space_condition."
+            ),
+        )
+
+    merged_confirmed = sorted(
+        set(
+            base_req.confirmed_fields
+            + payload.confirmed_fields
+            + auto_confirmed_fields
+            + list(normalized_changes.keys())
+        )
+    )
+    ruleset = _get_ruleset_or_default(payload.ruleset_id or existing.ruleset_id)
+
+    request_payload = AddressRequest(
+        address=base_req.address,
+        attributes=merged_attrs,
+        confirmed_fields=merged_confirmed,
+        structure_geometry_source=base_req.structure_geometry_source,
+        selection_mode=base_req.selection_mode,
+        property_anchor_point=base_req.property_anchor_point,
+        user_selected_point=base_req.user_selected_point,
+        selected_structure_id=base_req.selected_structure_id,
+        selected_structure_geometry=base_req.selected_structure_geometry,
+        audience=payload.audience or base_req.audience,
+        tags=base_req.tags,
+        organization_id=existing.organization_id,
+        ruleset_id=ruleset.ruleset_id,
+        include_calibrated_outputs=bool(base_req.include_calibrated_outputs),
+    )
+    updated = _compute_assessment(
+        request_payload,
+        organization_id=existing.organization_id,
+        ruleset=ruleset,
+        portfolio_name=existing.portfolio_name,
+        tags=existing.tags,
+    )
+    updated.review_status = existing.review_status
+    updated.workflow_state = existing.workflow_state
+    updated.assigned_reviewer = existing.assigned_reviewer
+    updated.assigned_role = existing.assigned_role
+    store.save(updated)
+
+    before_options = build_homeowner_improvement_options(existing)
+    after_options = build_homeowner_improvement_options(updated)
+    what_changed, change_notes = build_improvement_change_set(
+        existing,
+        updated,
+        changed_fields_hint=list(normalized_changes.keys()),
+    )
+    if payload.defensible_space_condition and mapped_defensible_space_ft is not None:
+        what_changed.setdefault(
+            "defensible_space_condition_mapping",
+            {"before": payload.defensible_space_condition, "after": mapped_defensible_space_ft},
+        )
+        change_notes.append(
+            "Defensible space condition was converted to an approximate defensible-space distance for scoring."
+        )
+
+    confidence_improved = float(updated.confidence_score or 0.0) > float(existing.confidence_score or 0.0)
+    recommendations_adjusted = (
+        list(existing.top_recommended_actions or [])[:3] != list(updated.top_recommended_actions or [])[:3]
+        or before_options.improve_your_result_suggestions != after_options.improve_your_result_suggestions
+    )
+
+    _log_audit(
+        ctx=ctx,
+        entity_type="assessment",
+        entity_id=updated.assessment_id,
+        action="assessment_improvement_rerun_created",
+        organization_id=updated.organization_id,
+        metadata={
+            "source_assessment_id": assessment_id,
+            "ruleset_id": ruleset.ruleset_id,
+            "changed_fields": sorted(list(normalized_changes.keys())),
+            "defensible_space_condition": payload.defensible_space_condition,
+        },
+    )
+    return HomeownerImprovementRunResponse(
+        baseline_assessment_id=assessment_id,
+        updated_assessment_id=updated.assessment_id,
+        before_summary=summarize_assessment_for_improvement(existing),
+        after_summary=summarize_assessment_for_improvement(updated),
+        what_changed=what_changed,
+        confidence_improved=confidence_improved,
+        recommendations_adjusted=recommendations_adjusted,
+        improve_your_result_before=before_options,
+        improve_your_result_after=after_options,
+        change_notes=list(dict.fromkeys(change_notes)),
+    )
 
 
 @app.post("/risk/simulate", response_model=SimulationResult, dependencies=[Depends(require_api_key)])

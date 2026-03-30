@@ -129,6 +129,16 @@ class ReassessmentRequest(BaseModel):
     ruleset_id: Optional[str] = None
 
 
+class HomeownerImprovementRunRequest(BaseModel):
+    attributes: PropertyAttributes = Field(default_factory=PropertyAttributes)
+    defensible_space_condition: Optional[
+        Literal["poor", "limited", "moderate", "good", "excellent"]
+    ] = None
+    confirmed_fields: List[str] = Field(default_factory=list)
+    audience: Audience = "homeowner"
+    ruleset_id: Optional[str] = None
+
+
 class SimulationRequest(BaseModel):
     assessment_id: Optional[str] = None
     address: Optional[str] = None
@@ -712,6 +722,36 @@ class HomeownerConfidenceSummary(BaseModel):
     missing_data: List[str] = Field(default_factory=list)
     fallback_assumptions: List[str] = Field(default_factory=list)
     accuracy_improvements: List[str] = Field(default_factory=list)
+
+
+class HomeownerFollowUpInput(BaseModel):
+    input_key: str
+    assessment_field: str
+    label: str
+    prompt: str
+    input_type: Literal["select", "number"] = "select"
+    options: List[str] = Field(default_factory=list)
+    unit: Optional[str] = None
+
+
+class HomeownerImprovementOptions(BaseModel):
+    assessment_id: str
+    missing_key_inputs: List[str] = Field(default_factory=list)
+    improve_your_result_suggestions: List[str] = Field(default_factory=list)
+    optional_follow_up_inputs: List[HomeownerFollowUpInput] = Field(default_factory=list)
+
+
+class HomeownerImprovementRunResponse(BaseModel):
+    baseline_assessment_id: str
+    updated_assessment_id: str
+    before_summary: Dict[str, Any] = Field(default_factory=dict)
+    after_summary: Dict[str, Any] = Field(default_factory=dict)
+    what_changed: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
+    confidence_improved: bool = False
+    recommendations_adjusted: bool = False
+    improve_your_result_before: HomeownerImprovementOptions
+    improve_your_result_after: HomeownerImprovementOptions
+    change_notes: List[str] = Field(default_factory=list)
 
 
 class TrustDiagnosticsConfidence(BaseModel):
