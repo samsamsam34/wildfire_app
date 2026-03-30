@@ -76,7 +76,12 @@ def _safe_float(value: Any) -> float | None:
         return None
 
 
-def _load_high_signal_weights_from_feature_signal_report(path: Path) -> dict[str, float]:
+def _load_and_filter_high_signal_weights_from_feature_signal_report(
+    path: Path,
+    *,
+    min_feature_auc: float = 0.55,
+    min_feature_stddev: float = 1e-6,
+) -> tuple[dict[str, float], dict[str, Any]]:
     payload = _safe_load_json(path)
     if not isinstance(payload, dict):
         raise ValueError(f"Invalid feature signal report JSON: {path}")
@@ -109,23 +114,88 @@ def _load_high_signal_weights_from_feature_signal_report(path: Path) -> dict[str
         "slope_index",
     ]
     out: dict[str, float] = {}
+    included_rows: list[dict[str, Any]] = []
+    excluded_rows: list[dict[str, Any]] = []
     for feature_name in required:
+        feature_row = next(
+            (
+                row
+                for row in candidates
+                if str(row.get("feature") or "").strip() == feature_name
+            ),
+            {},
+        )
+        best_auc = _safe_float(feature_row.get("best_auc"))
+        feature_stddev = _safe_float(feature_row.get("feature_stddev"))
         auc_strength = auc_by_feature.get(feature_name)
-        if auc_strength is None:
-            signal = signal_by_feature.get(feature_name)
-            if signal is None:
-                continue
-            # Fall back to signal-score scaling when best_auc is absent.
-            out[feature_name] = max(0.01, float(signal))
+        signal = signal_by_feature.get(feature_name)
+
+        exclude_reasons: list[str] = []
+        if best_auc is None:
+            exclude_reasons.append("missing_best_auc")
+        elif float(best_auc) < float(min_feature_auc):
+            exclude_reasons.append(
+                f"best_auc_below_threshold({best_auc:.4f}<{float(min_feature_auc):.4f})"
+            )
+        if feature_stddev is not None and abs(float(feature_stddev)) < float(min_feature_stddev):
+            exclude_reasons.append(
+                f"feature_stddev_below_threshold({feature_stddev:.6f}<{float(min_feature_stddev):.6f})"
+            )
+        if signal is None and auc_strength is None:
+            exclude_reasons.append("missing_signal_and_auc_strength")
+
+        if exclude_reasons:
+            excluded_rows.append(
+                {
+                    "feature": feature_name,
+                    "best_auc": best_auc,
+                    "feature_stddev": feature_stddev,
+                    "signal_score": signal,
+                    "reasons": exclude_reasons,
+                }
+            )
             continue
-        # Exponential emphasis on stronger univariate AUC separation so weak
-        # features (for example low-AUC slope variants) do not dominate.
-        out[feature_name] = max(1e-6, float(auc_strength) ** 4)
+
+        if auc_strength is None:
+            # Fall back to signal-score scaling when best_auc is present but parsing
+            # failed for auc-strength extraction.
+            out[feature_name] = max(0.01, float(signal or 0.01))
+        else:
+            # Exponential emphasis on stronger univariate AUC separation so weak
+            # features (for example low-AUC slope variants) do not dominate.
+            out[feature_name] = max(1e-6, float(auc_strength) ** 4)
+        included_rows.append(
+            {
+                "feature": feature_name,
+                "best_auc": best_auc,
+                "feature_stddev": feature_stddev,
+                "signal_score": signal,
+                "raw_weight": out[feature_name],
+            }
+        )
     if not out:
         raise ValueError(
-            "Feature signal report does not contain usable signal scores for the required high-signal features."
+            "No high-signal features met thresholds. "
+            f"min_feature_auc={float(min_feature_auc):.4f}, min_feature_stddev={float(min_feature_stddev):.6f}. "
+            f"excluded={excluded_rows}"
         )
-    return out
+    summary = {
+        "feature_signal_report_path": str(path),
+        "thresholds": {
+            "min_feature_auc": float(min_feature_auc),
+            "min_feature_stddev": float(min_feature_stddev),
+        },
+        "included_feature_count": len(included_rows),
+        "excluded_feature_count": len(excluded_rows),
+        "included_features": included_rows,
+        "excluded_features": excluded_rows,
+    }
+    return out, summary
+
+
+def _load_high_signal_weights_from_feature_signal_report(path: Path) -> dict[str, float]:
+    weights, _summary = _load_and_filter_high_signal_weights_from_feature_signal_report(path)
+    return weights
 
 
 def _extract_feature_input_versions(rows: list[dict[str, Any]]) -> dict[str, list[str]]:
@@ -1438,6 +1508,7 @@ def run_public_outcome_validation(
     allow_surrogate_wildfire_score: bool = True,
     use_high_signal_simplified_model: bool = False,
     high_signal_feature_weights: dict[str, float] | None = None,
+    high_signal_feature_filtering: dict[str, Any] | None = None,
     min_join_confidence_score_for_metrics: float | None = None,
     retain_unusable_rows: bool = True,
     baseline_run_id: str | None = None,
@@ -1595,6 +1666,33 @@ def run_public_outcome_validation(
                 f"medium_confidence={((subset_metrics.get('medium_confidence_subset') or {}).get('count'))} "
                 f"high_evidence={((subset_metrics.get('high_evidence_subset') or {}).get('count'))}"
             )
+        if isinstance(high_signal_feature_filtering, dict):
+            report["high_signal_feature_filtering"] = high_signal_feature_filtering
+            print(
+                "[public-validation] High-signal feature filtering: "
+                f"included={high_signal_feature_filtering.get('included_feature_count')} "
+                f"excluded={high_signal_feature_filtering.get('excluded_feature_count')} "
+                f"thresholds={high_signal_feature_filtering.get('thresholds')}"
+            )
+            excluded_rows = (
+                high_signal_feature_filtering.get("excluded_features")
+                if isinstance(high_signal_feature_filtering.get("excluded_features"), list)
+                else []
+            )
+            if excluded_rows:
+                print(
+                    "[public-validation] Excluded high-signal features: "
+                    + str(
+                        [
+                            {
+                                "feature": row.get("feature"),
+                                "reasons": row.get("reasons"),
+                            }
+                            for row in excluded_rows
+                            if isinstance(row, dict)
+                        ]
+                    )
+                )
     except ValueError as exc:
         rows = []
         report = _insufficient_data_report(
@@ -1919,6 +2017,11 @@ def run_public_outcome_validation(
                 if isinstance(high_signal_feature_weights, dict)
                 else {}
             ),
+            "high_signal_feature_filtering": (
+                high_signal_feature_filtering
+                if isinstance(high_signal_feature_filtering, dict)
+                else {}
+            ),
             "min_join_confidence_score_for_metrics": (
                 float(min_join_confidence_score_for_metrics)
                 if min_join_confidence_score_for_metrics is not None
@@ -1955,6 +2058,11 @@ def run_public_outcome_validation(
                 "high_signal_feature_weights": (
                     {k: float(v) for k, v in sorted((high_signal_feature_weights or {}).items())}
                     if isinstance(high_signal_feature_weights, dict)
+                    else {}
+                ),
+                "high_signal_feature_filtering": (
+                    high_signal_feature_filtering
+                    if isinstance(high_signal_feature_filtering, dict)
                     else {}
                 ),
                 "min_join_confidence_score_for_metrics": (
@@ -2100,8 +2208,21 @@ def main() -> int:
         default="",
         help=(
             "Optional path to feature_signal_report.json. When provided with "
-            "--use-high-signal-simplified-model, per-feature signal_score values are used as weights."
+            "--use-high-signal-simplified-model, per-feature strength from report metrics "
+            "(best_auc emphasis with threshold gating) is used as weights."
         ),
+    )
+    parser.add_argument(
+        "--high-signal-min-feature-auc",
+        type=float,
+        default=0.55,
+        help="Minimum per-feature univariate best_auc required for inclusion when loading feature_signal_report weights.",
+    )
+    parser.add_argument(
+        "--high-signal-min-feature-stddev",
+        type=float,
+        default=1e-6,
+        help="Minimum per-feature stddev required for inclusion when loading feature_signal_report weights.",
     )
     parser.add_argument(
         "--min-join-confidence-score-for-metrics",
@@ -2130,9 +2251,12 @@ def main() -> int:
 
     thresholds = [float(token) for token in str(args.thresholds).split(",") if token.strip()]
     high_signal_feature_weights: dict[str, float] | None = None
+    high_signal_feature_filtering: dict[str, Any] | None = None
     if bool(args.use_high_signal_simplified_model) and str(args.feature_signal_report or "").strip():
-        high_signal_feature_weights = _load_high_signal_weights_from_feature_signal_report(
-            Path(str(args.feature_signal_report)).expanduser()
+        high_signal_feature_weights, high_signal_feature_filtering = _load_and_filter_high_signal_weights_from_feature_signal_report(
+            Path(str(args.feature_signal_report)).expanduser(),
+            min_feature_auc=float(args.high_signal_min_feature_auc),
+            min_feature_stddev=float(args.high_signal_min_feature_stddev),
         )
     result = run_public_outcome_validation(
         evaluation_dataset=(Path(args.evaluation_dataset).expanduser() if args.evaluation_dataset else None),
@@ -2150,6 +2274,7 @@ def main() -> int:
         allow_surrogate_wildfire_score=bool(args.allow_surrogate_wildfire_score),
         use_high_signal_simplified_model=bool(args.use_high_signal_simplified_model),
         high_signal_feature_weights=high_signal_feature_weights,
+        high_signal_feature_filtering=high_signal_feature_filtering,
         min_join_confidence_score_for_metrics=(
             float(args.min_join_confidence_score_for_metrics)
             if args.min_join_confidence_score_for_metrics is not None

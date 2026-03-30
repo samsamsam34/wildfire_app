@@ -10,6 +10,7 @@ from scripts.build_calibration_dataset import build_calibration_dataset
 from scripts.build_public_outcome_evaluation_dataset import build_public_outcome_evaluation_dataset
 from scripts.ingest_public_structure_damage import normalize_public_damage_rows
 from scripts.run_public_outcome_validation import (
+    _load_and_filter_high_signal_weights_from_feature_signal_report,
     _load_high_signal_weights_from_feature_signal_report,
     run_public_outcome_validation,
 )
@@ -673,6 +674,115 @@ def test_load_high_signal_weights_from_feature_signal_report_prioritizes_stronge
         "slope_index",
     }
     assert weights["slope_index"] < weights["nearest_high_fuel_patch_distance_ft"]
+
+
+def test_feature_signal_weight_loader_excludes_weak_features_by_threshold(tmp_path: Path) -> None:
+    report_path = tmp_path / "feature_signal_report.json"
+    report_path.write_text(
+        json.dumps(
+            {
+                "top_predictive_features": [
+                    {
+                        "feature": "nearest_high_fuel_patch_distance_ft",
+                        "best_auc": 0.66,
+                        "feature_stddev": 12.0,
+                        "signal_score": 0.4,
+                    },
+                    {
+                        "feature": "canopy_adjacency_proxy_pct",
+                        "best_auc": 0.64,
+                        "feature_stddev": 8.0,
+                        "signal_score": 0.38,
+                    },
+                    {
+                        "feature": "vegetation_continuity_proxy_pct",
+                        "best_auc": 0.53,
+                        "feature_stddev": 5.0,
+                        "signal_score": 0.2,
+                    },
+                    {
+                        "feature": "slope_index",
+                        "best_auc": 0.60,
+                        "feature_stddev": 0.0,
+                        "signal_score": 0.18,
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    weights, summary = _load_and_filter_high_signal_weights_from_feature_signal_report(
+        report_path,
+        min_feature_auc=0.55,
+        min_feature_stddev=0.01,
+    )
+    assert "nearest_high_fuel_patch_distance_ft" in weights
+    assert "canopy_adjacency_proxy_pct" in weights
+    assert "vegetation_continuity_proxy_pct" not in weights
+    assert "slope_index" not in weights
+    excluded = summary.get("excluded_features") or []
+    excluded_names = {str(row.get("feature")) for row in excluded if isinstance(row, dict)}
+    assert "vegetation_continuity_proxy_pct" in excluded_names
+    assert "slope_index" in excluded_names
+
+
+def test_validation_report_includes_high_signal_feature_filtering_summary(tmp_path: Path) -> None:
+    outcomes_csv = tmp_path / "outcomes.csv"
+    _write_outcomes_csv(outcomes_csv)
+    feature_artifact = tmp_path / "feature_artifact.json"
+    _write_feature_artifact(feature_artifact)
+    normalized = normalize_public_damage_rows(input_path=outcomes_csv, source_name="fixture_outcomes")
+    normalized_path = tmp_path / "normalized.json"
+    normalized_path.write_text(json.dumps(normalized), encoding="utf-8")
+    evaluation_dataset_run = build_public_outcome_evaluation_dataset(
+        outcomes_path=normalized_path,
+        feature_artifacts=[feature_artifact],
+        output_root=tmp_path / "eval_dataset_runs",
+        run_id="joined_fixture",
+        overwrite=True,
+    )
+    evaluation_dataset_path = Path(evaluation_dataset_run["run_dir"]) / "evaluation_dataset.jsonl"
+
+    feature_signal_report = tmp_path / "feature_signal_report.json"
+    feature_signal_report.write_text(
+        json.dumps(
+            {
+                "top_predictive_features": [
+                    {"feature": "nearest_high_fuel_patch_distance_ft", "best_auc": 0.66, "feature_stddev": 12.0, "signal_score": 0.4},
+                    {"feature": "canopy_adjacency_proxy_pct", "best_auc": 0.64, "feature_stddev": 8.0, "signal_score": 0.38},
+                    {"feature": "vegetation_continuity_proxy_pct", "best_auc": 0.53, "feature_stddev": 5.0, "signal_score": 0.2},
+                    {"feature": "slope_index", "best_auc": 0.60, "feature_stddev": 0.0, "signal_score": 0.18},
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = run_public_outcome_validation(
+        evaluation_dataset=evaluation_dataset_path,
+        output_root=tmp_path / "validation_runs",
+        run_id="feature_filtering_summary",
+        overwrite=True,
+        use_high_signal_simplified_model=True,
+        high_signal_feature_weights={
+            "nearest_high_fuel_patch_distance_ft": 0.8,
+            "canopy_adjacency_proxy_pct": 0.7,
+        },
+        high_signal_feature_filtering={
+            "feature_signal_report_path": str(feature_signal_report),
+            "thresholds": {"min_feature_auc": 0.55, "min_feature_stddev": 0.01},
+            "included_feature_count": 2,
+            "excluded_feature_count": 2,
+            "excluded_features": [
+                {"feature": "vegetation_continuity_proxy_pct", "reasons": ["best_auc_below_threshold"]},
+                {"feature": "slope_index", "reasons": ["feature_stddev_below_threshold"]},
+            ],
+        },
+    )
+    metrics = json.loads(Path(result["validation_metrics_path"]).read_text(encoding="utf-8"))
+    filtering = metrics.get("high_signal_feature_filtering") or {}
+    assert filtering.get("included_feature_count") == 2
+    assert filtering.get("excluded_feature_count") == 2
 
 
 def test_validation_propagates_retention_fallback_warning_from_dataset_join_report(tmp_path: Path) -> None:

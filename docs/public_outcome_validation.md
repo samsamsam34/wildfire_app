@@ -80,6 +80,22 @@ python scripts/run_public_outcome_validation.py \
   --feature-signal-report benchmark/public_outcomes/validation/<prior_run_id>/feature_signal_report.json
 ```
 
+Optional feature-quality gates:
+
+```bash
+python scripts/run_public_outcome_validation.py \
+  --evaluation-dataset-run-id <run_id> \
+  --use-high-signal-simplified-model \
+  --feature-signal-report benchmark/public_outcomes/validation/<prior_run_id>/feature_signal_report.json \
+  --high-signal-min-feature-auc 0.55 \
+  --high-signal-min-feature-stddev 0.000001
+```
+
+When a feature falls below either threshold, it is excluded automatically from the simplified model and logged in:
+- console run logs (`Excluded high-signal features: ...`)
+- `validation_metrics.json` under `high_signal_feature_filtering`
+- `manifest.json` under input/command config
+
 Filtering strictness is configurable and defaults to row-retention with tagging:
 
 ```bash
