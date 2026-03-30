@@ -90,6 +90,8 @@ HIGH_SIGNAL_MODEL_SIGNAL_WEIGHTS: dict[str, float] = {
     "vegetation_continuity_proxy_pct": 0.2908944683,
     "slope_index": 0.2548561782,
 }
+HIGH_SIGNAL_FEATURE_KEYS = tuple(HIGH_SIGNAL_MODEL_SIGNAL_WEIGHTS.keys())
+HIGH_SIGNAL_MODEL_EQUAL_WEIGHTS: dict[str, float] = {key: 1.0 for key in HIGH_SIGNAL_FEATURE_KEYS}
 
 
 def _utc_now_iso() -> str:
@@ -626,8 +628,32 @@ def _compute_vegetation_density_index(row: dict[str, Any]) -> float | None:
     return (numerator / denom) if denom > 0.0 else None
 
 
-def _compute_high_signal_simplified_score(row: dict[str, Any]) -> tuple[float | None, dict[str, Any]]:
+def _normalize_high_signal_feature_weights(
+    weights: dict[str, float] | None,
+) -> dict[str, float]:
+    base = weights if isinstance(weights, dict) else {}
+    filtered: dict[str, float] = {}
+    for key in HIGH_SIGNAL_FEATURE_KEYS:
+        raw = _safe_float(base.get(key))
+        if raw is None or raw <= 0.0:
+            continue
+        filtered[key] = float(raw)
+    if not filtered:
+        filtered = dict(HIGH_SIGNAL_MODEL_EQUAL_WEIGHTS)
+    total = sum(filtered.values())
+    if total <= 0.0:
+        filtered = dict(HIGH_SIGNAL_MODEL_EQUAL_WEIGHTS)
+        total = float(len(filtered))
+    return {key: (float(value) / float(total)) for key, value in sorted(filtered.items())}
+
+
+def _compute_high_signal_simplified_score(
+    row: dict[str, Any],
+    *,
+    feature_weights: dict[str, float] | None = None,
+) -> tuple[float | None, dict[str, Any]]:
     components: dict[str, float] = {}
+    normalized_weights = _normalize_high_signal_feature_weights(feature_weights)
 
     nearest_high_fuel_patch_distance_ft = _safe_float(
         _extract_feature_value(row, "nearest_high_fuel_patch_distance_ft")
@@ -664,7 +690,7 @@ def _compute_high_signal_simplified_score(row: dict[str, Any]) -> tuple[float | 
         components["slope_index"] = max(0.0, min(100.0, float(slope_index)))
 
     weighted_terms: list[tuple[str, float, float]] = []
-    for feature_name, weight in HIGH_SIGNAL_MODEL_SIGNAL_WEIGHTS.items():
+    for feature_name, weight in normalized_weights.items():
         component_value = _safe_float(components.get(feature_name))
         if component_value is None:
             continue
@@ -684,18 +710,19 @@ def _compute_high_signal_simplified_score(row: dict[str, Any]) -> tuple[float | 
             "available": False,
             "reason": "non_positive_weight_sum",
             "components": components,
-            "normalized_weights": {},
+            "normalized_weights": normalized_weights,
         }
-    normalized_weights = {
+    available_weight_normalized = {
         feature_name: (weight / total_weight)
         for feature_name, _, weight in weighted_terms
     }
-    score = sum(value * normalized_weights[feature_name] for feature_name, value, _ in weighted_terms)
+    score = sum(value * available_weight_normalized[feature_name] for feature_name, value, _ in weighted_terms)
     score = max(0.0, min(100.0, float(score)))
     return score, {
         "available": True,
         "components": components,
-        "normalized_weights": normalized_weights,
+        "requested_normalized_weights": normalized_weights,
+        "available_feature_weights_normalized": available_weight_normalized,
     }
 
 
@@ -2864,6 +2891,7 @@ def _prepare_rows(
     allow_label_derived_target: bool = True,
     allow_surrogate_wildfire_score: bool = True,
     use_high_signal_simplified_model: bool = False,
+    high_signal_feature_weights: dict[str, float] | None = None,
     min_join_confidence_score_for_metrics: float | None = None,
     retain_unusable_rows: bool = True,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
@@ -2885,7 +2913,10 @@ def _prepare_rows(
             wildfire_score = _derive_surrogate_wildfire_score(row)
             if wildfire_score is not None:
                 wildfire_score_source = "surrogate_from_site_and_vulnerability"
-        simplified_score, simplified_meta = _compute_high_signal_simplified_score(row)
+        simplified_score, simplified_meta = _compute_high_signal_simplified_score(
+            row,
+            feature_weights=high_signal_feature_weights,
+        )
         if use_high_signal_simplified_model and simplified_score is not None:
             wildfire_score = simplified_score
             wildfire_score_source = "high_signal_simplified_model"
@@ -3036,6 +3067,7 @@ def evaluate_public_outcome_dataset_rows(
     allow_label_derived_target: bool = True,
     allow_surrogate_wildfire_score: bool = True,
     use_high_signal_simplified_model: bool = False,
+    high_signal_feature_weights: dict[str, float] | None = None,
     min_join_confidence_score_for_metrics: float | None = None,
     retain_unusable_rows: bool = True,
     generated_at: str | None = None,
@@ -3045,6 +3077,11 @@ def evaluate_public_outcome_dataset_rows(
         allow_label_derived_target=bool(allow_label_derived_target),
         allow_surrogate_wildfire_score=bool(allow_surrogate_wildfire_score),
         use_high_signal_simplified_model=bool(use_high_signal_simplified_model),
+        high_signal_feature_weights=(
+            _normalize_high_signal_feature_weights(high_signal_feature_weights)
+            if bool(use_high_signal_simplified_model)
+            else None
+        ),
         min_join_confidence_score_for_metrics=(
             float(min_join_confidence_score_for_metrics)
             if min_join_confidence_score_for_metrics is not None
@@ -3356,6 +3393,11 @@ def evaluate_public_outcome_dataset_rows(
                 "allow_label_derived_target": bool(allow_label_derived_target),
                 "allow_surrogate_wildfire_score": bool(allow_surrogate_wildfire_score),
                 "use_high_signal_simplified_model": bool(use_high_signal_simplified_model),
+                "high_signal_feature_weights": (
+                    _normalize_high_signal_feature_weights(high_signal_feature_weights)
+                    if bool(use_high_signal_simplified_model)
+                    else {}
+                ),
                 "min_join_confidence_score_for_metrics": (
                     float(min_join_confidence_score_for_metrics)
                     if min_join_confidence_score_for_metrics is not None
@@ -3371,10 +3413,7 @@ def evaluate_public_outcome_dataset_rows(
                 else "raw_wildfire_risk_score"
             ),
             "high_signal_model_weights": (
-                {
-                    key: (float(weight) / float(sum(HIGH_SIGNAL_MODEL_SIGNAL_WEIGHTS.values())))
-                    for key, weight in HIGH_SIGNAL_MODEL_SIGNAL_WEIGHTS.items()
-                }
+                _normalize_high_signal_feature_weights(high_signal_feature_weights)
                 if bool(use_high_signal_simplified_model)
                 else {}
             ),
@@ -3523,6 +3562,7 @@ def evaluate_public_outcome_dataset_file(
     allow_label_derived_target: bool = True,
     allow_surrogate_wildfire_score: bool = True,
     use_high_signal_simplified_model: bool = False,
+    high_signal_feature_weights: dict[str, float] | None = None,
     min_join_confidence_score_for_metrics: float | None = None,
     retain_unusable_rows: bool = True,
     generated_at: str | None = None,
@@ -3539,6 +3579,7 @@ def evaluate_public_outcome_dataset_file(
         allow_label_derived_target=allow_label_derived_target,
         allow_surrogate_wildfire_score=allow_surrogate_wildfire_score,
         use_high_signal_simplified_model=use_high_signal_simplified_model,
+        high_signal_feature_weights=high_signal_feature_weights,
         min_join_confidence_score_for_metrics=min_join_confidence_score_for_metrics,
         retain_unusable_rows=retain_unusable_rows,
         generated_at=generated_at,
@@ -3558,6 +3599,7 @@ def trace_public_outcome_dataset_flow(
     allow_label_derived_target: bool = True,
     allow_surrogate_wildfire_score: bool = True,
     use_high_signal_simplified_model: bool = False,
+    high_signal_feature_weights: dict[str, float] | None = None,
     min_join_confidence_score_for_metrics: float | None = None,
     retain_unusable_rows: bool = True,
 ) -> dict[str, Any]:
@@ -3567,6 +3609,11 @@ def trace_public_outcome_dataset_flow(
         allow_label_derived_target=allow_label_derived_target,
         allow_surrogate_wildfire_score=allow_surrogate_wildfire_score,
         use_high_signal_simplified_model=use_high_signal_simplified_model,
+        high_signal_feature_weights=(
+            _normalize_high_signal_feature_weights(high_signal_feature_weights)
+            if bool(use_high_signal_simplified_model)
+            else None
+        ),
         min_join_confidence_score_for_metrics=min_join_confidence_score_for_metrics,
         retain_unusable_rows=retain_unusable_rows,
     )

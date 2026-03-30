@@ -67,6 +67,67 @@ def _safe_load_json(path: Path) -> dict[str, Any] | None:
     return payload if isinstance(payload, dict) else None
 
 
+def _safe_float(value: Any) -> float | None:
+    try:
+        if value is None or str(value).strip() == "":
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _load_high_signal_weights_from_feature_signal_report(path: Path) -> dict[str, float]:
+    payload = _safe_load_json(path)
+    if not isinstance(payload, dict):
+        raise ValueError(f"Invalid feature signal report JSON: {path}")
+    candidates: list[dict[str, Any]] = []
+    for key in ("feature_ranking_strongest_to_weakest", "top_predictive_features", "weak_or_noisy_features"):
+        rows = payload.get(key)
+        if isinstance(rows, list):
+            candidates.extend([row for row in rows if isinstance(row, dict)])
+    signal_by_feature: dict[str, float] = {}
+    auc_by_feature: dict[str, float] = {}
+    for row in candidates:
+        feature_name = str(row.get("feature") or "").strip()
+        if not feature_name:
+            continue
+        signal = _safe_float(row.get("signal_score"))
+        if signal is None:
+            signal = 0.0
+        if feature_name not in signal_by_feature or float(signal) > float(signal_by_feature[feature_name]):
+            signal_by_feature[feature_name] = float(signal)
+        best_auc = _safe_float(row.get("best_auc"))
+        if best_auc is not None:
+            auc_strength = max(0.0, min(0.5, float(best_auc) - 0.5))
+            if feature_name not in auc_by_feature or auc_strength > float(auc_by_feature[feature_name]):
+                auc_by_feature[feature_name] = float(auc_strength)
+
+    required = [
+        "nearest_high_fuel_patch_distance_ft",
+        "canopy_adjacency_proxy_pct",
+        "vegetation_continuity_proxy_pct",
+        "slope_index",
+    ]
+    out: dict[str, float] = {}
+    for feature_name in required:
+        auc_strength = auc_by_feature.get(feature_name)
+        if auc_strength is None:
+            signal = signal_by_feature.get(feature_name)
+            if signal is None:
+                continue
+            # Fall back to signal-score scaling when best_auc is absent.
+            out[feature_name] = max(0.01, float(signal))
+            continue
+        # Exponential emphasis on stronger univariate AUC separation so weak
+        # features (for example low-AUC slope variants) do not dominate.
+        out[feature_name] = max(1e-6, float(auc_strength) ** 4)
+    if not out:
+        raise ValueError(
+            "Feature signal report does not contain usable signal scores for the required high-signal features."
+        )
+    return out
+
+
 def _extract_feature_input_versions(rows: list[dict[str, Any]]) -> dict[str, list[str]]:
     observed: dict[str, set[str]] = {
         "scoring_model_versions": set(),
@@ -1376,6 +1437,7 @@ def run_public_outcome_validation(
     allow_label_derived_target: bool = True,
     allow_surrogate_wildfire_score: bool = True,
     use_high_signal_simplified_model: bool = False,
+    high_signal_feature_weights: dict[str, float] | None = None,
     min_join_confidence_score_for_metrics: float | None = None,
     retain_unusable_rows: bool = True,
     baseline_run_id: str | None = None,
@@ -1398,6 +1460,7 @@ def run_public_outcome_validation(
         allow_label_derived_target=allow_label_derived_target,
         allow_surrogate_wildfire_score=allow_surrogate_wildfire_score,
         use_high_signal_simplified_model=use_high_signal_simplified_model,
+        high_signal_feature_weights=high_signal_feature_weights,
         min_join_confidence_score_for_metrics=min_join_confidence_score_for_metrics,
         retain_unusable_rows=retain_unusable_rows,
     )
@@ -1469,6 +1532,7 @@ def run_public_outcome_validation(
             allow_label_derived_target=bool(allow_label_derived_target),
             allow_surrogate_wildfire_score=bool(allow_surrogate_wildfire_score),
             use_high_signal_simplified_model=bool(use_high_signal_simplified_model),
+            high_signal_feature_weights=high_signal_feature_weights,
             min_join_confidence_score_for_metrics=(
                 float(min_join_confidence_score_for_metrics)
                 if min_join_confidence_score_for_metrics is not None
@@ -1850,6 +1914,11 @@ def run_public_outcome_validation(
             "allow_label_derived_target": bool(allow_label_derived_target),
             "allow_surrogate_wildfire_score": bool(allow_surrogate_wildfire_score),
             "use_high_signal_simplified_model": bool(use_high_signal_simplified_model),
+            "high_signal_feature_weights": (
+                {k: float(v) for k, v in sorted((high_signal_feature_weights or {}).items())}
+                if isinstance(high_signal_feature_weights, dict)
+                else {}
+            ),
             "min_join_confidence_score_for_metrics": (
                 float(min_join_confidence_score_for_metrics)
                 if min_join_confidence_score_for_metrics is not None
@@ -1883,6 +1952,11 @@ def run_public_outcome_validation(
                 "allow_label_derived_target": bool(allow_label_derived_target),
                 "allow_surrogate_wildfire_score": bool(allow_surrogate_wildfire_score),
                 "use_high_signal_simplified_model": bool(use_high_signal_simplified_model),
+                "high_signal_feature_weights": (
+                    {k: float(v) for k, v in sorted((high_signal_feature_weights or {}).items())}
+                    if isinstance(high_signal_feature_weights, dict)
+                    else {}
+                ),
                 "min_join_confidence_score_for_metrics": (
                     float(min_join_confidence_score_for_metrics)
                     if min_join_confidence_score_for_metrics is not None
@@ -2022,6 +2096,14 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--feature-signal-report",
+        default="",
+        help=(
+            "Optional path to feature_signal_report.json. When provided with "
+            "--use-high-signal-simplified-model, per-feature signal_score values are used as weights."
+        ),
+    )
+    parser.add_argument(
         "--min-join-confidence-score-for-metrics",
         type=float,
         default=None,
@@ -2047,6 +2129,11 @@ def main() -> int:
     args = parser.parse_args()
 
     thresholds = [float(token) for token in str(args.thresholds).split(",") if token.strip()]
+    high_signal_feature_weights: dict[str, float] | None = None
+    if bool(args.use_high_signal_simplified_model) and str(args.feature_signal_report or "").strip():
+        high_signal_feature_weights = _load_high_signal_weights_from_feature_signal_report(
+            Path(str(args.feature_signal_report)).expanduser()
+        )
     result = run_public_outcome_validation(
         evaluation_dataset=(Path(args.evaluation_dataset).expanduser() if args.evaluation_dataset else None),
         evaluation_dataset_root=Path(args.evaluation_dataset_root).expanduser(),
@@ -2062,6 +2149,7 @@ def main() -> int:
         allow_label_derived_target=bool(args.allow_label_derived_target),
         allow_surrogate_wildfire_score=bool(args.allow_surrogate_wildfire_score),
         use_high_signal_simplified_model=bool(args.use_high_signal_simplified_model),
+        high_signal_feature_weights=high_signal_feature_weights,
         min_join_confidence_score_for_metrics=(
             float(args.min_join_confidence_score_for_metrics)
             if args.min_join_confidence_score_for_metrics is not None

@@ -71,6 +71,15 @@ This mode uses only:
 
 Weights are proportional to recent feature-signal diagnostics and renormalized over available features per row.
 
+To load weights directly from a prior `feature_signal_report.json`:
+
+```bash
+python scripts/run_public_outcome_validation.py \
+  --evaluation-dataset-run-id <run_id> \
+  --use-high-signal-simplified-model \
+  --feature-signal-report benchmark/public_outcomes/validation/<prior_run_id>/feature_signal_report.json
+```
+
 Filtering strictness is configurable and defaults to row-retention with tagging:
 
 ```bash

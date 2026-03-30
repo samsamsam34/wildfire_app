@@ -9,7 +9,10 @@ from backend.public_outcome_validation import evaluate_public_outcome_dataset_fi
 from scripts.build_calibration_dataset import build_calibration_dataset
 from scripts.build_public_outcome_evaluation_dataset import build_public_outcome_evaluation_dataset
 from scripts.ingest_public_structure_damage import normalize_public_damage_rows
-from scripts.run_public_outcome_validation import run_public_outcome_validation
+from scripts.run_public_outcome_validation import (
+    _load_high_signal_weights_from_feature_signal_report,
+    run_public_outcome_validation,
+)
 
 
 def _write_outcomes_csv(path: Path) -> None:
@@ -571,6 +574,105 @@ def test_high_signal_simplified_model_beats_hazard_only_on_controlled_fixture(tm
         for row in prepared_rows
         if bool(row.get("row_usable_for_metrics"))
     )
+
+
+def test_weighted_high_signal_model_improves_auc_vs_unweighted_fixture(tmp_path: Path) -> None:
+    rows = []
+    for idx in range(24):
+        adverse = 1 if idx < 12 else 0
+        # Make nearest_high_fuel_patch_distance_ft the dominant true signal.
+        # Keep other features weak or opposing so equal-weight blending underperforms.
+        if adverse:
+            raw_features = {
+                "nearest_high_fuel_patch_distance_ft": 18.0 + (idx * 1.2),
+                "canopy_adjacency_proxy_pct": 84.0 - (idx * 0.6),
+                "vegetation_continuity_proxy_pct": 18.0 + (idx * 0.7),
+                "slope_index": 22.0 + (idx * 0.4),
+            }
+        else:
+            j = idx - 12
+            raw_features = {
+                "nearest_high_fuel_patch_distance_ft": 230.0 + (j * 2.8),
+                "canopy_adjacency_proxy_pct": 28.0 + (j * 0.8),
+                "vegetation_continuity_proxy_pct": 72.0 - (j * 0.9),
+                "slope_index": 68.0 - (j * 0.5),
+            }
+        rows.append(
+            {
+                "event": {"event_id": "evt-weighted"},
+                "feature": {"record_id": f"w-{idx}"},
+                "outcome": {
+                    "damage_label": "destroyed" if adverse else "no_damage",
+                    "damage_severity_class": "destroyed" if adverse else "none",
+                    "structure_loss_or_major_damage": adverse,
+                },
+                "scores": {
+                    "wildfire_risk_score": 50.0,
+                    "site_hazard_score": 50.0,
+                    "home_ignition_vulnerability_score": 50.0,
+                },
+                "feature_snapshot": {
+                    "raw_feature_vector": raw_features,
+                    "transformed_feature_vector": {},
+                },
+                "join_metadata": {"join_confidence_tier": "high", "join_confidence_score": 0.95},
+                "confidence": {"confidence_tier": "high"},
+                "evidence": {"evidence_quality_tier": "high"},
+            }
+        )
+
+    dataset_path = tmp_path / "weighted_vs_unweighted_eval.jsonl"
+    dataset_path.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
+
+    unweighted_report, _ = evaluate_public_outcome_dataset_file(
+        dataset_path=dataset_path,
+        min_labeled_rows=1,
+        use_high_signal_simplified_model=True,
+    )
+    weighted_report, _ = evaluate_public_outcome_dataset_file(
+        dataset_path=dataset_path,
+        min_labeled_rows=1,
+        use_high_signal_simplified_model=True,
+        high_signal_feature_weights={
+            "nearest_high_fuel_patch_distance_ft": 0.95,
+            "canopy_adjacency_proxy_pct": 0.05,
+            "vegetation_continuity_proxy_pct": 0.02,
+            "slope_index": 0.01,
+        },
+    )
+    auc_unweighted = float(
+        ((unweighted_report.get("discrimination_metrics") or {}).get("wildfire_risk_score_auc")) or 0.0
+    )
+    auc_weighted = float(
+        ((weighted_report.get("discrimination_metrics") or {}).get("wildfire_risk_score_auc")) or 0.0
+    )
+    assert auc_weighted > auc_unweighted
+    assert auc_weighted > 0.58
+
+
+def test_load_high_signal_weights_from_feature_signal_report_prioritizes_stronger_auc(tmp_path: Path) -> None:
+    report_path = tmp_path / "feature_signal_report.json"
+    report_path.write_text(
+        json.dumps(
+            {
+                "top_predictive_features": [
+                    {"feature": "nearest_high_fuel_patch_distance_ft", "best_auc": 0.6667, "signal_score": 0.38},
+                    {"feature": "canopy_adjacency_proxy_pct", "best_auc": 0.6667, "signal_score": 0.37},
+                    {"feature": "vegetation_continuity_proxy_pct", "best_auc": 0.6667, "signal_score": 0.29},
+                    {"feature": "slope_index", "best_auc": 0.5781, "signal_score": 0.25},
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    weights = _load_high_signal_weights_from_feature_signal_report(report_path)
+    assert set(weights.keys()) == {
+        "nearest_high_fuel_patch_distance_ft",
+        "canopy_adjacency_proxy_pct",
+        "vegetation_continuity_proxy_pct",
+        "slope_index",
+    }
+    assert weights["slope_index"] < weights["nearest_high_fuel_patch_distance_ft"]
 
 
 def test_validation_propagates_retention_fallback_warning_from_dataset_join_report(tmp_path: Path) -> None:
