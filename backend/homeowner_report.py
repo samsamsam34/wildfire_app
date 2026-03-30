@@ -120,15 +120,95 @@ def _summarize_top_risk_drivers(key_risk_drivers: list[str]) -> list[str]:
 
 def _estimated_benefit_phrase(impact_level: str, confidence_tier: str | None) -> str:
     impact = str(impact_level or "low").lower()
-    if impact == "high":
-        phrase = "Likely to reduce wildfire risk meaningfully when completed and maintained."
-    elif impact == "medium":
-        phrase = "Likely to reduce wildfire risk over time."
-    else:
-        phrase = "May provide incremental wildfire protection."
     if confidence_tier in {"low", "preliminary"}:
+        if impact == "high":
+            phrase = "May help reduce wildfire risk meaningfully when completed and maintained."
+        elif impact == "medium":
+            phrase = "May help reduce wildfire risk over time."
+        else:
+            phrase = "May provide incremental wildfire protection."
         return phrase + " Benefit estimate is directional because some inputs were estimated."
-    return phrase
+    if impact == "high":
+        return "Likely to reduce wildfire risk meaningfully when completed and maintained."
+    if impact == "medium":
+        return "Likely to reduce wildfire risk over time."
+    return "May provide incremental wildfire protection."
+
+
+def _expected_effect_from_impact(impact_level: str | None) -> str:
+    impact = str(impact_level or "low").lower()
+    if impact == "high":
+        return "significant"
+    if impact == "medium":
+        return "moderate"
+    return "small"
+
+
+def _is_weak_guidance_evidence(confidence_tier: str | None, evidence_status: str | None = None) -> bool:
+    if str(confidence_tier or "").lower() in {"low", "preliminary"}:
+        return True
+    if str(evidence_status or "").lower() in {"inferred", "missing", "unknown"}:
+        return True
+    return False
+
+
+def _infer_what_it_reduces(
+    *,
+    action_text: str,
+    context_text: str = "",
+    target_zone: str | None = None,
+    impacted_submodels: list[str] | None = None,
+) -> str:
+    haystack = " ".join(
+        [
+            str(action_text or "").lower(),
+            str(context_text or "").lower(),
+            str(target_zone or "").lower(),
+            " ".join(str(item or "").lower() for item in list(impacted_submodels or [])),
+        ]
+    )
+    if any(token in haystack for token in ("0-5", "ember", "debris", "gutter", "vent", "roofline", "roof")):
+        return "ember ignition and direct flame exposure right next to your home"
+    if any(token in haystack for token in ("5-30", "30 feet", "defensible", "thinning", "prune", "pruning")):
+        return "radiant heat and flame spread pressure around the home"
+    if any(token in haystack for token in ("fuel", "brush", "vegetation", "canopy", "tree")):
+        return "the chance that nearby vegetation carries fire toward your home"
+    return "the chance that wildfire reaches and ignites your home"
+
+
+def _build_why_this_matters_sentence(*, action_text: str, what_it_reduces: str, weak_evidence: bool) -> str:
+    action = str(action_text or "").strip().rstrip(".")
+    if not action:
+        action = "This action"
+    verb = "may help reduce" if weak_evidence else "helps reduce"
+    return f"{action} {verb} {what_it_reduces}."
+
+
+def _enrich_prioritized_action(
+    action: HomeownerPrioritizedAction,
+    *,
+    confidence_tier: str | None,
+) -> HomeownerPrioritizedAction:
+    what_it_reduces = str(action.what_it_reduces or "").strip() or _infer_what_it_reduces(
+        action_text=str(action.action or ""),
+        context_text=str(action.explanation or ""),
+    )
+    weak_evidence = _is_weak_guidance_evidence(confidence_tier=confidence_tier)
+    why_this_matters = str(action.why_this_matters or "").strip() or _build_why_this_matters_sentence(
+        action_text=str(action.action or "This action"),
+        what_it_reduces=what_it_reduces,
+        weak_evidence=weak_evidence,
+    )
+    expected_effect = str(action.expected_effect or "").strip().lower()
+    if expected_effect not in {"small", "moderate", "significant"}:
+        expected_effect = _expected_effect_from_impact(str(action.impact_level or "low"))
+    return action.model_copy(
+        update={
+            "why_this_matters": why_this_matters,
+            "what_it_reduces": what_it_reduces,
+            "expected_effect": expected_effect,
+        }
+    )
 
 
 def _summarize_prioritized_actions(
@@ -149,11 +229,27 @@ def _summarize_prioritized_actions(
         effort = str(row.effort_level or "medium")
         if effort not in {"low", "medium", "high"}:
             effort = "medium"
+        what_it_reduces = str(row.what_it_reduces or "").strip() or _infer_what_it_reduces(
+            action_text=action,
+            context_text=str(row.explanation or ""),
+        )
+        weak_evidence = _is_weak_guidance_evidence(confidence_tier=confidence_tier)
+        why_this_matters = str(row.why_this_matters or "").strip() or _build_why_this_matters_sentence(
+            action_text=action,
+            what_it_reduces=what_it_reduces,
+            weak_evidence=weak_evidence,
+        )
+        expected_effect = str(row.expected_effect or "").strip().lower()
+        if expected_effect not in {"small", "moderate", "significant"}:
+            expected_effect = _expected_effect_from_impact(str(row.impact_level or "low"))
         rows.append(
             {
                 "action": action,
                 "effort_level": effort,
                 "impact_level": str(row.impact_level or "low"),
+                "expected_effect": expected_effect,
+                "what_it_reduces": what_it_reduces,
+                "why_this_matters": why_this_matters,
                 "estimated_benefit": _estimated_benefit_phrase(str(row.impact_level or "low"), confidence_tier),
                 "why_it_matters": str(row.explanation or "").strip(),
             }
@@ -222,12 +318,29 @@ def _mitigation_actions(result: AssessmentResult) -> list[HomeownerReportAction]
         if not title or title.lower() in seen_titles:
             continue
         seen_titles.add(title.lower())
+        weak_evidence = _is_weak_guidance_evidence(
+            confidence_tier=result.confidence_tier,
+            evidence_status=action.evidence_status,
+        )
+        what_it_reduces = _infer_what_it_reduces(
+            action_text=title,
+            context_text=str(action.why_it_matters or action.explanation or ""),
+            target_zone=str(action.target_zone or ""),
+        )
+        why_this_matters = _build_why_this_matters_sentence(
+            action_text=title,
+            what_it_reduces=what_it_reduces,
+            weak_evidence=weak_evidence,
+        )
         actions.append(
             HomeownerReportAction(
                 title=title,
                 priority=int(action.priority or 5),
                 target_zone=(str(action.target_zone).strip() or None),
-                why_it_matters=str(action.why_it_matters or "").strip(),
+                why_it_matters=str(action.why_it_matters or "").strip() or why_this_matters,
+                why_this_matters=why_this_matters,
+                what_it_reduces=what_it_reduces,
+                expected_effect=_expected_effect_from_impact(str(action.impact_category or "low")),  # type: ignore[arg-type]
                 expected_impact_category=action.impact_category,
                 evidence_status=action.evidence_status,
                 explanation=str(action.explanation or "").strip(),
@@ -241,12 +354,29 @@ def _mitigation_actions(result: AssessmentResult) -> list[HomeownerReportAction]
         if not title or title.lower() in seen_titles:
             continue
         seen_titles.add(title.lower())
+        weak_evidence = _is_weak_guidance_evidence(
+            confidence_tier=result.confidence_tier,
+            evidence_status="observed",
+        )
+        what_it_reduces = _infer_what_it_reduces(
+            action_text=title,
+            context_text=str(mitigation.reason or ""),
+            impacted_submodels=list(mitigation.impacted_submodels or []),
+        )
+        why_this_matters = _build_why_this_matters_sentence(
+            action_text=title,
+            what_it_reduces=what_it_reduces,
+            weak_evidence=weak_evidence,
+        )
         actions.append(
             HomeownerReportAction(
                 title=title,
                 priority=int(mitigation.priority or 5),
                 target_zone=None,
-                why_it_matters=str(mitigation.reason or "").strip(),
+                why_it_matters=str(mitigation.reason or "").strip() or why_this_matters,
+                why_this_matters=why_this_matters,
+                what_it_reduces=what_it_reduces,
+                expected_effect=_expected_effect_from_impact(str(mitigation.estimated_risk_reduction_band or "low")),
                 expected_impact_category=mitigation.estimated_risk_reduction_band,
                 evidence_status="observed",
                 explanation=str(mitigation.reason or "").strip(),
@@ -258,30 +388,36 @@ def _mitigation_actions(result: AssessmentResult) -> list[HomeownerReportAction]
 
 
 def _prioritized_actions(result: AssessmentResult) -> list[HomeownerPrioritizedAction]:
+    base: list[HomeownerPrioritizedAction] = []
     if result.prioritized_mitigation_actions:
-        return list(result.prioritized_mitigation_actions)[:5]
-
-    fallback: list[HomeownerPrioritizedAction] = []
-    for action in result.mitigation_plan[:5]:
-        impact = str(action.estimated_risk_reduction_band or "low")
-        effort = str(action.effort or "medium")
-        if effort not in {"low", "medium", "high"}:
-            effort = "medium"
-        if impact not in {"low", "medium", "high"}:
-            impact = "low"
-        timeline = "now" if impact == "high" and effort == "low" else ("this_season" if impact in {"high", "medium"} else "later")
-        fallback.append(
-            HomeownerPrioritizedAction(
-                action=str(action.title or action.action or "Mitigation action"),
-                explanation=str(action.reason or action.impact_statement or ""),
-                impact_level=impact,  # type: ignore[arg-type]
-                effort_level=effort,  # type: ignore[arg-type]
-                estimated_cost_band=effort,  # type: ignore[arg-type]
-                timeline=timeline,  # type: ignore[arg-type]
-                priority=int(action.priority or 5),
+        base = list(result.prioritized_mitigation_actions)[:5]
+    else:
+        fallback: list[HomeownerPrioritizedAction] = []
+        for action in result.mitigation_plan[:5]:
+            impact = str(action.estimated_risk_reduction_band or "low")
+            effort = str(action.effort or "medium")
+            if effort not in {"low", "medium", "high"}:
+                effort = "medium"
+            if impact not in {"low", "medium", "high"}:
+                impact = "low"
+            timeline = "now" if impact == "high" and effort == "low" else ("this_season" if impact in {"high", "medium"} else "later")
+            fallback.append(
+                HomeownerPrioritizedAction(
+                    action=str(action.title or action.action or "Mitigation action"),
+                    explanation=str(action.reason or action.impact_statement or ""),
+                    impact_level=impact,  # type: ignore[arg-type]
+                    effort_level=effort,  # type: ignore[arg-type]
+                    estimated_cost_band=effort,  # type: ignore[arg-type]
+                    timeline=timeline,  # type: ignore[arg-type]
+                    priority=int(action.priority or 5),
+                )
             )
-        )
-    return fallback
+        base = fallback
+
+    return [
+        _enrich_prioritized_action(row, confidence_tier=result.confidence_tier)
+        for row in base
+    ][:5]
 
 
 def build_homeowner_report(

@@ -144,6 +144,14 @@ def test_homeowner_report_and_pdf_generate_for_complete_assessment(monkeypatch, 
     assert isinstance(report["top_risk_drivers_detailed"], list)
     assert isinstance(report["confidence_summary"], dict)
     assert len(report["top_recommended_actions"]) <= 3
+    for action in report["top_recommended_actions"]:
+        assert isinstance(action.get("why_this_matters"), str)
+        assert isinstance(action.get("what_it_reduces"), str)
+        assert action.get("expected_effect") in {"small", "moderate", "significant"}
+    for action in report["mitigation_plan"]:
+        assert isinstance(action.get("why_this_matters"), str)
+        assert isinstance(action.get("what_it_reduces"), str)
+        assert action.get("expected_effect") in {"small", "moderate", "significant"}
     assert "blockers" in report["home_hardening_readiness_summary"]
     assert "summary" in report["home_hardening_readiness_summary"]
     assert isinstance(report["defensible_space_summary"]["zone_findings"], list)
@@ -312,12 +320,24 @@ def test_homeowner_report_homeowner_focused_fields_across_confidence_tiers(monke
         first = prioritized[0]
         assert first.get("effort_level") in {"low", "medium", "high"}
         assert isinstance(first.get("estimated_benefit"), str) and first.get("estimated_benefit")
+        assert isinstance(first.get("why_this_matters"), str) and first.get("why_this_matters")
+        assert isinstance(first.get("what_it_reduces"), str) and first.get("what_it_reduces")
+        assert first.get("expected_effect") in {"small", "moderate", "significant"}
         assert isinstance(report.get("what_to_do_first"), dict)
         assert str((report.get("what_to_do_first") or {}).get("action") or "").strip()
         assert isinstance(report.get("limitations_notice"), str)
+        assert all(
+            isinstance(row.get("why_this_matters"), str) and row.get("why_this_matters")
+            and isinstance(row.get("what_it_reduces"), str) and row.get("what_it_reduces")
+            and row.get("expected_effect") in {"small", "moderate", "significant"}
+            for row in prioritized
+        )
 
         if tier in {"low", "preliminary"}:
             assert "appears to have" in report["headline_risk_summary"].lower()
             assert "estimated" in report["limitations_notice"].lower() or "missing" in report["limitations_notice"].lower()
+            assert "may help reduce" in str(first.get("why_this_matters")).lower()
         if tier == "high":
             assert report["headline_risk_summary"].startswith("Your home has ")
+            assert "helps reduce" in str(first.get("why_this_matters")).lower()
+            assert "may help reduce" not in str(first.get("why_this_matters")).lower()

@@ -694,6 +694,9 @@ class HomeownerRiskDriver(BaseModel):
 class HomeownerPrioritizedAction(BaseModel):
     action: str = ""
     explanation: str = ""
+    why_this_matters: str = ""
+    what_it_reduces: str = ""
+    expected_effect: Literal["small", "moderate", "significant"] = "moderate"
     impact_level: Literal["high", "medium", "low"] = "low"
     effort_level: Literal["low", "medium", "high"] = "medium"
     estimated_cost_band: Literal["low", "medium", "high"] = "medium"
@@ -1132,6 +1135,9 @@ class HomeownerReportAction(BaseModel):
     priority: int = 5
     target_zone: Optional[str] = None
     why_it_matters: str = ""
+    why_this_matters: str = ""
+    what_it_reduces: str = ""
+    expected_effect: Literal["small", "moderate", "significant"] = "moderate"
     expected_impact_category: Literal["low", "medium", "high"] = "medium"
     evidence_status: Literal["observed", "inferred", "missing", "unknown"] = "unknown"
     explanation: str = ""

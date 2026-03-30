@@ -21,6 +21,10 @@ The report JSON includes:
 - `headline_risk_summary`
 - `top_risk_drivers` (plain-language, max 4)
 - `prioritized_actions` (impact-ordered, 3-5 when available)
+  - each action includes:
+    - `why_this_matters`
+    - `what_it_reduces`
+    - `expected_effect` (`small` / `moderate` / `significant`)
 - `what_to_do_first`
 - `limitations_notice`
 - `report_header`
@@ -63,6 +67,11 @@ The report presentation is organized for homeowner usability:
 ## Confidence and limitations
 
 The report explicitly summarizes confidence tier, missing inputs/fallback limitations, and includes a decision-support disclaimer.
+
+Mitigation phrasing is confidence-aware:
+- stronger evidence can use direct phrasing like "helps reduce"
+- weak/inferred evidence uses hedged phrasing like "may help reduce"
+- mitigation effects are qualitative and directional (no unsupported percentage claims)
 
 ## Notes
 
