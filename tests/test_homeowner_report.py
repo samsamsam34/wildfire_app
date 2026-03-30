@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 import backend.auth as auth
 import backend.main as app_main
 from backend.database import AssessmentStore
-from backend.models import MitigationAction
+from backend.models import HomeownerPrioritizedAction, MitigationAction
 from backend.wildfire_data import WildfireContext
 
 
@@ -107,6 +107,11 @@ def test_homeowner_report_and_pdf_generate_for_complete_assessment(monkeypatch, 
     report = report_res.json()
 
     for key in (
+        "headline_risk_summary",
+        "top_risk_drivers",
+        "prioritized_actions",
+        "what_to_do_first",
+        "limitations_notice",
         "report_header",
         "property_summary",
         "score_summary",
@@ -129,6 +134,12 @@ def test_homeowner_report_and_pdf_generate_for_complete_assessment(monkeypatch, 
     assert report["score_summary"]["home_hardening_readiness"] is not None
     assert report["score_summary"]["insurance_readiness_score"] is not None
     assert isinstance(report["top_recommended_actions"], list)
+    assert isinstance(report["top_risk_drivers"], list)
+    assert len(report["top_risk_drivers"]) <= 4
+    assert isinstance(report["prioritized_actions"], list)
+    assert len(report["prioritized_actions"]) <= 5
+    assert isinstance(report["what_to_do_first"], dict)
+    assert isinstance(report["limitations_notice"], str)
     assert isinstance(report["prioritized_mitigation_actions"], list)
     assert isinstance(report["top_risk_drivers_detailed"], list)
     assert isinstance(report["confidence_summary"], dict)
@@ -233,3 +244,80 @@ def test_homeowner_report_handles_unavailable_scores_and_long_text_deterministic
     assert pdf_res_b.status_code == 200
     assert pdf_res_a.content == pdf_res_b.content
     assert len(pdf_res_a.content) > 800
+
+
+def test_homeowner_report_homeowner_focused_fields_across_confidence_tiers(monkeypatch, tmp_path: Path):
+    context = _ctx(env=58.0, wildland=62.0, historic=44.0)
+    _setup(monkeypatch, tmp_path, context)
+    assessed = _run_assessment("701 Confidence Tier Ln, Missoula, MT 59802")
+
+    original = app_main.store.get(assessed["assessment_id"])
+    assert original is not None
+
+    base_actions = [
+        HomeownerPrioritizedAction(
+            action="Remove leaves and debris within 5 feet of the home",
+            explanation="Reduces immediate ignition pathways next to the structure.",
+            impact_level="high",
+            effort_level="low",
+            estimated_cost_band="low",
+            timeline="now",
+            priority=1,
+        ),
+        HomeownerPrioritizedAction(
+            action="Thin dense vegetation in the 5-30 foot zone",
+            explanation="Lowers heat and ember exposure around the structure.",
+            impact_level="medium",
+            effort_level="medium",
+            estimated_cost_band="medium",
+            timeline="this_season",
+            priority=2,
+        ),
+        HomeownerPrioritizedAction(
+            action="Maintain tree spacing and prune branches near the roofline",
+            explanation="Reduces fire spread into the home envelope.",
+            impact_level="low",
+            effort_level="medium",
+            estimated_cost_band="medium",
+            timeline="later",
+            priority=3,
+        ),
+    ]
+
+    for tier in ("high", "moderate", "low", "preliminary"):
+        patched = original.model_copy(deep=True)
+        patched.confidence_tier = tier
+        patched.confidence_summary.missing_data = ["roof_type"] if tier in {"low", "preliminary"} else []
+        patched.confidence_summary.fallback_assumptions = ["regional proxy"] if tier in {"low", "preliminary"} else []
+        patched.top_risk_drivers = [
+            "dense vegetation close to the home",
+            "high ember exposure",
+            "slope/topography amplification",
+            "fuel model pressure near structure",
+            "limited defensible space within 30 feet",
+        ]
+        patched.prioritized_mitigation_actions = list(base_actions)
+
+        monkeypatch.setattr(app_main.store, "get", lambda _assessment_id, _patched=patched: _patched)
+        report_res = client.get(f"/report/{assessed['assessment_id']}/homeowner")
+        assert report_res.status_code == 200
+        report = report_res.json()
+
+        assert "headline_risk_summary" in report
+        assert report["headline_risk_summary"]
+        assert len(report.get("top_risk_drivers") or []) <= 4
+        assert all("fuel model" not in str(row).lower() for row in (report.get("top_risk_drivers") or []))
+        prioritized = report.get("prioritized_actions") or []
+        assert 1 <= len(prioritized) <= 5
+        first = prioritized[0]
+        assert first.get("effort_level") in {"low", "medium", "high"}
+        assert isinstance(first.get("estimated_benefit"), str) and first.get("estimated_benefit")
+        assert isinstance(report.get("what_to_do_first"), dict)
+        assert str((report.get("what_to_do_first") or {}).get("action") or "").strip()
+        assert isinstance(report.get("limitations_notice"), str)
+
+        if tier in {"low", "preliminary"}:
+            assert "appears to have" in report["headline_risk_summary"].lower()
+            assert "estimated" in report["limitations_notice"].lower() or "missing" in report["limitations_notice"].lower()
+        if tier == "high":
+            assert report["headline_risk_summary"].startswith("Your home has ")

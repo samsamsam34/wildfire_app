@@ -18,6 +18,11 @@ Optional query flag:
 
 The report JSON includes:
 
+- `headline_risk_summary`
+- `top_risk_drivers` (plain-language, max 4)
+- `prioritized_actions` (impact-ordered, 3-5 when available)
+- `what_to_do_first`
+- `limitations_notice`
 - `report_header`
 - `property_summary`
 - `score_summary`
@@ -31,8 +36,13 @@ The report JSON includes:
 - `metadata`
 
 Primary homeowner-facing score fields are:
+- `headline_risk_summary`
 - `score_summary.overall_wildfire_risk`
 - `score_summary.home_hardening_readiness`
+- `top_risk_drivers`
+- `prioritized_actions`
+- `what_to_do_first`
+- `limitations_notice`
 - `key_risk_drivers`
 - `top_recommended_actions`
 - `prioritized_mitigation_actions`

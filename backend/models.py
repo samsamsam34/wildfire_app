@@ -1141,6 +1141,11 @@ class HomeownerReport(BaseModel):
     assessment_id: str
     report_format_version: str = "1.0.0"
     generated_at: str
+    headline_risk_summary: str = ""
+    top_risk_drivers: List[str] = Field(default_factory=list)
+    prioritized_actions: List[Dict[str, object]] = Field(default_factory=list)
+    what_to_do_first: Dict[str, object] = Field(default_factory=dict)
+    limitations_notice: str = ""
     report_header: Dict[str, object] = Field(default_factory=dict)
     property_summary: Dict[str, object] = Field(default_factory=dict)
     score_summary: Dict[str, object] = Field(default_factory=dict)

@@ -73,6 +73,105 @@ def _plain_driver(text: str) -> str:
     return mapping.get(normalized, str(text or "").strip())
 
 
+def _de_jargonize(text: str) -> str:
+    normalized = str(text or "").strip()
+    if not normalized:
+        return ""
+    replacements = {
+        "fuel model": "vegetation and dry brush conditions",
+        "canopy": "tree cover",
+        "ember exposure": "wind-blown ember exposure",
+        "flame-contact": "direct flame contact",
+    }
+    lowered = normalized.lower()
+    for src, dst in replacements.items():
+        if src in lowered:
+            lowered = lowered.replace(src, dst)
+    if not lowered:
+        return ""
+    return lowered[0].upper() + lowered[1:]
+
+
+def _headline_risk_summary(result: AssessmentResult, risk_score: float | None) -> str:
+    risk_band = _risk_band(risk_score)
+    risk_label = "unknown" if risk_band == "unavailable" else ("low" if risk_band == "lower" else risk_band)
+    uncertain = bool(
+        (result.confidence_tier in {"low", "preliminary"})
+        or list(result.confidence_summary.missing_data or [])
+        or list(result.confidence_summary.fallback_assumptions or [])
+    )
+    if risk_label == "unknown":
+        return "We could not determine a reliable wildfire risk level from current data."
+    if uncertain:
+        return (
+            f"Your home appears to have {risk_label} wildfire risk, but this estimate is uncertain because "
+            "some property details were estimated or missing."
+        )
+    return f"Your home has {risk_label} wildfire risk."
+
+
+def _summarize_top_risk_drivers(key_risk_drivers: list[str]) -> list[str]:
+    cleaned = [_de_jargonize(_plain_driver(row)) for row in key_risk_drivers if str(row).strip()]
+    unique = list(dict.fromkeys([row for row in cleaned if row]))
+    if unique:
+        return unique[:4]
+    return ["We could not confirm property-specific risk drivers from current data."]
+
+
+def _estimated_benefit_phrase(impact_level: str, confidence_tier: str | None) -> str:
+    impact = str(impact_level or "low").lower()
+    if impact == "high":
+        phrase = "Likely to reduce wildfire risk meaningfully when completed and maintained."
+    elif impact == "medium":
+        phrase = "Likely to reduce wildfire risk over time."
+    else:
+        phrase = "May provide incremental wildfire protection."
+    if confidence_tier in {"low", "preliminary"}:
+        return phrase + " Benefit estimate is directional because some inputs were estimated."
+    return phrase
+
+
+def _summarize_prioritized_actions(
+    prioritized_actions: list[HomeownerPrioritizedAction],
+    *,
+    confidence_tier: str | None,
+) -> list[dict[str, object]]:
+    impact_rank = {"high": 0, "medium": 1, "low": 2}
+    ordered = sorted(
+        list(prioritized_actions or []),
+        key=lambda row: (impact_rank.get(str(row.impact_level), 3), int(row.priority or 99), str(row.action or "").lower()),
+    )
+    rows: list[dict[str, object]] = []
+    for row in ordered[:5]:
+        action = str(row.action or "").strip()
+        if not action:
+            continue
+        effort = str(row.effort_level or "medium")
+        if effort not in {"low", "medium", "high"}:
+            effort = "medium"
+        rows.append(
+            {
+                "action": action,
+                "effort_level": effort,
+                "impact_level": str(row.impact_level or "low"),
+                "estimated_benefit": _estimated_benefit_phrase(str(row.impact_level or "low"), confidence_tier),
+                "why_it_matters": str(row.explanation or "").strip(),
+            }
+        )
+    return rows
+
+
+def _limitations_notice(result: AssessmentResult, combined_limitations: list[str]) -> str:
+    if combined_limitations:
+        prefix = "Some results are estimated because: "
+        return prefix + "; ".join(combined_limitations[:2])
+    if result.confidence_tier in {"low", "preliminary"}:
+        return "Some key property details were estimated or missing, so use this report as planning guidance."
+    if result.confidence_tier == "moderate":
+        return "Most major inputs are available, but some details were estimated."
+    return "Most high-impact inputs were observed directly for this property."
+
+
 def _confidence_summary(result: AssessmentResult) -> str:
     tier = str(result.confidence_tier or "preliminary")
     restriction = str(result.use_restriction or "review_required")
@@ -266,10 +365,26 @@ def build_homeowner_report(
 
     all_mitigation_actions = _mitigation_actions(result)
     top_recommended_actions = all_mitigation_actions[:3]
+    top_risk_drivers = _summarize_top_risk_drivers(key_risk_drivers)
+    prioritized_actions_summary = _summarize_prioritized_actions(
+        prioritized_actions,
+        confidence_tier=result.confidence_tier,
+    )
+    what_to_do_first = prioritized_actions_summary[0] if prioritized_actions_summary else {}
+    headline_risk_summary = _headline_risk_summary(
+        result,
+        result.overall_wildfire_risk if result.overall_wildfire_risk is not None else result.wildfire_risk_score,
+    )
+    limitations_notice = _limitations_notice(result, combined_limitations)
 
     return HomeownerReport(
         assessment_id=result.assessment_id,
         generated_at=report_generated_at,
+        headline_risk_summary=headline_risk_summary,
+        top_risk_drivers=top_risk_drivers,
+        prioritized_actions=prioritized_actions_summary,
+        what_to_do_first=what_to_do_first,
+        limitations_notice=limitations_notice,
         report_header={
             "title": "WildfireRisk Advisor Home Hardening Report",
             "subtitle": "Property-specific wildfire risk and practical hardening guidance",
@@ -425,6 +540,20 @@ def _build_report_lines(report: HomeownerReport) -> list[str]:
         f"Confidence: {score_summary.get('confidence_score')} ({score_summary.get('confidence_tier', 'unknown')})"
     ))
     lines.append("")
+
+    if report.headline_risk_summary:
+        lines.extend(_wrap_text_line("Homeowner Summary"))
+        lines.extend(_wrap_text_line(report.headline_risk_summary, prefix="- "))
+        if report.what_to_do_first:
+            lines.extend(
+                _wrap_text_line(
+                    f"What to do first: {report.what_to_do_first.get('action', 'No primary action available')}",
+                    prefix="- ",
+                )
+            )
+        if report.limitations_notice:
+            lines.extend(_wrap_text_line(f"Limitations: {report.limitations_notice}", prefix="- "))
+        lines.append("")
 
     lines.extend(_wrap_text_line("Top Risk Drivers"))
     if report.key_risk_drivers:
