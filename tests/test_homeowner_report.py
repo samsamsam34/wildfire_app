@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 import backend.auth as auth
 import backend.main as app_main
 from backend.database import AssessmentStore
+from backend.homeowner_report import export_homeowner_report
 from backend.models import HomeownerPrioritizedAction, MitigationAction
 from backend.wildfire_data import WildfireContext
 
@@ -488,3 +489,71 @@ def test_mitigation_ranking_prefers_high_confidence_over_low_confidence(monkeypa
     assert len(ranked) >= 2
     assert "30 ft" in str(ranked[0].get("action") or "")
     assert float(ranked[0].get("data_confidence_score") or 0.0) > float(ranked[1].get("data_confidence_score") or 0.0)
+
+
+def test_export_homeowner_report_generates_clean_structured_output_across_confidence_tiers(monkeypatch, tmp_path: Path):
+    context = _ctx(env=53.0, wildland=45.0, historic=30.0)
+    _setup(monkeypatch, tmp_path, context)
+    assessed = _run_assessment("55 Shareable Report Dr, Missoula, MT 59802")
+    original = app_main.store.get(assessed["assessment_id"])
+    assert original is not None
+
+    for tier in ("high", "moderate", "low", "preliminary"):
+        patched = original.model_copy(deep=True)
+        patched.confidence_tier = tier
+        patched.confidence_summary.missing_data = ["roof_type"] if tier in {"low", "preliminary"} else []
+        patched.confidence_summary.fallback_assumptions = ["regional proxy"] if tier in {"low", "preliminary"} else []
+        patched.fallback_weight_fraction = 0.7 if tier in {"low", "preliminary"} else 0.0
+        patched.assessment_diagnostics.fallback_decisions = [{"fallback_type": "derived_proxy"}] if tier in {"low", "preliminary"} else []
+        patched.prioritized_mitigation_actions = [
+            HomeownerPrioritizedAction(
+                action="Clear vegetation within 5 ft of the home",
+                explanation="Removes ignition pathways next to the structure.",
+                impact_level="high",
+                effort_level="low",
+                data_confidence="high" if tier in {"high", "moderate"} else "low",
+                priority=1,
+            )
+        ]
+
+        exported = export_homeowner_report(patched, output_format="structured")
+        assert isinstance(exported, dict)
+        for required in (
+            "headline_risk_summary",
+            "top_risk_drivers",
+            "prioritized_actions",
+            "what_to_do_first",
+            "confidence_summary",
+            "limitations_notice",
+            "disclaimer",
+        ):
+            assert required in exported
+        assert isinstance(exported.get("top_risk_drivers"), list)
+        assert isinstance(exported.get("prioritized_actions"), list)
+        assert isinstance(exported.get("confidence_summary"), dict)
+
+
+def test_export_homeowner_report_low_confidence_includes_clear_limitations_and_pdf(monkeypatch, tmp_path: Path):
+    context = _ctx(env=56.0, wildland=49.0, historic=32.0)
+    _setup(monkeypatch, tmp_path, context)
+    assessed = _run_assessment("56 Shareable Limitations Ln, Missoula, MT 59802")
+    original = app_main.store.get(assessed["assessment_id"])
+    assert original is not None
+
+    low = original.model_copy(deep=True)
+    low.confidence_tier = "low"
+    low.confidence_summary.missing_data = ["roof_type", "vent_type", "structure_geometry"]
+    low.confidence_summary.fallback_assumptions = ["point-based geometry fallback"]
+    low.fallback_weight_fraction = 0.8
+    low.assessment_diagnostics.fallback_decisions = [{"fallback_type": "derived_proxy"}]
+
+    exported = export_homeowner_report(low, output_format="structured")
+    assert isinstance(exported, dict)
+    confidence_summary = exported.get("confidence_summary") or {}
+    assert confidence_summary.get("confidence_tier") in {"low", "preliminary"}
+    assert "estimated" in str(exported.get("limitations_notice") or "").lower() or "missing" in str(exported.get("limitations_notice") or "").lower()
+    assert "not a guarantee" in str(exported.get("disclaimer") or "").lower()
+
+    pdf_bytes = export_homeowner_report(low, output_format="pdf")
+    assert isinstance(pdf_bytes, bytes)
+    assert pdf_bytes.startswith(b"%PDF-1.4")

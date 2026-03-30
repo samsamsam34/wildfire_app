@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import timezone
 import re
 import textwrap
-from typing import Any
+from typing import Any, Literal
 
 from backend.models import (
     AssessmentResult,
@@ -802,6 +802,78 @@ def build_homeowner_report(
         },
         professional_debug_metadata=professional_debug_metadata,
     )
+
+
+def _export_confidence_summary(report: HomeownerReport) -> dict[str, object]:
+    score_summary = report.score_summary or {}
+    confidence_and_limitations = report.confidence_and_limitations or {}
+    tier = str(
+        score_summary.get("confidence_tier")
+        or confidence_and_limitations.get("confidence_tier")
+        or "preliminary"
+    ).strip().lower()
+    score = _to_float(score_summary.get("confidence_score"))
+
+    if tier == "high":
+        summary = "High confidence: key property and location inputs were observed directly."
+    elif tier in {"moderate", "medium"}:
+        summary = "Moderate confidence: most major inputs are available, with some estimated details."
+    else:
+        summary = "Lower confidence: several details were estimated or missing, so this report is advisory."
+
+    limitations = [
+        str(row).strip()
+        for row in list(confidence_and_limitations.get("limitations") or [])
+        if str(row).strip()
+    ][:3]
+    return {
+        "confidence_tier": tier,
+        "confidence_score": score,
+        "summary": summary,
+        "limitations": limitations,
+    }
+
+
+def export_homeowner_report(
+    result: AssessmentResult,
+    *,
+    output_format: Literal["structured", "pdf"] = "structured",
+) -> dict[str, object] | bytes:
+    report = build_homeowner_report(result, include_professional_debug_metadata=False)
+    if output_format == "pdf":
+        return render_homeowner_report_pdf(report)
+
+    property_summary = report.property_summary or {}
+    ranked_actions = [dict(row) for row in list(report.ranked_actions or [])][:5]
+    if not ranked_actions:
+        ranked_actions = [dict(row) for row in list(report.prioritized_actions or [])][:5]
+    most_impactful = [dict(row) for row in list(report.most_impactful_actions or [])][:2]
+    if not most_impactful:
+        most_impactful = ranked_actions[:2]
+    what_to_do_first = dict(report.what_to_do_first or (ranked_actions[0] if ranked_actions else {}))
+
+    limitations_notice = str(report.limitations_notice or "").strip()
+    confidence_summary = _export_confidence_summary(report)
+    if confidence_summary.get("confidence_tier") in {"low", "preliminary"} and limitations_notice:
+        if "estimated" not in limitations_notice.lower() and "missing" not in limitations_notice.lower():
+            limitations_notice = limitations_notice + " Some details were estimated or missing."
+
+    return {
+        "assessment_id": report.assessment_id,
+        "generated_at": report.generated_at,
+        "address": str(property_summary.get("address") or ""),
+        "headline_risk_summary": str(report.headline_risk_summary or ""),
+        "top_risk_drivers": list(report.top_risk_drivers or [])[:4],
+        "prioritized_actions": ranked_actions[:5],
+        "most_impactful_actions": most_impactful,
+        "what_to_do_first": what_to_do_first,
+        "confidence_summary": confidence_summary,
+        "limitations_notice": limitations_notice,
+        "disclaimer": (
+            "This report supports homeowner planning and conversations with contractors, agents, "
+            "or insurers. It is not a guarantee of wildfire outcomes or insurability."
+        ),
+    }
 
 
 def _wrap_text_line(text: str, *, width: int = 96, prefix: str = "") -> list[str]:

@@ -14,6 +14,15 @@ Optional query flag:
   - Adds internal diagnostic blocks to the JSON view for review/debug use.
   - Omitted by default for consumer-facing output.
 
+## Programmatic export
+
+For a clean, shareable non-technical payload (or PDF bytes), use:
+
+- `backend.homeowner_report.export_homeowner_report(result, output_format="structured")`
+- `backend.homeowner_report.export_homeowner_report(result, output_format="pdf")`
+
+The structured export intentionally focuses on homeowner-facing sections and omits technical diagnostics.
+
 ## Report sections
 
 The report JSON includes:
