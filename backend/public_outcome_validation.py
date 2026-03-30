@@ -82,6 +82,14 @@ VIABILITY_MIN_INDEPENDENT_SAMPLES = 30
 VIABILITY_MIN_FEATURES_WITH_VARIANCE = 5
 VIABILITY_MIN_FEATURE_VARIATION_RATIO = 0.25
 VIABILITY_MIN_AUC_MARGIN_VS_RANDOM = 0.05
+HIGH_SIGNAL_MODEL_SIGNAL_WEIGHTS: dict[str, float] = {
+    # Weights are proportional to observed directional signal from recent
+    # feature-signal diagnostics and then renormalized on available features.
+    "nearest_high_fuel_patch_distance_ft": 0.3819357558,
+    "canopy_adjacency_proxy_pct": 0.3753699792,
+    "vegetation_continuity_proxy_pct": 0.2908944683,
+    "slope_index": 0.2548561782,
+}
 
 
 def _utc_now_iso() -> str:
@@ -616,6 +624,79 @@ def _compute_vegetation_density_index(row: dict[str, Any]) -> float | None:
     numerator = sum(value * weight for value, weight in weighted_terms)
     denom = sum(weight for _, weight in weighted_terms)
     return (numerator / denom) if denom > 0.0 else None
+
+
+def _compute_high_signal_simplified_score(row: dict[str, Any]) -> tuple[float | None, dict[str, Any]]:
+    components: dict[str, float] = {}
+
+    nearest_high_fuel_patch_distance_ft = _safe_float(
+        _extract_feature_value(row, "nearest_high_fuel_patch_distance_ft")
+    )
+    if nearest_high_fuel_patch_distance_ft is not None:
+        distance_clamped = max(0.0, min(300.0, float(nearest_high_fuel_patch_distance_ft)))
+        components["nearest_high_fuel_patch_distance_ft"] = max(
+            0.0,
+            min(100.0, 100.0 - ((distance_clamped / 300.0) * 100.0)),
+        )
+
+    canopy_adjacency_proxy_pct = _normalize_percent_like(
+        _extract_feature_value(row, "canopy_adjacency_proxy_pct")
+    )
+    if canopy_adjacency_proxy_pct is not None:
+        # Direction aligned to observed signal: higher adjacency currently maps
+        # to lower adverse-outcome probability in this labeled sample.
+        components["canopy_adjacency_proxy_pct"] = max(
+            0.0,
+            min(100.0, 100.0 - float(canopy_adjacency_proxy_pct)),
+        )
+
+    vegetation_continuity_proxy_pct = _normalize_percent_like(
+        _extract_feature_value(row, "vegetation_continuity_proxy_pct")
+    )
+    if vegetation_continuity_proxy_pct is not None:
+        components["vegetation_continuity_proxy_pct"] = max(
+            0.0,
+            min(100.0, float(vegetation_continuity_proxy_pct)),
+        )
+
+    slope_index = _normalize_percent_like(_extract_feature_value(row, "slope_index"))
+    if slope_index is not None:
+        components["slope_index"] = max(0.0, min(100.0, float(slope_index)))
+
+    weighted_terms: list[tuple[str, float, float]] = []
+    for feature_name, weight in HIGH_SIGNAL_MODEL_SIGNAL_WEIGHTS.items():
+        component_value = _safe_float(components.get(feature_name))
+        if component_value is None:
+            continue
+        weighted_terms.append((feature_name, float(component_value), float(weight)))
+
+    if not weighted_terms:
+        return None, {
+            "available": False,
+            "reason": "no_high_signal_features_available",
+            "components": {},
+            "normalized_weights": {},
+        }
+
+    total_weight = sum(weight for _, _, weight in weighted_terms)
+    if total_weight <= 0.0:
+        return None, {
+            "available": False,
+            "reason": "non_positive_weight_sum",
+            "components": components,
+            "normalized_weights": {},
+        }
+    normalized_weights = {
+        feature_name: (weight / total_weight)
+        for feature_name, _, weight in weighted_terms
+    }
+    score = sum(value * normalized_weights[feature_name] for feature_name, value, _ in weighted_terms)
+    score = max(0.0, min(100.0, float(score)))
+    return score, {
+        "available": True,
+        "components": components,
+        "normalized_weights": normalized_weights,
+    }
 
 
 def _bucketize_segment(
@@ -2782,6 +2863,7 @@ def _prepare_rows(
     *,
     allow_label_derived_target: bool = True,
     allow_surrogate_wildfire_score: bool = True,
+    use_high_signal_simplified_model: bool = False,
     min_join_confidence_score_for_metrics: float | None = None,
     retain_unusable_rows: bool = True,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
@@ -2803,6 +2885,10 @@ def _prepare_rows(
             wildfire_score = _derive_surrogate_wildfire_score(row)
             if wildfire_score is not None:
                 wildfire_score_source = "surrogate_from_site_and_vulnerability"
+        simplified_score, simplified_meta = _compute_high_signal_simplified_score(row)
+        if use_high_signal_simplified_model and simplified_score is not None:
+            wildfire_score = simplified_score
+            wildfire_score_source = "high_signal_simplified_model"
 
         fallback_flags = _extract_fallback_flags(row)
         evidence_tier = _extract_evidence_tier(row)
@@ -2910,6 +2996,8 @@ def _prepare_rows(
         prepared_row["missing_features"] = missing_features
         prepared_row["fallback_heavy"] = fallback_heavy
         prepared_row["wildfire_score_source"] = wildfire_score_source
+        prepared_row["high_signal_simplified_score"] = simplified_score
+        prepared_row["high_signal_model_components"] = simplified_meta
         prepared_row["row_usable_for_metrics"] = len(exclusion_reasons) == 0
         prepared_row["exclusion_reasons"] = exclusion_reasons
 
@@ -2947,6 +3035,7 @@ def evaluate_public_outcome_dataset_rows(
     min_labeled_rows: int = 1,
     allow_label_derived_target: bool = True,
     allow_surrogate_wildfire_score: bool = True,
+    use_high_signal_simplified_model: bool = False,
     min_join_confidence_score_for_metrics: float | None = None,
     retain_unusable_rows: bool = True,
     generated_at: str | None = None,
@@ -2955,6 +3044,7 @@ def evaluate_public_outcome_dataset_rows(
         rows,
         allow_label_derived_target=bool(allow_label_derived_target),
         allow_surrogate_wildfire_score=bool(allow_surrogate_wildfire_score),
+        use_high_signal_simplified_model=bool(use_high_signal_simplified_model),
         min_join_confidence_score_for_metrics=(
             float(min_join_confidence_score_for_metrics)
             if min_join_confidence_score_for_metrics is not None
@@ -3265,6 +3355,7 @@ def evaluate_public_outcome_dataset_rows(
             "filter_config": {
                 "allow_label_derived_target": bool(allow_label_derived_target),
                 "allow_surrogate_wildfire_score": bool(allow_surrogate_wildfire_score),
+                "use_high_signal_simplified_model": bool(use_high_signal_simplified_model),
                 "min_join_confidence_score_for_metrics": (
                     float(min_join_confidence_score_for_metrics)
                     if min_join_confidence_score_for_metrics is not None
@@ -3272,6 +3363,31 @@ def evaluate_public_outcome_dataset_rows(
                 ),
                 "retain_unusable_rows": bool(retain_unusable_rows),
             },
+        },
+        "score_model": {
+            "active_model": (
+                "high_signal_simplified_model"
+                if bool(use_high_signal_simplified_model)
+                else "raw_wildfire_risk_score"
+            ),
+            "high_signal_model_weights": (
+                {
+                    key: (float(weight) / float(sum(HIGH_SIGNAL_MODEL_SIGNAL_WEIGHTS.values())))
+                    for key, weight in HIGH_SIGNAL_MODEL_SIGNAL_WEIGHTS.items()
+                }
+                if bool(use_high_signal_simplified_model)
+                else {}
+            ),
+            "high_signal_model_directionality": (
+                {
+                    "nearest_high_fuel_patch_distance_ft": "risk_up_via_inverse_distance_transform",
+                    "canopy_adjacency_proxy_pct": "risk_down_observed_signal_alignment",
+                    "vegetation_continuity_proxy_pct": "risk_up",
+                    "slope_index": "risk_up",
+                }
+                if bool(use_high_signal_simplified_model)
+                else {}
+            ),
         },
         "discrimination_metrics": {
             "wildfire_risk_score_auc": raw_auc,
@@ -3406,6 +3522,7 @@ def evaluate_public_outcome_dataset_file(
     min_labeled_rows: int = 1,
     allow_label_derived_target: bool = True,
     allow_surrogate_wildfire_score: bool = True,
+    use_high_signal_simplified_model: bool = False,
     min_join_confidence_score_for_metrics: float | None = None,
     retain_unusable_rows: bool = True,
     generated_at: str | None = None,
@@ -3421,6 +3538,7 @@ def evaluate_public_outcome_dataset_file(
         min_labeled_rows=min_labeled_rows,
         allow_label_derived_target=allow_label_derived_target,
         allow_surrogate_wildfire_score=allow_surrogate_wildfire_score,
+        use_high_signal_simplified_model=use_high_signal_simplified_model,
         min_join_confidence_score_for_metrics=min_join_confidence_score_for_metrics,
         retain_unusable_rows=retain_unusable_rows,
         generated_at=generated_at,
@@ -3439,6 +3557,7 @@ def trace_public_outcome_dataset_flow(
     dataset_path: Path,
     allow_label_derived_target: bool = True,
     allow_surrogate_wildfire_score: bool = True,
+    use_high_signal_simplified_model: bool = False,
     min_join_confidence_score_for_metrics: float | None = None,
     retain_unusable_rows: bool = True,
 ) -> dict[str, Any]:
@@ -3447,6 +3566,7 @@ def trace_public_outcome_dataset_flow(
         rows,
         allow_label_derived_target=allow_label_derived_target,
         allow_surrogate_wildfire_score=allow_surrogate_wildfire_score,
+        use_high_signal_simplified_model=use_high_signal_simplified_model,
         min_join_confidence_score_for_metrics=min_join_confidence_score_for_metrics,
         retain_unusable_rows=retain_unusable_rows,
     )

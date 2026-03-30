@@ -1375,6 +1375,7 @@ def run_public_outcome_validation(
     min_labeled_rows: int = 1,
     allow_label_derived_target: bool = True,
     allow_surrogate_wildfire_score: bool = True,
+    use_high_signal_simplified_model: bool = False,
     min_join_confidence_score_for_metrics: float | None = None,
     retain_unusable_rows: bool = True,
     baseline_run_id: str | None = None,
@@ -1396,6 +1397,7 @@ def run_public_outcome_validation(
         dataset_path=dataset_path,
         allow_label_derived_target=allow_label_derived_target,
         allow_surrogate_wildfire_score=allow_surrogate_wildfire_score,
+        use_high_signal_simplified_model=use_high_signal_simplified_model,
         min_join_confidence_score_for_metrics=min_join_confidence_score_for_metrics,
         retain_unusable_rows=retain_unusable_rows,
     )
@@ -1466,6 +1468,7 @@ def run_public_outcome_validation(
             min_labeled_rows=max(1, int(min_labeled_rows)),
             allow_label_derived_target=bool(allow_label_derived_target),
             allow_surrogate_wildfire_score=bool(allow_surrogate_wildfire_score),
+            use_high_signal_simplified_model=bool(use_high_signal_simplified_model),
             min_join_confidence_score_for_metrics=(
                 float(min_join_confidence_score_for_metrics)
                 if min_join_confidence_score_for_metrics is not None
@@ -1846,6 +1849,7 @@ def run_public_outcome_validation(
             "min_labeled_rows": int(max(1, int(min_labeled_rows))),
             "allow_label_derived_target": bool(allow_label_derived_target),
             "allow_surrogate_wildfire_score": bool(allow_surrogate_wildfire_score),
+            "use_high_signal_simplified_model": bool(use_high_signal_simplified_model),
             "min_join_confidence_score_for_metrics": (
                 float(min_join_confidence_score_for_metrics)
                 if min_join_confidence_score_for_metrics is not None
@@ -1878,6 +1882,7 @@ def run_public_outcome_validation(
                 "min_labeled_rows": int(max(1, int(min_labeled_rows))),
                 "allow_label_derived_target": bool(allow_label_derived_target),
                 "allow_surrogate_wildfire_score": bool(allow_surrogate_wildfire_score),
+                "use_high_signal_simplified_model": bool(use_high_signal_simplified_model),
                 "min_join_confidence_score_for_metrics": (
                     float(min_join_confidence_score_for_metrics)
                     if min_join_confidence_score_for_metrics is not None
@@ -2007,6 +2012,16 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--use-high-signal-simplified-model",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Override wildfire_risk_score with a simplified high-signal model using only: "
+            "nearest_high_fuel_patch_distance_ft, canopy_adjacency_proxy_pct, "
+            "vegetation_continuity_proxy_pct, and slope_index."
+        ),
+    )
+    parser.add_argument(
         "--min-join-confidence-score-for-metrics",
         type=float,
         default=None,
@@ -2046,6 +2061,7 @@ def main() -> int:
         min_labeled_rows=max(1, int(args.min_labeled_rows)),
         allow_label_derived_target=bool(args.allow_label_derived_target),
         allow_surrogate_wildfire_score=bool(args.allow_surrogate_wildfire_score),
+        use_high_signal_simplified_model=bool(args.use_high_signal_simplified_model),
         min_join_confidence_score_for_metrics=(
             float(args.min_join_confidence_score_for_metrics)
             if args.min_join_confidence_score_for_metrics is not None

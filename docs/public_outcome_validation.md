@@ -55,6 +55,22 @@ python scripts/run_public_outcome_validation.py \
   --min-labeled-rows 1
 ```
 
+Run validation with the simplified high-signal model (evaluation-mode only):
+
+```bash
+python scripts/run_public_outcome_validation.py \
+  --evaluation-dataset-run-id <run_id> \
+  --use-high-signal-simplified-model
+```
+
+This mode uses only:
+- `nearest_high_fuel_patch_distance_ft` (inverse-distance transform, risk-up)
+- `canopy_adjacency_proxy_pct` (observed-direction aligned, risk-down)
+- `vegetation_continuity_proxy_pct` (risk-up)
+- `slope_index` (risk-up, when present)
+
+Weights are proportional to recent feature-signal diagnostics and renormalized over available features per row.
+
 Filtering strictness is configurable and defaults to row-retention with tagging:
 
 ```bash

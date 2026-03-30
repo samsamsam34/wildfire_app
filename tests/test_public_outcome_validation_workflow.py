@@ -507,6 +507,72 @@ def test_feature_signal_diagnostics_flags_direction_conflict(tmp_path: Path) -> 
     assert int(alignment.get("conflicts_remaining_post_alignment") or 0) == 0
 
 
+def test_high_signal_simplified_model_beats_hazard_only_on_controlled_fixture(tmp_path: Path) -> None:
+    rows = []
+    for idx in range(10):
+        adverse = 1 if idx < 5 else 0
+        if adverse:
+            raw_features = {
+                "nearest_high_fuel_patch_distance_ft": 20.0 + idx,
+                "canopy_adjacency_proxy_pct": 12.0 + idx,
+                "vegetation_continuity_proxy_pct": 82.0 - idx,
+                "slope_index": 78.0 - (idx * 2.0),
+            }
+        else:
+            raw_features = {
+                "nearest_high_fuel_patch_distance_ft": 250.0 + idx,
+                "canopy_adjacency_proxy_pct": 84.0 - idx,
+                "vegetation_continuity_proxy_pct": 20.0 + idx,
+                "slope_index": 24.0 + (idx * 1.5),
+            }
+        rows.append(
+            {
+                "event": {"event_id": "evt-simplified"},
+                "feature": {"record_id": f"row-{idx}"},
+                "outcome": {
+                    "damage_label": "destroyed" if adverse else "no_damage",
+                    "damage_severity_class": "destroyed" if adverse else "none",
+                    "structure_loss_or_major_damage": adverse,
+                },
+                "scores": {
+                    "wildfire_risk_score": 50.0,
+                    "site_hazard_score": 50.0,
+                    "home_ignition_vulnerability_score": 50.0,
+                },
+                "feature_snapshot": {
+                    "raw_feature_vector": raw_features,
+                    "transformed_feature_vector": {},
+                },
+                "join_metadata": {"join_confidence_tier": "high", "join_confidence_score": 0.95},
+                "confidence": {"confidence_tier": "high"},
+                "evidence": {"evidence_quality_tier": "high"},
+            }
+        )
+
+    dataset_path = tmp_path / "high_signal_simplified_eval.jsonl"
+    dataset_path.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
+
+    report, prepared_rows = evaluate_public_outcome_dataset_file(
+        dataset_path=dataset_path,
+        min_labeled_rows=1,
+        use_high_signal_simplified_model=True,
+    )
+    assert (report.get("score_model") or {}).get("active_model") == "high_signal_simplified_model"
+    assert (report.get("discrimination_metrics") or {}).get("wildfire_risk_score_auc") is not None
+    assert float((report.get("discrimination_metrics") or {}).get("wildfire_risk_score_auc") or 0.0) > 0.58
+
+    baseline = report.get("baseline_model_comparison") or {}
+    comparison = baseline.get("comparison") if isinstance(baseline, dict) else {}
+    assert bool((comparison or {}).get("beats_all_baselines_by_auc")) is True
+    assert float((comparison or {}).get("best_baseline_auc") or 0.0) <= 0.58
+
+    assert all(
+        str(row.get("wildfire_score_source") or "") == "high_signal_simplified_model"
+        for row in prepared_rows
+        if bool(row.get("row_usable_for_metrics"))
+    )
+
+
 def test_validation_propagates_retention_fallback_warning_from_dataset_join_report(tmp_path: Path) -> None:
     dataset_root = tmp_path / "eval_ds"
     run_dir = dataset_root / "tiny_run"
