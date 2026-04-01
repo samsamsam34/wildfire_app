@@ -639,6 +639,25 @@ def build_homeowner_report(
         result.home_hardening_readiness_score_available
         or result.insurance_readiness_score_available
     )
+    homeowner_confidence = (
+        (result.homeowner_summary or {}).get("confidence_summary")
+        if isinstance(result.homeowner_summary, dict)
+        else {}
+    )
+    homeowner_confidence = homeowner_confidence if isinstance(homeowner_confidence, dict) else {}
+    homeowner_trust_summary = (
+        (result.homeowner_summary or {}).get("trust_summary")
+        if isinstance(result.homeowner_summary, dict)
+        else {}
+    )
+    homeowner_trust_summary = homeowner_trust_summary if isinstance(homeowner_trust_summary, dict) else {}
+    nearby_home_comparison_safeguard_triggered = bool(
+        homeowner_trust_summary.get("nearby_home_comparison_safeguard_triggered")
+    )
+    nearby_home_comparison_safeguard_message = str(
+        homeowner_trust_summary.get("nearby_home_comparison_safeguard_message")
+        or "This estimate is not precise enough to compare adjacent homes."
+    ).strip()
 
     raw_driver_candidates = list(result.top_risk_drivers or [])
     if not raw_driver_candidates and result.top_risk_drivers_detailed:
@@ -685,25 +704,6 @@ def build_homeowner_report(
     combined_limitations = list(
         dict.fromkeys(grouped_limitations + assessment_limitations + ds_limitations + low_confidence_flags)
     )[:6]
-    homeowner_confidence = (
-        (result.homeowner_summary or {}).get("confidence_summary")
-        if isinstance(result.homeowner_summary, dict)
-        else {}
-    )
-    homeowner_confidence = homeowner_confidence if isinstance(homeowner_confidence, dict) else {}
-    homeowner_trust_summary = (
-        (result.homeowner_summary or {}).get("trust_summary")
-        if isinstance(result.homeowner_summary, dict)
-        else {}
-    )
-    homeowner_trust_summary = homeowner_trust_summary if isinstance(homeowner_trust_summary, dict) else {}
-    nearby_home_comparison_safeguard_triggered = bool(
-        homeowner_trust_summary.get("nearby_home_comparison_safeguard_triggered")
-    )
-    nearby_home_comparison_safeguard_message = str(
-        homeowner_trust_summary.get("nearby_home_comparison_safeguard_message")
-        or "This estimate is not precise enough to compare adjacent homes."
-    ).strip()
     homeowner_improve_your_result = (
         (result.homeowner_summary or {}).get("improve_your_result")
         if isinstance(result.homeowner_summary, dict)

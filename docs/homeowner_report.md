@@ -38,6 +38,11 @@ The report JSON includes:
     - `expected_effect` (`small` / `moderate` / `significant`)
 - `what_to_do_first`
 - `trust_summary` (user-facing confidence language + key uncertainty drivers)
+  - for low-differentiation runs, includes `low_differentiation_explanation` with:
+    - what was measured directly
+    - what was estimated from regional context
+    - why nearby homes may look similar
+    - what additional details make the result more property-specific
 - `improve_your_result` (diagnostic-gap-driven suggestions derived from existing evidence/coverage/fallback signals)
 - `limitations_notice`
 - `report_header`

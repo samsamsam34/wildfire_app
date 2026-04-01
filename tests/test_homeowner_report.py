@@ -215,6 +215,10 @@ def test_homeowner_report_surfaces_mostly_regional_differentiation_mode(monkeypa
     assert trust_summary.get("differentiation_mode") == "mostly_regional"
     assert float(trust_summary.get("neighborhood_differentiation_confidence") or 0.0) <= 40.0
     assert isinstance(trust_summary.get("differentiation_summary"), str)
+    low_diff = trust_summary.get("low_differentiation_explanation") or {}
+    assert low_diff.get("applies") is True
+    assert isinstance(low_diff.get("why_nearby_properties_may_appear_similar"), str)
+    assert isinstance(low_diff.get("what_would_make_this_more_property_specific") or [], list)
 
     pdf_res = client.get(f"/report/{assessed['assessment_id']}/homeowner/pdf")
     assert pdf_res.status_code == 200

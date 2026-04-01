@@ -5304,6 +5304,18 @@ def test_low_coverage_homeowner_summary_uses_limited_mode_and_grouped_limitation
     assert isinstance(trust_summary.get("fallback_drivers") or [], list)
     assert isinstance(trust_summary.get("missing_inputs") or [], list)
     assert isinstance(trust_summary.get("coverage_gaps") or [], list)
+    low_diff = trust_summary.get("low_differentiation_explanation")
+    assert isinstance(low_diff, dict)
+    assert low_diff.get("applies") is True
+    assert isinstance(low_diff.get("what_was_measured_directly") or [], list)
+    assert isinstance(low_diff.get("what_was_estimated_from_regional_context") or [], list)
+    assert isinstance(low_diff.get("what_would_make_this_more_property_specific") or [], list)
+    assert isinstance(low_diff.get("why_nearby_properties_may_appear_similar"), str)
+    estimated_blob = " ".join(str(item).lower() for item in (low_diff.get("what_was_estimated_from_regional_context") or []))
+    assert "building footprint was missing" in estimated_blob
+    assert "map point" in estimated_blob or "regional context" in estimated_blob
+    improvement_blob = " ".join(str(item).lower() for item in (low_diff.get("what_would_make_this_more_property_specific") or []))
+    assert "roof type" in improvement_blob or "vent type" in improvement_blob or "defensible space" in improvement_blob
     assert isinstance(trust_summary.get("nearby_home_comparison_safeguard_triggered"), bool)
     if trust_summary.get("nearby_home_comparison_safeguard_triggered"):
         assert trust_summary.get("parcel_level_comparison_allowed") is False
@@ -5413,6 +5425,29 @@ def test_homeowner_trust_summary_maps_internal_tiers_to_user_friendly_labels():
         safeguarded.get("nearby_home_comparison_safeguard_message")
         == "This estimate is not precise enough to compare adjacent homes."
     )
+
+    property_specific = app_main._build_homeowner_trust_summary(
+        confidence_tier="high",
+        fallback_decisions=[],
+        missing_inputs=[],
+        preflight={
+            "feature_coverage_summary": {
+                "building_footprint_available": True,
+                "parcel_polygon_available": True,
+                "near_structure_vegetation_available": True,
+                "hazard_severity_available": True,
+                "burn_probability_available": True,
+                "dryness_available": True,
+            },
+            "geometry_basis": "footprint",
+        },
+        differentiation_snapshot={
+            "differentiation_mode": "property_specific",
+            "neighborhood_differentiation_confidence": 82.0,
+            "notes": [],
+        },
+    )
+    assert property_specific.get("low_differentiation_explanation") is None
 
 
 def test_old_rows_without_provenance_defaults_are_readable(tmp_path):

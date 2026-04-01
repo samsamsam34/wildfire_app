@@ -3847,6 +3847,15 @@ def _build_homeowner_trust_summary(
             )
         )[:4]
 
+    low_differentiation_explanation = _build_low_differentiation_explanation_block(
+        preflight=preflight,
+        differentiation_mode=differentiation_mode,
+        differentiation_confidence=differentiation_confidence,
+        missing_field_labels=missing_field_labels,
+        fallback_decisions=fallback_decisions,
+        nearby_home_comparison_safeguard_triggered=nearby_home_comparison_safeguard_triggered,
+    )
+
     return {
         "confidence_level": confidence_level,
         "summary": summary,
@@ -3868,9 +3877,114 @@ def _build_homeowner_trust_summary(
         ),
         "differentiation_summary": differentiation_summary,
         "differentiation_notes": differentiation_notes,
+        "low_differentiation_explanation": low_differentiation_explanation,
         "nearby_home_comparison_safeguard_triggered": nearby_home_comparison_safeguard_triggered,
         "nearby_home_comparison_safeguard_message": nearby_home_comparison_safeguard_message,
         "parcel_level_comparison_allowed": not nearby_home_comparison_safeguard_triggered,
+    }
+
+
+def _build_low_differentiation_explanation_block(
+    *,
+    preflight: dict[str, Any],
+    differentiation_mode: str,
+    differentiation_confidence: float,
+    missing_field_labels: list[str],
+    fallback_decisions: list[dict[str, object]],
+    nearby_home_comparison_safeguard_triggered: bool,
+) -> dict[str, Any] | None:
+    mode = str(differentiation_mode or "").strip().lower()
+    trigger = (
+        nearby_home_comparison_safeguard_triggered
+        or mode == "mostly_regional"
+        or (mode == "mixed" and float(differentiation_confidence) <= 45.0)
+    )
+    if not trigger:
+        return None
+
+    coverage = dict(preflight.get("feature_coverage_summary") or {})
+    geometry_basis = str(preflight.get("geometry_basis") or "geocode_point").strip().lower()
+
+    footprint_available = bool(coverage.get("building_footprint_available"))
+    parcel_available = bool(coverage.get("parcel_polygon_available"))
+    near_structure_available = bool(coverage.get("near_structure_vegetation_available"))
+    hazard_available = bool(coverage.get("hazard_severity_available"))
+    burn_available = bool(coverage.get("burn_probability_available"))
+    dryness_available = bool(coverage.get("dryness_available"))
+
+    measured_directly: list[str] = []
+    estimated_from_regional: list[str] = []
+    make_more_property_specific: list[str] = []
+
+    if footprint_available:
+        measured_directly.append("Home shape was measured from a building footprint.")
+    elif parcel_available:
+        measured_directly.append("A parcel boundary was available for location context.")
+    else:
+        estimated_from_regional.append("Building footprint was missing, so location detail was limited.")
+        make_more_property_specific.append("Add or confirm a building footprint for this home.")
+
+    if near_structure_available and geometry_basis != "geocode_point":
+        measured_directly.append("Vegetation close to the home was measured around the structure.")
+    elif near_structure_available and geometry_basis == "geocode_point":
+        estimated_from_regional.append("Near-home vegetation was sampled from a map point estimate.")
+        make_more_property_specific.append("Pin the exact home location or add structure geometry for better near-home vegetation detail.")
+    else:
+        estimated_from_regional.append("Near-home vegetation detail was estimated from broader area signals.")
+        make_more_property_specific.append("Add near-home vegetation detail, especially in the 0–5 ft and 5–30 ft zones.")
+
+    if hazard_available and burn_available and dryness_available:
+        measured_directly.append("Regional hazard and dryness layers were available.")
+    else:
+        estimated_from_regional.append("Some wildfire hazard or dryness layers were estimated from regional context.")
+        make_more_property_specific.append("Use a prepared region with fuller hazard, burn history, and dryness coverage.")
+
+    structure_fields = {"roof type", "vent type", "defensible space condition"}
+    missing_structure_fields = [
+        field for field in missing_field_labels if str(field).strip().lower() in structure_fields
+    ]
+    if missing_structure_fields:
+        estimated_from_regional.append(
+            "Some structure details were unknown: "
+            + ", ".join(missing_structure_fields[:3])
+            + ("..." if len(missing_structure_fields) > 3 else "")
+            + "."
+        )
+        make_more_property_specific.append("Add roof type, vent type, and defensible space details.")
+    else:
+        structure_fallback_detected = any(
+            str((row or {}).get("missing_input") or "").strip().lower()
+            in {"roof_type", "vent_type", "defensible_space_ft"}
+            for row in list(fallback_decisions or [])
+            if isinstance(row, dict)
+        )
+        if structure_fallback_detected:
+            estimated_from_regional.append("Some structure details were estimated from default assumptions.")
+            make_more_property_specific.append("Add roof type, vent type, and defensible space details when unknown.")
+
+    if geometry_basis == "geocode_point":
+        make_more_property_specific.append("Verify the map pin is on the correct structure, not just the street address point.")
+
+    measured_directly = list(dict.fromkeys([row.strip() for row in measured_directly if row.strip()]))[:3]
+    estimated_from_regional = list(
+        dict.fromkeys([row.strip() for row in estimated_from_regional if row.strip()])
+    )[:4]
+    make_more_property_specific = list(
+        dict.fromkeys([row.strip() for row in make_more_property_specific if row.strip()])
+    )[:6]
+
+    why_similar = (
+        "Nearby homes may look similar because this estimate relies more on shared neighborhood and regional conditions than on home-specific measurements."
+    )
+    if nearby_home_comparison_safeguard_triggered:
+        why_similar = "This estimate is not precise enough to compare adjacent homes because key home-level details are still estimated."
+
+    return {
+        "applies": True,
+        "what_was_measured_directly": measured_directly,
+        "what_was_estimated_from_regional_context": estimated_from_regional,
+        "why_nearby_properties_may_appear_similar": why_similar,
+        "what_would_make_this_more_property_specific": make_more_property_specific,
     }
 
 
