@@ -4885,6 +4885,17 @@ def test_low_coverage_homeowner_summary_uses_limited_mode_and_grouped_limitation
     diagnostics = assessed.get("developer_diagnostics") or {}
     assert isinstance((diagnostics.get("fallback_decisions") or []), list)
     assert "preflight" in diagnostics
+    improve_your_result = homeowner_summary.get("improve_your_result") or {}
+    assert isinstance(improve_your_result, dict)
+    suggestions = improve_your_result.get("suggestions") or []
+    assert isinstance(suggestions, list)
+    assert len(suggestions) >= 1
+    joined_suggestions = " ".join(str(item).lower() for item in suggestions)
+    assert "roof type" in joined_suggestions or "defensible space" in joined_suggestions
+    diagnostic_sources = improve_your_result.get("diagnostic_sources") or {}
+    assert isinstance(diagnostic_sources, dict)
+    assert isinstance(diagnostic_sources.get("coverage_gaps") or [], list)
+    assert isinstance(diagnostic_sources.get("fallback_inputs") or [], list)
 
 
 def test_missing_factor_omission_reports_weight_and_counts(monkeypatch, tmp_path):

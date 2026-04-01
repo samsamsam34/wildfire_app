@@ -680,6 +680,12 @@ def build_homeowner_report(
         else {}
     )
     homeowner_trust_summary = homeowner_trust_summary if isinstance(homeowner_trust_summary, dict) else {}
+    homeowner_improve_your_result = (
+        (result.homeowner_summary or {}).get("improve_your_result")
+        if isinstance(result.homeowner_summary, dict)
+        else {}
+    )
+    homeowner_improve_your_result = homeowner_improve_your_result if isinstance(homeowner_improve_your_result, dict) else {}
     confidence_headline = str(homeowner_confidence.get("headline") or "").strip() or _confidence_summary(result)
     confidence_limitations = [
         str(item).strip()
@@ -695,6 +701,7 @@ def build_homeowner_report(
         "use_restriction": result.use_restriction,
         "confidence_statement": confidence_headline,
         "trust_summary": homeowner_trust_summary,
+        "improve_your_result": homeowner_improve_your_result,
         "observed_data": list(result.confidence_summary.observed_data or []),
         "estimated_data": list(result.confidence_summary.estimated_data or []),
         "missing_data": list(result.confidence_summary.missing_data or []),
@@ -898,6 +905,8 @@ def export_homeowner_report(
             limitations_notice = limitations_notice + " Some details were estimated or missing."
     trust_summary = report.confidence_and_limitations.get("trust_summary")
     trust_summary = trust_summary if isinstance(trust_summary, dict) else {}
+    improve_your_result = report.confidence_and_limitations.get("improve_your_result")
+    improve_your_result = improve_your_result if isinstance(improve_your_result, dict) else {}
 
     return {
         "assessment_id": report.assessment_id,
@@ -910,6 +919,7 @@ def export_homeowner_report(
         "what_to_do_first": what_to_do_first,
         "confidence_summary": confidence_summary,
         "trust_summary": trust_summary,
+        "improve_your_result": improve_your_result,
         "limitations_notice": limitations_notice,
         "disclaimer": (
             "This report supports homeowner planning and conversations with contractors, agents, "

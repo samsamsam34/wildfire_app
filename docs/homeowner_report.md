@@ -38,6 +38,7 @@ The report JSON includes:
     - `expected_effect` (`small` / `moderate` / `significant`)
 - `what_to_do_first`
 - `trust_summary` (user-facing confidence language + key uncertainty drivers)
+- `improve_your_result` (diagnostic-gap-driven suggestions derived from existing evidence/coverage/fallback signals)
 - `limitations_notice`
 - `report_header`
 - `property_summary`
@@ -65,6 +66,7 @@ Primary homeowner-facing score fields are:
 - `confidence_and_limitations`
 - `confidence_summary`
 - `trust_summary`
+- `improve_your_result`
 
 `insurance_readiness_summary` is retained as an optional/future-facing compatibility block.
 

@@ -95,6 +95,8 @@ def test_homeowner_improvement_options_detect_missing_key_inputs(monkeypatch, tm
     assert any("roof" in str(prompt).lower() for prompt in prompts)
     assert any("vent" in str(prompt).lower() for prompt in prompts)
     assert any("non-combustible" in str(prompt).lower() for prompt in prompts)
+    joined_suggestions = " ".join(str(item).lower() for item in (body.get("improve_your_result_suggestions") or []))
+    assert "roof type" in joined_suggestions or "vent" in joined_suggestions
 
 
 def test_homeowner_improvement_rerun_increases_confidence_and_updates_guidance(monkeypatch, tmp_path: Path) -> None:

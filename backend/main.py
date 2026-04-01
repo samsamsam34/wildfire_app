@@ -41,6 +41,7 @@ from backend.homeowner_advisor import (
     prioritize_mitigation_actions,
 )
 from backend.homeowner_improvement import (
+    build_improve_your_result_block,
     build_homeowner_improvement_options,
     build_improvement_change_set,
     defensible_space_ft_from_condition,
@@ -5977,6 +5978,10 @@ def _run_assessment(
     )
 
     result = _apply_ruleset_to_result(result, ruleset)
+    improve_your_result = build_improve_your_result_block(result)
+    homeowner_summary_with_improvement = dict(result.homeowner_summary or {})
+    homeowner_summary_with_improvement["improve_your_result"] = improve_your_result
+    result.homeowner_summary = homeowner_summary_with_improvement
     score_variance_diagnostics = _build_score_variance_diagnostics(
         context=context,
         risk=risk,

@@ -569,6 +569,7 @@ def test_export_homeowner_report_generates_clean_structured_output_across_confid
             "what_to_do_first",
             "confidence_summary",
             "trust_summary",
+            "improve_your_result",
             "limitations_notice",
             "disclaimer",
         ):
@@ -577,6 +578,7 @@ def test_export_homeowner_report_generates_clean_structured_output_across_confid
         assert isinstance(exported.get("prioritized_actions"), list)
         assert isinstance(exported.get("confidence_summary"), dict)
         assert isinstance(exported.get("trust_summary"), dict)
+        assert isinstance(exported.get("improve_your_result"), dict)
 
 
 def test_export_homeowner_report_low_confidence_includes_clear_limitations_and_pdf(monkeypatch, tmp_path: Path):
