@@ -899,6 +899,14 @@ class SpecificitySummary(BaseModel):
     comparison_allowed: bool = False
 
 
+class GeometryResolutionSummary(BaseModel):
+    anchor_source: str = "geocoded_address_point"
+    anchor_quality_score: float = 0.0
+    parcel_match_status: str = "not_found"
+    footprint_match_status: str = "none"
+    ring_generation_mode: str = "point_annulus_fallback"
+
+
 class AssessmentResult(BaseModel):
     assessment_id: str
     address: str
@@ -992,6 +1000,7 @@ class AssessmentResult(BaseModel):
     feature_coverage_percent: float = 0.0
     assessment_specificity_tier: AssessmentSpecificityTier = "regional_estimate"
     specificity_summary: SpecificitySummary = Field(default_factory=SpecificitySummary)
+    geometry_resolution: GeometryResolutionSummary = Field(default_factory=GeometryResolutionSummary)
     assessment_output_state: AssessmentOutputState = "insufficient_data"
     assessment_mode: AssessmentMode = "insufficient_data"
     scoring_status: str = "insufficient_data_to_score"

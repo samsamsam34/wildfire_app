@@ -102,6 +102,7 @@ from backend.models import (
     EligibilityStatus,
     EnvironmentalFactors,
     FreshnessStatus,
+    GeometryResolutionSummary,
     InputSourceMetadata,
     GeocodeDebugRequest,
     GeocodingDetails,
@@ -2005,6 +2006,62 @@ def _normalize_property_level_context(raw_context: object) -> dict[str, Any]:
     else:
         normalized["ring_metrics"] = None
     return normalized
+
+
+def _build_geometry_resolution_summary(
+    property_level_context: dict[str, Any],
+) -> GeometryResolutionSummary:
+    ctx = property_level_context if isinstance(property_level_context, dict) else {}
+
+    anchor_source = str(ctx.get("property_anchor_source") or "geocoded_address_point").strip().lower()
+    if not anchor_source:
+        anchor_source = "geocoded_address_point"
+
+    raw_anchor_quality = (
+        ctx.get("property_anchor_quality_score")
+        if ctx.get("property_anchor_quality_score") is not None
+        else ctx.get("anchor_quality_score")
+    )
+    try:
+        anchor_quality_score = float(raw_anchor_quality if raw_anchor_quality is not None else 0.0)
+    except (TypeError, ValueError):
+        anchor_quality_score = 0.0
+    if anchor_quality_score > 1.0 and anchor_quality_score <= 100.0:
+        anchor_quality_score = anchor_quality_score / 100.0
+    anchor_quality_score = round(max(0.0, min(1.0, anchor_quality_score)), 3)
+
+    parcel_match_status = "not_found"
+    parcel_lookup_method = str(ctx.get("parcel_lookup_method") or "").strip().lower()
+    if ctx.get("parcel_id"):
+        parcel_match_status = "matched"
+    elif isinstance(ctx.get("parcel_geometry"), dict):
+        parcel_match_status = "matched"
+    elif parcel_lookup_method in {"contains_point", "nearest_within_tolerance"}:
+        parcel_match_status = "matched"
+    elif parcel_lookup_method in {"provider_unavailable", "lookup_unavailable"}:
+        parcel_match_status = "provider_unavailable"
+    elif parcel_lookup_method:
+        parcel_match_status = "not_found"
+    elif ctx.get("parcel_source") or ctx.get("parcel_source_name"):
+        parcel_match_status = "not_found"
+
+    footprint_match_status = str(ctx.get("structure_match_status") or "none").strip().lower()
+    if not footprint_match_status:
+        footprint_match_status = "none"
+    if footprint_match_status not in {"matched", "none", "ambiguous", "provider_unavailable", "error"}:
+        footprint_match_status = "matched" if bool(ctx.get("footprint_used")) else "none"
+
+    ring_generation_mode = str(ctx.get("ring_generation_mode") or "").strip().lower()
+    if ring_generation_mode not in {"footprint_aware_rings", "point_annulus_fallback"}:
+        ring_generation_mode = "footprint_aware_rings" if bool(ctx.get("footprint_used")) else "point_annulus_fallback"
+
+    return GeometryResolutionSummary(
+        anchor_source=anchor_source,
+        anchor_quality_score=anchor_quality_score,
+        parcel_match_status=parcel_match_status,
+        footprint_match_status=footprint_match_status,
+        ring_generation_mode=ring_generation_mode,
+    )
 
 
 def _normalize_layer_coverage(
@@ -5120,6 +5177,8 @@ def _run_assessment(
         property_level_context["ring_generation_mode"] = (
             "footprint_aware_rings" if bool(property_level_context.get("footprint_used")) else "point_annulus_fallback"
         )
+    geometry_resolution = _build_geometry_resolution_summary(property_level_context)
+    property_level_context["geometry_resolution"] = geometry_resolution.model_dump()
     if requested_property_anchor_point is not None:
         property_level_context["property_anchor_point"] = requested_property_anchor_point
     if requested_user_selected_point is not None:
@@ -6179,6 +6238,7 @@ def _run_assessment(
         feature_coverage_percent=float(coverage_preflight.get("feature_coverage_percent") or 0.0),
         assessment_specificity_tier=str(coverage_preflight.get("assessment_specificity_tier") or "regional_estimate"),
         specificity_summary=dict(specificity_summary),
+        geometry_resolution=geometry_resolution,
         assessment_output_state=str(assessment_output_state or "insufficient_data"),
         assessment_mode=homeowner_assessment_mode,
         scoring_status=scoring_status,

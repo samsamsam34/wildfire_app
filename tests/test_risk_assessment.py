@@ -229,6 +229,7 @@ def _assert_core_contract(body: dict) -> None:
         "feature_coverage_percent",
         "assessment_specificity_tier",
         "specificity_summary",
+        "geometry_resolution",
         "limited_assessment_flag",
         "observed_factor_count",
         "missing_factor_count",
@@ -360,6 +361,31 @@ def _assert_core_contract(body: dict) -> None:
 
     assert "fallback_mode" in body["property_level_context"]
     assert body["property_level_context"]["fallback_mode"] in {"footprint", "point_based"}
+    geometry_resolution = body["geometry_resolution"]
+    assert isinstance(geometry_resolution, dict)
+    for key in [
+        "anchor_source",
+        "anchor_quality_score",
+        "parcel_match_status",
+        "footprint_match_status",
+        "ring_generation_mode",
+    ]:
+        assert key in geometry_resolution
+    assert isinstance(geometry_resolution["anchor_source"], str)
+    assert 0.0 <= float(geometry_resolution["anchor_quality_score"]) <= 1.0
+    assert geometry_resolution["parcel_match_status"] in {
+        "matched",
+        "not_found",
+        "provider_unavailable",
+    }
+    assert geometry_resolution["footprint_match_status"] in {
+        "matched",
+        "none",
+        "ambiguous",
+        "provider_unavailable",
+        "error",
+    }
+    assert geometry_resolution["ring_generation_mode"] in {"footprint_aware_rings", "point_annulus_fallback"}
     for layer in ["burn_probability", "hazard", "slope", "fuel", "canopy", "fire_history"]:
         assert layer in body["environmental_layer_status"]
     assert isinstance(body["input_source_metadata"], dict)
@@ -628,6 +654,113 @@ def test_assessment_passes_user_selected_point_override_to_context(monkeypatch, 
     assert plc.get("anchor_quality") in {"low", "medium", "high"}
     assert isinstance(plc.get("anchor_quality_score"), (int, float))
     assert body.get("final_structure_geometry_source") == "user_selected_point_unsnapped"
+
+
+def test_nearby_homes_with_distinct_footprints_surface_distinct_ring_metrics_and_geometry_resolution(
+    monkeypatch,
+    tmp_path,
+):
+    auth.API_KEYS = set()
+
+    def _geocode(address: str):
+        if "home a" in address.lower():
+            return (39.7392, -104.99032, "test-geocoder")
+        return (39.7392, -104.99002, "test-geocoder")
+
+    def _collect(lat, lon, **_kwargs):
+        dense = float(lon) < -104.99015
+        ring_0_5 = 82.0 if dense else 26.0
+        ring_5_30 = 74.0 if dense else 33.0
+        ring_metrics = {
+            "ring_0_5_ft": {"vegetation_density": ring_0_5},
+            "ring_5_30_ft": {"vegetation_density": ring_5_30},
+            "ring_30_100_ft": {"vegetation_density": 58.0 if dense else 41.0},
+        }
+        ctx = _ctx(59.0, 63.0, 50.0, ring_metrics=ring_metrics)
+        ctx.property_level_context.update(
+            {
+                "footprint_used": True,
+                "footprint_status": "used",
+                "structure_match_status": "matched",
+                "structure_match_method": "parcel_intersection",
+                "structure_match_confidence": 0.93,
+                "ring_generation_mode": "footprint_aware_rings",
+                "geometry_source": "trusted_building_footprint",
+                "geometry_confidence": 0.93,
+                "final_structure_geometry_source": "auto_detected",
+                "property_anchor_source": "authoritative_address_point",
+                "property_anchor_quality_score": 0.95,
+                "anchor_quality_score": 0.95,
+                "parcel_id": "parcel-a" if dense else "parcel-b",
+                "parcel_lookup_method": "contains_point",
+            }
+        )
+        return ctx
+
+    monkeypatch.setattr(app_main.geocoder, "geocode", _geocode)
+    monkeypatch.setattr(app_main.wildfire_data, "collect_context", _collect)
+    monkeypatch.setattr(app_main, "store", AssessmentStore(str(tmp_path / "test_assessments.db")))
+
+    a = _run(_payload("Nearby Home A", {"roof_type": "class a", "vent_type": "ember-resistant"}))
+    b = _run(_payload("Nearby Home B", {"roof_type": "class a", "vent_type": "ember-resistant"}))
+
+    assert (
+        a["property_level_context"]["ring_metrics"]["ring_0_5_ft"]["vegetation_density"]
+        != b["property_level_context"]["ring_metrics"]["ring_0_5_ft"]["vegetation_density"]
+    )
+    assert a["ring_generation_mode"] == "footprint_aware_rings"
+    assert b["ring_generation_mode"] == "footprint_aware_rings"
+    assert a["geometry_resolution"]["footprint_match_status"] == "matched"
+    assert b["geometry_resolution"]["footprint_match_status"] == "matched"
+    assert a["geometry_resolution"]["parcel_match_status"] == "matched"
+    assert b["geometry_resolution"]["parcel_match_status"] == "matched"
+    assert a["geometry_resolution"]["ring_generation_mode"] == "footprint_aware_rings"
+    assert b["geometry_resolution"]["ring_generation_mode"] == "footprint_aware_rings"
+
+
+def test_low_quality_anchor_geometry_resolution_is_explicitly_cautious(monkeypatch, tmp_path):
+    context = _ctx(
+        51.0,
+        52.0,
+        45.0,
+        ring_metrics={
+            "ring_0_5_ft": {"vegetation_density": 46.0},
+            "ring_5_30_ft": {"vegetation_density": 43.0},
+            "ring_30_100_ft": {"vegetation_density": 38.0},
+        },
+    )
+    context.property_level_context.update(
+        {
+            "footprint_used": False,
+            "footprint_status": "not_found",
+            "fallback_mode": "point_based",
+            "structure_match_status": "none",
+            "ring_generation_mode": "point_annulus_fallback",
+            "geometry_basis": "point",
+            "geometry_source": "raw_geocode_point",
+            "final_structure_geometry_source": "raw_geocode_point",
+            "structure_geometry_confidence": 0.2,
+            "property_anchor_source": "approximate_geocode",
+            "property_anchor_quality": "low",
+            "property_anchor_quality_score": 0.34,
+            "anchor_quality_score": 0.34,
+            "parcel_id": None,
+            "parcel_lookup_method": None,
+            "parcel_lookup_distance_m": None,
+        }
+    )
+    _setup(monkeypatch, tmp_path, context)
+
+    assessed = _run(_payload("Low Quality Anchor Ln", {"roof_type": "unknown"}))
+    resolution = assessed["geometry_resolution"]
+
+    assert resolution["anchor_source"] == "approximate_geocode"
+    assert resolution["anchor_quality_score"] == pytest.approx(0.34, abs=1e-6)
+    assert resolution["parcel_match_status"] == "not_found"
+    assert resolution["footprint_match_status"] == "none"
+    assert resolution["ring_generation_mode"] == "point_annulus_fallback"
+    assert assessed["ring_generation_mode"] == "point_annulus_fallback"
+    assert assessed["final_structure_geometry_source"] == "raw_geocode_point"
 
 
 def test_property_findings_from_ring_metrics_surface_in_assessment(monkeypatch, tmp_path):
