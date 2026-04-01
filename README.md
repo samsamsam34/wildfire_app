@@ -74,6 +74,7 @@ Primary homeowner-facing assessment fields now emphasize actionability:
 - `top_recommended_actions`
 - `simulator_explanations` (on `/risk/simulate`)
 - `confidence_summary`
+- `specificity_summary` (property-specific vs address-level vs regional estimate status)
 - `assumptions_and_unknowns`
 - `confidence_tier`
 

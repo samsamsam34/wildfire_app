@@ -37,6 +37,11 @@ The report JSON includes:
     - `what_it_reduces`
     - `expected_effect` (`small` / `moderate` / `significant`)
 - `what_to_do_first`
+- `specificity_summary`
+  - `specificity_tier` (`property_specific` | `address_level` | `regional_estimate` | `insufficient_data`)
+  - `headline`
+  - `what_this_means`
+  - `comparison_allowed`
 - `trust_summary` (user-facing confidence language + key uncertainty drivers)
   - for low-differentiation runs, includes `low_differentiation_explanation` with:
     - what was measured directly
@@ -70,6 +75,7 @@ Primary homeowner-facing score fields are:
 - `prioritized_mitigation_actions`
 - `confidence_and_limitations`
 - `confidence_summary`
+- `specificity_summary`
 - `trust_summary`
 - `improve_your_result`
 

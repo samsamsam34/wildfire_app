@@ -228,6 +228,7 @@ def _assert_core_contract(body: dict) -> None:
         "feature_coverage_summary",
         "feature_coverage_percent",
         "assessment_specificity_tier",
+        "specificity_summary",
         "limited_assessment_flag",
         "observed_factor_count",
         "missing_factor_count",
@@ -5236,6 +5237,83 @@ def test_preflight_coverage_tier_marks_high_vs_limited_specificity(monkeypatch, 
     assert low["assessment_specificity_tier"] in {"address_level", "regional_estimate"}
     assert low["score_specificity_warning"]
     assert low["confidence_tier"] in {"moderate", "low", "preliminary"}
+
+
+def test_specificity_summary_tiers_for_property_address_and_regional(monkeypatch, tmp_path):
+    property_ctx = _ctx(
+        env=58.0,
+        wildland=48.0,
+        historic=39.0,
+        ring_metrics={
+            "zone_0_5_ft": {"vegetation_density": 18.0},
+            "zone_5_30_ft": {"vegetation_density": 28.0},
+            "zone_30_100_ft": {"vegetation_density": 36.0},
+        },
+    )
+    property_ctx.access_exposure_index = 25.0
+    property_ctx.access_context = {"status": "ok", "source": "osm_road_network"}
+    _setup(monkeypatch, tmp_path, property_ctx)
+    property_assessed = _run(
+        _payload(
+            "901 Property Specific Rd",
+            {"roof_type": "class a", "vent_type": "ember-resistant", "defensible_space_ft": 30},
+            confirmed=["roof_type", "vent_type", "defensible_space_ft"],
+        )
+    )
+    property_specificity = property_assessed.get("specificity_summary") or {}
+    assert property_specificity.get("specificity_tier") == "property_specific"
+    assert property_specificity.get("comparison_allowed") is True
+    assert "property-specific" in str(property_specificity.get("headline", "")).lower()
+
+    address_ctx = _ctx(env=58.0, wildland=48.0, historic=39.0, ring_metrics={})
+    address_ctx.access_exposure_index = 20.0
+    address_ctx.access_context = {"status": "ok"}
+    address_ctx.property_level_context.update(
+        {
+            "parcel_geometry": {
+                "type": "Polygon",
+                "coordinates": [[[-104.9905, 39.7391], [-104.9901, 39.7391], [-104.9901, 39.7394], [-104.9905, 39.7394], [-104.9905, 39.7391]]],
+            },
+            "region_property_specific_readiness": "address_level_only",
+        }
+    )
+    _setup(monkeypatch, tmp_path, address_ctx)
+    address_assessed = _run(_payload("902 Address Level Rd", {}, confirmed=[]))
+    address_specificity = address_assessed.get("specificity_summary") or {}
+    assert address_specificity.get("specificity_tier") == "address_level"
+    assert isinstance(address_specificity.get("comparison_allowed"), bool)
+    assert "address-level" in str(address_specificity.get("headline", "")).lower()
+
+    regional_ctx = _ctx(env=58.0, wildland=48.0, historic=39.0, ring_metrics={})
+    regional_ctx.burn_probability_index = None
+    regional_ctx.hazard_severity_index = None
+    regional_ctx.moisture_index = None
+    regional_ctx.access_exposure_index = None
+    regional_ctx.access_context = {"status": "missing"}
+    regional_ctx.environmental_layer_status = {
+        "burn_probability": "missing",
+        "hazard": "missing",
+        "slope": "ok",
+        "fuel": "ok",
+        "canopy": "missing",
+        "fire_history": "missing",
+    }
+    regional_ctx.property_level_context.update(
+        {
+            "footprint_used": False,
+            "fallback_mode": "point_based",
+            "ring_metrics": {},
+            "region_property_specific_readiness": "limited_regional_ready",
+        }
+    )
+    _setup(monkeypatch, tmp_path, regional_ctx)
+    regional_assessed = _run(_payload("903 Regional Estimate Rd", {}, confirmed=[]))
+    regional_specificity = regional_assessed.get("specificity_summary") or {}
+    assert regional_specificity.get("specificity_tier") == "regional_estimate"
+    assert regional_specificity.get("comparison_allowed") is False
+    assert "nearby homes may appear similar" in str(
+        regional_specificity.get("what_this_means", "")
+    ).lower()
 
 
 def test_low_coverage_homeowner_summary_uses_limited_mode_and_grouped_limitations(monkeypatch, tmp_path):

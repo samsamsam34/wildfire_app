@@ -3700,6 +3700,79 @@ def _to_homeowner_confidence_phrase(confidence_tier: str) -> str:
     return "limited confidence"
 
 
+def _build_specificity_summary(
+    *,
+    assessment_specificity_tier: str,
+    assessment_mode: str,
+    limited_assessment_flag: bool,
+    confidence_summary: dict[str, Any],
+    trust_summary: dict[str, Any],
+) -> dict[str, Any]:
+    tier = str(assessment_specificity_tier or "regional_estimate").strip().lower()
+    mode = str(assessment_mode or "insufficient_data").strip().lower()
+
+    if mode == "insufficient_data":
+        specificity_tier = "insufficient_data"
+    elif tier in {"property_specific", "address_level", "regional_estimate"}:
+        specificity_tier = tier
+    else:
+        specificity_tier = "regional_estimate"
+
+    nearby_home_guardrail = bool(trust_summary.get("nearby_home_comparison_safeguard_triggered"))
+    comparison_allowed = bool(trust_summary.get("parcel_level_comparison_allowed"))
+    if specificity_tier == "property_specific" and not nearby_home_guardrail:
+        comparison_allowed = True
+    if specificity_tier in {"regional_estimate", "insufficient_data"}:
+        comparison_allowed = False
+    if nearby_home_guardrail:
+        comparison_allowed = False
+
+    confidence_level = str(trust_summary.get("confidence_level") or "").strip().lower()
+    if not confidence_level:
+        confidence_level = str(confidence_summary.get("assessment_type") or "").strip().lower()
+
+    if specificity_tier == "property_specific":
+        headline = "Property-specific estimate"
+        what_this_means = (
+            "This result uses home-specific geometry and nearby conditions. "
+            "It is generally suitable for comparing nearby homes when local conditions differ."
+        )
+    elif specificity_tier == "address_level":
+        headline = "Address-level estimate"
+        what_this_means = (
+            "This result uses address-level and nearby context, but some home-specific details were estimated."
+        )
+        if confidence_level in {"limited confidence", "low confidence"} or limited_assessment_flag:
+            what_this_means += " Nearby-home comparisons should be treated as directional, not precise."
+    elif specificity_tier == "regional_estimate":
+        headline = "Regional estimate"
+        what_this_means = (
+            "This result relies more on shared neighborhood and regional conditions than on home-specific measurements, "
+            "so nearby homes may appear similar."
+        )
+    else:
+        headline = "Insufficient data for property estimate"
+        what_this_means = (
+            "This location does not have enough reliable home-level and regional inputs yet. "
+            "Nearby homes may appear similar because the estimate relies on limited regional context."
+        )
+
+    safeguard_message = str(trust_summary.get("nearby_home_comparison_safeguard_message") or "").strip()
+    if (
+        specificity_tier in {"regional_estimate", "insufficient_data"}
+        and safeguard_message
+        and "nearby homes may appear similar" not in what_this_means.lower()
+    ):
+        what_this_means = f"{what_this_means} {safeguard_message}"
+
+    return {
+        "specificity_tier": specificity_tier,
+        "headline": headline,
+        "what_this_means": what_this_means.strip(),
+        "comparison_allowed": bool(comparison_allowed),
+    }
+
+
 def _friendly_missing_input_name(field_name: str) -> str:
     token = str(field_name or "").strip().lower()
     mapping = {
@@ -5511,13 +5584,37 @@ def _run_assessment(
         preflight=coverage_preflight,
         differentiation_snapshot=differentiation_snapshot,
     )
+    homeowner_assessment_mode = _to_homeowner_assessment_mode(assessment_output_state)
+    specificity_summary = _build_specificity_summary(
+        assessment_specificity_tier=str(coverage_preflight.get("assessment_specificity_tier") or "regional_estimate"),
+        assessment_mode=homeowner_assessment_mode,
+        limited_assessment_flag=bool(coverage_preflight.get("limited_assessment_flag")),
+        confidence_summary=homeowner_confidence_summary,
+        trust_summary=trust_summary,
+    )
+    force_low_specificity_safeguard = specificity_summary.get("specificity_tier") in {
+        "regional_estimate",
+        "insufficient_data",
+    }
     nearby_home_comparison_safeguard_triggered = bool(
         trust_summary.get("nearby_home_comparison_safeguard_triggered")
-    )
+    ) or bool(force_low_specificity_safeguard)
     nearby_home_comparison_safeguard_message = str(
         trust_summary.get("nearby_home_comparison_safeguard_message")
         or "This estimate is not precise enough to compare adjacent homes."
     ).strip()
+    if nearby_home_comparison_safeguard_triggered:
+        trust_summary["nearby_home_comparison_safeguard_triggered"] = True
+        trust_summary["nearby_home_comparison_safeguard_message"] = nearby_home_comparison_safeguard_message
+        trust_summary["parcel_level_comparison_allowed"] = False
+        trust_summary["differentiation_summary"] = nearby_home_comparison_safeguard_message
+    specificity_summary = _build_specificity_summary(
+        assessment_specificity_tier=str(coverage_preflight.get("assessment_specificity_tier") or "regional_estimate"),
+        assessment_mode=homeowner_assessment_mode,
+        limited_assessment_flag=bool(coverage_preflight.get("limited_assessment_flag")),
+        confidence_summary=homeowner_confidence_summary,
+        trust_summary=trust_summary,
+    )
     if nearby_home_comparison_safeguard_triggered:
         # Suppress parcel-level differentiation claims when the evidence is
         # mostly regional and neighborhood differentiation confidence is low.
@@ -5569,7 +5666,6 @@ def _run_assessment(
         )[:4]
         defensible_space_analysis = dict(defensible_space_analysis or {})
         defensible_space_analysis["summary"] = nearby_home_comparison_safeguard_message
-    homeowner_assessment_mode = _to_homeowner_assessment_mode(assessment_output_state)
     readiness_provisional = bool(
         float(risk.geometry_quality_score) < 0.62
         or float(risk.fallback_weight_fraction) >= 0.60
@@ -5617,6 +5713,7 @@ def _run_assessment(
         "recommended_data_improvements": recommended_data_improvements,
         "confidence_improvement_actions": confidence_improvement_actions,
         "differentiation_diagnostics": differentiation_snapshot,
+        "specificity_summary": dict(specificity_summary),
         "nearby_home_comparison_safeguard_triggered": nearby_home_comparison_safeguard_triggered,
         "nearby_home_comparison_safeguard_message": (
             nearby_home_comparison_safeguard_message if nearby_home_comparison_safeguard_triggered else None
@@ -5657,6 +5754,7 @@ def _run_assessment(
             "structure_assumption_mode": structure_assumption_mode,
             "structure_score_confidence": round(structure_score_confidence, 1),
         },
+        "specificity_summary": dict(specificity_summary),
         "differentiation": differentiation_snapshot,
         "nearby_home_comparison_safeguard_triggered": nearby_home_comparison_safeguard_triggered,
         "nearby_home_comparison_safeguard_message": (
@@ -6080,6 +6178,7 @@ def _run_assessment(
         feature_coverage_summary=dict(coverage_preflight.get("feature_coverage_summary") or {}),
         feature_coverage_percent=float(coverage_preflight.get("feature_coverage_percent") or 0.0),
         assessment_specificity_tier=str(coverage_preflight.get("assessment_specificity_tier") or "regional_estimate"),
+        specificity_summary=dict(specificity_summary),
         assessment_output_state=str(assessment_output_state or "insufficient_data"),
         assessment_mode=homeowner_assessment_mode,
         scoring_status=scoring_status,

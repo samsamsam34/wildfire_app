@@ -140,6 +140,67 @@ def _headline_risk_summary(result: AssessmentResult, risk_score: float | None, *
     return f"Your home has {risk_label} wildfire risk."
 
 
+def _specificity_summary(result: AssessmentResult, homeowner_trust_summary: dict[str, Any]) -> dict[str, Any]:
+    raw = _dump_value(getattr(result, "specificity_summary", None))
+    if isinstance(raw, dict):
+        tier = str(raw.get("specificity_tier") or "").strip().lower()
+        headline = str(raw.get("headline") or "").strip()
+        what_this_means = str(raw.get("what_this_means") or "").strip()
+        comparison_allowed = bool(raw.get("comparison_allowed"))
+    else:
+        tier = ""
+        headline = ""
+        what_this_means = ""
+        comparison_allowed = False
+
+    mode = str(getattr(result, "assessment_mode", "") or "").strip().lower()
+    if mode == "insufficient_data":
+        tier = "insufficient_data"
+    elif tier not in {"property_specific", "address_level", "regional_estimate"}:
+        tier = str(getattr(result, "assessment_specificity_tier", "regional_estimate") or "regional_estimate").strip().lower()
+        if tier not in {"property_specific", "address_level", "regional_estimate"}:
+            tier = "regional_estimate"
+
+    if not headline:
+        if tier == "property_specific":
+            headline = "Property-specific estimate"
+        elif tier == "address_level":
+            headline = "Address-level estimate"
+        elif tier == "regional_estimate":
+            headline = "Regional estimate"
+        else:
+            headline = "Insufficient data for property estimate"
+
+    if not what_this_means:
+        if tier == "property_specific":
+            what_this_means = (
+                "This result uses home-specific geometry and nearby conditions and can usually distinguish nearby homes."
+            )
+        elif tier == "address_level":
+            what_this_means = (
+                "This result uses address-level and nearby context, but some home-specific details were estimated."
+            )
+        elif tier == "regional_estimate":
+            what_this_means = (
+                "This result relies more on shared neighborhood and regional conditions, so nearby homes may appear similar."
+            )
+        else:
+            what_this_means = (
+                "There was not enough reliable data for a property-level estimate. Nearby homes may appear similar because this run uses limited regional context."
+            )
+
+    safeguard_triggered = bool(homeowner_trust_summary.get("nearby_home_comparison_safeguard_triggered"))
+    if tier in {"regional_estimate", "insufficient_data"} or safeguard_triggered:
+        comparison_allowed = False
+
+    return {
+        "specificity_tier": tier,
+        "headline": headline,
+        "what_this_means": what_this_means,
+        "comparison_allowed": bool(comparison_allowed),
+    }
+
+
 def _risk_driver_from_text(driver_text: str, *, tone_level: str) -> str:
     text = str(driver_text or "").strip().lower()
     if not text:
@@ -739,6 +800,7 @@ def build_homeowner_report(
             "it is not a guarantee of insurability or wildfire safety."
         ),
     }
+    specificity_summary = _specificity_summary(result, homeowner_trust_summary)
 
     professional_debug_metadata: dict[str, Any] | None = None
     if include_professional_debug_metadata:
@@ -863,6 +925,7 @@ def build_homeowner_report(
         },
         confidence_summary=result.confidence_summary,
         confidence_and_limitations=confidence_and_limitations,
+        specificity_summary=specificity_summary,
         metadata={
             "model_version": result.model_version,
             "product_version": result.product_version,
@@ -952,6 +1015,7 @@ def export_homeowner_report(
         "most_impactful_actions": most_impactful,
         "what_to_do_first": what_to_do_first,
         "confidence_summary": confidence_summary,
+        "specificity_summary": (_dump_value(report.specificity_summary) if report.specificity_summary else {}),
         "trust_summary": trust_summary,
         "improve_your_result": improve_your_result,
         "limitations_notice": limitations_notice,
@@ -997,6 +1061,8 @@ def _build_report_lines(report: HomeownerReport) -> list[str]:
     readiness = report.home_hardening_readiness_summary or {}
     insurance_reference = report.insurance_readiness_summary or {}
     confidence = report.confidence_and_limitations or {}
+    specificity_summary = _dump_value(report.specificity_summary)
+    specificity_summary = specificity_summary if isinstance(specificity_summary, dict) else {}
     metadata = report.metadata or {}
 
     lines.extend(_wrap_text_line(str(header.get("title") or "WildfireRisk Advisor Home Hardening Report")))
@@ -1021,6 +1087,13 @@ def _build_report_lines(report: HomeownerReport) -> list[str]:
     lines.extend(_wrap_text_line(
         f"Confidence: {score_summary.get('confidence_score')} ({score_summary.get('confidence_tier', 'unknown')})"
     ))
+    if specificity_summary:
+        lines.extend(
+            _wrap_text_line(
+                f"Specificity: {specificity_summary.get('headline', 'Regional estimate')} "
+                f"(tier={specificity_summary.get('specificity_tier', 'regional_estimate')})"
+            )
+        )
     lines.append("")
 
     if report.headline_risk_summary:
@@ -1123,6 +1196,19 @@ def _build_report_lines(report: HomeownerReport) -> list[str]:
 
     lines.extend(_wrap_text_line("Confidence and Limitations"))
     lines.extend(_wrap_text_line(str(confidence.get("confidence_statement") or "Confidence summary unavailable."), prefix="- "))
+    if specificity_summary:
+        lines.extend(
+            _wrap_text_line(
+                f"Specificity: {specificity_summary.get('headline') or 'Regional estimate'}",
+                prefix="- ",
+            )
+        )
+        lines.extend(
+            _wrap_text_line(
+                str(specificity_summary.get("what_this_means") or ""),
+                prefix="- ",
+            )
+        )
     for limitation in list(confidence.get("limitations") or [])[:6]:
         lines.extend(_wrap_text_line(str(limitation), prefix="- "))
     lines.extend(

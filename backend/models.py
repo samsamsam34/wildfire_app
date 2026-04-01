@@ -26,6 +26,12 @@ WorkflowState = Literal[
 ]
 ConfidenceTier = Literal["high", "moderate", "low", "preliminary"]
 AssessmentSpecificityTier = Literal["property_specific", "address_level", "regional_estimate"]
+SpecificitySummaryTier = Literal[
+    "property_specific",
+    "address_level",
+    "regional_estimate",
+    "insufficient_data",
+]
 AssessmentOutputState = Literal[
     "property_specific_assessment",
     "address_level_estimate",
@@ -886,6 +892,13 @@ class CalibratedPublicOutcomeMetadata(BaseModel):
     notes: List[str] = Field(default_factory=list)
 
 
+class SpecificitySummary(BaseModel):
+    specificity_tier: SpecificitySummaryTier = "regional_estimate"
+    headline: str = ""
+    what_this_means: str = ""
+    comparison_allowed: bool = False
+
+
 class AssessmentResult(BaseModel):
     assessment_id: str
     address: str
@@ -978,6 +991,7 @@ class AssessmentResult(BaseModel):
     feature_coverage_summary: Dict[str, bool] = Field(default_factory=dict)
     feature_coverage_percent: float = 0.0
     assessment_specificity_tier: AssessmentSpecificityTier = "regional_estimate"
+    specificity_summary: SpecificitySummary = Field(default_factory=SpecificitySummary)
     assessment_output_state: AssessmentOutputState = "insufficient_data"
     assessment_mode: AssessmentMode = "insufficient_data"
     scoring_status: str = "insufficient_data_to_score"
@@ -1223,6 +1237,7 @@ class HomeownerReport(BaseModel):
     confidence_and_limitations: Dict[str, object] = Field(default_factory=dict)
     metadata: Dict[str, object] = Field(default_factory=dict)
     professional_debug_metadata: Optional[Dict[str, object]] = None
+    specificity_summary: SpecificitySummary = Field(default_factory=SpecificitySummary)
 
 
 class AssessmentMapLayer(BaseModel):

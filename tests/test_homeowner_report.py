@@ -129,6 +129,7 @@ def test_homeowner_report_and_pdf_generate_for_complete_assessment(monkeypatch, 
         "confidence_summary",
         "confidence_and_limitations",
         "metadata",
+        "specificity_summary",
     ):
         assert key in report
 
@@ -151,6 +152,8 @@ def test_homeowner_report_and_pdf_generate_for_complete_assessment(monkeypatch, 
     assert isinstance(report["prioritized_mitigation_actions"], list)
     assert isinstance(report["top_risk_drivers_detailed"], list)
     assert isinstance(report["confidence_summary"], dict)
+    assert report["specificity_summary"]["specificity_tier"] == assessed["specificity_summary"]["specificity_tier"]
+    assert isinstance(report["specificity_summary"]["comparison_allowed"], bool)
     assert len(report["top_recommended_actions"]) <= 3
     for action in report["top_recommended_actions"]:
         assert isinstance(action.get("why_this_matters"), str)
@@ -211,6 +214,10 @@ def test_homeowner_report_surfaces_mostly_regional_differentiation_mode(monkeypa
     report_res = client.get(f"/report/{assessed['assessment_id']}/homeowner")
     assert report_res.status_code == 200
     report = report_res.json()
+    specificity = report.get("specificity_summary") or {}
+    assert specificity.get("specificity_tier") == "regional_estimate"
+    assert specificity.get("comparison_allowed") is False
+    assert "nearby homes may appear similar" in str(specificity.get("what_this_means") or "").lower()
     trust_summary = (report.get("confidence_and_limitations") or {}).get("trust_summary") or {}
     assert trust_summary.get("differentiation_mode") == "mostly_regional"
     assert float(trust_summary.get("neighborhood_differentiation_confidence") or 0.0) <= 40.0
@@ -224,7 +231,36 @@ def test_homeowner_report_surfaces_mostly_regional_differentiation_mode(monkeypa
     assert pdf_res.status_code == 200
     assert "application/pdf" in pdf_res.headers.get("content-type", "")
     assert pdf_res.content.startswith(b"%PDF-1.4")
+    assert b"Specificity: Regional estimate" in pdf_res.content
     assert "attachment; filename=\"wildfire_homeowner_report_" in pdf_res.headers.get("content-disposition", "")
+
+
+def test_homeowner_report_surfaces_address_level_specificity(monkeypatch, tmp_path: Path):
+    context = _ctx(env=49.0, wildland=44.0, historic=35.0, ring_metrics={})
+    context.access_exposure_index = 18.0
+    context.access_context = {"status": "ok"}
+    context.property_level_context.update(
+        {
+            "parcel_geometry": {
+                "type": "Polygon",
+                "coordinates": [[[-113.9943, 46.8719], [-113.9939, 46.8719], [-113.9939, 46.8722], [-113.9943, 46.8722], [-113.9943, 46.8719]]],
+            },
+            "region_property_specific_readiness": "address_level_only",
+            "footprint_used": False,
+            "fallback_mode": "point_based",
+            "ring_metrics": {},
+        }
+    )
+    _setup(monkeypatch, tmp_path, context)
+    assessed = _run_assessment("422 Address Level Example Ave, Missoula, MT 59802")
+
+    report_res = client.get(f"/report/{assessed['assessment_id']}/homeowner")
+    assert report_res.status_code == 200
+    report = report_res.json()
+    specificity = report.get("specificity_summary") or {}
+    assert specificity.get("specificity_tier") == "address_level"
+    assert "address-level" in str(specificity.get("headline") or "").lower()
+    assert isinstance(specificity.get("comparison_allowed"), bool)
 
 
 def test_homeowner_report_surfaces_fallback_limitations_and_optional_debug_block(monkeypatch, tmp_path: Path):
