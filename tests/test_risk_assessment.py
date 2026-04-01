@@ -4338,6 +4338,81 @@ def test_confidence_reduces_when_ring_metrics_unavailable(monkeypatch, tmp_path)
     assert assessed_without["evidence_quality_summary"]["use_restriction"] in {"review_required", "screening_only", "consumer_estimate"}
 
 
+def test_nearby_properties_collapse_toward_similar_scores_when_geometry_and_layers_are_missing(monkeypatch, tmp_path):
+    auth.API_KEYS = set()
+
+    def _geocode(address: str):
+        if "100 " in address:
+            return 46.87210, -113.99400, "test-geocoder"
+        return 46.87255, -113.99360, "test-geocoder"
+
+    def _context_for(lat: float) -> WildfireContext:
+        # Mild environmental differences between nearby homes are preserved,
+        # but missing geometry + partial layers should collapse differentiation.
+        env = 58.0 if lat < 46.87230 else 62.0
+        slope = 54.0 if lat < 46.87230 else 60.0
+        ctx = _ctx(env=env, wildland=48.0, historic=42.0, ring_metrics={})
+        ctx.hazard_severity_index = None
+        ctx.wildfire_hazard = None
+        ctx.moisture_index = None
+        ctx.environmental_layer_status = {
+            "burn_probability": "ok",
+            "hazard": "missing",
+            "slope": "ok",
+            "fuel": "ok",
+            "canopy": "ok",
+            "fire_history": "ok",
+        }
+        ctx.property_level_context.update(
+            {
+                "footprint_used": False,
+                "footprint_status": "not_found",
+                "fallback_mode": "point_based",
+                "ring_metrics": {},
+                "parcel_id": None,
+                "parcel_geometry": None,
+            }
+        )
+        return ctx
+
+    monkeypatch.setattr(app_main.geocoder, "geocode", _geocode)
+    monkeypatch.setattr(app_main.wildfire_data, "collect_context", lambda lat, lon: _context_for(float(lat)))
+    monkeypatch.setattr(app_main, "store", AssessmentStore(str(tmp_path / "nearby_similarity.db")))
+
+    a = _run(_payload("100 Similarity Lane, Missoula, MT 59802", {}, confirmed=[]))
+    b = _run(_payload("101 Similarity Lane, Missoula, MT 59802", {}, confirmed=[]))
+
+    assert a["property_level_context"]["fallback_mode"] == "point_based"
+    assert b["property_level_context"]["fallback_mode"] == "point_based"
+    assert a["assessment_specificity_tier"] == "regional_estimate"
+    assert b["assessment_specificity_tier"] == "regional_estimate"
+    assert a["home_ignition_vulnerability_score"] is None
+    assert b["home_ignition_vulnerability_score"] is None
+    assert float(a["fallback_weight_fraction"] or 0.0) >= 0.95
+    assert float(b["fallback_weight_fraction"] or 0.0) >= 0.95
+
+    wildfire_delta = abs(float(a["wildfire_risk_score"] or 0.0) - float(b["wildfire_risk_score"] or 0.0))
+    assert wildfire_delta <= 3.0
+
+    canonical = [
+        "vegetation_intensity_risk",
+        "fuel_proximity_risk",
+        "slope_topography_risk",
+        "ember_exposure_risk",
+        "flame_contact_risk",
+        "historic_fire_risk",
+        "structure_vulnerability_risk",
+        "defensible_space_risk",
+    ]
+    def _effective_weight(payload: dict, key: str) -> float:
+        return float(((payload.get("weighted_contributions") or {}).get(key) or {}).get("effective_weight") or 0.0)
+
+    total_effective_a = sum(_effective_weight(a, key) for key in canonical)
+    shared_effective_a = _effective_weight(a, "slope_topography_risk") + _effective_weight(a, "historic_fire_risk")
+    assert total_effective_a > 0.0
+    assert (shared_effective_a / total_effective_a) >= 0.90
+
+
 def test_observed_property_data_quality_beats_fallback_only(monkeypatch, tmp_path):
     observed_ctx = _ctx(
         env=46.0,

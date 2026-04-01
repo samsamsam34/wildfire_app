@@ -167,6 +167,54 @@ def test_homeowner_report_and_pdf_generate_for_complete_assessment(monkeypatch, 
     assert "summary" in report["home_hardening_readiness_summary"]
     assert isinstance(report["defensible_space_summary"]["zone_findings"], list)
     assert report.get("professional_debug_metadata") is None
+    trust_summary = (report.get("confidence_and_limitations") or {}).get("trust_summary") or {}
+    assert "differentiation_mode" in trust_summary
+    assert "neighborhood_differentiation_confidence" in trust_summary
+    assert "property_specific_feature_count" in trust_summary
+    assert "proxy_feature_count" in trust_summary
+    assert "defaulted_feature_count" in trust_summary
+    assert "regional_feature_count" in trust_summary
+
+
+def test_homeowner_report_surfaces_mostly_regional_differentiation_mode(monkeypatch, tmp_path: Path):
+    context = _ctx(
+        env=52.0,
+        wildland=49.0,
+        historic=41.0,
+        ring_metrics={},
+        environmental_layer_status={
+            "burn_probability": "missing",
+            "hazard": "missing",
+            "slope": "ok",
+            "fuel": "ok",
+            "canopy": "ok",
+            "fire_history": "ok",
+        },
+    )
+    context.burn_probability_index = None
+    context.burn_probability = None
+    context.hazard_severity_index = None
+    context.wildfire_hazard = None
+    context.property_level_context.update(
+        {
+            "footprint_used": False,
+            "footprint_status": "not_found",
+            "fallback_mode": "point_based",
+            "parcel_geometry": None,
+            "near_structure_vegetation_0_5_pct": None,
+            "canopy_adjacency_proxy_pct": None,
+            "vegetation_continuity_proxy_pct": None,
+        }
+    )
+    _setup(monkeypatch, tmp_path, context)
+    assessed = _run_assessment("299 Regional Estimate Rd, Missoula, MT 59802")
+    report_res = client.get(f"/report/{assessed['assessment_id']}/homeowner")
+    assert report_res.status_code == 200
+    report = report_res.json()
+    trust_summary = (report.get("confidence_and_limitations") or {}).get("trust_summary") or {}
+    assert trust_summary.get("differentiation_mode") == "mostly_regional"
+    assert float(trust_summary.get("neighborhood_differentiation_confidence") or 0.0) <= 40.0
+    assert isinstance(trust_summary.get("differentiation_summary"), str)
 
     pdf_res = client.get(f"/report/{assessed['assessment_id']}/homeowner/pdf")
     assert pdf_res.status_code == 200

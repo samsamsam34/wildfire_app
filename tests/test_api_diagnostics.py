@@ -14,6 +14,11 @@ client = TestClient(app_main.app)
 
 
 def _context() -> WildfireContext:
+    ring_metrics = {
+        "zone_0_5_ft": {"vegetation_density": 36.0},
+        "zone_5_30_ft": {"vegetation_density": 44.0},
+        "zone_30_100_ft": {"vegetation_density": 40.0},
+    }
     return WildfireContext(
         environmental_index=55.0,
         slope_index=52.0,
@@ -42,10 +47,20 @@ def _context() -> WildfireContext:
         },
         data_sources=["test-context"],
         assumptions=[],
+        structure_ring_metrics=ring_metrics,
         property_level_context={
             "footprint_used": True,
             "footprint_status": "used",
             "fallback_mode": "footprint",
+            "ring_metrics": ring_metrics,
+            "parcel_geometry": {
+                "type": "Polygon",
+                "coordinates": [[[-104.99045, 39.7390], [-104.99010, 39.7390], [-104.99010, 39.7393], [-104.99045, 39.7393], [-104.99045, 39.7390]]],
+            },
+            "near_structure_vegetation_0_5_pct": 38.0,
+            "canopy_adjacency_proxy_pct": 41.0,
+            "vegetation_continuity_proxy_pct": 35.0,
+            "nearest_high_fuel_patch_distance_ft": 26.0,
             "region_id": "test_region",
         },
     )
@@ -106,6 +121,12 @@ def test_diagnostics_included_when_flag_enabled(monkeypatch, tmp_path: Path) -> 
     assert "monotonicity" in diagnostics
     assert "benchmark_alignment" in diagnostics
     assert "distribution_context" in diagnostics
+    assert "differentiation_mode" in diagnostics
+    assert "property_specific_feature_count" in diagnostics
+    assert "proxy_feature_count" in diagnostics
+    assert "defaulted_feature_count" in diagnostics
+    assert "regional_feature_count" in diagnostics
+    assert "neighborhood_differentiation_confidence" in diagnostics
     assert "vegetation_signal" in diagnostics
     assert "inferred_fields" in diagnostics["confidence"]
     assert "fallback_weight_fraction" in diagnostics["confidence"]
@@ -164,3 +185,88 @@ def test_report_endpoint_supports_opt_in_diagnostics(monkeypatch, tmp_path: Path
     assert "vegetation_signal" in body["diagnostics"]
     assert "confidence_reduction_reasons" in body["diagnostics"]["confidence"]
     assert "assumption_sensitive" in body["diagnostics"]["stability"]
+
+
+def test_differentiation_mode_property_specific_with_full_geometry(monkeypatch, tmp_path: Path) -> None:
+    _setup(monkeypatch, tmp_path)
+    clear_trust_reference_cache()
+    response = client.post("/risk/assess?include_diagnostics=true", json=_payload())
+    assert response.status_code == 200
+    diagnostics = response.json()["diagnostics"]
+    assert diagnostics["differentiation_mode"] == "property_specific"
+    assert float(diagnostics["neighborhood_differentiation_confidence"] or 0.0) >= 70.0
+    assert int(diagnostics["property_specific_feature_count"] or 0) >= 4
+
+
+def test_differentiation_mode_mixed_when_building_footprint_missing(monkeypatch, tmp_path: Path) -> None:
+    _setup(monkeypatch, tmp_path)
+    clear_trust_reference_cache()
+    base_context = _context()
+    base_context.structure_ring_metrics = {}
+    base_context.property_level_context.update(
+        {
+            "footprint_used": False,
+            "footprint_status": "not_found",
+            "fallback_mode": "point_based",
+            "ring_metrics": {},
+        }
+    )
+    monkeypatch.setattr(
+        app_main.wildfire_data,
+        "collect_context",
+        lambda _lat, _lon, **_kwargs: base_context,
+    )
+    response = client.post("/risk/assess?include_diagnostics=true", json=_payload())
+    assert response.status_code == 200
+    diagnostics = response.json()["diagnostics"]
+    assert diagnostics["differentiation_mode"] in {"mixed", "mostly_regional"}
+    assert float(diagnostics["neighborhood_differentiation_confidence"] or 0.0) < 75.0
+
+
+def test_differentiation_mode_mostly_regional_with_sparse_property_signals(monkeypatch, tmp_path: Path) -> None:
+    _setup(monkeypatch, tmp_path)
+    clear_trust_reference_cache()
+    sparse = _context()
+    sparse.hazard_severity_index = None
+    sparse.wildfire_hazard = None
+    sparse.burn_probability_index = None
+    sparse.burn_probability = None
+    sparse.structure_ring_metrics = {}
+    sparse.environmental_layer_status = {
+        "burn_probability": "missing",
+        "hazard": "missing",
+        "slope": "ok",
+        "fuel": "ok",
+        "canopy": "ok",
+        "fire_history": "ok",
+    }
+    sparse.property_level_context.update(
+        {
+            "footprint_used": False,
+            "footprint_status": "not_found",
+            "fallback_mode": "point_based",
+            "ring_metrics": {},
+            "parcel_geometry": None,
+            "near_structure_vegetation_0_5_pct": None,
+            "canopy_adjacency_proxy_pct": None,
+            "vegetation_continuity_proxy_pct": None,
+            "nearest_high_fuel_patch_distance_ft": None,
+        }
+    )
+    monkeypatch.setattr(
+        app_main.wildfire_data,
+        "collect_context",
+        lambda _lat, _lon, **_kwargs: sparse,
+    )
+    sparse_payload = {
+        "address": "123 Test Diagnostics Way, Test, CO",
+        "attributes": {},
+        "confirmed_fields": [],
+        "audience": "homeowner",
+        "tags": ["diagnostics-test"],
+    }
+    response = client.post("/risk/assess?include_diagnostics=true", json=sparse_payload)
+    assert response.status_code == 200
+    diagnostics = response.json()["diagnostics"]
+    assert diagnostics["differentiation_mode"] == "mostly_regional"
+    assert float(diagnostics["neighborhood_differentiation_confidence"] or 0.0) <= 40.0

@@ -24,6 +24,7 @@ from backend.benchmarking import (
     build_benchmark_hints_for_assessment,
 )
 from backend.calibration import resolve_public_calibration
+from backend.differentiation import build_differentiation_snapshot
 from backend.defensible_space import (
     build_defensible_space_analysis,
     build_prioritized_vegetation_actions,
@@ -3715,6 +3716,7 @@ def _build_homeowner_trust_summary(
     fallback_decisions: list[dict[str, object]],
     missing_inputs: list[str],
     preflight: dict[str, Any],
+    differentiation_snapshot: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     confidence_level = _to_homeowner_confidence_phrase(confidence_tier)
 
@@ -3792,10 +3794,29 @@ def _build_homeowner_trust_summary(
         uncertainty_drivers.append(coverage_gaps[0])
     uncertainty_drivers = uncertainty_drivers[:4]
 
+    differentiation_snapshot = dict(differentiation_snapshot or {})
+    differentiation_mode = str(
+        differentiation_snapshot.get("differentiation_mode") or "mostly_regional"
+    )
+    differentiation_confidence = float(
+        differentiation_snapshot.get("neighborhood_differentiation_confidence") or 0.0
+    )
+    differentiation_notes = [
+        str(item).strip()
+        for item in list(differentiation_snapshot.get("notes") or [])
+        if str(item).strip()
+    ][:4]
     if uncertainty_drivers:
         summary = f"This assessment is presented with {confidence_level}. Main uncertainty drivers are listed below."
     else:
         summary = f"This assessment is presented with {confidence_level} using mostly observed property and regional data."
+
+    if differentiation_mode == "mostly_regional":
+        differentiation_summary = "Nearby homes may receive similar results because this run relies mostly on regional context."
+    elif differentiation_mode == "mixed":
+        differentiation_summary = "This run combines property-specific and regional signals; nearby homes may still partially converge."
+    else:
+        differentiation_summary = "This run is primarily property-specific and should differentiate nearby homes when local conditions differ."
 
     return {
         "confidence_level": confidence_level,
@@ -3804,6 +3825,20 @@ def _build_homeowner_trust_summary(
         "fallback_drivers": fallback_drivers,
         "missing_inputs": missing_field_labels,
         "coverage_gaps": coverage_gaps[:4],
+        "differentiation_mode": differentiation_mode,
+        "neighborhood_differentiation_confidence": round(differentiation_confidence, 1),
+        "property_specific_feature_count": int(
+            differentiation_snapshot.get("property_specific_feature_count") or 0
+        ),
+        "proxy_feature_count": int(differentiation_snapshot.get("proxy_feature_count") or 0),
+        "defaulted_feature_count": int(
+            differentiation_snapshot.get("defaulted_feature_count") or 0
+        ),
+        "regional_feature_count": int(
+            differentiation_snapshot.get("regional_feature_count") or 0
+        ),
+        "differentiation_summary": differentiation_summary,
+        "differentiation_notes": differentiation_notes,
     }
 
 
@@ -5289,11 +5324,23 @@ def _run_assessment(
         geometry_basis=str(coverage_preflight.get("geometry_basis") or "geocode_point"),
         improvement_actions=confidence_improvement_actions,
     )
+    differentiation_snapshot = build_differentiation_snapshot(
+        feature_coverage_summary=dict(coverage_preflight.get("feature_coverage_summary") or {}),
+        preflight=coverage_preflight,
+        property_level_context=property_level_context,
+        environmental_layer_status=dict(context.environmental_layer_status or {}),
+        fallback_weight_fraction=float(risk.fallback_weight_fraction),
+        missing_inputs=list(assumptions_block.missing_inputs or []),
+        inferred_inputs=list(assumptions_block.inferred_inputs or []),
+        input_source_metadata=input_source_metadata,
+        fallback_decisions=fallback_decisions,
+    )
     trust_summary = _build_homeowner_trust_summary(
         confidence_tier=str(confidence_block.confidence_tier),
         fallback_decisions=fallback_decisions,
         missing_inputs=list(assumptions_block.missing_inputs or []),
         preflight=coverage_preflight,
+        differentiation_snapshot=differentiation_snapshot,
     )
     homeowner_assessment_mode = _to_homeowner_assessment_mode(assessment_output_state)
     readiness_provisional = bool(
@@ -5334,6 +5381,7 @@ def _run_assessment(
         "minimum_missing_requirements": minimum_missing_requirements,
         "recommended_data_improvements": recommended_data_improvements,
         "confidence_improvement_actions": confidence_improvement_actions,
+        "differentiation_diagnostics": differentiation_snapshot,
     }
     homeowner_summary = {
         "assessment_mode": homeowner_assessment_mode,
@@ -5367,6 +5415,7 @@ def _run_assessment(
                 1,
             ),
         },
+        "differentiation": differentiation_snapshot,
         "home_hardening_readiness_precision": "provisional" if readiness_provisional else "stable",
         "confidence_summary": homeowner_confidence_summary,
         "trust_summary": trust_summary,

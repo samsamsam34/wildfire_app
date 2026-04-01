@@ -6,6 +6,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+from backend.differentiation import build_differentiation_snapshot
 from backend.models import (
     AssessmentResult,
     TrustDiagnostics,
@@ -476,6 +477,27 @@ def build_trust_diagnostics(
         segment=segment,
         notes=distribution_notes,
     )
+    preflight = (
+        (result.developer_diagnostics or {}).get("preflight")
+        if isinstance(result.developer_diagnostics, dict)
+        else {}
+    )
+    preflight = preflight if isinstance(preflight, dict) else {}
+    differentiation = build_differentiation_snapshot(
+        feature_coverage_summary=dict(result.feature_coverage_summary or {}),
+        preflight=preflight,
+        property_level_context=(
+            dict(result.property_level_context)
+            if isinstance(result.property_level_context, dict)
+            else {}
+        ),
+        environmental_layer_status=dict(result.environmental_layer_status or {}),
+        fallback_weight_fraction=float(result.fallback_weight_fraction or 0.0),
+        missing_inputs=list(result.missing_inputs or []),
+        inferred_inputs=list(result.assessment_diagnostics.inferred_inputs or []),
+        input_source_metadata=dict(result.input_source_metadata or {}),
+        fallback_decisions=list(result.assessment_diagnostics.fallback_decisions or []),
+    )
     vegetation_signal = _build_vegetation_signal(result)
 
     explanations: list[str] = []
@@ -502,6 +524,8 @@ def build_trust_diagnostics(
             + ", ".join(confidence.confidence_reduction_reasons[:3])
             + "."
         )
+    if str(differentiation.get("differentiation_mode") or "") == "mostly_regional":
+        explanations.append("Property-level differentiation is limited; this estimate is mostly regional.")
 
     return TrustDiagnostics(
         generated_at=result.generated_at,
@@ -512,6 +536,15 @@ def build_trust_diagnostics(
         monotonicity=monotonicity,
         benchmark_alignment=benchmark_alignment,
         distribution_context=distribution_context,
+        differentiation_mode=str(differentiation.get("differentiation_mode") or "mostly_regional"),
+        property_specific_feature_count=int(differentiation.get("property_specific_feature_count") or 0),
+        proxy_feature_count=int(differentiation.get("proxy_feature_count") or 0),
+        defaulted_feature_count=int(differentiation.get("defaulted_feature_count") or 0),
+        regional_feature_count=int(differentiation.get("regional_feature_count") or 0),
+        neighborhood_differentiation_confidence=float(
+            differentiation.get("neighborhood_differentiation_confidence") or 0.0
+        ),
+        differentiation_notes=[str(row) for row in list(differentiation.get("notes") or []) if str(row).strip()],
         vegetation_signal=vegetation_signal,
         explanations=explanations,
     )
