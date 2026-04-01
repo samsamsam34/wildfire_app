@@ -28,8 +28,8 @@ The structured export intentionally focuses on homeowner-facing sections and omi
 The report JSON includes:
 
 - `headline_risk_summary`
-- `top_risk_drivers` (plain-language, max 4)
-- `prioritized_actions` (impact-ordered, 3-5 when available)
+- `top_risk_drivers` (plain-language, top 3)
+- `prioritized_actions` (top 3 composed from existing mitigation recommendations)
 - `ranked_actions` (practical homeowner ranking)
 - `most_impactful_actions` (top 1-2 highlighted)
   - each action includes:
@@ -69,8 +69,8 @@ Primary homeowner-facing score fields are:
 The report presentation is organized for homeowner usability:
 1. Property summary
 2. Overall wildfire risk level
-3. Top risk drivers
-4. Top mitigation actions
+3. Top 3 risk drivers
+4. Top 3 mitigation actions and what to do first
 5. Mitigation simulator examples (guidance section)
 6. Confidence and assumptions
 7. Next-step checklist

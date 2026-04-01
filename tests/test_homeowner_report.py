@@ -138,9 +138,9 @@ def test_homeowner_report_and_pdf_generate_for_complete_assessment(monkeypatch, 
     assert report["score_summary"]["insurance_readiness_score"] is not None
     assert isinstance(report["top_recommended_actions"], list)
     assert isinstance(report["top_risk_drivers"], list)
-    assert len(report["top_risk_drivers"]) <= 4
+    assert len(report["top_risk_drivers"]) <= 3
     assert isinstance(report["prioritized_actions"], list)
-    assert len(report["prioritized_actions"]) <= 5
+    assert len(report["prioritized_actions"]) <= 3
     assert isinstance(report["ranked_actions"], list)
     assert len(report["ranked_actions"]) <= 5
     assert isinstance(report["most_impactful_actions"], list)
@@ -326,11 +326,11 @@ def test_homeowner_report_homeowner_focused_fields_across_confidence_tiers(monke
 
         assert "headline_risk_summary" in report
         assert report["headline_risk_summary"]
-        assert len(report.get("top_risk_drivers") or []) <= 4
+        assert len(report.get("top_risk_drivers") or []) <= 3
         assert all("fuel model" not in str(row).lower() for row in (report.get("top_risk_drivers") or []))
         assert isinstance((report.get("top_risk_drivers") or [None])[0], str)
         prioritized = report.get("prioritized_actions") or []
-        assert 1 <= len(prioritized) <= 5
+        assert 1 <= len(prioritized) <= 3
         first = prioritized[0]
         assert first.get("effort_level") in {"low", "medium", "high"}
         assert isinstance(first.get("estimated_benefit"), str) and first.get("estimated_benefit")
@@ -489,6 +489,50 @@ def test_mitigation_ranking_prefers_high_confidence_over_low_confidence(monkeypa
     assert len(ranked) >= 2
     assert "30 ft" in str(ranked[0].get("action") or "")
     assert float(ranked[0].get("data_confidence_score") or 0.0) > float(ranked[1].get("data_confidence_score") or 0.0)
+
+
+def test_homeowner_report_composes_existing_outputs_without_mitigation_fallback_recompute(monkeypatch, tmp_path: Path):
+    context = _ctx(env=62.0, wildland=52.0, historic=40.0)
+    _setup(monkeypatch, tmp_path, context)
+    assessed = _run_assessment("300 Compose Only Way, Missoula, MT 59802")
+    original = app_main.store.get(assessed["assessment_id"])
+    assert original is not None
+
+    patched = original.model_copy(deep=True)
+    patched.top_risk_drivers = [
+        "dense vegetation close to the home",
+        "high ember exposure",
+        "limited defensible space within 30 feet",
+        "close proximity to wildland fuels",
+    ]
+    patched.prioritized_mitigation_actions = [
+        HomeownerPrioritizedAction(action="Action A", impact_level="high", effort_level="low", data_confidence="high", priority=1),
+        HomeownerPrioritizedAction(action="Action B", impact_level="medium", effort_level="low", data_confidence="high", priority=2),
+        HomeownerPrioritizedAction(action="Action C", impact_level="low", effort_level="medium", data_confidence="high", priority=3),
+        HomeownerPrioritizedAction(action="Action D", impact_level="low", effort_level="medium", data_confidence="high", priority=4),
+    ]
+    patched.mitigation_plan = [
+        MitigationAction(
+            title="Fallback Only Action (Should Not Enter Top 3)",
+            reason="This is present only in mitigation_plan.",
+            impacted_submodels=["home_ignition_vulnerability"],
+            estimated_risk_reduction_band="high",
+            estimated_readiness_improvement_band="high",
+            priority=1,
+            insurer_relevance="recommended",
+        )
+    ]
+
+    monkeypatch.setattr(app_main.store, "get", lambda _assessment_id, _obj=patched: _obj)
+    report = client.get(f"/report/{assessed['assessment_id']}/homeowner").json()
+
+    assert len(report.get("top_risk_drivers") or []) == 3
+    prioritized = report.get("prioritized_actions") or []
+    assert len(prioritized) == 3
+    action_names = [str(row.get("action") or "") for row in prioritized]
+    assert "Fallback Only Action (Should Not Enter Top 3)" not in action_names
+    first_action = str((report.get("what_to_do_first") or {}).get("action") or "")
+    assert first_action in action_names
 
 
 def test_export_homeowner_report_generates_clean_structured_output_across_confidence_tiers(monkeypatch, tmp_path: Path):

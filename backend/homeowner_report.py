@@ -164,12 +164,17 @@ def _risk_driver_from_text(driver_text: str, *, tone_level: str) -> str:
     return f"{base} may be contributing to risk, but some details are estimated."
 
 
-def _summarize_top_risk_drivers(key_risk_drivers: list[str], *, tone_level: str) -> list[str]:
+def _summarize_top_risk_drivers(
+    key_risk_drivers: list[str],
+    *,
+    tone_level: str,
+    limit: int = 3,
+) -> list[str]:
     cleaned = [_de_jargonize(_plain_driver(row)) for row in key_risk_drivers if str(row).strip()]
     cleaned = [row for row in cleaned if row]
     unique = list(dict.fromkeys([_risk_driver_from_text(row, tone_level=tone_level) for row in cleaned if row]))
     if unique:
-        return unique[:4]
+        return unique[: max(1, int(limit))]
     return ["We could not confirm property-specific risk drivers from current data."]
 
 
@@ -401,6 +406,7 @@ def _summarize_prioritized_actions(
     prioritized_actions: list[HomeownerPrioritizedAction],
     *,
     tone_level: str,
+    limit: int = 3,
 ) -> list[dict[str, object]]:
     impact_rank = {"high": 0, "medium": 1, "low": 2}
     ordered = sorted(
@@ -408,7 +414,7 @@ def _summarize_prioritized_actions(
         key=lambda row: (impact_rank.get(str(row.impact_level), 3), int(row.priority or 99), str(row.action or "").lower()),
     )
     rows: list[dict[str, object]] = []
-    for row in ordered[:5]:
+    for row in ordered[: max(1, int(limit))]:
         action = str(row.action or "").strip()
         if not action:
             continue
@@ -573,6 +579,21 @@ def _prioritized_actions(result: AssessmentResult) -> list[HomeownerPrioritizedA
     base: list[HomeownerPrioritizedAction] = []
     if result.prioritized_mitigation_actions:
         base = list(result.prioritized_mitigation_actions)[:5]
+    elif result.top_recommended_actions:
+        # Compose from existing top recommendations when prioritized action rows
+        # are unavailable in legacy payloads.
+        base = [
+            HomeownerPrioritizedAction(
+                action=str(action or "").strip(),
+                impact_level="medium",
+                effort_level="medium",
+                estimated_cost_band="medium",
+                timeline="this_season",
+                priority=index + 1,
+            )
+            for index, action in enumerate(list(result.top_recommended_actions or [])[:5])
+            if str(action or "").strip()
+        ]
     else:
         fallback: list[HomeownerPrioritizedAction] = []
         for action in result.mitigation_plan[:5]:
@@ -619,7 +640,17 @@ def build_homeowner_report(
         or result.insurance_readiness_score_available
     )
 
-    key_risk_drivers = [_plain_driver(row) for row in list(result.top_risk_drivers or [])]
+    raw_driver_candidates = list(result.top_risk_drivers or [])
+    if not raw_driver_candidates and result.top_risk_drivers_detailed:
+        raw_driver_candidates = [
+            str(row.explanation or row.factor or "").strip()
+            for row in list(result.top_risk_drivers_detailed or [])
+            if str(row.explanation or row.factor or "").strip()
+        ]
+    if not raw_driver_candidates and str(result.explanation_summary or "").strip():
+        raw_driver_candidates = [str(result.explanation_summary).strip()]
+
+    key_risk_drivers = [_plain_driver(row) for row in raw_driver_candidates]
     key_risk_drivers = [row for row in key_risk_drivers if row][:6]
     prioritized_actions = _prioritized_actions(result)
 
@@ -689,6 +720,7 @@ def build_homeowner_report(
     prioritized_actions_summary = _summarize_prioritized_actions(
         prioritized_actions,
         tone_level=tone_level,
+        limit=3,
     )
     ranked_actions, most_impactful_actions = _rank_mitigation_actions(prioritized_actions_summary)
     what_to_do_first = ranked_actions[0] if ranked_actions else (prioritized_actions_summary[0] if prioritized_actions_summary else {})
@@ -863,8 +895,8 @@ def export_homeowner_report(
         "generated_at": report.generated_at,
         "address": str(property_summary.get("address") or ""),
         "headline_risk_summary": str(report.headline_risk_summary or ""),
-        "top_risk_drivers": list(report.top_risk_drivers or [])[:4],
-        "prioritized_actions": ranked_actions[:5],
+        "top_risk_drivers": list(report.top_risk_drivers or [])[:3],
+        "prioritized_actions": ranked_actions[:3],
         "most_impactful_actions": most_impactful,
         "what_to_do_first": what_to_do_first,
         "confidence_summary": confidence_summary,
