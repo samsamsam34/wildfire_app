@@ -227,6 +227,8 @@ def test_map_endpoint_returns_point_footprint_rings_and_overlays(monkeypatch, tm
         "user_selected_polygon",
         "user_selected_point_snapped",
         "user_selected_point_unsnapped",
+        "parcel_inferred_home_location",
+        "raw_geocode_point",
     }
     assert payload["geocode_provider"]
     assert payload["geocode_precision"] in {"rooftop", "parcel_or_address_point", "interpolated", "approximate", "unknown", None}

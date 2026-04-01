@@ -609,6 +609,17 @@ def test_assessment_passes_user_selected_point_override_to_context(monkeypatch, 
     assert plc.get("selection_mode") == "point"
     assert plc.get("user_selected_point") == {"latitude": 39.7394, "longitude": -104.9901}
     assert plc.get("geometry_basis") in {"point", "footprint", "parcel"}
+    assert plc.get("geometry_source") in {
+        "trusted_building_footprint",
+        "parcel_geometry_inferred_home_location",
+        "user_selected_map_point_snapped_structure",
+        "user_selected_map_point_unsnapped",
+        "raw_geocode_point",
+    }
+    assert isinstance(plc.get("geometry_confidence"), (int, float))
+    assert plc.get("ring_generation_mode") in {"footprint_aware_rings", "point_annulus_fallback"}
+    assert body.get("geometry_source") == plc.get("geometry_source")
+    assert body.get("ring_generation_mode") == plc.get("ring_generation_mode")
     assert plc.get("structure_selection_method")
     assert plc.get("anchor_quality") in {"low", "medium", "high"}
     assert isinstance(plc.get("anchor_quality_score"), (int, float))
@@ -766,6 +777,13 @@ def test_wildfire_data_builds_point_proxy_ring_metrics_when_footprint_unavailabl
     )
     assert ring_context["footprint_used"] is False
     assert ring_context["fallback_mode"] == "point_based"
+    assert ring_context["ring_generation_mode"] == "point_annulus_fallback"
+    assert ring_context["geometry_source"] in {
+        "raw_geocode_point",
+        "parcel_geometry_inferred_home_location",
+        "user_selected_map_point_unsnapped",
+    }
+    assert float(ring_context.get("geometry_confidence") or 0.0) < 0.7
     assert isinstance(ring_context["ring_metrics"], dict)
     assert ring_context["ring_metrics"]["zone_0_5_ft"]["vegetation_density"] == pytest.approx(70.0)
     assert any("point-based annulus" in note.lower() for note in assumptions)
@@ -896,6 +914,76 @@ def test_wildfire_data_point_selection_uses_parcel_intersection_snap_method(monk
     assert context_blob["final_structure_geometry_source"] == "user_selected_point_snapped"
     assert context_blob["structure_selection_method"] == "point_parcel_intersection_snap"
     assert context_blob["geometry_basis"] == "footprint"
+
+
+def test_wildfire_data_point_selection_missing_footprint_prefers_parcel_inferred_anchor(monkeypatch):
+    _require_shapely()
+    client = WildfireDataClient()
+    parcel = Polygon(
+        [
+            (-105.00080, 40.00080),
+            (-105.00040, 40.00080),
+            (-105.00040, 40.00040),
+            (-105.00080, 40.00040),
+            (-105.00080, 40.00080),
+        ]
+    )
+
+    monkeypatch.setattr(
+        client.footprints,
+        "get_building_footprint",
+        lambda _lat, _lon, **_kwargs: BuildingFootprintResult(
+            found=False,
+            footprint=None,
+            centroid=None,
+            source="fixture_missing",
+            confidence=0.0,
+            match_status="none",
+            match_method="nearest_building_fallback",
+            matched_structure_id=None,
+            match_distance_m=41.0,
+            candidate_count=1,
+            candidate_summaries=[],
+            assumptions=["No nearby building footprint found for this location."],
+        ),
+    )
+
+    sampled: dict[str, float] = {}
+
+    def _proxy(**kwargs):
+        sampled["lat"] = float(kwargs["lat"])
+        sampled["lon"] = float(kwargs["lon"])
+        return {
+            "zone_0_5_ft": {"vegetation_density": 41.0},
+            "ring_0_5_ft": {"vegetation_density": 41.0},
+            "zone_5_30_ft": {"vegetation_density": 37.0},
+            "ring_5_30_ft": {"vegetation_density": 37.0},
+            "zone_30_100_ft": {"vegetation_density": 33.0},
+            "ring_30_100_ft": {"vegetation_density": 33.0},
+        }
+
+    monkeypatch.setattr(client, "_build_point_proxy_ring_metrics", _proxy)
+
+    context_blob, assumptions, _sources = client._compute_structure_ring_metrics(
+        40.0,
+        -105.0,
+        canopy_path="",
+        fuel_path="",
+        selection_mode="point",
+        user_selected_point={"latitude": 40.00005, "longitude": -105.00005},
+        parcel_polygon=parcel,
+        use_parcel_association_for_point_mode=True,
+    )
+
+    inferred_point = parcel.representative_point()
+    assert sampled["lat"] == pytest.approx(float(inferred_point.y), abs=1e-6)
+    assert sampled["lon"] == pytest.approx(float(inferred_point.x), abs=1e-6)
+    assert context_blob["geometry_source"] == "parcel_geometry_inferred_home_location"
+    assert context_blob["geometry_basis"] == "parcel"
+    assert context_blob["ring_generation_mode"] == "point_annulus_fallback"
+    assert context_blob["final_structure_geometry_source"] == "parcel_inferred_home_location"
+    assert context_blob["structure_selection_method"] == "parcel_inferred_home_location"
+    assert any("parcel geometry to infer a home location" in note.lower() for note in assumptions)
 
 
 def test_wildfire_data_point_selection_detects_point_inside_footprint(monkeypatch):
@@ -1056,12 +1144,14 @@ def test_wildfire_data_point_selection_unsnapped_falls_back_to_selected_anchor(m
     assert context_blob["selection_mode"] == "point"
     assert context_blob["final_structure_geometry_source"] == "user_selected_point_unsnapped"
     assert context_blob["structure_selection_method"] == "point_unsnapped_no_match"
+    assert context_blob["geometry_source"] == "user_selected_map_point_unsnapped"
+    assert context_blob["ring_generation_mode"] == "point_annulus_fallback"
     assert context_blob["geometry_basis"] == "point"
     assert context_blob["structure_geometry_confidence"] == pytest.approx(0.42)
     assert context_blob["snapped_structure_distance_m"] is None
     assert context_blob["user_selected_point"] == {"latitude": 46.8702, "longitude": -113.9898}
     assert context_blob["display_point_source"] == "property_anchor_point"
-    assert any("exact building outline unavailable" in note.lower() for note in assumptions)
+    assert any("could not be snapped" in note.lower() for note in assumptions)
 
 
 def test_score_decomposition_and_blended_wildfire_score(monkeypatch, tmp_path):
@@ -3485,6 +3575,83 @@ def test_structure_ring_summary_pipeline(monkeypatch):
     assert assumptions == []
 
 
+def test_nearby_distinct_footprints_generate_distinct_ring_metrics(monkeypatch):
+    _require_shapely()
+    client = WildfireDataClient()
+    small = Polygon(
+        [
+            (-105.00024, 40.00024),
+            (-105.00018, 40.00024),
+            (-105.00018, 40.00018),
+            (-105.00024, 40.00018),
+            (-105.00024, 40.00024),
+        ]
+    )
+    large = Polygon(
+        [
+            (-105.00004, 40.00024),
+            (-104.99982, 40.00024),
+            (-104.99982, 40.00002),
+            (-105.00004, 40.00002),
+            (-105.00004, 40.00024),
+        ]
+    )
+
+    def _lookup(lat: float, lon: float, **_kwargs):
+        chosen = small if float(lon) < -105.0001 else large
+        c = chosen.centroid
+        return BuildingFootprintResult(
+            found=True,
+            footprint=chosen,
+            centroid=(float(c.y), float(c.x)),
+            source="fixture",
+            confidence=0.94,
+            match_status="matched",
+            match_method="nearest_building_fallback",
+            matched_structure_id="small-home" if chosen is small else "large-home",
+            match_distance_m=2.0,
+            candidate_count=1,
+            candidate_summaries=[],
+            assumptions=[],
+        )
+
+    monkeypatch.setattr(client.footprints, "get_building_footprint", _lookup)
+    monkeypatch.setattr(client, "_summarize_ring_fuel_presence", lambda _geom, fuel_path: None)
+
+    def _canopy(ring_geom, canopy_path):
+        # Deterministic geometry-driven synthetic canopy proxy for test discrimination.
+        area_signal = max(1.0, min(95.0, ring_geom.area * 1_000_000_000.0))
+        return {
+            "canopy_mean": round(area_signal, 1),
+            "canopy_max": round(min(100.0, area_signal + 8.0), 1),
+            "coverage_pct": round(area_signal, 1),
+            "vegetation_density": round(area_signal, 1),
+        }
+
+    monkeypatch.setattr(client, "_summarize_ring_canopy", _canopy)
+
+    a, _a_assumptions, _a_sources = client._compute_structure_ring_metrics(
+        40.0002,
+        -105.0002,
+        canopy_path="canopy.tif",
+        fuel_path="fuel.tif",
+    )
+    b, _b_assumptions, _b_sources = client._compute_structure_ring_metrics(
+        40.0002,
+        -104.9999,
+        canopy_path="canopy.tif",
+        fuel_path="fuel.tif",
+    )
+
+    assert a["footprint_used"] is True
+    assert b["footprint_used"] is True
+    assert a["geometry_source"] == "trusted_building_footprint"
+    assert b["geometry_source"] == "trusted_building_footprint"
+    assert a["ring_generation_mode"] == "footprint_aware_rings"
+    assert b["ring_generation_mode"] == "footprint_aware_rings"
+    assert a["ring_metrics"]["ring_0_5_ft"]["vegetation_density"] != b["ring_metrics"]["ring_0_5_ft"]["vegetation_density"]
+
+
 def test_context_collect_fallback_when_footprint_unavailable(monkeypatch):
     client = WildfireDataClient()
 
@@ -3968,6 +4135,90 @@ def test_ring_metrics_influence_risk_and_mitigation():
     titles = [rec.title.lower() for rec in high_plan]
     assert any("0-5 ft zone" in title for title in titles)
     assert any("5-30 ft zone" in title for title in titles)
+
+
+def test_nearby_properties_with_distinct_edge_vegetation_get_distinct_vegetation_subscores():
+    attrs = PropertyAttributes(
+        roof_type="class a",
+        vent_type="ember-resistant",
+        defensible_space_ft=24,
+        construction_year=2015,
+    )
+    shared_ring = {
+        "ring_0_5_ft": {"vegetation_density": 40.0},
+        "ring_5_30_ft": {"vegetation_density": 46.0},
+        "ring_30_100_ft": {"vegetation_density": 49.0},
+    }
+
+    low_edge_ctx = _ctx(env=56.0, wildland=54.0, historic=48.0, ring_metrics=shared_ring)
+    low_edge_ctx.property_level_context.update(
+        {
+            "near_structure_vegetation_0_5_pct": 12.0,
+            "near_structure_vegetation_5_30_pct": 24.0,
+            "vegetation_edge_directional_concentration_pct": 18.0,
+            "canopy_dense_fuel_asymmetry_pct": 14.0,
+            "nearest_continuous_vegetation_distance_ft": 120.0,
+            "vegetation_directional_precision": "footprint_boundary",
+            "vegetation_directional_precision_score": 0.92,
+        }
+    )
+
+    high_edge_ctx = _ctx(env=56.0, wildland=54.0, historic=48.0, ring_metrics=shared_ring)
+    high_edge_ctx.property_level_context.update(
+        {
+            "near_structure_vegetation_0_5_pct": 92.0,
+            "near_structure_vegetation_5_30_pct": 88.0,
+            "vegetation_edge_directional_concentration_pct": 94.0,
+            "canopy_dense_fuel_asymmetry_pct": 90.0,
+            "nearest_continuous_vegetation_distance_ft": 4.0,
+            "vegetation_directional_precision": "footprint_boundary",
+            "vegetation_directional_precision_score": 0.92,
+        }
+    )
+
+    # Nearby homes should still diverge materially when immediate vegetation contexts differ.
+    low_risk = app_main.risk_engine.score(attrs, 39.73920, -104.99030, low_edge_ctx)
+    high_risk = app_main.risk_engine.score(attrs, 39.73945, -104.99010, high_edge_ctx)
+
+    assert high_risk.submodel_scores["flame_contact_risk"].score - low_risk.submodel_scores["flame_contact_risk"].score >= 12.0
+    assert high_risk.submodel_scores["defensible_space_risk"].score - low_risk.submodel_scores["defensible_space_risk"].score >= 10.0
+    assert high_risk.submodel_scores["vegetation_intensity_risk"].score - low_risk.submodel_scores["vegetation_intensity_risk"].score >= 9.0
+    assert (
+        high_risk.submodel_scores["flame_contact_risk"].key_inputs["vegetation_directional_precision"]
+        == "footprint_boundary"
+    )
+
+
+def test_vegetation_directional_features_fallback_to_point_proxy_when_geometry_missing():
+    attrs = PropertyAttributes(
+        roof_type="class a",
+        vent_type="ember-resistant",
+        defensible_space_ft=22,
+        construction_year=2015,
+    )
+    point_ctx = _ctx(env=56.0, wildland=54.0, historic=48.0, ring_metrics={})
+    point_ctx.property_level_context.update(
+        {
+            "footprint_used": False,
+            "fallback_mode": "point_based",
+            "near_structure_vegetation_0_5_pct": 68.0,
+            "near_structure_vegetation_5_30_pct": 60.0,
+            "vegetation_edge_directional_concentration_pct": 72.0,
+            "canopy_dense_fuel_asymmetry_pct": 66.0,
+            "nearest_continuous_vegetation_distance_ft": 16.0,
+            "vegetation_directional_precision": "point_proxy",
+            "vegetation_directional_precision_score": 0.42,
+        }
+    )
+
+    risk = app_main.risk_engine.score(attrs, 39.7392, -104.9903, point_ctx)
+    flame = risk.submodel_scores["flame_contact_risk"]
+    defensible = risk.submodel_scores["defensible_space_risk"]
+
+    assert isinstance(risk.total_score, float)
+    assert flame.key_inputs["vegetation_directional_precision"] == "point_proxy"
+    assert defensible.key_inputs["vegetation_directional_precision"] == "point_proxy"
+    assert any("point-proxy sampling" in assumption.lower() for assumption in flame.assumptions)
 
 
 def _headers(role: str = "admin", org: str = "default_org", user: str = "test_user") -> dict:

@@ -1037,6 +1037,9 @@ class AssessmentResult(BaseModel):
     candidate_structure_count: Optional[int] = None
     final_structure_geometry_source: Optional[str] = None
     structure_geometry_confidence: Optional[float] = None
+    geometry_source: Optional[str] = None
+    geometry_confidence: Optional[float] = None
+    ring_generation_mode: Optional[str] = None
     snapped_structure_distance_m: Optional[float] = None
     selection_mode: Optional[SelectionMode] = None
     matched_structure_centroid: Optional[Dict[str, float]] = None

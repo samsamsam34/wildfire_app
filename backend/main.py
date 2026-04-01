@@ -1896,6 +1896,8 @@ def _normalize_property_level_context(raw_context: object) -> dict[str, Any]:
         "user_selected_polygon",
         "user_selected_point_snapped",
         "user_selected_point_unsnapped",
+        "parcel_inferred_home_location",
+        "raw_geocode_point",
     }:
         final_source = (
             "user_selected_polygon"
@@ -4878,6 +4880,29 @@ def _run_assessment(
     property_level_context["selection_mode"] = str(
         property_level_context.get("selection_mode") or requested_selection_mode
     )
+    if not property_level_context.get("geometry_source"):
+        final_geometry_source = str(property_level_context.get("final_structure_geometry_source") or "").strip().lower()
+        if final_geometry_source == "user_selected_point_snapped":
+            property_level_context["geometry_source"] = "user_selected_map_point_snapped_structure"
+        elif final_geometry_source == "user_selected_point_unsnapped":
+            property_level_context["geometry_source"] = "user_selected_map_point_unsnapped"
+        elif str(property_level_context.get("geometry_basis") or "").strip().lower() == "parcel":
+            property_level_context["geometry_source"] = "parcel_geometry_inferred_home_location"
+        elif bool(property_level_context.get("footprint_used")):
+            property_level_context["geometry_source"] = "trusted_building_footprint"
+        else:
+            property_level_context["geometry_source"] = "raw_geocode_point"
+    if property_level_context.get("geometry_confidence") is None:
+        try:
+            property_level_context["geometry_confidence"] = float(
+                property_level_context.get("structure_geometry_confidence") or 0.0
+            )
+        except (TypeError, ValueError):
+            property_level_context["geometry_confidence"] = 0.0
+    if not property_level_context.get("ring_generation_mode"):
+        property_level_context["ring_generation_mode"] = (
+            "footprint_aware_rings" if bool(property_level_context.get("footprint_used")) else "point_annulus_fallback"
+        )
     if requested_property_anchor_point is not None:
         property_level_context["property_anchor_point"] = requested_property_anchor_point
     if requested_user_selected_point is not None:
@@ -5964,6 +5989,21 @@ def _run_assessment(
         structure_geometry_confidence=(
             float(property_level_context.get("structure_geometry_confidence"))
             if property_level_context.get("structure_geometry_confidence") is not None
+            else None
+        ),
+        geometry_source=(
+            str(property_level_context.get("geometry_source"))
+            if property_level_context.get("geometry_source")
+            else None
+        ),
+        geometry_confidence=(
+            float(property_level_context.get("geometry_confidence"))
+            if property_level_context.get("geometry_confidence") is not None
+            else None
+        ),
+        ring_generation_mode=(
+            str(property_level_context.get("ring_generation_mode"))
+            if property_level_context.get("ring_generation_mode")
             else None
         ),
         snapped_structure_distance_m=(

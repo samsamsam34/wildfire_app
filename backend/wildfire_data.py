@@ -43,12 +43,13 @@ try:
     import numpy as np
     import rasterio
     from pyproj import Transformer
-    from shapely.geometry import Point, mapping, shape
+    from shapely.geometry import LineString, Point, mapping, shape
     from shapely.ops import transform as shapely_transform
 except Exception:  # pragma: no cover - graceful runtime fallback when geo deps are missing
     np = None
     rasterio = None
     Transformer = None
+    LineString = None
     Point = None
     mapping = None
     shape = None
@@ -440,6 +441,17 @@ class WildfireDataClient:
         ring_context["near_structure_vegetation_0_5_pct"] = self._coerce_float(
             selected_feature.get("near_structure_vegetation_0_5_pct")
         )
+        if ring_context.get("near_structure_vegetation_0_5_pct") is None:
+            ring_context["near_structure_vegetation_0_5_pct"] = self._coerce_float(
+                ((ring_metrics.get("ring_0_5_ft") or {}).get("vegetation_density"))
+            )
+        ring_context["near_structure_vegetation_5_30_pct"] = self._coerce_float(
+            selected_feature.get("near_structure_vegetation_5_30_pct")
+        )
+        if ring_context.get("near_structure_vegetation_5_30_pct") is None:
+            ring_context["near_structure_vegetation_5_30_pct"] = self._coerce_float(
+                ((ring_metrics.get("ring_5_30_ft") or {}).get("vegetation_density"))
+            )
         ring_context["canopy_adjacency_proxy_pct"] = self._coerce_float(
             selected_feature.get("canopy_adjacency_proxy_pct")
         )
@@ -812,6 +824,268 @@ class WildfireDataClient:
 
         return round((wildland_cells / len(fuel_vals)) * 100.0, 1)
 
+    @staticmethod
+    def _fuel_code_to_combustibility_index(raw: float | None) -> float | None:
+        if raw is None:
+            return None
+        try:
+            code = int(round(float(raw)))
+        except (TypeError, ValueError):
+            return None
+        if 1 <= code <= 3:
+            return 20.0 + (code - 1) * 4.0
+        if 4 <= code <= 9:
+            return 34.0 + (code - 4) * 4.2
+        if 10 <= code <= 13:
+            return 58.0 + (code - 10) * 6.0
+        if 101 <= code <= 109:
+            return 68.0 + (code - 101) * 2.0
+        if 121 <= code <= 124:
+            return 82.0 + (code - 121) * 3.0
+        if 141 <= code <= 149:
+            return 62.0 + (code - 141) * 2.5
+        return None
+
+    def _sample_combined_vegetation_index(
+        self,
+        *,
+        canopy_path: str,
+        fuel_path: str,
+        lat: float,
+        lon: float,
+    ) -> float | None:
+        canopy_raw = self._sample_raster_point(canopy_path, lat, lon) if self._file_exists(canopy_path) else None
+        canopy_idx = self._coerce_float(self._to_index(canopy_raw, 0.0, 100.0)) if canopy_raw is not None else None
+        if canopy_idx is not None:
+            canopy_idx = max(0.0, min(100.0, float(canopy_idx)))
+        fuel_raw = self._sample_raster_point(fuel_path, lat, lon) if self._file_exists(fuel_path) else None
+        fuel_idx = self._fuel_code_to_combustibility_index(fuel_raw)
+
+        if canopy_idx is not None and fuel_idx is not None:
+            return round(max(0.0, min(100.0, (0.68 * canopy_idx) + (0.32 * fuel_idx))), 1)
+        if canopy_idx is not None:
+            return round(canopy_idx, 1)
+        if fuel_idx is not None:
+            return round(max(0.0, min(100.0, fuel_idx)), 1)
+        return None
+
+    def _offset_point_by_bearing(
+        self,
+        *,
+        origin_lat: float,
+        origin_lon: float,
+        distance_m: float,
+        bearing_deg: float,
+    ) -> tuple[float, float]:
+        theta = math.radians(float(bearing_deg))
+        d_lat = self._meters_to_lat_deg(float(distance_m) * math.sin(theta))
+        d_lon = self._meters_to_lon_deg(float(distance_m) * math.cos(theta), origin_lat)
+        return float(origin_lat + d_lat), float(origin_lon + d_lon)
+
+    @staticmethod
+    def _extract_intersection_points(geom: Any) -> list[Any]:
+        if geom is None:
+            return []
+        geom_type = str(getattr(geom, "geom_type", ""))
+        if geom_type == "Point":
+            return [geom]
+        if geom_type == "MultiPoint":
+            return [pt for pt in list(getattr(geom, "geoms", []) or []) if str(getattr(pt, "geom_type", "")) == "Point"]
+        if geom_type in {"GeometryCollection", "MultiLineString", "LineString"}:
+            points: list[Any] = []
+            for part in list(getattr(geom, "geoms", []) or [geom]):
+                part_type = str(getattr(part, "geom_type", ""))
+                if part_type == "Point":
+                    points.append(part)
+                elif part_type == "LineString":
+                    coords = list(getattr(part, "coords", []) or [])
+                    if coords:
+                        for coord in (coords[0], coords[-1]):
+                            try:
+                                if Point is not None:
+                                    points.append(Point(float(coord[0]), float(coord[1])))
+                            except Exception:
+                                continue
+            return points
+        return []
+
+    def _estimate_footprint_edge_distance_m(
+        self,
+        *,
+        footprint: Any | None,
+        origin_lat: float,
+        origin_lon: float,
+        bearing_deg: float,
+        max_search_m: float = 250.0,
+    ) -> float:
+        if footprint is None or LineString is None or Transformer is None or shapely_transform is None:
+            return 0.0
+        try:
+            to_3857 = Transformer.from_crs("EPSG:4326", "EPSG:3857", always_xy=True).transform
+            centroid_m = shapely_transform(to_3857, Point(origin_lon, origin_lat))
+            footprint_m = shapely_transform(to_3857, footprint)
+            theta = math.radians(float(bearing_deg))
+            target_x = float(centroid_m.x + (math.cos(theta) * max_search_m))
+            target_y = float(centroid_m.y + (math.sin(theta) * max_search_m))
+            ray = LineString([(float(centroid_m.x), float(centroid_m.y)), (target_x, target_y)])
+            intersections = footprint_m.boundary.intersection(ray)
+            points = self._extract_intersection_points(intersections)
+            distances = []
+            for pt in points:
+                try:
+                    distance = float(max(0.0, pt.distance(centroid_m)))
+                except Exception:
+                    continue
+                if distance > 0.05:
+                    distances.append(distance)
+            if not distances:
+                return 0.0
+            return float(min(distances))
+        except Exception:
+            return 0.0
+
+    def _compute_structure_aware_vegetation_features(
+        self,
+        *,
+        origin_lat: float,
+        origin_lon: float,
+        canopy_path: str,
+        fuel_path: str,
+        footprint: Any | None,
+    ) -> dict[str, Any]:
+        directions: list[tuple[str, float]] = [
+            ("east", 0.0),
+            ("north", 90.0),
+            ("west", 180.0),
+            ("south", 270.0),
+        ]
+        has_footprint = footprint is not None
+        sector_samples: dict[str, dict[str, float | None]] = {}
+        near_0_5_values: list[float] = []
+        near_5_30_values: list[float] = []
+        continuous_candidates_ft: list[float] = []
+        threshold_index = 42.0
+        continuity_steps_ft = [2.0, 5.0, 10.0, 20.0, 30.0, 50.0, 75.0, 100.0, 150.0, 200.0]
+
+        for direction_name, bearing_deg in directions:
+            edge_offset_m = self._estimate_footprint_edge_distance_m(
+                footprint=footprint,
+                origin_lat=origin_lat,
+                origin_lon=origin_lon,
+                bearing_deg=bearing_deg,
+            )
+            close_lat, close_lon = self._offset_point_by_bearing(
+                origin_lat=origin_lat,
+                origin_lon=origin_lon,
+                distance_m=edge_offset_m + (3.0 * 0.3048),
+                bearing_deg=bearing_deg,
+            )
+            zone1_lat, zone1_lon = self._offset_point_by_bearing(
+                origin_lat=origin_lat,
+                origin_lon=origin_lon,
+                distance_m=edge_offset_m + (18.0 * 0.3048),
+                bearing_deg=bearing_deg,
+            )
+            close_index = self._sample_combined_vegetation_index(
+                canopy_path=canopy_path,
+                fuel_path=fuel_path,
+                lat=close_lat,
+                lon=close_lon,
+            )
+            zone1_index = self._sample_combined_vegetation_index(
+                canopy_path=canopy_path,
+                fuel_path=fuel_path,
+                lat=zone1_lat,
+                lon=zone1_lon,
+            )
+            if close_index is not None:
+                near_0_5_values.append(float(close_index))
+            if zone1_index is not None:
+                near_5_30_values.append(float(zone1_index))
+            sector_samples[direction_name] = {
+                "edge_offset_m": round(float(edge_offset_m), 2),
+                "veg_0_5_index": round(float(close_index), 1) if close_index is not None else None,
+                "veg_5_30_index": round(float(zone1_index), 1) if zone1_index is not None else None,
+            }
+
+            streak = 0
+            first_hit_ft: float | None = None
+            for distance_ft in continuity_steps_ft:
+                sample_lat, sample_lon = self._offset_point_by_bearing(
+                    origin_lat=origin_lat,
+                    origin_lon=origin_lon,
+                    distance_m=edge_offset_m + (distance_ft * 0.3048),
+                    bearing_deg=bearing_deg,
+                )
+                sample_index = self._sample_combined_vegetation_index(
+                    canopy_path=canopy_path,
+                    fuel_path=fuel_path,
+                    lat=sample_lat,
+                    lon=sample_lon,
+                )
+                if sample_index is not None and float(sample_index) >= threshold_index:
+                    streak += 1
+                    if first_hit_ft is None:
+                        first_hit_ft = float(distance_ft)
+                    if streak >= 2 and first_hit_ft is not None:
+                        continuous_candidates_ft.append(first_hit_ft)
+                        break
+                else:
+                    streak = 0
+                    first_hit_ft = None
+
+        near_0_5_pct = (
+            round(sum(near_0_5_values) / len(near_0_5_values), 1)
+            if near_0_5_values
+            else None
+        )
+        near_5_30_pct = (
+            round(sum(near_5_30_values) / len(near_5_30_values), 1)
+            if near_5_30_values
+            else None
+        )
+        directional_concentration = None
+        if near_0_5_values:
+            directional_concentration = round(
+                max(0.0, min(100.0, max(near_0_5_values) - (sum(near_0_5_values) / len(near_0_5_values)))),
+                1,
+            )
+        canopy_fuel_asymmetry = None
+        if near_5_30_values:
+            canopy_fuel_asymmetry = round(
+                max(0.0, min(100.0, max(near_5_30_values) - min(near_5_30_values))),
+                1,
+            )
+        nearest_continuous_distance_ft = (
+            round(min(continuous_candidates_ft), 1)
+            if continuous_candidates_ft
+            else None
+        )
+
+        return {
+            "near_structure_vegetation_0_5_pct": near_0_5_pct,
+            "near_structure_vegetation_5_30_pct": near_5_30_pct,
+            "vegetation_edge_directional_concentration_pct": directional_concentration,
+            "canopy_dense_fuel_asymmetry_pct": canopy_fuel_asymmetry,
+            "nearest_continuous_vegetation_distance_ft": nearest_continuous_distance_ft,
+            "vegetation_directional_sectors": sector_samples,
+            "vegetation_directional_precision": (
+                "footprint_boundary"
+                if has_footprint
+                else "point_proxy"
+            ),
+            "vegetation_directional_precision_score": (
+                0.9
+                if has_footprint
+                else 0.45
+            ),
+            "vegetation_directional_basis": (
+                "structure_boundary_relative"
+                if has_footprint
+                else "point_proxy_relative"
+            ),
+        }
+
     def _sample_annulus(
         self,
         path: str,
@@ -1000,6 +1274,8 @@ class WildfireDataClient:
         user_selected_point: dict[str, Any] | None = None,
         selected_structure_id: str | None = None,
         selected_structure_geometry: dict[str, Any] | None = None,
+        geocoded_lat: float | None = None,
+        geocoded_lon: float | None = None,
     ) -> tuple[dict[str, Any], list[str], list[str]]:
         assumptions: list[str] = []
         sources: list[str] = []
@@ -1032,6 +1308,30 @@ class WildfireDataClient:
         if normalized_selection_mode == "point" and user_selected_point_coords is not None:
             query_lat, query_lon = user_selected_point_coords
             assumptions.append("Using user-selected map point for structure lookup and ring analysis.")
+
+        geocode_fallback_lat = float(geocoded_lat) if geocoded_lat is not None else float(lat)
+        geocode_fallback_lon = float(geocoded_lon) if geocoded_lon is not None else float(lon)
+
+        def _infer_point_from_parcel(
+            polygon: Any | None,
+            *,
+            default_lat: float,
+            default_lon: float,
+        ) -> tuple[float, float]:
+            if polygon is None:
+                return default_lat, default_lon
+            try:
+                if bool(getattr(polygon, "is_empty", True)):
+                    return default_lat, default_lon
+                rep = polygon.representative_point()
+                if rep is not None and getattr(rep, "is_empty", True) is False:
+                    return float(rep.y), float(rep.x)
+                centroid = polygon.centroid
+                if centroid is not None and getattr(centroid, "is_empty", True) is False:
+                    return float(centroid.y), float(centroid.x)
+            except Exception:
+                return default_lat, default_lon
+            return default_lat, default_lon
 
         def _derive_age_material_proxy(
             neighbor_metrics_payload: dict[str, Any] | None,
@@ -1148,8 +1448,20 @@ class WildfireDataClient:
                     "matched_structure_centroid": None,
                     "matched_structure_footprint": None,
                     "fallback_mode": "point_based",
+                    "geometry_source": "raw_geocode_point",
+                    "geometry_confidence": 0.0,
+                    "ring_generation_mode": "point_annulus_fallback",
                     "ring_metrics": None,
                     "nearest_vegetation_distance_ft": None,
+                    "near_structure_vegetation_0_5_pct": None,
+                    "near_structure_vegetation_5_30_pct": None,
+                    "vegetation_edge_directional_concentration_pct": None,
+                    "canopy_dense_fuel_asymmetry_pct": None,
+                    "nearest_continuous_vegetation_distance_ft": None,
+                    "vegetation_directional_sectors": {},
+                    "vegetation_directional_precision": "point_proxy",
+                    "vegetation_directional_precision_score": 0.2,
+                    "vegetation_directional_basis": "point_proxy_relative",
                     "neighboring_structure_metrics": None,
                 }, assumptions, sources
 
@@ -1209,9 +1521,44 @@ class WildfireDataClient:
                 assumptions.append("Using point-based vegetation context because structure snap confidence was weak.")
             else:
                 assumptions.append("Building footprint analysis unavailable; using point-based vegetation context.")
+            fallback_query_lat = float(query_lat)
+            fallback_query_lon = float(query_lon)
+            fallback_geometry_source = "raw_geocode_point"
+            fallback_selection_method = "raw_geocode_point_fallback"
+            geometry_basis = "point"
+            structure_geometry_confidence = 0.25 if normalized_selection_mode == "point" else 0.2
+            if parcel_polygon is not None:
+                fallback_query_lat, fallback_query_lon = _infer_point_from_parcel(
+                    parcel_polygon,
+                    default_lat=fallback_query_lat,
+                    default_lon=fallback_query_lon,
+                )
+                fallback_geometry_source = "parcel_geometry_inferred_home_location"
+                fallback_selection_method = "parcel_inferred_home_location"
+                geometry_basis = "parcel"
+                structure_geometry_confidence = 0.55
+                assumptions.append(
+                    "Building footprint unavailable; using parcel geometry to infer a home location for ring sampling."
+                )
+            elif normalized_selection_mode == "point" and user_selected_point_coords is not None:
+                fallback_geometry_source = "user_selected_map_point_unsnapped"
+                fallback_selection_method = (
+                    "point_unsnapped_low_confidence_or_distance"
+                    if force_unsnapped_point
+                    else "point_unsnapped_no_match"
+                )
+                structure_geometry_confidence = 0.42
+                assumptions.append(
+                    "User-selected point could not be snapped to a trusted structure footprint; using point-annulus fallback."
+                )
+            else:
+                fallback_query_lat = geocode_fallback_lat
+                fallback_query_lon = geocode_fallback_lon
+                fallback_geometry_source = "raw_geocode_point"
+                fallback_selection_method = "raw_geocode_point_fallback"
             point_proxy_metrics = self._build_point_proxy_ring_metrics(
-                lat=query_lat,
-                lon=query_lon,
+                lat=fallback_query_lat,
+                lon=fallback_query_lon,
                 canopy_path=canopy_path,
                 fuel_path=fuel_path,
             )
@@ -1232,9 +1579,16 @@ class WildfireDataClient:
             ):
                 assumptions.append("Structure ring metrics were approximated from point-based annulus sampling.")
                 sources.append("Point-proxy ring vegetation summaries")
+            structure_veg_features = self._compute_structure_aware_vegetation_features(
+                origin_lat=fallback_query_lat,
+                origin_lon=fallback_query_lon,
+                canopy_path=canopy_path,
+                fuel_path=fuel_path,
+                footprint=None,
+            )
             neighbor_metrics = footprint_client.get_neighbor_structure_metrics(
-                lat=query_lat,
-                lon=query_lon,
+                lat=fallback_query_lat,
+                lon=fallback_query_lon,
                 subject_footprint=None,
                 source_path=result.source,
                 radius_m=300.0 * 0.3048,
@@ -1250,29 +1604,20 @@ class WildfireDataClient:
                 status = "not_found"
             final_geometry_source = (
                 "user_selected_point_unsnapped"
-                if normalized_selection_mode == "point"
-                else "auto_detected"
-            )
-            if normalized_selection_mode == "point":
-                assumptions.append(
-                    "Exact building outline unavailable near the selected point; using the selected location as the property anchor."
+                if fallback_geometry_source == "user_selected_map_point_unsnapped"
+                else (
+                    "parcel_inferred_home_location"
+                    if fallback_geometry_source == "parcel_geometry_inferred_home_location"
+                    else "raw_geocode_point"
                 )
+            )
             structure_selection_method = "no_footprint_found"
             if status == "provider_unavailable":
                 structure_selection_method = "footprint_provider_unavailable"
             elif match_status == "ambiguous":
                 structure_selection_method = "ambiguous_candidates_fallback"
-            if normalized_selection_mode == "point":
-                if force_unsnapped_point:
-                    structure_selection_method = "point_unsnapped_low_confidence_or_distance"
-                else:
-                    structure_selection_method = "point_unsnapped_no_match"
-            geometry_basis = "parcel" if parcel_polygon is not None else "point"
-            structure_geometry_confidence = (
-                0.52
-                if geometry_basis == "parcel"
-                else (0.42 if normalized_selection_mode == "point" else 0.0)
-            )
+            if fallback_selection_method:
+                structure_selection_method = fallback_selection_method
             return {
                 "footprint_used": False,
                 "footprint_found": False,
@@ -1303,8 +1648,28 @@ class WildfireDataClient:
                 "user_selected_point_in_footprint": False,
                 "display_point_source": "property_anchor_point",
                 "fallback_mode": "point_based",
+                "geometry_source": fallback_geometry_source,
+                "geometry_confidence": structure_geometry_confidence,
+                "ring_generation_mode": "point_annulus_fallback",
                 "ring_metrics": point_proxy_metrics if point_proxy_metrics else None,
                 "nearest_vegetation_distance_ft": nearest_vegetation_distance_ft,
+                "near_structure_vegetation_0_5_pct": structure_veg_features.get("near_structure_vegetation_0_5_pct"),
+                "near_structure_vegetation_5_30_pct": structure_veg_features.get("near_structure_vegetation_5_30_pct"),
+                "vegetation_edge_directional_concentration_pct": structure_veg_features.get(
+                    "vegetation_edge_directional_concentration_pct"
+                ),
+                "canopy_dense_fuel_asymmetry_pct": structure_veg_features.get(
+                    "canopy_dense_fuel_asymmetry_pct"
+                ),
+                "nearest_continuous_vegetation_distance_ft": structure_veg_features.get(
+                    "nearest_continuous_vegetation_distance_ft"
+                ),
+                "vegetation_directional_sectors": structure_veg_features.get("vegetation_directional_sectors"),
+                "vegetation_directional_precision": structure_veg_features.get("vegetation_directional_precision"),
+                "vegetation_directional_precision_score": structure_veg_features.get(
+                    "vegetation_directional_precision_score"
+                ),
+                "vegetation_directional_basis": structure_veg_features.get("vegetation_directional_basis"),
                 "neighboring_structure_metrics": neighbor_metrics,
                 "building_age_proxy_year": proxy_year,
                 "building_age_material_proxy_risk": proxy_risk,
@@ -1371,6 +1736,13 @@ class WildfireDataClient:
             if density is not None and float(density) >= 40.0:
                 nearest_vegetation_distance_ft = approx_ft
                 break
+        structure_veg_features = self._compute_structure_aware_vegetation_features(
+            origin_lat=query_lat,
+            origin_lon=query_lon,
+            canopy_path=canopy_path,
+            fuel_path=fuel_path,
+            footprint=result.footprint,
+        )
 
         neighbor_metrics = footprint_client.get_neighbor_structure_metrics(
             lat=query_lat,
@@ -1420,6 +1792,13 @@ class WildfireDataClient:
                 if str(match_method or "") == "parcel_intersection"
                 else ("point_in_footprint" if str(match_method or "") == "point_in_footprint" else "nearest_building_fallback")
             )
+        geometry_source = "trusted_building_footprint"
+        if final_structure_geometry_source == "user_selected_point_snapped":
+            geometry_source = "user_selected_map_point_snapped_structure"
+        geometry_confidence = max(
+            float(structure_geometry_confidence or 0.0),
+            float(structure_match_confidence or 0.0),
+        )
         display_point_source = (
             "matched_structure_centroid"
             if (
@@ -1473,8 +1852,28 @@ class WildfireDataClient:
             ),
             "display_point_source": display_point_source,
             "fallback_mode": "footprint" if ring_metrics else "point_based",
+            "geometry_source": geometry_source,
+            "geometry_confidence": geometry_confidence,
+            "ring_generation_mode": "footprint_aware_rings",
             "ring_metrics": ring_metrics,
             "nearest_vegetation_distance_ft": nearest_vegetation_distance_ft,
+            "near_structure_vegetation_0_5_pct": structure_veg_features.get("near_structure_vegetation_0_5_pct"),
+            "near_structure_vegetation_5_30_pct": structure_veg_features.get("near_structure_vegetation_5_30_pct"),
+            "vegetation_edge_directional_concentration_pct": structure_veg_features.get(
+                "vegetation_edge_directional_concentration_pct"
+            ),
+            "canopy_dense_fuel_asymmetry_pct": structure_veg_features.get(
+                "canopy_dense_fuel_asymmetry_pct"
+            ),
+            "nearest_continuous_vegetation_distance_ft": structure_veg_features.get(
+                "nearest_continuous_vegetation_distance_ft"
+            ),
+            "vegetation_directional_sectors": structure_veg_features.get("vegetation_directional_sectors"),
+            "vegetation_directional_precision": structure_veg_features.get("vegetation_directional_precision"),
+            "vegetation_directional_precision_score": structure_veg_features.get(
+                "vegetation_directional_precision_score"
+            ),
+            "vegetation_directional_basis": structure_veg_features.get("vegetation_directional_basis"),
             "neighboring_structure_metrics": neighbor_metrics,
             "building_age_proxy_year": proxy_year,
             "building_age_material_proxy_risk": proxy_risk,
@@ -1833,7 +2232,19 @@ class WildfireDataClient:
             "footprint_source": None,
             "display_point_source": "property_anchor_point",
             "fallback_mode": "point_based",
+            "geometry_source": "raw_geocode_point",
+            "geometry_confidence": 0.0,
+            "ring_generation_mode": "point_annulus_fallback",
             "ring_metrics": None,
+            "near_structure_vegetation_0_5_pct": None,
+            "near_structure_vegetation_5_30_pct": None,
+            "vegetation_edge_directional_concentration_pct": None,
+            "canopy_dense_fuel_asymmetry_pct": None,
+            "nearest_continuous_vegetation_distance_ft": None,
+            "vegetation_directional_sectors": {},
+            "vegetation_directional_precision": "point_proxy",
+            "vegetation_directional_precision_score": 0.0,
+            "vegetation_directional_basis": "point_proxy_relative",
             "hazard_context": {},
             "moisture_context": {},
             "historical_fire_context": {},
@@ -2050,6 +2461,8 @@ class WildfireDataClient:
             ),
             selected_structure_id=selected_structure_id,
             selected_structure_geometry=selected_structure_geometry if isinstance(selected_structure_geometry, dict) else None,
+            geocoded_lat=float(lat),
+            geocoded_lon=float(lon),
         )
         ring_context, naip_assumptions, naip_sources = self._apply_naip_feature_enrichment(
             ring_context=ring_context,
@@ -2125,6 +2538,27 @@ class WildfireDataClient:
                     else None
                 ),
                 "geometry_basis": str(ring_context.get("geometry_basis") or ("footprint" if ring_context.get("footprint_used") else "point")),
+                "geometry_source": str(
+                    ring_context.get("geometry_source")
+                    or (
+                        "trusted_building_footprint"
+                        if ring_context.get("footprint_used")
+                        else "raw_geocode_point"
+                    )
+                ),
+                "geometry_confidence": (
+                    float(ring_context.get("geometry_confidence"))
+                    if ring_context.get("geometry_confidence") is not None
+                    else (
+                        float(ring_context.get("structure_geometry_confidence"))
+                        if ring_context.get("structure_geometry_confidence") is not None
+                        else 0.0
+                    )
+                ),
+                "ring_generation_mode": str(
+                    ring_context.get("ring_generation_mode")
+                    or ("footprint_aware_rings" if ring_context.get("footprint_used") else "point_annulus_fallback")
+                ),
                 "footprint_source": ring_context.get("footprint_source"),
                 "structure_selection_method": (
                     str(ring_context.get("structure_selection_method") or ring_context.get("structure_match_method") or "no_footprint_found")
