@@ -277,3 +277,39 @@ def test_nearby_differentiation_pack_reports_local_separation_and_caution(tmp_pa
     )
     assert bool(missing["differentiation"]["nearby_home_comparison_safeguard_triggered"]) is True
     assert bool(footprint["differentiation"]["nearby_home_comparison_safeguard_triggered"]) is False
+
+
+def test_nearby_differentiation_v2_pack_measures_separation_and_honest_abstention(tmp_path):
+    pack_path = Path("benchmark") / "scenario_pack_nearby_differentiation_v2.json"
+    artifact = run_benchmark_suite(pack_path=pack_path, output_dir=tmp_path / "nearby_v2")
+    assert artifact["summary"]["passed"] is True
+
+    nearby = artifact.get("nearby_differentiation_performance") or {}
+    assert nearby.get("available") is True
+    separation = nearby.get("separation_analysis") or {}
+    assert int(separation.get("pair_count") or 0) >= 7
+    assert int(separation.get("separation_achieved_count") or 0) >= 7
+    assert int(separation.get("collapsed_toward_similarity_count") or 0) >= 1
+    assert int(separation.get("collapsed_correctly_flagged_low_specificity_count") or 0) >= 1
+    assert int(separation.get("collapsed_not_flagged_count") or 0) == 0
+
+    snapshots = {
+        row["scenario_id"]: row["snapshot"]
+        for row in artifact.get("scenario_results", [])
+        if isinstance(row, dict) and isinstance(row.get("snapshot"), dict)
+    }
+
+    dense = snapshots["nearby_v2_dense_0_5ft_footprint"]
+    clear = snapshots["nearby_v2_clear_0_5ft_footprint"]
+    assert float(dense["scores"]["wildfire_risk_score"]) > float(clear["scores"]["wildfire_risk_score"])
+    assert float(dense["scores"]["home_ignition_vulnerability_score"]) > float(
+        clear["scores"]["home_ignition_vulnerability_score"]
+    )
+    assert dense["specificity"]["comparison_allowed"] is True
+    assert clear["specificity"]["comparison_allowed"] is True
+
+    missing = snapshots["nearby_v2_footprint_missing_point"]
+    available = snapshots["nearby_v2_footprint_available"]
+    assert bool(missing["specificity"]["comparison_allowed"]) is False
+    assert bool(available["specificity"]["comparison_allowed"]) is True
+    assert str(missing["specificity"]["specificity_tier"]) in {"regional_estimate", "address_level", "insufficient_data"}

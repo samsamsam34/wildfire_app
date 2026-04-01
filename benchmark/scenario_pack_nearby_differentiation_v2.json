@@ -1,0 +1,644 @@
+{
+  "benchmark_pack_version": "1.1.0-nearby-differentiation",
+  "factor_schema_version": "1.3.0",
+  "description": "Nearby-home differentiation benchmark pack focused on local signal separation and honest abstention under low-specificity data.",
+  "scenarios": [
+    {
+      "scenario_id": "nearby_v2_dense_0_5ft_footprint",
+      "description": "Dense 0-5 ft vegetation with footprint geometry and confirmed structure details.",
+      "profile_tags": ["nearby_differentiation", "adjacent_pair", "local_vegetation", "footprint"],
+      "input_payload": {
+        "address": "101 Cedar Ridge Ln, Missoula, MT",
+        "attributes": {
+          "roof_type": "class a",
+          "vent_type": "ember-resistant",
+          "defensible_space_ft": 18,
+          "construction_year": 2008
+        },
+        "confirmed_fields": ["roof_type", "vent_type", "defensible_space_ft", "construction_year"],
+        "audience": "homeowner",
+        "tags": ["benchmark", "nearby-v2"]
+      },
+      "location": {"lat": 46.873100, "lon": -113.996120, "geocode_source": "benchmark-nearby-v2"},
+      "context": {
+        "burn_probability_index": 63.0,
+        "hazard_severity_index": 66.0,
+        "slope_index": 42.0,
+        "fuel_index": 61.0,
+        "moisture_index": 51.0,
+        "canopy_index": 57.0,
+        "wildland_distance_index": 62.0,
+        "historic_fire_index": 55.0,
+        "property_level_context": {
+          "footprint_used": true,
+          "footprint_status": "used",
+          "fallback_mode": "footprint",
+          "geometry_basis": "footprint",
+          "structure_geometry_confidence": 0.93,
+          "ring_generation_mode": "footprint_aware_rings",
+          "final_structure_geometry_source": "auto_detected",
+          "property_anchor_source": "authoritative_address_point",
+          "property_anchor_quality_score": 0.95,
+          "parcel_id": "p-nearby-v2-101",
+          "parcel_lookup_method": "contains_point",
+          "ring_metrics": {
+            "ring_0_5_ft": {"vegetation_density": 84.0},
+            "ring_5_30_ft": {"vegetation_density": 72.0},
+            "ring_30_100_ft": {"vegetation_density": 61.0}
+          },
+          "near_structure_vegetation_0_5_pct": 85.0,
+          "canopy_adjacency_proxy_pct": 71.0,
+          "vegetation_continuity_proxy_pct": 67.0,
+          "nearest_high_fuel_patch_distance_ft": 44.0
+        }
+      },
+      "expected": {
+        "assessment_status_in": ["partially_scored", "fully_scored"],
+        "fallback_mode": "footprint",
+        "specificity_tiers": ["property_specific", "address_level"],
+        "comparison_allowed": true,
+        "confidence_language_contains_any": ["moderate confidence", "high confidence"]
+      }
+    },
+    {
+      "scenario_id": "nearby_v2_clear_0_5ft_footprint",
+      "description": "Clear 0-5 ft zone with same regional context and footprint geometry.",
+      "profile_tags": ["nearby_differentiation", "adjacent_pair", "local_vegetation", "footprint"],
+      "input_payload": {
+        "address": "103 Cedar Ridge Ln, Missoula, MT",
+        "attributes": {
+          "roof_type": "class a",
+          "vent_type": "ember-resistant",
+          "defensible_space_ft": 18,
+          "construction_year": 2008
+        },
+        "confirmed_fields": ["roof_type", "vent_type", "defensible_space_ft", "construction_year"],
+        "audience": "homeowner",
+        "tags": ["benchmark", "nearby-v2"]
+      },
+      "location": {"lat": 46.873145, "lon": -113.996165, "geocode_source": "benchmark-nearby-v2"},
+      "context": {
+        "burn_probability_index": 63.0,
+        "hazard_severity_index": 66.0,
+        "slope_index": 42.0,
+        "fuel_index": 61.0,
+        "moisture_index": 51.0,
+        "canopy_index": 57.0,
+        "wildland_distance_index": 62.0,
+        "historic_fire_index": 55.0,
+        "property_level_context": {
+          "footprint_used": true,
+          "footprint_status": "used",
+          "fallback_mode": "footprint",
+          "geometry_basis": "footprint",
+          "structure_geometry_confidence": 0.93,
+          "ring_generation_mode": "footprint_aware_rings",
+          "final_structure_geometry_source": "auto_detected",
+          "property_anchor_source": "authoritative_address_point",
+          "property_anchor_quality_score": 0.95,
+          "parcel_id": "p-nearby-v2-103",
+          "parcel_lookup_method": "contains_point",
+          "ring_metrics": {
+            "ring_0_5_ft": {"vegetation_density": 9.0},
+            "ring_5_30_ft": {"vegetation_density": 27.0},
+            "ring_30_100_ft": {"vegetation_density": 52.0}
+          },
+          "near_structure_vegetation_0_5_pct": 10.0,
+          "canopy_adjacency_proxy_pct": 31.0,
+          "vegetation_continuity_proxy_pct": 53.0,
+          "nearest_high_fuel_patch_distance_ft": 185.0
+        }
+      },
+      "expected": {
+        "assessment_status_in": ["partially_scored", "fully_scored"],
+        "fallback_mode": "footprint",
+        "specificity_tiers": ["property_specific", "address_level"],
+        "comparison_allowed": true,
+        "confidence_language_contains_any": ["moderate confidence", "high confidence"]
+      }
+    },
+    {
+      "scenario_id": "nearby_v2_footprint_missing_point",
+      "description": "Nearby home with missing footprint and point-based fallback.",
+      "profile_tags": ["nearby_differentiation", "adjacent_pair", "geometry_gap", "point_fallback"],
+      "input_payload": {
+        "address": "140 Aspen Way, Missoula, MT",
+        "attributes": {
+          "roof_type": null,
+          "vent_type": null,
+          "defensible_space_ft": null,
+          "construction_year": null
+        },
+        "confirmed_fields": [],
+        "audience": "homeowner",
+        "tags": ["benchmark", "nearby-v2"]
+      },
+      "location": {"lat": 46.872500, "lon": -113.995300, "geocode_source": "benchmark-nearby-v2"},
+      "context": {
+        "burn_probability_index": 59.0,
+        "hazard_severity_index": 61.0,
+        "slope_index": 55.0,
+        "fuel_index": 60.0,
+        "moisture_index": 50.0,
+        "canopy_index": 58.0,
+        "wildland_distance_index": 60.0,
+        "historic_fire_index": 54.0,
+        "property_level_context": {
+          "footprint_used": false,
+          "footprint_status": "not_found",
+          "fallback_mode": "point_based",
+          "geometry_basis": "point",
+          "selection_mode": "point",
+          "structure_geometry_confidence": 0.33,
+          "ring_generation_mode": "point_annulus_fallback",
+          "final_structure_geometry_source": "raw_geocode_point",
+          "property_anchor_source": "approximate_geocode",
+          "property_anchor_quality_score": 0.42,
+          "feature_bundle_summary": {
+            "coverage_metrics": {
+              "observed_feature_count": 3,
+              "inferred_feature_count": 1,
+              "fallback_feature_count": 9,
+              "missing_feature_count": 4,
+              "observed_weight_fraction": 0.2,
+              "fallback_dominance_ratio": 0.53,
+              "structure_geometry_quality_score": 0.35,
+              "structure_geometry_confidence": 0.33,
+              "anchor_quality_score": 0.42,
+              "environmental_layer_coverage_score": 42.0,
+              "property_specificity_score": 30.0
+            }
+          }
+        }
+      },
+      "expected": {
+        "assessment_status_in": ["partially_scored", "insufficient_data", "fully_scored"],
+        "fallback_mode": "point_based",
+        "specificity_tiers": ["regional_estimate", "address_level", "insufficient_data"],
+        "comparison_allowed": false,
+        "confidence_language_contains_any": ["limited confidence", "confidence unavailable", "low confidence"]
+      }
+    },
+    {
+      "scenario_id": "nearby_v2_footprint_available",
+      "description": "Nearby home with footprint geometry and confirmed structure details.",
+      "profile_tags": ["nearby_differentiation", "adjacent_pair", "geometry_gap", "footprint"],
+      "input_payload": {
+        "address": "142 Aspen Way, Missoula, MT",
+        "attributes": {
+          "roof_type": "class a",
+          "vent_type": "ember-resistant",
+          "defensible_space_ft": 22,
+          "construction_year": 2006
+        },
+        "confirmed_fields": ["roof_type", "vent_type", "defensible_space_ft", "construction_year"],
+        "audience": "homeowner",
+        "tags": ["benchmark", "nearby-v2"]
+      },
+      "location": {"lat": 46.872545, "lon": -113.995345, "geocode_source": "benchmark-nearby-v2"},
+      "context": {
+        "burn_probability_index": 59.0,
+        "hazard_severity_index": 61.0,
+        "slope_index": 55.0,
+        "fuel_index": 60.0,
+        "moisture_index": 50.0,
+        "canopy_index": 58.0,
+        "wildland_distance_index": 60.0,
+        "historic_fire_index": 54.0,
+        "property_level_context": {
+          "footprint_used": true,
+          "footprint_status": "used",
+          "fallback_mode": "footprint",
+          "geometry_basis": "footprint",
+          "selection_mode": "polygon",
+          "structure_geometry_confidence": 0.9,
+          "ring_generation_mode": "footprint_aware_rings",
+          "final_structure_geometry_source": "auto_detected",
+          "property_anchor_source": "authoritative_address_point",
+          "property_anchor_quality_score": 0.9,
+          "parcel_id": "p-nearby-v2-142",
+          "parcel_lookup_method": "contains_point",
+          "ring_metrics": {
+            "ring_0_5_ft": {"vegetation_density": 31.0},
+            "ring_5_30_ft": {"vegetation_density": 43.0},
+            "ring_30_100_ft": {"vegetation_density": 51.0}
+          }
+        }
+      },
+      "expected": {
+        "assessment_status_in": ["partially_scored", "fully_scored"],
+        "fallback_mode": "footprint",
+        "specificity_tiers": ["property_specific", "address_level"],
+        "comparison_allowed": true,
+        "confidence_language_contains_any": ["moderate confidence", "high confidence"]
+      }
+    },
+    {
+      "scenario_id": "nearby_v2_inputs_absent",
+      "description": "Same local context but roof/vent/defensible-space inputs absent.",
+      "profile_tags": ["nearby_differentiation", "adjacent_pair", "inputs_gap", "footprint"],
+      "input_payload": {
+        "address": "160 Pine Creek Rd, Missoula, MT",
+        "attributes": {
+          "roof_type": null,
+          "vent_type": null,
+          "defensible_space_ft": null,
+          "construction_year": null
+        },
+        "confirmed_fields": [],
+        "audience": "homeowner",
+        "tags": ["benchmark", "nearby-v2"]
+      },
+      "location": {"lat": 46.872900, "lon": -113.995650, "geocode_source": "benchmark-nearby-v2"},
+      "context": {
+        "burn_probability_index": 61.0,
+        "hazard_severity_index": 63.0,
+        "slope_index": 47.0,
+        "fuel_index": 60.0,
+        "moisture_index": 52.0,
+        "canopy_index": 56.0,
+        "wildland_distance_index": 61.0,
+        "historic_fire_index": 55.0,
+        "property_level_context": {
+          "footprint_used": true,
+          "footprint_status": "used",
+          "fallback_mode": "footprint",
+          "geometry_basis": "footprint",
+          "structure_geometry_confidence": 0.9,
+          "ring_generation_mode": "footprint_aware_rings",
+          "final_structure_geometry_source": "auto_detected",
+          "property_anchor_source": "authoritative_address_point",
+          "property_anchor_quality_score": 0.9,
+          "ring_metrics": {
+            "ring_0_5_ft": {"vegetation_density": 38.0},
+            "ring_5_30_ft": {"vegetation_density": 50.0},
+            "ring_30_100_ft": {"vegetation_density": 58.0}
+          }
+        }
+      },
+      "expected": {
+        "assessment_status_in": ["partially_scored", "fully_scored"],
+        "fallback_mode": "footprint",
+        "specificity_tiers": ["property_specific", "address_level"],
+        "comparison_allowed": false,
+        "confidence_language_contains_any": ["limited confidence", "moderate confidence"]
+      }
+    },
+    {
+      "scenario_id": "nearby_v2_inputs_present",
+      "description": "Same local context with roof/vent/defensible-space details provided.",
+      "profile_tags": ["nearby_differentiation", "adjacent_pair", "inputs_gap", "footprint"],
+      "input_payload": {
+        "address": "162 Pine Creek Rd, Missoula, MT",
+        "attributes": {
+          "roof_type": "class a",
+          "vent_type": "ember-resistant",
+          "defensible_space_ft": 28,
+          "construction_year": 2010
+        },
+        "confirmed_fields": ["roof_type", "vent_type", "defensible_space_ft", "construction_year"],
+        "audience": "homeowner",
+        "tags": ["benchmark", "nearby-v2"]
+      },
+      "location": {"lat": 46.872945, "lon": -113.995695, "geocode_source": "benchmark-nearby-v2"},
+      "context": {
+        "burn_probability_index": 61.0,
+        "hazard_severity_index": 63.0,
+        "slope_index": 47.0,
+        "fuel_index": 60.0,
+        "moisture_index": 52.0,
+        "canopy_index": 56.0,
+        "wildland_distance_index": 61.0,
+        "historic_fire_index": 55.0,
+        "property_level_context": {
+          "footprint_used": true,
+          "footprint_status": "used",
+          "fallback_mode": "footprint",
+          "geometry_basis": "footprint",
+          "structure_geometry_confidence": 0.9,
+          "ring_generation_mode": "footprint_aware_rings",
+          "final_structure_geometry_source": "auto_detected",
+          "property_anchor_source": "authoritative_address_point",
+          "property_anchor_quality_score": 0.9,
+          "ring_metrics": {
+            "ring_0_5_ft": {"vegetation_density": 38.0},
+            "ring_5_30_ft": {"vegetation_density": 50.0},
+            "ring_30_100_ft": {"vegetation_density": 58.0}
+          }
+        }
+      },
+      "expected": {
+        "assessment_status_in": ["partially_scored", "fully_scored"],
+        "fallback_mode": "footprint",
+        "specificity_tiers": ["property_specific", "address_level"],
+        "comparison_allowed": true,
+        "confidence_language_contains_any": ["moderate confidence", "high confidence"]
+      }
+    },
+    {
+      "scenario_id": "nearby_v2_naip_dense_footprint",
+      "description": "Same regional context with stronger near-structure NAIP-like adjacency and continuity signal.",
+      "profile_tags": ["nearby_differentiation", "adjacent_pair", "naip_proxy", "footprint"],
+      "input_payload": {
+        "address": "180 Sycamore Trl, Missoula, MT",
+        "attributes": {
+          "roof_type": "class a",
+          "vent_type": "ember-resistant",
+          "defensible_space_ft": 20,
+          "construction_year": 2011
+        },
+        "confirmed_fields": ["roof_type", "vent_type", "defensible_space_ft", "construction_year"],
+        "audience": "homeowner",
+        "tags": ["benchmark", "nearby-v2"]
+      },
+      "location": {"lat": 46.873200, "lon": -113.995900, "geocode_source": "benchmark-nearby-v2"},
+      "context": {
+        "burn_probability_index": 60.0,
+        "hazard_severity_index": 62.0,
+        "slope_index": 46.0,
+        "fuel_index": 59.0,
+        "moisture_index": 52.0,
+        "canopy_index": 56.0,
+        "wildland_distance_index": 61.0,
+        "historic_fire_index": 54.0,
+        "property_level_context": {
+          "footprint_used": true,
+          "footprint_status": "used",
+          "fallback_mode": "footprint",
+          "geometry_basis": "footprint",
+          "structure_geometry_confidence": 0.9,
+          "ring_generation_mode": "footprint_aware_rings",
+          "final_structure_geometry_source": "auto_detected",
+          "ring_metrics": {
+            "ring_0_5_ft": {"vegetation_density": 46.0},
+            "ring_5_30_ft": {"vegetation_density": 57.0},
+            "ring_30_100_ft": {"vegetation_density": 62.0}
+          },
+          "near_structure_vegetation_0_5_pct": 64.0,
+          "canopy_adjacency_proxy_pct": 73.0,
+          "vegetation_continuity_proxy_pct": 70.0,
+          "nearest_high_fuel_patch_distance_ft": 38.0
+        }
+      },
+      "expected": {
+        "assessment_status_in": ["partially_scored", "fully_scored"],
+        "fallback_mode": "footprint",
+        "specificity_tiers": ["property_specific", "address_level"],
+        "comparison_allowed": true,
+        "confidence_language_contains_any": ["moderate confidence", "high confidence"]
+      }
+    },
+    {
+      "scenario_id": "nearby_v2_naip_sparse_footprint",
+      "description": "Same regional context with weaker near-structure NAIP-like adjacency and continuity signal.",
+      "profile_tags": ["nearby_differentiation", "adjacent_pair", "naip_proxy", "footprint"],
+      "input_payload": {
+        "address": "182 Sycamore Trl, Missoula, MT",
+        "attributes": {
+          "roof_type": "class a",
+          "vent_type": "ember-resistant",
+          "defensible_space_ft": 20,
+          "construction_year": 2011
+        },
+        "confirmed_fields": ["roof_type", "vent_type", "defensible_space_ft", "construction_year"],
+        "audience": "homeowner",
+        "tags": ["benchmark", "nearby-v2"]
+      },
+      "location": {"lat": 46.873245, "lon": -113.995945, "geocode_source": "benchmark-nearby-v2"},
+      "context": {
+        "burn_probability_index": 60.0,
+        "hazard_severity_index": 62.0,
+        "slope_index": 46.0,
+        "fuel_index": 59.0,
+        "moisture_index": 52.0,
+        "canopy_index": 56.0,
+        "wildland_distance_index": 61.0,
+        "historic_fire_index": 54.0,
+        "property_level_context": {
+          "footprint_used": true,
+          "footprint_status": "used",
+          "fallback_mode": "footprint",
+          "geometry_basis": "footprint",
+          "structure_geometry_confidence": 0.9,
+          "ring_generation_mode": "footprint_aware_rings",
+          "final_structure_geometry_source": "auto_detected",
+          "ring_metrics": {
+            "ring_0_5_ft": {"vegetation_density": 31.0},
+            "ring_5_30_ft": {"vegetation_density": 42.0},
+            "ring_30_100_ft": {"vegetation_density": 50.0}
+          },
+          "near_structure_vegetation_0_5_pct": 33.0,
+          "canopy_adjacency_proxy_pct": 37.0,
+          "vegetation_continuity_proxy_pct": 45.0,
+          "nearest_high_fuel_patch_distance_ft": 165.0
+        }
+      },
+      "expected": {
+        "assessment_status_in": ["partially_scored", "fully_scored"],
+        "fallback_mode": "footprint",
+        "specificity_tiers": ["property_specific", "address_level"],
+        "comparison_allowed": true,
+        "confidence_language_contains_any": ["moderate confidence", "high confidence"]
+      }
+    },
+    {
+      "scenario_id": "nearby_v2_naip_dense_point_fallback",
+      "description": "Point-fallback scenario with denser NAIP-like local signal; should remain cautious for comparisons.",
+      "profile_tags": ["nearby_differentiation", "adjacent_pair", "naip_proxy", "point_fallback", "abstention"],
+      "input_payload": {
+        "address": "220 Willow Bend, Missoula, MT",
+        "attributes": {
+          "roof_type": null,
+          "vent_type": null,
+          "defensible_space_ft": null,
+          "construction_year": null
+        },
+        "confirmed_fields": [],
+        "audience": "homeowner",
+        "tags": ["benchmark", "nearby-v2"]
+      },
+      "location": {"lat": 46.872300, "lon": -113.995100, "geocode_source": "benchmark-nearby-v2"},
+      "context": {
+        "burn_probability_index": 58.0,
+        "hazard_severity_index": 60.0,
+        "slope_index": 54.0,
+        "fuel_index": 59.0,
+        "moisture_index": 50.0,
+        "canopy_index": 57.0,
+        "wildland_distance_index": 60.0,
+        "historic_fire_index": 53.0,
+        "property_level_context": {
+          "footprint_used": false,
+          "footprint_status": "not_found",
+          "fallback_mode": "point_based",
+          "geometry_basis": "point",
+          "selection_mode": "point",
+          "structure_geometry_confidence": 0.34,
+          "ring_generation_mode": "point_annulus_fallback",
+          "final_structure_geometry_source": "raw_geocode_point",
+          "property_anchor_source": "approximate_geocode",
+          "property_anchor_quality_score": 0.44,
+          "near_structure_vegetation_0_5_pct": 41.0,
+          "canopy_adjacency_proxy_pct": 46.0,
+          "vegetation_continuity_proxy_pct": 44.0,
+          "nearest_high_fuel_patch_distance_ft": 120.0
+        }
+      },
+      "expected": {
+        "assessment_status_in": ["partially_scored", "insufficient_data", "fully_scored"],
+        "fallback_mode": "point_based",
+        "specificity_tiers": ["regional_estimate", "address_level", "insufficient_data"],
+        "comparison_allowed": false,
+        "confidence_language_contains_any": ["limited confidence", "confidence unavailable", "low confidence"],
+        "differentiation_modes": ["mostly_regional", "mixed"]
+      }
+    },
+    {
+      "scenario_id": "nearby_v2_naip_sparse_point_fallback",
+      "description": "Point-fallback scenario with sparser NAIP-like local signal; comparison still should remain disabled.",
+      "profile_tags": ["nearby_differentiation", "adjacent_pair", "naip_proxy", "point_fallback", "abstention"],
+      "input_payload": {
+        "address": "222 Willow Bend, Missoula, MT",
+        "attributes": {
+          "roof_type": null,
+          "vent_type": null,
+          "defensible_space_ft": null,
+          "construction_year": null
+        },
+        "confirmed_fields": [],
+        "audience": "homeowner",
+        "tags": ["benchmark", "nearby-v2"]
+      },
+      "location": {"lat": 46.872345, "lon": -113.995145, "geocode_source": "benchmark-nearby-v2"},
+      "context": {
+        "burn_probability_index": 58.0,
+        "hazard_severity_index": 60.0,
+        "slope_index": 54.0,
+        "fuel_index": 59.0,
+        "moisture_index": 50.0,
+        "canopy_index": 57.0,
+        "wildland_distance_index": 60.0,
+        "historic_fire_index": 53.0,
+        "property_level_context": {
+          "footprint_used": false,
+          "footprint_status": "not_found",
+          "fallback_mode": "point_based",
+          "geometry_basis": "point",
+          "selection_mode": "point",
+          "structure_geometry_confidence": 0.34,
+          "ring_generation_mode": "point_annulus_fallback",
+          "final_structure_geometry_source": "raw_geocode_point",
+          "property_anchor_source": "approximate_geocode",
+          "property_anchor_quality_score": 0.44,
+          "near_structure_vegetation_0_5_pct": 38.0,
+          "canopy_adjacency_proxy_pct": 43.0,
+          "vegetation_continuity_proxy_pct": 41.0,
+          "nearest_high_fuel_patch_distance_ft": 140.0
+        }
+      },
+      "expected": {
+        "assessment_status_in": ["partially_scored", "insufficient_data", "fully_scored"],
+        "fallback_mode": "point_based",
+        "specificity_tiers": ["regional_estimate", "address_level", "insufficient_data"],
+        "comparison_allowed": false,
+        "confidence_language_contains_any": ["limited confidence", "confidence unavailable", "low confidence"],
+        "differentiation_modes": ["mostly_regional", "mixed"]
+      }
+    }
+  ],
+  "relative_assertions": [
+    {
+      "assertion_id": "nearby_v2_dense0_5_local_subscore_gt_clear",
+      "left": "nearby_v2_dense_0_5ft_footprint",
+      "metric": "scores.home_ignition_vulnerability_score",
+      "op": ">",
+      "right": "nearby_v2_clear_0_5ft_footprint"
+    },
+    {
+      "assertion_id": "nearby_v2_dense0_5_top_risk_gt_clear",
+      "left": "nearby_v2_dense_0_5ft_footprint",
+      "metric": "scores.wildfire_risk_score",
+      "op": ">",
+      "right": "nearby_v2_clear_0_5ft_footprint"
+    },
+    {
+      "assertion_id": "nearby_v2_footprint_available_confidence_gt_missing",
+      "left": "nearby_v2_footprint_available",
+      "metric": "confidence.confidence_score",
+      "op": ">",
+      "right": "nearby_v2_footprint_missing_point"
+    },
+    {
+      "assertion_id": "nearby_v2_footprint_available_diff_confidence_gt_missing",
+      "left": "nearby_v2_footprint_available",
+      "metric": "differentiation.neighborhood_differentiation_confidence",
+      "op": ">",
+      "right": "nearby_v2_footprint_missing_point"
+    },
+    {
+      "assertion_id": "nearby_v2_missing_comparison_disabled_vs_available",
+      "left": "nearby_v2_footprint_missing_point",
+      "metric": "specificity.comparison_allowed",
+      "op": "<",
+      "right": "nearby_v2_footprint_available"
+    },
+    {
+      "assertion_id": "nearby_v2_inputs_present_confidence_gt_absent",
+      "left": "nearby_v2_inputs_present",
+      "metric": "confidence.confidence_score",
+      "op": ">",
+      "right": "nearby_v2_inputs_absent"
+    },
+    {
+      "assertion_id": "nearby_v2_inputs_absent_local_vulnerability_ge_present",
+      "left": "nearby_v2_inputs_absent",
+      "metric": "scores.home_ignition_vulnerability_score",
+      "op": ">=",
+      "right": "nearby_v2_inputs_present"
+    },
+    {
+      "assertion_id": "nearby_v2_naip_dense_local_subscore_gt_sparse",
+      "left": "nearby_v2_naip_dense_footprint",
+      "metric": "scores.home_ignition_vulnerability_score",
+      "op": ">",
+      "right": "nearby_v2_naip_sparse_footprint"
+    },
+    {
+      "assertion_id": "nearby_v2_naip_dense_top_risk_gt_sparse",
+      "left": "nearby_v2_naip_dense_footprint",
+      "metric": "scores.wildfire_risk_score",
+      "op": ">",
+      "right": "nearby_v2_naip_sparse_footprint"
+    },
+    {
+      "assertion_id": "nearby_v2_point_dense_local_subscore_ge_sparse",
+      "left": "nearby_v2_naip_dense_point_fallback",
+      "metric": "scores.home_ignition_vulnerability_score",
+      "op": ">=",
+      "right": "nearby_v2_naip_sparse_point_fallback"
+    },
+    {
+      "assertion_id": "nearby_v2_point_dense_top_risk_ge_sparse",
+      "left": "nearby_v2_naip_dense_point_fallback",
+      "metric": "scores.wildfire_risk_score",
+      "op": ">=",
+      "right": "nearby_v2_naip_sparse_point_fallback"
+    }
+  ],
+  "monotonic_assertions": [
+    {
+      "assertion_id": "nearby_v2_missing_fallback_weight_gt_available",
+      "left": "nearby_v2_footprint_missing_point",
+      "metric": "evidence_metrics.fallback_weight_fraction",
+      "op": ">",
+      "right": "nearby_v2_footprint_available"
+    },
+    {
+      "assertion_id": "nearby_v2_point_pair_diff_confidence_le_footprint_pair",
+      "left": "nearby_v2_naip_dense_point_fallback",
+      "metric": "differentiation.neighborhood_differentiation_confidence",
+      "op": "<=",
+      "right": "nearby_v2_naip_dense_footprint"
+    }
+  ]
+}

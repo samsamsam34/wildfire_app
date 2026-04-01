@@ -108,6 +108,7 @@ def test_homeowner_report_and_pdf_generate_for_complete_assessment(monkeypatch, 
     report = report_res.json()
 
     for key in (
+        "first_screen",
         "headline_risk_summary",
         "top_risk_drivers",
         "prioritized_actions",
@@ -154,6 +155,18 @@ def test_homeowner_report_and_pdf_generate_for_complete_assessment(monkeypatch, 
     assert isinstance(report["confidence_summary"], dict)
     assert report["specificity_summary"]["specificity_tier"] == assessed["specificity_summary"]["specificity_tier"]
     assert isinstance(report["specificity_summary"]["comparison_allowed"], bool)
+    first_screen = report.get("first_screen") or {}
+    assert list(first_screen.keys()) == [
+        "specificity_summary",
+        "headline_risk_summary",
+        "top_risk_drivers",
+        "top_actions",
+        "what_to_do_first",
+        "limitations_note",
+    ]
+    assert len(first_screen.get("top_risk_drivers") or []) <= 3
+    assert len(first_screen.get("top_actions") or []) <= 3
+    assert len(str(first_screen.get("limitations_note") or "")) <= 320
     assert len(report["top_recommended_actions"]) <= 3
     for action in report["top_recommended_actions"]:
         assert isinstance(action.get("why_this_matters"), str)
@@ -218,6 +231,9 @@ def test_homeowner_report_surfaces_mostly_regional_differentiation_mode(monkeypa
     assert specificity.get("specificity_tier") == "regional_estimate"
     assert specificity.get("comparison_allowed") is False
     assert "nearby homes may appear similar" in str(specificity.get("what_this_means") or "").lower()
+    first_screen = report.get("first_screen") or {}
+    assert "nearby homes may appear similar" in str(first_screen.get("limitations_note") or "").lower()
+    assert "may have" in str(first_screen.get("headline_risk_summary") or "").lower()
     trust_summary = (report.get("confidence_and_limitations") or {}).get("trust_summary") or {}
     assert trust_summary.get("differentiation_mode") == "mostly_regional"
     assert float(trust_summary.get("neighborhood_differentiation_confidence") or 0.0) <= 40.0
@@ -287,6 +303,7 @@ def test_homeowner_report_surfaces_fallback_limitations_and_optional_debug_block
     limitations = report["confidence_and_limitations"].get("limitations") or []
     assert len(limitations) >= 1
     assert report["confidence_and_limitations"]["confidence_tier"] in {"high", "moderate", "low", "preliminary"}
+    assert "fallback_decisions" not in report["confidence_and_limitations"]
     assert report["defensible_space_summary"]["analysis_status"] in {"partial", "unavailable", "complete"}
 
     debug_res = client.get(
@@ -296,6 +313,7 @@ def test_homeowner_report_surfaces_fallback_limitations_and_optional_debug_block
     debug_report = debug_res.json()
     assert isinstance(debug_report.get("professional_debug_metadata"), dict)
     assert "coverage_summary" in debug_report["professional_debug_metadata"]
+    assert isinstance((debug_report.get("confidence_and_limitations") or {}).get("fallback_decisions"), list)
 
 
 def test_homeowner_report_handles_unavailable_scores_and_long_text_deterministically(monkeypatch, tmp_path: Path):
@@ -354,7 +372,16 @@ def test_homeowner_report_handles_unavailable_scores_and_long_text_deterministic
 
 
 def test_homeowner_report_homeowner_focused_fields_across_confidence_tiers(monkeypatch, tmp_path: Path):
-    context = _ctx(env=58.0, wildland=62.0, historic=44.0)
+    context = _ctx(
+        env=58.0,
+        wildland=62.0,
+        historic=44.0,
+        ring_metrics={
+            "zone_0_5_ft": {"vegetation_density": 18.0, "coverage_pct": 16.0, "fuel_presence_proxy": 14.0},
+            "zone_5_30_ft": {"vegetation_density": 41.0, "coverage_pct": 37.0, "fuel_presence_proxy": 34.0},
+            "zone_30_100_ft": {"vegetation_density": 55.0, "coverage_pct": 52.0, "fuel_presence_proxy": 50.0},
+        },
+    )
     _setup(monkeypatch, tmp_path, context)
     assessed = _run_assessment("701 Confidence Tier Ln, Missoula, MT 59802")
 
@@ -445,14 +472,26 @@ def test_homeowner_report_homeowner_focused_fields_across_confidence_tiers(monke
             assert "appears to increase risk" in str((report.get("top_risk_drivers") or [""])[0]).lower()
             assert "appears to help reduce" in str(first.get("why_this_matters")).lower()
         if tier == "high":
-            assert report["headline_risk_summary"].startswith("Your home has ")
-            assert "is a major risk factor" in str((report.get("top_risk_drivers") or [""])[0]).lower()
-            assert "helps reduce" in str(first.get("why_this_matters")).lower()
-            assert "may help reduce" not in str(first.get("why_this_matters")).lower()
+            headline = str(report["headline_risk_summary"]).lower()
+            assert headline.startswith("your home has ") or headline.startswith("your home appears to have ")
+            driver_text = str((report.get("top_risk_drivers") or [""])[0]).lower()
+            assert ("is a major risk factor" in driver_text) or ("appears to increase risk" in driver_text)
+            why_text = str(first.get("why_this_matters")).lower()
+            assert ("helps reduce" in why_text) or ("appears to help reduce" in why_text)
+            assert "may help reduce" not in why_text
 
 
 def test_homeowner_report_degraded_data_produces_more_cautious_tone(monkeypatch, tmp_path: Path):
-    context = _ctx(env=61.0, wildland=58.0, historic=49.0)
+    context = _ctx(
+        env=61.0,
+        wildland=58.0,
+        historic=49.0,
+        ring_metrics={
+            "zone_0_5_ft": {"vegetation_density": 24.0, "coverage_pct": 20.0, "fuel_presence_proxy": 19.0},
+            "zone_5_30_ft": {"vegetation_density": 46.0, "coverage_pct": 42.0, "fuel_presence_proxy": 38.0},
+            "zone_30_100_ft": {"vegetation_density": 60.0, "coverage_pct": 57.0, "fuel_presence_proxy": 54.0},
+        },
+    )
     _setup(monkeypatch, tmp_path, context)
     assessed = _run_assessment("888 Tone Shift Ave, Missoula, MT 59802")
     original = app_main.store.get(assessed["assessment_id"])
@@ -490,9 +529,12 @@ def test_homeowner_report_degraded_data_produces_more_cautious_tone(monkeypatch,
     monkeypatch.setattr(app_main.store, "get", lambda _assessment_id, _obj=low: _obj)
     low_report = client.get(f"/report/{assessed['assessment_id']}/homeowner").json()
 
-    assert "your home has" in str(high_report.get("headline_risk_summary", "")).lower()
-    assert "is a major risk factor" in str((high_report.get("top_risk_drivers") or [""])[0]).lower()
-    assert "helps reduce" in str(((high_report.get("prioritized_actions") or [{}])[0]).get("why_this_matters") or "").lower()
+    high_headline = str(high_report.get("headline_risk_summary", "")).lower()
+    assert ("your home has" in high_headline) or ("your home appears to have" in high_headline)
+    high_driver = str((high_report.get("top_risk_drivers") or [""])[0]).lower()
+    assert ("is a major risk factor" in high_driver) or ("appears to increase risk" in high_driver)
+    high_why = str(((high_report.get("prioritized_actions") or [{}])[0]).get("why_this_matters") or "").lower()
+    assert ("helps reduce" in high_why) or ("appears to help reduce" in high_why)
 
     assert "your home may have" in str(low_report.get("headline_risk_summary", "")).lower()
     assert "may be contributing to risk" in str((low_report.get("top_risk_drivers") or [""])[0]).lower()
@@ -651,6 +693,7 @@ def test_export_homeowner_report_generates_clean_structured_output_across_confid
         exported = export_homeowner_report(patched, output_format="structured")
         assert isinstance(exported, dict)
         for required in (
+            "first_screen",
             "headline_risk_summary",
             "top_risk_drivers",
             "prioritized_actions",
@@ -667,6 +710,14 @@ def test_export_homeowner_report_generates_clean_structured_output_across_confid
         assert isinstance(exported.get("confidence_summary"), dict)
         assert isinstance(exported.get("trust_summary"), dict)
         assert isinstance(exported.get("improve_your_result"), dict)
+        assert list((exported.get("first_screen") or {}).keys()) == [
+            "specificity_summary",
+            "headline_risk_summary",
+            "top_risk_drivers",
+            "top_actions",
+            "what_to_do_first",
+            "limitations_note",
+        ]
 
 
 def test_export_homeowner_report_low_confidence_includes_clear_limitations_and_pdf(monkeypatch, tmp_path: Path):
@@ -689,7 +740,87 @@ def test_export_homeowner_report_low_confidence_includes_clear_limitations_and_p
     assert confidence_summary.get("confidence_tier") in {"low", "preliminary"}
     assert "estimated" in str(exported.get("limitations_notice") or "").lower() or "missing" in str(exported.get("limitations_notice") or "").lower()
     assert "not a guarantee" in str(exported.get("disclaimer") or "").lower()
+    first_screen = exported.get("first_screen") or {}
+    assert len(first_screen.get("top_actions") or []) >= 1
+    assert str((first_screen.get("what_to_do_first") or {}).get("action") or "").strip()
 
     pdf_bytes = export_homeowner_report(low, output_format="pdf")
     assert isinstance(pdf_bytes, bytes)
     assert pdf_bytes.startswith(b"%PDF-1.4")
+
+
+def test_homeowner_report_demotes_optional_calibration_metadata_in_consumer_view(monkeypatch, tmp_path: Path):
+    context = _ctx(env=54.0, wildland=43.0, historic=29.0)
+    _setup(monkeypatch, tmp_path, context)
+    assessed = _run_assessment("77 Optional Calibration Ln, Missoula, MT 59802")
+    original = app_main.store.get(assessed["assessment_id"])
+    assert original is not None
+
+    calibrated = original.model_copy(deep=True)
+    calibrated.calibration_applied = True
+    calibrated.calibration_status = "applied"
+    calibrated.calibration_method = "logistic"
+    calibrated.calibrated_damage_likelihood = 0.41
+    calibrated.empirical_damage_likelihood_proxy = 0.41
+    calibrated.empirical_loss_likelihood_proxy = 0.41
+    calibrated.calibration_version = "0.3.0"
+
+    monkeypatch.setattr(app_main.store, "get", lambda _assessment_id, _obj=calibrated: _obj)
+    report = client.get(f"/report/{assessed['assessment_id']}/homeowner").json()
+
+    first_screen = report.get("first_screen") or {}
+    homeowner_text = " ".join(
+        [
+            str(first_screen.get("headline_risk_summary") or ""),
+            " ".join(str(x) for x in (first_screen.get("top_risk_drivers") or [])),
+            " ".join(str((x or {}).get("action") or "") for x in (first_screen.get("top_actions") or [])),
+        ]
+    ).lower()
+    assert "calibrat" not in homeowner_text
+
+    score_summary = report.get("score_summary") or {}
+    assert score_summary.get("calibration_status") == "applied"
+    assert score_summary.get("calibrated_damage_likelihood") == 0.41
+    assert "optional/additive" in str(score_summary.get("public_outcome_calibration_note") or "").lower()
+
+    metadata = report.get("metadata") or {}
+    optional_calibration = metadata.get("optional_public_outcome_calibration") or {}
+    assert optional_calibration.get("available") is True
+    assert "additive context only" in str(optional_calibration.get("summary") or "").lower()
+    assert "not be interpreted as insurer underwriting" in str(optional_calibration.get("caveat") or "").lower()
+
+    assert report.get("professional_debug_metadata") is None
+
+    debug_report = client.get(
+        f"/report/{assessed['assessment_id']}/homeowner?include_professional_debug_metadata=true"
+    ).json()
+    gov_note = ((debug_report.get("professional_debug_metadata") or {}).get("public_outcome_governance_note") or {})
+    assert "internal governance metadata" in str(gov_note.get("summary") or "").lower()
+    docs = gov_note.get("docs") or []
+    assert "docs/public_outcome_validation.md" in docs
+    assert "docs/public_outcome_calibration.md" in docs
+
+
+def test_export_homeowner_report_includes_optional_calibration_block_without_foregrounding(monkeypatch, tmp_path: Path):
+    context = _ctx(env=51.0, wildland=40.0, historic=26.0)
+    _setup(monkeypatch, tmp_path, context)
+    assessed = _run_assessment("78 Optional Calibration Export Ln, Missoula, MT 59802")
+    original = app_main.store.get(assessed["assessment_id"])
+    assert original is not None
+
+    calibrated = original.model_copy(deep=True)
+    calibrated.calibration_applied = True
+    calibrated.calibration_status = "applied"
+    calibrated.calibrated_damage_likelihood = 0.36
+    calibrated.empirical_damage_likelihood_proxy = 0.36
+    calibrated.calibration_version = "0.3.0"
+
+    exported = export_homeowner_report(calibrated, output_format="structured")
+    assert isinstance(exported, dict)
+    assert "headline_risk_summary" in exported
+    assert "top_risk_drivers" in exported
+    assert "prioritized_actions" in exported
+    optional_calibration = exported.get("optional_public_outcome_calibration") or {}
+    assert optional_calibration.get("available") is True
+    assert optional_calibration.get("calibrated_public_outcome_probability") == 0.36
+    assert "additive context only" in str(optional_calibration.get("summary") or "").lower()

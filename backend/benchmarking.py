@@ -721,6 +721,11 @@ def _scenario_snapshot(
         if isinstance(homeowner_summary.get("trust_summary"), dict)
         else {}
     )
+    homeowner_confidence_summary = (
+        homeowner_summary.get("confidence_summary")
+        if isinstance(homeowner_summary.get("confidence_summary"), dict)
+        else {}
+    )
     differentiation_source = (
         result.developer_diagnostics.get("differentiation_diagnostics")
         if isinstance(result.developer_diagnostics, dict)
@@ -758,6 +763,29 @@ def _scenario_snapshot(
         ).strip()
         or None
     )
+    confidence_language = str(
+        homeowner_trust_summary.get("confidence_level")
+        or homeowner_confidence_summary.get("label")
+        or str(result.confidence_tier)
+    ).strip()
+    specificity_obj = (
+        result.specificity_summary.model_dump()
+        if hasattr(result.specificity_summary, "model_dump")
+        else {}
+    )
+    if not isinstance(specificity_obj, dict):
+        specificity_obj = {}
+    specificity_tier = str(
+        specificity_obj.get("specificity_tier")
+        or result.assessment_specificity_tier
+        or "regional_estimate"
+    )
+    comparison_allowed = bool(
+        specificity_obj.get("comparison_allowed")
+        if "comparison_allowed" in specificity_obj
+        else (homeowner_trust_summary.get("parcel_level_comparison_allowed"))
+    )
+    specificity_headline = str(specificity_obj.get("headline") or "").strip()
 
     return {
         "scenario_id": scenario["scenario_id"],
@@ -781,11 +809,17 @@ def _scenario_snapshot(
         "confidence": {
             "confidence_score": result.confidence_score,
             "confidence_tier": result.confidence_tier,
+            "confidence_language": confidence_language,
             "use_restriction": result.use_restriction,
             "missing_critical_fields": list(result.assessment_diagnostics.critical_inputs_missing or []),
             "missing_critical_fields_count": len(result.assessment_diagnostics.critical_inputs_missing or []),
             "inferred_fields": list(result.assessment_diagnostics.inferred_inputs or []),
             "inferred_fields_count": len(result.assessment_diagnostics.inferred_inputs or []),
+        },
+        "specificity": {
+            "specificity_tier": specificity_tier,
+            "comparison_allowed": comparison_allowed,
+            "headline": specificity_headline,
         },
         "assessment_status": result.assessment_status,
         "assessment_blockers": list(result.assessment_blockers or []),
@@ -863,6 +897,40 @@ def _evaluate_scenario_expectations(snapshot: dict[str, Any], expected: dict[str
     if isinstance(expected_confidence, list) and expected_confidence:
         actual = snapshot["confidence"]["confidence_tier"]
         add_check("confidence_tier", actual in expected_confidence, f"expected_in={expected_confidence} actual={actual}")
+
+    expected_specificity = expected.get("specificity_tiers")
+    if isinstance(expected_specificity, list) and expected_specificity:
+        actual = str((snapshot.get("specificity") or {}).get("specificity_tier") or "")
+        add_check(
+            "specificity_tier",
+            actual in expected_specificity,
+            f"expected_in={expected_specificity} actual={actual}",
+        )
+
+    if "comparison_allowed" in expected:
+        actual = bool((snapshot.get("specificity") or {}).get("comparison_allowed"))
+        wanted = bool(expected.get("comparison_allowed"))
+        add_check("comparison_allowed", actual == wanted, f"expected={wanted} actual={actual}")
+
+    confidence_language_contains_any = expected.get("confidence_language_contains_any")
+    if isinstance(confidence_language_contains_any, list) and confidence_language_contains_any:
+        actual = str((snapshot.get("confidence") or {}).get("confidence_language") or "").lower()
+        tokens = [str(token).strip().lower() for token in confidence_language_contains_any if str(token).strip()]
+        passed = any(token in actual for token in tokens) if tokens else False
+        add_check(
+            "confidence_language",
+            passed,
+            f"expected_any={tokens} actual={actual}",
+        )
+
+    differentiation_modes = expected.get("differentiation_modes")
+    if isinstance(differentiation_modes, list) and differentiation_modes:
+        actual = str((snapshot.get("differentiation") or {}).get("differentiation_mode") or "")
+        add_check(
+            "differentiation_mode",
+            actual in differentiation_modes,
+            f"expected_in={differentiation_modes} actual={actual}",
+        )
 
     expected_restriction = expected.get("use_restrictions")
     if isinstance(expected_restriction, list) and expected_restriction:
@@ -971,6 +1039,14 @@ def _build_nearby_differentiation_performance_summary(
             "failed_assertions": [],
             "local_subscore_assertions": {"count": 0, "passed": 0, "failed": 0},
             "confidence_caution_assertions": {"count": 0, "passed": 0, "failed": 0},
+            "separation_analysis": {
+                "pair_count": 0,
+                "separation_achieved_count": 0,
+                "collapsed_toward_similarity_count": 0,
+                "collapsed_correctly_flagged_low_specificity_count": 0,
+                "collapsed_not_flagged_count": 0,
+                "pairs": [],
+            },
             "scenario_diagnostics": [],
             "notes": [
                 "No nearby-home differentiation scenarios were tagged in this pack.",
@@ -1016,6 +1092,8 @@ def _build_nearby_differentiation_performance_summary(
         if not isinstance(snap, dict):
             continue
         differentiation = snap.get("differentiation") if isinstance(snap.get("differentiation"), dict) else {}
+        specificity = snap.get("specificity") if isinstance(snap.get("specificity"), dict) else {}
+        confidence = snap.get("confidence") if isinstance(snap.get("confidence"), dict) else {}
         scenario_diagnostics.append(
             {
                 "scenario_id": scenario_id,
@@ -1033,6 +1111,91 @@ def _build_nearby_differentiation_performance_summary(
                 "nearby_home_comparison_safeguard_triggered": bool(
                     differentiation.get("nearby_home_comparison_safeguard_triggered")
                 ),
+                "specificity_tier": str(specificity.get("specificity_tier") or ""),
+                "comparison_allowed": bool(specificity.get("comparison_allowed")),
+                "confidence_language": str(confidence.get("confidence_language") or ""),
+            }
+        )
+
+    def _collapse_threshold(metric: str) -> float | None:
+        normalized = str(metric or "").strip()
+        if normalized.startswith("scores.wildfire_risk_score"):
+            return 3.0
+        if normalized.startswith("scores.home_ignition_vulnerability_score"):
+            return 2.0
+        if normalized.startswith("scores.site_hazard_score"):
+            return 2.0
+        if normalized.startswith("scores.insurance_readiness_score"):
+            return 2.0
+        return None
+
+    pair_rows: list[dict[str, Any]] = []
+    separation_achieved_count = 0
+    collapsed_toward_similarity_count = 0
+    collapsed_correctly_flagged_count = 0
+    for assertion in relevant_assertions:
+        metric = str(assertion.get("metric") or "")
+        threshold = _collapse_threshold(metric)
+        if threshold is None:
+            continue
+        left_id = str(assertion.get("left") or "")
+        right_id = str(assertion.get("right") or "")
+        left_value = _safe_float(assertion.get("left_value"))
+        right_value = _safe_float(assertion.get("right_value"))
+        if left_value is None or right_value is None:
+            continue
+        delta = abs(float(left_value) - float(right_value))
+        passed = bool(assertion.get("passed", False))
+        if passed:
+            separation_achieved_count += 1
+        left_snapshot = snapshots.get(left_id) if isinstance(snapshots.get(left_id), dict) else {}
+        right_snapshot = snapshots.get(right_id) if isinstance(snapshots.get(right_id), dict) else {}
+        left_specificity = (
+            left_snapshot.get("specificity")
+            if isinstance(left_snapshot.get("specificity"), dict)
+            else {}
+        )
+        right_specificity = (
+            right_snapshot.get("specificity")
+            if isinstance(right_snapshot.get("specificity"), dict)
+            else {}
+        )
+        left_diff = (
+            left_snapshot.get("differentiation")
+            if isinstance(left_snapshot.get("differentiation"), dict)
+            else {}
+        )
+        right_diff = (
+            right_snapshot.get("differentiation")
+            if isinstance(right_snapshot.get("differentiation"), dict)
+            else {}
+        )
+        low_specificity_flagged = bool(
+            (not bool(left_specificity.get("comparison_allowed")))
+            or (not bool(right_specificity.get("comparison_allowed")))
+            or str(left_specificity.get("specificity_tier") or "") in {"regional_estimate", "insufficient_data"}
+            or str(right_specificity.get("specificity_tier") or "") in {"regional_estimate", "insufficient_data"}
+            or bool(left_diff.get("nearby_home_comparison_safeguard_triggered"))
+            or bool(right_diff.get("nearby_home_comparison_safeguard_triggered"))
+        )
+        effective_threshold = threshold * (3.0 if low_specificity_flagged else 1.0)
+        collapsed = delta <= effective_threshold
+        if collapsed:
+            collapsed_toward_similarity_count += 1
+        if collapsed and low_specificity_flagged:
+            collapsed_correctly_flagged_count += 1
+        pair_rows.append(
+            {
+                "assertion_id": str(assertion.get("assertion_id") or ""),
+                "left": left_id,
+                "right": right_id,
+                "metric": metric,
+                "op": str(assertion.get("op") or ""),
+                "passed": passed,
+                "absolute_delta": round(delta, 3),
+                "collapse_threshold": effective_threshold,
+                "collapsed_toward_similarity": collapsed,
+                "low_specificity_flagged": low_specificity_flagged,
             }
         )
 
@@ -1059,9 +1222,18 @@ def _build_nearby_differentiation_performance_summary(
             "passed": caution_pass,
             "failed": max(0, caution_total - caution_pass),
         },
+        "separation_analysis": {
+            "pair_count": len(pair_rows),
+            "separation_achieved_count": separation_achieved_count,
+            "collapsed_toward_similarity_count": collapsed_toward_similarity_count,
+            "collapsed_correctly_flagged_low_specificity_count": collapsed_correctly_flagged_count,
+            "collapsed_not_flagged_count": max(0, collapsed_toward_similarity_count - collapsed_correctly_flagged_count),
+            "pairs": pair_rows,
+        },
         "scenario_diagnostics": scenario_diagnostics,
         "notes": [
             "Nearby-home differentiation scenarios should separate local sub-scores while confidence/differentiation diagnostics track data quality.",
+            "Honest abstention is treated as success when local-condition differences collapse under low-specificity evidence and safeguard flags are raised.",
         ],
     }
 

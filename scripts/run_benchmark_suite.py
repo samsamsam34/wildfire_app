@@ -62,6 +62,11 @@ def main(argv: list[str] | None = None) -> int:
                     "assertion_fail_count": nearby.get("assertion_fail_count"),
                     "local_subscore_assertion_fail_count": (nearby.get("local_subscore_assertions") or {}).get("failed"),
                     "confidence_caution_assertion_fail_count": (nearby.get("confidence_caution_assertions") or {}).get("failed"),
+                    "separation_achieved_count": (nearby.get("separation_analysis") or {}).get("separation_achieved_count"),
+                    "collapsed_toward_similarity_count": (nearby.get("separation_analysis") or {}).get("collapsed_toward_similarity_count"),
+                    "collapsed_correctly_flagged_low_specificity_count": (
+                        (nearby.get("separation_analysis") or {}).get("collapsed_correctly_flagged_low_specificity_count")
+                    ),
                 },
             },
             indent=2,
