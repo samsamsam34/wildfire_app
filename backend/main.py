@@ -5373,6 +5373,11 @@ def _run_assessment(
         or float(risk.fallback_weight_fraction) >= 0.60
         or float(coverage_preflight.get("regional_enrichment_consumption_score") or 100.0) < 60.0
     )
+    structure_data_completeness = float(risk.structure_data_completeness or 0.0)
+    structure_assumption_mode = str(risk.structure_assumption_mode or "unknown")
+    if structure_assumption_mode not in {"observed", "mixed", "default_assumed"}:
+        structure_assumption_mode = "unknown"
+    structure_score_confidence = float(risk.structure_score_confidence or 0.0)
     developer_diagnostics = {
         "fallback_decisions": fallback_decisions,
         "score_availability_notes": score_availability_notes,
@@ -5400,6 +5405,9 @@ def _run_assessment(
         "fallback_feature_count": int(coverage_preflight.get("fallback_feature_count") or risk.fallback_feature_count),
         "missing_feature_count": int(coverage_preflight.get("missing_feature_count") or 0),
         "fallback_weight_fraction": float(risk.fallback_weight_fraction),
+        "structure_data_completeness": structure_data_completeness,
+        "structure_assumption_mode": structure_assumption_mode,
+        "structure_score_confidence": structure_score_confidence,
         "scoring_status": scoring_status,
         "computed_components": computed_components,
         "blocked_components": blocked_components,
@@ -5439,6 +5447,9 @@ def _run_assessment(
                 ),
                 1,
             ),
+            "structure_data_completeness": round(structure_data_completeness, 1),
+            "structure_assumption_mode": structure_assumption_mode,
+            "structure_score_confidence": round(structure_score_confidence, 1),
         },
         "differentiation": differentiation_snapshot,
         "home_hardening_readiness_precision": "provisional" if readiness_provisional else "stable",
@@ -5876,6 +5887,9 @@ def _run_assessment(
         observed_weight_fraction=float(risk.observed_weight_fraction),
         fallback_dominance_ratio=float(risk.fallback_dominance_ratio),
         fallback_weight_fraction=float(risk.fallback_weight_fraction),
+        structure_data_completeness=structure_data_completeness,
+        structure_assumption_mode=structure_assumption_mode,
+        structure_score_confidence=structure_score_confidence,
         geometry_quality_score=float(coverage_preflight.get("geometry_quality_score") or risk.geometry_quality_score),
         regional_context_coverage_score=float(
             coverage_preflight.get("regional_context_coverage_score") or risk.regional_context_coverage_score
@@ -6206,6 +6220,9 @@ def _run_assessment(
             "inferred_feature_count": result.inferred_feature_count,
             "fallback_feature_count": result.fallback_feature_count,
             "missing_feature_count": result.missing_feature_count,
+            "structure_data_completeness": result.structure_data_completeness,
+            "structure_assumption_mode": result.structure_assumption_mode,
+            "structure_score_confidence": result.structure_score_confidence,
             "fallback_evidence_fraction": round(
                 float(result.fallback_feature_count)
                 / float(

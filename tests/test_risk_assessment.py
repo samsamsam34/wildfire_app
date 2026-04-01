@@ -239,6 +239,9 @@ def _assert_core_contract(body: dict) -> None:
         "observed_weight_fraction",
         "fallback_dominance_ratio",
         "fallback_weight_fraction",
+        "structure_data_completeness",
+        "structure_assumption_mode",
+        "structure_score_confidence",
         "geometry_quality_score",
         "regional_context_coverage_score",
         "property_specificity_score",
@@ -4957,6 +4960,66 @@ def test_missing_structure_specific_fields_still_scores_home_with_fallbacks(monk
     fallback_decisions = (assessed["assessment_diagnostics"] or {}).get("fallback_decisions") or []
     assert any(str(d.get("missing_input")) == "roof_type" for d in fallback_decisions)
     assert any(str(d.get("missing_input")) == "vent_type" for d in fallback_decisions)
+    assert assessed["structure_data_completeness"] <= 40.0
+    assert assessed["structure_assumption_mode"] in {"default_assumed", "mixed"}
+    assert assessed["structure_score_confidence"] <= 55.0
+    struct_weight = float(
+        assessed["weighted_contributions"]["structure_vulnerability_risk"]["effective_weight"] or 0.0
+    )
+    assert struct_weight < 0.09
+    readiness_factor_names = {f["name"] for f in assessed["readiness_factors"]}
+    assert "structure_data_completeness" in readiness_factor_names or "structure_evidence_quality" in readiness_factor_names
+
+
+def test_missing_structure_details_reduce_structure_scoring_confidence_vs_observed(monkeypatch, tmp_path):
+    ctx = _ctx(env=52.0, wildland=49.0, historic=44.0)
+    ctx.property_level_context["ring_metrics"] = {
+        "ring_0_5_ft": {"vegetation_density": 44.0},
+        "ring_5_30_ft": {"vegetation_density": 51.0},
+        "ring_30_100_ft": {"vegetation_density": 46.0},
+    }
+    ctx.property_level_context["footprint_used"] = True
+    ctx.structure_ring_metrics = ctx.property_level_context["ring_metrics"]
+    _setup(monkeypatch, tmp_path, ctx)
+
+    observed = _run(
+        _payload(
+            "Observed Structure Confidence",
+            {
+                "roof_type": "class a",
+                "vent_type": "ember-resistant",
+                "window_type": "dual pane tempered",
+                "construction_year": 2017,
+                "defensible_space_ft": 24,
+            },
+            confirmed=["roof_type", "vent_type", "window_type", "construction_year", "defensible_space_ft"],
+        )
+    )
+    unknown = _run(
+        _payload(
+            "Unknown Structure Confidence",
+            {"defensible_space_ft": 24},
+            confirmed=["defensible_space_ft"],
+        )
+    )
+
+    assert unknown["structure_data_completeness"] < observed["structure_data_completeness"]
+    assert unknown["structure_score_confidence"] < observed["structure_score_confidence"]
+    assert unknown["structure_score_confidence"] <= 55.0
+    assert observed["structure_score_confidence"] >= 70.0
+    assert unknown["structure_assumption_mode"] in {"default_assumed", "mixed"}
+    assert observed["structure_assumption_mode"] in {"observed", "mixed"}
+
+    observed_weight = float(
+        observed["weighted_contributions"]["structure_vulnerability_risk"]["effective_weight"] or 0.0
+    )
+    unknown_weight = float(
+        unknown["weighted_contributions"]["structure_vulnerability_risk"]["effective_weight"] or 0.0
+    )
+    assert unknown_weight < observed_weight
+
+    unknown_structure_score = float(unknown["submodel_scores"]["structure_vulnerability_risk"]["score"])
+    assert 30.0 <= unknown_structure_score <= 70.0
 
 
 def test_partial_noncritical_layer_coverage_degrades_without_fatal_failure(monkeypatch, tmp_path):

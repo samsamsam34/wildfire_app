@@ -96,6 +96,9 @@ class RiskComputation:
     geometry_quality_score: float = 0.0
     regional_context_coverage_score: float = 0.0
     property_specificity_score: float = 0.0
+    structure_data_completeness: float = 0.0
+    structure_assumption_mode: str = "unknown"
+    structure_score_confidence: float = 0.0
     access_provisional: bool = True
     access_note: str = (
         "Access exposure is derived separately from wildfire total scoring and may be limited by available road-network data."
@@ -775,6 +778,15 @@ class RiskEngine:
         building_age_material_proxy_risk = _to_float(
             (context.property_level_context or {}).get("building_age_material_proxy_risk")
         )
+        window = (attrs.window_type or "unknown").lower()
+        window_ignition = None
+        if attrs.window_type is not None:
+            if "tempered" in window:
+                window_ignition = 26.0
+            elif "dual" in window or "double" in window:
+                window_ignition = 34.0
+            else:
+                window_ignition = 58.0
 
         def _construction_risk_from_year(year_value: int | float | None) -> float | None:
             if year_value is None:
@@ -826,17 +838,75 @@ class RiskEngine:
         else:
             construction_risk = _construction_risk_from_year(attrs.construction_year)
 
+        structure_observed_fields: list[str] = []
+        structure_inferred_fields: list[str] = []
+        structure_defaulted_fields: list[str] = []
+        if attrs.roof_type is not None:
+            structure_observed_fields.append("roof_type")
+        else:
+            structure_defaulted_fields.append("roof_type")
+        if attrs.vent_type is not None:
+            structure_observed_fields.append("vent_type")
+        else:
+            structure_defaulted_fields.append("vent_type")
+        if attrs.window_type is not None:
+            structure_observed_fields.append("window_type")
+        else:
+            structure_defaulted_fields.append("window_type")
+        if attrs.construction_year is not None:
+            structure_observed_fields.append("construction_year")
+        elif construction_risk is not None:
+            structure_inferred_fields.append("construction_year")
+        else:
+            structure_defaulted_fields.append("construction_year")
+
+        structure_completeness_units = float(len(structure_observed_fields)) + (0.5 * float(len(structure_inferred_fields)))
+        structure_data_completeness = max(0.0, min(100.0, (structure_completeness_units / 4.0) * 100.0))
+        if len(structure_observed_fields) >= 3 and not structure_defaulted_fields:
+            structure_assumption_mode = "observed"
+        elif len(structure_observed_fields) == 0 and len(structure_inferred_fields) == 0:
+            structure_assumption_mode = "default_assumed"
+        else:
+            structure_assumption_mode = "mixed"
+        structure_geometry_confidence = _to_float(property_level_context.get("structure_geometry_confidence"))
+        if structure_geometry_confidence is None:
+            structure_geometry_confidence = 0.55
+        structure_geometry_confidence = max(0.0, min(1.0, float(structure_geometry_confidence)))
+        structure_score_confidence = (0.85 * structure_data_completeness) + (15.0 * structure_geometry_confidence)
+        if structure_assumption_mode == "default_assumed":
+            structure_score_confidence = min(structure_score_confidence, 32.0)
+            structure_assumptions.append(
+                "Structure details are mostly unknown; structure vulnerability used conservative neutral assumptions."
+            )
+        elif len(structure_observed_fields) <= 1 and len(structure_defaulted_fields) >= 2:
+            structure_score_confidence = min(structure_score_confidence, 56.0)
+            structure_assumptions.append(
+                "Structure details are sparse; structure vulnerability confidence is reduced."
+            )
+        if attrs.roof_type is None and attrs.vent_type is None:
+            structure_score_confidence = min(structure_score_confidence, 52.0)
+            structure_assumptions.append(
+                "Roof and vent details are missing; ember hardening interpretation is provisional."
+            )
+        structure_score_confidence = max(5.0, min(100.0, structure_score_confidence))
+
         structure_score = weighted_score(
             [
-                (0.33, roof_ignition, "Roof type unavailable for structure vulnerability model."),
-                (0.25, vent_ignition, "Vent type unavailable for structure vulnerability model."),
-                (0.23, construction_risk, "Construction year and building-age proxy unavailable for structure vulnerability model."),
+                (0.30, roof_ignition, "Roof type unavailable for structure vulnerability model."),
+                (0.23, vent_ignition, "Vent type unavailable for structure vulnerability model."),
+                (0.20, construction_risk, "Construction year and building-age proxy unavailable for structure vulnerability model."),
+                (0.10, window_ignition, "Window type unavailable for structure vulnerability model."),
                 (0.08, structure_density_proxy_index, "Structure-density proxy unavailable for structure vulnerability model."),
-                (0.07, nearest_structure_isolation_index, "Nearest-structure isolation proxy unavailable for structure vulnerability model."),
+                (0.05, nearest_structure_isolation_index, "Nearest-structure isolation proxy unavailable for structure vulnerability model."),
                 (0.04, clustering_index, "Structure clustering proxy unavailable for structure vulnerability model."),
             ],
             structure_assumptions,
         )
+        # Low-confidence structure evidence should not yield highly separated structure
+        # vulnerability scores; damp toward a neutral anchor when details are mostly assumed.
+        neutral_anchor = 50.0
+        confidence_multiplier = max(0.22, min(1.0, float(structure_score_confidence) / 100.0))
+        structure_score = neutral_anchor + ((float(structure_score) - neutral_anchor) * confidence_multiplier)
         structure_clamped = clamp_score(structure_score)
         submodels["structure_vulnerability_risk"] = SubmodelResult(
             score=structure_clamped,
@@ -847,6 +917,7 @@ class RiskEngine:
                 "construction_risk_proxy": construction_risk,
                 "building_age_proxy_year": building_age_proxy_year,
                 "building_age_material_proxy_risk": building_age_material_proxy_risk,
+                "window_ignition_proxy": window_ignition,
                 "structure_density_proxy_index": structure_density_proxy_index,
                 "distance_to_nearest_structure_ft": distance_to_nearest_structure_ft,
                 "clustering_index": clustering_index,
@@ -854,6 +925,12 @@ class RiskEngine:
                 "nearest_structure_distance_ft": nearest_structure_distance_ft,
                 "nearest_structure_proximity_index": nearest_structure_proximity_index,
                 "nearest_structure_isolation_index": nearest_structure_isolation_index,
+                "structure_data_completeness": round(structure_data_completeness, 1),
+                "structure_assumption_mode": structure_assumption_mode,
+                "structure_score_confidence": round(structure_score_confidence, 1),
+                "structure_observed_fields": list(structure_observed_fields),
+                "structure_inferred_fields": list(structure_inferred_fields),
+                "structure_defaulted_fields": list(structure_defaulted_fields),
             },
             assumptions=structure_assumptions,
             raw_score=round(float(structure_score), 4),
@@ -1017,6 +1094,20 @@ class RiskEngine:
             else (85.0 if geometry_basis == "footprint" else (62.0 if geometry_basis == "parcel" else 42.0))
         )
         feature_fallback_ratio = float(bundle_metrics.get("fallback_dominance_ratio") or 0.0)
+        structure_model_inputs = (
+            submodels.get("structure_vulnerability_risk").key_inputs
+            if isinstance(submodels.get("structure_vulnerability_risk"), SubmodelResult)
+            else {}
+        )
+        try:
+            structure_data_completeness = float((structure_model_inputs or {}).get("structure_data_completeness") or 0.0)
+        except (TypeError, ValueError):
+            structure_data_completeness = 0.0
+        structure_assumption_mode = str((structure_model_inputs or {}).get("structure_assumption_mode") or "unknown")
+        try:
+            structure_score_confidence = float((structure_model_inputs or {}).get("structure_score_confidence") or 0.0)
+        except (TypeError, ValueError):
+            structure_score_confidence = 0.0
         ring_metrics = (
             property_level_context.get("ring_metrics")
             if isinstance(property_level_context.get("ring_metrics"), dict)
@@ -1149,12 +1240,24 @@ class RiskEngine:
             has_fallback_tokens = any(
                 tok in assumptions_text for tok in ("fallback", "proxy", "missing", "unavailable", "point-based")
             )
+            if name == "structure_vulnerability_risk":
+                observed_fraction = min(
+                    observed_fraction,
+                    max(0.12, min(1.0, structure_score_confidence / 100.0)),
+                )
             availability_multiplier = _availability_multiplier(
                 name,
                 observed_fraction,
                 assumptions_text,
                 has_fallback_tokens=has_fallback_tokens,
             )
+            if name == "structure_vulnerability_risk":
+                availability_multiplier *= max(0.20, min(1.0, structure_score_confidence / 100.0))
+                if structure_assumption_mode == "default_assumed":
+                    availability_multiplier *= 0.55
+                elif structure_assumption_mode == "mixed":
+                    availability_multiplier *= 0.82
+                availability_multiplier = max(0.0, min(1.0, availability_multiplier))
             omitted_due_to_missing = observed_input_count <= 0
             effective_weight = 0.0 if omitted_due_to_missing else (weight * observed_fraction * availability_multiplier)
             suppressed_by_evidence = False
@@ -1349,6 +1452,9 @@ class RiskEngine:
             geometry_quality_score=round(max(0.0, min(1.0, geometry_quality_score)), 3),
             regional_context_coverage_score=round(max(0.0, min(100.0, regional_context_coverage_score)), 1),
             property_specificity_score=round(max(0.0, min(100.0, property_specificity_score)), 1),
+            structure_data_completeness=round(max(0.0, min(100.0, structure_data_completeness)), 1),
+            structure_assumption_mode=structure_assumption_mode,
+            structure_score_confidence=round(max(0.0, min(100.0, structure_score_confidence)), 1),
             access_provisional=access_provisional,
             access_note=access_note,
         )
@@ -1797,6 +1903,21 @@ class RiskEngine:
             penalty += value
             penalties_applied[name] = round(penalties_applied.get(name, 0.0) + value, 1)
 
+        structure_inputs = (
+            risk.submodel_scores.get("structure_vulnerability_risk", SubmodelResult(0.0, "", {})).key_inputs
+            if isinstance(risk.submodel_scores.get("structure_vulnerability_risk"), SubmodelResult)
+            else {}
+        )
+        try:
+            structure_data_completeness = float((structure_inputs or {}).get("structure_data_completeness") or 0.0)
+        except (TypeError, ValueError):
+            structure_data_completeness = 0.0
+        structure_assumption_mode = str((structure_inputs or {}).get("structure_assumption_mode") or "unknown")
+        try:
+            structure_score_confidence = float((structure_inputs or {}).get("structure_score_confidence") or 0.0)
+        except (TypeError, ValueError):
+            structure_score_confidence = 0.0
+
         structure_evidence_weight = sum(
             float((risk.weighted_contributions.get(name) or {}).get("weight", 0.0))
             for name in STRUCTURE_SPECIFIC_SUBMODELS
@@ -1804,6 +1925,7 @@ class RiskEngine:
         weak_structure_evidence = (
             (risk.geometry_basis == "point" and structure_evidence_weight < 0.22)
             or (risk.geometry_quality_score < 0.62 and structure_evidence_weight < 0.28)
+            or structure_score_confidence < 55.0
         )
         if weak_structure_evidence:
             evidence_penalty = max(4.0, float(p.get("defensible_watch", 8.0)) * 0.45)
@@ -1817,6 +1939,18 @@ class RiskEngine:
             )
             add_penalty("structure_evidence_quality", evidence_penalty)
             blockers.append("Structure geometry evidence is weak")
+        if structure_score_confidence < 45.0:
+            uncertainty_penalty = max(3.0, float(p.get("roof_watch", 6.0)) * 0.50)
+            factors.append(
+                {
+                    "name": "structure_data_completeness",
+                    "status": "watch",
+                    "score_impact": -round(uncertainty_penalty, 1),
+                    "detail": "Most structure hardening inputs are unknown; readiness remains a cautious estimate.",
+                }
+            )
+            add_penalty("structure_data_completeness", uncertainty_penalty)
+            blockers.append("Structure details mostly unknown")
 
         roof = (attrs.roof_type or "unknown").lower()
         if roof in {"wood", "untreated wood shake"}:
@@ -1866,7 +2000,21 @@ class RiskEngine:
             blockers.append("Severely inadequate defensible space")
 
         structure_score = risk.submodel_scores["structure_vulnerability_risk"].score
-        if structure_score >= _threshold("structure_vulnerability_fail_score", 75.0):
+        if structure_score_confidence < 60.0 and structure_assumption_mode in {"default_assumed", "mixed"}:
+            cautious_penalty = 2.5 if structure_score_confidence >= 45.0 else 4.0
+            factors.append(
+                {
+                    "name": "structure_vulnerability",
+                    "status": "watch",
+                    "score_impact": -cautious_penalty,
+                    "detail": (
+                        "Structure hardening score is driven by partial/default assumptions "
+                        "and is treated conservatively."
+                    ),
+                }
+            )
+            add_penalty("structure_vulnerability", cautious_penalty)
+        elif structure_score >= _threshold("structure_vulnerability_fail_score", 75.0):
             factors.append({"name": "structure_vulnerability", "status": "fail", "score_impact": -8.0, "detail": "Overall structure hardening signal is poor."})
             add_penalty("structure_vulnerability", 8.0)
         elif structure_score >= _threshold("structure_vulnerability_watch_score", 60.0):

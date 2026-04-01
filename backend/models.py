@@ -997,6 +997,9 @@ class AssessmentResult(BaseModel):
     observed_weight_fraction: float = 0.0
     fallback_dominance_ratio: float = 0.0
     fallback_weight_fraction: float = 0.0
+    structure_data_completeness: float = 0.0
+    structure_assumption_mode: Literal["observed", "mixed", "default_assumed", "unknown"] = "unknown"
+    structure_score_confidence: float = 0.0
     geometry_quality_score: float = 0.0
     regional_context_coverage_score: float = 0.0
     property_specificity_score: float = 0.0
