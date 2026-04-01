@@ -640,6 +640,7 @@ Main coverage areas:
 The repo includes a versioned benchmark scenario pack for calibration discipline and drift checks:
 - `benchmark/scenario_pack_v1.json`
 - `benchmark/scenario_pack_confidence_v2.json` (geometry/enrichment/fallback-confidence stress pack)
+- `benchmark/scenario_pack_nearby_differentiation_v1.json` (adjacent-home local-differentiation stress pack)
 - runner: `scripts/run_benchmark_suite.py`
 - confidence runner: `scripts/run_confidence_benchmark_pack.py`
 
@@ -663,13 +664,22 @@ Run the confidence-focused pack (score spread + fallback/suppression diagnostics
 python scripts/run_confidence_benchmark_pack.py
 ```
 
+Run the nearby-home differentiation pack (local-factor separation + cautious missing-geometry behavior):
+
+```bash
+python scripts/run_benchmark_suite.py \
+  --pack benchmark/scenario_pack_nearby_differentiation_v1.json
+```
+
 What it checks:
 - scenario expectations (risk band, confidence tier/restriction, fallback behavior, warnings)
 - relative ordering assertions
 - monotonic sanity assertions (for mitigation and insurer-facing directional logic)
+- nearby-home differentiation assertions (local sub-score separation and confidence/differentiation caution under missing geometry)
 - release drift summary (score deltas, confidence deltas, warnings/blockers, factor contribution shifts)
 
-Benchmark artifacts include aggregated governance metadata plus a `model_governance` block.
+Benchmark artifacts include aggregated governance metadata, a `model_governance` block, and
+`nearby_differentiation_performance` when nearby-home scenarios are present.
 
 Use `POST /risk/debug?include_benchmark_hints=true` or `GET /report/{assessment_id}/export?include_benchmark_hints=true` to include lightweight benchmark resemblance and sanity-check hints in diagnostics/export output.
 

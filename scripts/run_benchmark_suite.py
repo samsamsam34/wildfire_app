@@ -43,6 +43,11 @@ def main(argv: list[str] | None = None) -> int:
         output_dir=Path(args.output_dir).expanduser(),
     )
     summary = artifact.get("summary", {})
+    nearby = (
+        artifact.get("nearby_differentiation_performance")
+        if isinstance(artifact.get("nearby_differentiation_performance"), dict)
+        else {}
+    )
     print(
         json.dumps(
             {
@@ -51,6 +56,13 @@ def main(argv: list[str] | None = None) -> int:
                 "scenario_failures": summary.get("scenario_failures"),
                 "assertion_failures": summary.get("assertion_failures"),
                 "passed": summary.get("passed"),
+                "nearby_differentiation_performance": {
+                    "available": nearby.get("available"),
+                    "scenario_count": nearby.get("scenario_count"),
+                    "assertion_fail_count": nearby.get("assertion_fail_count"),
+                    "local_subscore_assertion_fail_count": (nearby.get("local_subscore_assertions") or {}).get("failed"),
+                    "confidence_caution_assertion_fail_count": (nearby.get("confidence_caution_assertions") or {}).get("failed"),
+                },
             },
             indent=2,
             sort_keys=True,

@@ -244,3 +244,36 @@ def test_run_confidence_benchmark_pack_script_outputs_summary(tmp_path):
     assert payload["distribution"]["fallback_weight_fraction"]["count"] >= 1
     assert payload["distribution"]["suppressed_factor_count"]["count"] >= 1
     assert payload["spread_checks"]["wildfire_risk_score_spread"] is not None
+    assert "nearby_differentiation_performance" in payload
+
+
+def test_nearby_differentiation_pack_reports_local_separation_and_caution(tmp_path):
+    pack_path = Path("benchmark") / "scenario_pack_nearby_differentiation_v1.json"
+    artifact = run_benchmark_suite(pack_path=pack_path, output_dir=tmp_path / "nearby")
+    assert artifact["summary"]["passed"] is True
+
+    nearby = artifact.get("nearby_differentiation_performance") or {}
+    assert nearby.get("available") is True
+    assert int(nearby.get("scenario_count") or 0) >= 8
+    assert int(nearby.get("assertion_fail_count") or 0) == 0
+    assert int((nearby.get("local_subscore_assertions") or {}).get("count") or 0) >= 3
+    assert int((nearby.get("confidence_caution_assertions") or {}).get("count") or 0) >= 3
+
+    snapshots = {
+        row["scenario_id"]: row["snapshot"]
+        for row in artifact.get("scenario_results", [])
+        if isinstance(row, dict) and isinstance(row.get("snapshot"), dict)
+    }
+    dense = snapshots["nearby_dense_veg_0_5ft"]
+    clear = snapshots["nearby_clear_veg_0_5ft"]
+    assert float(dense["scores"]["home_ignition_vulnerability_score"]) > float(
+        clear["scores"]["home_ignition_vulnerability_score"]
+    )
+
+    missing = snapshots["nearby_missing_geometry_point"]
+    footprint = snapshots["nearby_footprint_geometry_available"]
+    assert float(missing["differentiation"]["neighborhood_differentiation_confidence"]) < float(
+        footprint["differentiation"]["neighborhood_differentiation_confidence"]
+    )
+    assert bool(missing["differentiation"]["nearby_home_comparison_safeguard_triggered"]) is True
+    assert bool(footprint["differentiation"]["nearby_home_comparison_safeguard_triggered"]) is False

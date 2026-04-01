@@ -715,6 +715,50 @@ def _scenario_snapshot(
             region_data_version=(result.property_level_context or {}).get("region_manifest_path"),
         )
     )
+    homeowner_summary = result.homeowner_summary if isinstance(result.homeowner_summary, dict) else {}
+    homeowner_trust_summary = (
+        homeowner_summary.get("trust_summary")
+        if isinstance(homeowner_summary.get("trust_summary"), dict)
+        else {}
+    )
+    differentiation_source = (
+        result.developer_diagnostics.get("differentiation_diagnostics")
+        if isinstance(result.developer_diagnostics, dict)
+        and isinstance(result.developer_diagnostics.get("differentiation_diagnostics"), dict)
+        else (
+            homeowner_summary.get("differentiation")
+            if isinstance(homeowner_summary.get("differentiation"), dict)
+            else {}
+        )
+    )
+    differentiation_mode = str(
+        homeowner_trust_summary.get("differentiation_mode")
+        or differentiation_source.get("differentiation_mode")
+        or "mostly_regional"
+    )
+    neighborhood_differentiation_confidence = _safe_float(
+        homeowner_trust_summary.get("neighborhood_differentiation_confidence")
+    )
+    if neighborhood_differentiation_confidence is None:
+        neighborhood_differentiation_confidence = _safe_float(
+            differentiation_source.get("neighborhood_differentiation_confidence")
+        )
+    if neighborhood_differentiation_confidence is None:
+        neighborhood_differentiation_confidence = 0.0
+    nearby_home_comparison_safeguard_triggered = bool(
+        homeowner_trust_summary.get("nearby_home_comparison_safeguard_triggered")
+        if "nearby_home_comparison_safeguard_triggered" in homeowner_trust_summary
+        else homeowner_summary.get("nearby_home_comparison_safeguard_triggered")
+    )
+    nearby_home_comparison_safeguard_message = (
+        str(
+            homeowner_trust_summary.get("nearby_home_comparison_safeguard_message")
+            or homeowner_summary.get("nearby_home_comparison_safeguard_message")
+            or ""
+        ).strip()
+        or None
+    )
+
     return {
         "scenario_id": scenario["scenario_id"],
         "description": scenario.get("description", ""),
@@ -769,6 +813,24 @@ def _scenario_snapshot(
         },
         "fallback_mode": (result.property_level_context or {}).get("fallback_mode"),
         "footprint_used": bool((result.property_level_context or {}).get("footprint_used")),
+        "differentiation": {
+            "differentiation_mode": differentiation_mode,
+            "neighborhood_differentiation_confidence": round(float(neighborhood_differentiation_confidence), 1),
+            "property_specific_feature_count": int(differentiation_source.get("property_specific_feature_count") or 0),
+            "proxy_feature_count": int(differentiation_source.get("proxy_feature_count") or 0),
+            "defaulted_feature_count": int(differentiation_source.get("defaulted_feature_count") or 0),
+            "regional_feature_count": int(differentiation_source.get("regional_feature_count") or 0),
+            "nearby_home_comparison_safeguard_triggered": nearby_home_comparison_safeguard_triggered,
+            "nearby_home_comparison_safeguard_message": nearby_home_comparison_safeguard_message,
+        },
+        "geometry": {
+            "geometry_source": result.geometry_source,
+            "geometry_confidence": result.geometry_confidence,
+            "ring_generation_mode": result.ring_generation_mode,
+            "final_structure_geometry_source": result.final_structure_geometry_source,
+            "structure_geometry_confidence": result.structure_geometry_confidence,
+            "structure_match_method": result.structure_match_method,
+        },
         "debug_excerpt": {
             "eligibility": debug_payload.get("eligibility", {}),
             "coverage": debug_payload.get("coverage", {}),
@@ -879,6 +941,131 @@ def _evaluate_pairwise_assertions(
     return results
 
 
+def _build_nearby_differentiation_performance_summary(
+    *,
+    scenarios: list[dict[str, Any]],
+    snapshots: dict[str, dict[str, Any]],
+    assertion_results: list[dict[str, Any]],
+) -> dict[str, Any]:
+    nearby_scenario_ids: list[str] = []
+    for scenario in scenarios:
+        if not isinstance(scenario, dict):
+            continue
+        scenario_id = str(scenario.get("scenario_id") or "").strip()
+        if not scenario_id:
+            continue
+        tags = scenario.get("profile_tags") if isinstance(scenario.get("profile_tags"), list) else []
+        normalized_tags = {str(tag).strip().lower() for tag in tags if str(tag).strip()}
+        if ("nearby_differentiation" in normalized_tags) or scenario_id.startswith("nearby_"):
+            nearby_scenario_ids.append(scenario_id)
+    nearby_scenario_ids = sorted(set(nearby_scenario_ids))
+
+    if not nearby_scenario_ids:
+        return {
+            "available": False,
+            "scenario_count": 0,
+            "scenario_ids": [],
+            "assertion_count": 0,
+            "assertion_pass_count": 0,
+            "assertion_fail_count": 0,
+            "failed_assertions": [],
+            "local_subscore_assertions": {"count": 0, "passed": 0, "failed": 0},
+            "confidence_caution_assertions": {"count": 0, "passed": 0, "failed": 0},
+            "scenario_diagnostics": [],
+            "notes": [
+                "No nearby-home differentiation scenarios were tagged in this pack.",
+            ],
+        }
+
+    relevant_assertions: list[dict[str, Any]] = []
+    for row in assertion_results:
+        if not isinstance(row, dict):
+            continue
+        left_id = str(row.get("left") or "").strip()
+        right_id = str(row.get("right") or "").strip()
+        if left_id in nearby_scenario_ids and right_id in nearby_scenario_ids:
+            relevant_assertions.append(row)
+
+    def _assertion_bucket(metric: str) -> str:
+        if metric.startswith("scores.home_ignition_vulnerability_score") or metric.startswith("scores.site_hazard_score"):
+            return "local_subscore"
+        if "confidence." in metric or "differentiation." in metric or "fallback_weight_fraction" in metric:
+            return "confidence_caution"
+        return "other"
+
+    local_total = 0
+    local_pass = 0
+    caution_total = 0
+    caution_pass = 0
+    for assertion in relevant_assertions:
+        metric = str(assertion.get("metric") or "")
+        passed = bool(assertion.get("passed", False))
+        bucket = _assertion_bucket(metric)
+        if bucket == "local_subscore":
+            local_total += 1
+            if passed:
+                local_pass += 1
+        elif bucket == "confidence_caution":
+            caution_total += 1
+            if passed:
+                caution_pass += 1
+
+    scenario_diagnostics: list[dict[str, Any]] = []
+    for scenario_id in nearby_scenario_ids:
+        snap = snapshots.get(scenario_id)
+        if not isinstance(snap, dict):
+            continue
+        differentiation = snap.get("differentiation") if isinstance(snap.get("differentiation"), dict) else {}
+        scenario_diagnostics.append(
+            {
+                "scenario_id": scenario_id,
+                "risk_score": _safe_float((snap.get("scores") or {}).get("wildfire_risk_score")),
+                "site_hazard_score": _safe_float((snap.get("scores") or {}).get("site_hazard_score")),
+                "home_ignition_vulnerability_score": _safe_float(
+                    (snap.get("scores") or {}).get("home_ignition_vulnerability_score")
+                ),
+                "confidence_score": _safe_float((snap.get("confidence") or {}).get("confidence_score")),
+                "fallback_weight_fraction": _safe_float((snap.get("evidence_metrics") or {}).get("fallback_weight_fraction")),
+                "differentiation_mode": str(differentiation.get("differentiation_mode") or ""),
+                "neighborhood_differentiation_confidence": _safe_float(
+                    differentiation.get("neighborhood_differentiation_confidence")
+                ),
+                "nearby_home_comparison_safeguard_triggered": bool(
+                    differentiation.get("nearby_home_comparison_safeguard_triggered")
+                ),
+            }
+        )
+
+    failed_assertions = [
+        str(row.get("assertion_id") or "")
+        for row in relevant_assertions
+        if not bool(row.get("passed", False))
+    ]
+    return {
+        "available": True,
+        "scenario_count": len(nearby_scenario_ids),
+        "scenario_ids": nearby_scenario_ids,
+        "assertion_count": len(relevant_assertions),
+        "assertion_pass_count": len(relevant_assertions) - len(failed_assertions),
+        "assertion_fail_count": len(failed_assertions),
+        "failed_assertions": failed_assertions,
+        "local_subscore_assertions": {
+            "count": local_total,
+            "passed": local_pass,
+            "failed": max(0, local_total - local_pass),
+        },
+        "confidence_caution_assertions": {
+            "count": caution_total,
+            "passed": caution_pass,
+            "failed": max(0, caution_total - caution_pass),
+        },
+        "scenario_diagnostics": scenario_diagnostics,
+        "notes": [
+            "Nearby-home differentiation scenarios should separate local sub-scores while confidence/differentiation diagnostics track data quality.",
+        ],
+    }
+
+
 def run_benchmark_suite(
     *,
     pack_path: str | Path | None = None,
@@ -933,6 +1120,11 @@ def run_benchmark_suite(
         assertions=list(pack.get("monotonic_assertions", [])),
         snapshots=snapshots_by_id,
         assertion_type="monotonic",
+    )
+    nearby_differentiation_performance = _build_nearby_differentiation_performance_summary(
+        scenarios=scenarios,
+        snapshots=snapshots_by_id,
+        assertion_results=(relative + monotonic),
     )
 
     scenario_failures = [
@@ -1012,6 +1204,7 @@ def run_benchmark_suite(
         "scenario_results": scenario_results,
         "relative_assertions": relative,
         "monotonic_assertions": monotonic,
+        "nearby_differentiation_performance": nearby_differentiation_performance,
         "summary": {
             "scenario_count": len(scenario_results),
             "scenario_failures": scenario_failures,

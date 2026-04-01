@@ -73,6 +73,12 @@ def _summary_payload(artifact: dict[str, Any]) -> dict[str, Any]:
     if wildfire_scores:
         risk_spread = round(max(wildfire_scores) - min(wildfire_scores), 3)
 
+    nearby_differentiation = (
+        artifact.get("nearby_differentiation_performance")
+        if isinstance(artifact.get("nearby_differentiation_performance"), dict)
+        else {"available": False}
+    )
+
     return {
         "artifact_path": artifact.get("artifact_path"),
         "summary": artifact.get("summary", {}),
@@ -87,6 +93,7 @@ def _summary_payload(artifact: dict[str, Any]) -> dict[str, Any]:
             "wildfire_risk_score_spread": risk_spread,
             "score_clustering_flag": bool(risk_spread is not None and risk_spread < 10.0),
         },
+        "nearby_differentiation_performance": nearby_differentiation,
     }
 
 
