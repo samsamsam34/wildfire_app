@@ -652,11 +652,28 @@ def build_homeowner_report(
 
     key_risk_drivers = [_plain_driver(row) for row in raw_driver_candidates]
     key_risk_drivers = [row for row in key_risk_drivers if row][:6]
+    if nearby_home_comparison_safeguard_triggered:
+        key_risk_drivers = [
+            row
+            for row in key_risk_drivers
+            if not any(
+                token in str(row).lower()
+                for token in ("near-structure", "0-5 ft", "5-30 ft", "defensible space")
+            )
+        ]
+        key_risk_drivers = [nearby_home_comparison_safeguard_message] + key_risk_drivers
+        key_risk_drivers = list(dict.fromkeys(key_risk_drivers))[:6]
     prioritized_actions = _prioritized_actions(result)
 
     defensible_space_analysis = result.defensible_space_analysis if isinstance(result.defensible_space_analysis, dict) else {}
     zone_findings = _zone_findings(defensible_space_analysis)
+    if nearby_home_comparison_safeguard_triggered:
+        zone_findings = []
     ds_limitations = list(result.defensible_space_limitations_summary or [])
+    if nearby_home_comparison_safeguard_triggered:
+        ds_limitations = list(
+            dict.fromkeys([nearby_home_comparison_safeguard_message] + ds_limitations)
+        )[:6]
 
     assessment_limitations = list(result.assessment_limitations_summary or [])
     low_confidence_flags = list(result.low_confidence_flags or [])
@@ -680,6 +697,13 @@ def build_homeowner_report(
         else {}
     )
     homeowner_trust_summary = homeowner_trust_summary if isinstance(homeowner_trust_summary, dict) else {}
+    nearby_home_comparison_safeguard_triggered = bool(
+        homeowner_trust_summary.get("nearby_home_comparison_safeguard_triggered")
+    )
+    nearby_home_comparison_safeguard_message = str(
+        homeowner_trust_summary.get("nearby_home_comparison_safeguard_message")
+        or "This estimate is not precise enough to compare adjacent homes."
+    ).strip()
     homeowner_improve_your_result = (
         (result.homeowner_summary or {}).get("improve_your_result")
         if isinstance(result.homeowner_summary, dict)
@@ -798,12 +822,22 @@ def build_homeowner_report(
         key_risk_drivers=key_risk_drivers,
         top_risk_drivers_detailed=list(result.top_risk_drivers_detailed or []),
         defensible_space_summary={
-            "summary": defensible_space_analysis.get("summary")
-            or "Defensible-space analysis was unavailable for this property.",
+            "summary": (
+                nearby_home_comparison_safeguard_message
+                if nearby_home_comparison_safeguard_triggered
+                else (
+                    defensible_space_analysis.get("summary")
+                    or "Defensible-space analysis was unavailable for this property."
+                )
+            ),
             "basis_geometry_type": defensible_space_analysis.get("basis_geometry_type") or "unknown",
             "basis_quality": defensible_space_analysis.get("basis_quality") or "unknown",
             "zone_findings": zone_findings,
-            "top_near_structure_risk_drivers": list(result.top_near_structure_risk_drivers or []),
+            "top_near_structure_risk_drivers": (
+                []
+                if nearby_home_comparison_safeguard_triggered
+                else list(result.top_near_structure_risk_drivers or [])
+            ),
             "limitations": ds_limitations,
             "analysis_status": ((defensible_space_analysis.get("data_quality") or {}).get("analysis_status") or "unknown"),
         },

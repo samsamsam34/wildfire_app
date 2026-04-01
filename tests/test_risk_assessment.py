@@ -3361,6 +3361,52 @@ def test_compare_endpoints(monkeypatch, tmp_path):
     assert len(m["comparisons"]) == 1
 
 
+def test_compare_endpoint_suppresses_adjacent_home_deltas_when_mostly_regional(monkeypatch, tmp_path):
+    ctx = _ctx(
+        env=50.0,
+        wildland=57.0,
+        historic=40.0,
+        environmental_layer_status={
+            "burn_probability": "missing",
+            "hazard": "missing",
+            "slope": "ok",
+            "fuel": "ok",
+            "canopy": "missing",
+            "fire_history": "missing",
+        },
+        ring_metrics={},
+    )
+    ctx.burn_probability_index = None
+    ctx.hazard_severity_index = None
+    ctx.moisture_index = None
+    ctx.burn_probability = None
+    ctx.wildfire_hazard = None
+    ctx.property_level_context = {
+        "footprint_used": False,
+        "footprint_status": "not_found",
+        "fallback_mode": "point_based",
+        "ring_metrics": {},
+        "region_property_specific_readiness": "limited_regional_ready",
+        "region_required_layers_missing": [],
+        "region_optional_layers_missing": ["whp", "roads", "gridmet_dryness"],
+        "region_enrichment_layers_missing": ["parcel_polygons"],
+    }
+    _setup(monkeypatch, tmp_path, ctx)
+
+    a = _run(_payload("Comparison Safeguard A", {}, confirmed=[]))
+    b = _run(_payload("Comparison Safeguard B", {}, confirmed=[]))
+    pair = client.get(f"/assessments/{a['assessment_id']}/compare/{b['assessment_id']}")
+    assert pair.status_code == 200
+    body = pair.json()
+    safeguard = (body.get("version_comparison") or {}).get("comparison_precision_safeguard") or {}
+    assert safeguard.get("triggered") is True
+    assert safeguard.get("message") == "This estimate is not precise enough to compare adjacent homes."
+    assert body.get("wildfire_risk_delta") is None
+    assert body.get("insurance_readiness_delta") is None
+    assert body.get("driver_differences") == {"added": [], "removed": []}
+    assert body.get("mitigation_differences") == {"added": [], "removed": []}
+
+
 def test_provisional_access_not_in_wildfire_score(monkeypatch, tmp_path):
     auth.API_KEYS = set()
 
@@ -5258,6 +5304,19 @@ def test_low_coverage_homeowner_summary_uses_limited_mode_and_grouped_limitation
     assert isinstance(trust_summary.get("fallback_drivers") or [], list)
     assert isinstance(trust_summary.get("missing_inputs") or [], list)
     assert isinstance(trust_summary.get("coverage_gaps") or [], list)
+    assert isinstance(trust_summary.get("nearby_home_comparison_safeguard_triggered"), bool)
+    if trust_summary.get("nearby_home_comparison_safeguard_triggered"):
+        assert trust_summary.get("parcel_level_comparison_allowed") is False
+        assert (
+            trust_summary.get("nearby_home_comparison_safeguard_message")
+            == "This estimate is not precise enough to compare adjacent homes."
+        )
+        assert (
+            homeowner_summary.get("nearby_home_comparison_safeguard_message")
+            == "This estimate is not precise enough to compare adjacent homes."
+        )
+        assert assessed.get("top_near_structure_risk_drivers") == []
+        assert assessed.get("prioritized_vegetation_actions") == []
 
     confidence_actions = homeowner_summary.get("confidence_improvement_actions") or []
     assert isinstance(confidence_actions, list)
@@ -5336,6 +5395,24 @@ def test_homeowner_trust_summary_maps_internal_tiers_to_user_friendly_labels():
     assert high.get("confidence_level") == "high confidence"
     assert moderate.get("confidence_level") == "moderate confidence"
     assert low.get("confidence_level") == "limited confidence"
+
+    safeguarded = app_main._build_homeowner_trust_summary(
+        confidence_tier="low",
+        fallback_decisions=[],
+        missing_inputs=[],
+        preflight={},
+        differentiation_snapshot={
+            "differentiation_mode": "mostly_regional",
+            "neighborhood_differentiation_confidence": 22.0,
+            "notes": [],
+        },
+    )
+    assert safeguarded.get("nearby_home_comparison_safeguard_triggered") is True
+    assert safeguarded.get("parcel_level_comparison_allowed") is False
+    assert (
+        safeguarded.get("nearby_home_comparison_safeguard_message")
+        == "This estimate is not precise enough to compare adjacent homes."
+    )
 
 
 def test_old_rows_without_provenance_defaults_are_readable(tmp_path):

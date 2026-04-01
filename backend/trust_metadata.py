@@ -6,7 +6,10 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from backend.differentiation import build_differentiation_snapshot
+from backend.differentiation import (
+    build_differentiation_snapshot,
+    should_trigger_nearby_home_comparison_safeguard,
+)
 from backend.models import (
     AssessmentResult,
     TrustDiagnostics,
@@ -524,7 +527,11 @@ def build_trust_diagnostics(
             + ", ".join(confidence.confidence_reduction_reasons[:3])
             + "."
         )
-    if str(differentiation.get("differentiation_mode") or "") == "mostly_regional":
+    differentiation_mode = str(differentiation.get("differentiation_mode") or "")
+    differentiation_confidence = float(differentiation.get("neighborhood_differentiation_confidence") or 0.0)
+    if should_trigger_nearby_home_comparison_safeguard(differentiation_mode, differentiation_confidence):
+        explanations.append("This estimate is not precise enough to compare adjacent homes.")
+    elif differentiation_mode == "mostly_regional":
         explanations.append("Property-level differentiation is limited; this estimate is mostly regional.")
 
     return TrustDiagnostics(

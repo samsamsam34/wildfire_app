@@ -24,7 +24,10 @@ from backend.benchmarking import (
     build_benchmark_hints_for_assessment,
 )
 from backend.calibration import resolve_public_calibration
-from backend.differentiation import build_differentiation_snapshot
+from backend.differentiation import (
+    build_differentiation_snapshot,
+    should_trigger_nearby_home_comparison_safeguard,
+)
 from backend.defensible_space import (
     build_defensible_space_analysis,
     build_prioritized_vegetation_actions,
@@ -3808,17 +3811,41 @@ def _build_homeowner_trust_summary(
         for item in list(differentiation_snapshot.get("notes") or [])
         if str(item).strip()
     ][:4]
+    nearby_home_comparison_safeguard_triggered = should_trigger_nearby_home_comparison_safeguard(
+        differentiation_mode,
+        differentiation_confidence,
+    )
+    nearby_home_comparison_safeguard_message = (
+        "This estimate is not precise enough to compare adjacent homes."
+        if nearby_home_comparison_safeguard_triggered
+        else None
+    )
     if uncertainty_drivers:
         summary = f"This assessment is presented with {confidence_level}. Main uncertainty drivers are listed below."
     else:
         summary = f"This assessment is presented with {confidence_level} using mostly observed property and regional data."
 
-    if differentiation_mode == "mostly_regional":
+    if nearby_home_comparison_safeguard_triggered:
+        differentiation_summary = (
+            "This estimate is not precise enough to compare adjacent homes."
+        )
+    elif differentiation_mode == "mostly_regional":
         differentiation_summary = "Nearby homes may receive similar results because this run relies mostly on regional context."
     elif differentiation_mode == "mixed":
         differentiation_summary = "This run combines property-specific and regional signals; nearby homes may still partially converge."
     else:
         differentiation_summary = "This run is primarily property-specific and should differentiate nearby homes when local conditions differ."
+    if nearby_home_comparison_safeguard_triggered:
+        uncertainty_drivers = list(
+            dict.fromkeys(
+                [nearby_home_comparison_safeguard_message] + list(uncertainty_drivers)
+            )
+        )[:4]
+        differentiation_notes = list(
+            dict.fromkeys(
+                [nearby_home_comparison_safeguard_message] + list(differentiation_notes)
+            )
+        )[:4]
 
     return {
         "confidence_level": confidence_level,
@@ -3841,6 +3868,9 @@ def _build_homeowner_trust_summary(
         ),
         "differentiation_summary": differentiation_summary,
         "differentiation_notes": differentiation_notes,
+        "nearby_home_comparison_safeguard_triggered": nearby_home_comparison_safeguard_triggered,
+        "nearby_home_comparison_safeguard_message": nearby_home_comparison_safeguard_message,
+        "parcel_level_comparison_allowed": not nearby_home_comparison_safeguard_triggered,
     }
 
 
@@ -5367,6 +5397,64 @@ def _run_assessment(
         preflight=coverage_preflight,
         differentiation_snapshot=differentiation_snapshot,
     )
+    nearby_home_comparison_safeguard_triggered = bool(
+        trust_summary.get("nearby_home_comparison_safeguard_triggered")
+    )
+    nearby_home_comparison_safeguard_message = str(
+        trust_summary.get("nearby_home_comparison_safeguard_message")
+        or "This estimate is not precise enough to compare adjacent homes."
+    ).strip()
+    if nearby_home_comparison_safeguard_triggered:
+        # Suppress parcel-level differentiation claims when the evidence is
+        # mostly regional and neighborhood differentiation confidence is low.
+        top_near_structure_risk_drivers = []
+        prioritized_vegetation_actions = []
+        ranked_driver_details = [
+            row
+            for row in list(ranked_driver_details or [])
+            if str(getattr(row, "factor", "") or "").strip().lower()
+            not in {
+                "defensible_space",
+                "flame_contact",
+                "ember_exposure",
+                "vegetation_proximity",
+                "nearby_fuel_load",
+            }
+        ]
+        property_findings = [
+            row
+            for row in list(property_findings or [])
+            if not any(
+                token in str(row).lower()
+                for token in (
+                    "near-structure",
+                    "0-5 ft",
+                    "5-30 ft",
+                    "defensible space",
+                    "adjacent to the home",
+                )
+            )
+        ]
+        top_risk_drivers = [
+            row
+            for row in list(top_risk_drivers or [])
+            if not any(
+                token in str(row).lower()
+                for token in (
+                    "near-structure",
+                    "0-5 ft",
+                    "5-30 ft",
+                    "defensible space",
+                )
+            )
+        ]
+        top_risk_drivers = [nearby_home_comparison_safeguard_message] + top_risk_drivers
+        top_risk_drivers = list(dict.fromkeys(top_risk_drivers))[:3]
+        defensible_space_limitations_summary = list(
+            dict.fromkeys([nearby_home_comparison_safeguard_message] + list(defensible_space_limitations_summary or []))
+        )[:4]
+        defensible_space_analysis = dict(defensible_space_analysis or {})
+        defensible_space_analysis["summary"] = nearby_home_comparison_safeguard_message
     homeowner_assessment_mode = _to_homeowner_assessment_mode(assessment_output_state)
     readiness_provisional = bool(
         float(risk.geometry_quality_score) < 0.62
@@ -5415,6 +5503,10 @@ def _run_assessment(
         "recommended_data_improvements": recommended_data_improvements,
         "confidence_improvement_actions": confidence_improvement_actions,
         "differentiation_diagnostics": differentiation_snapshot,
+        "nearby_home_comparison_safeguard_triggered": nearby_home_comparison_safeguard_triggered,
+        "nearby_home_comparison_safeguard_message": (
+            nearby_home_comparison_safeguard_message if nearby_home_comparison_safeguard_triggered else None
+        ),
     }
     homeowner_summary = {
         "assessment_mode": homeowner_assessment_mode,
@@ -5452,6 +5544,10 @@ def _run_assessment(
             "structure_score_confidence": round(structure_score_confidence, 1),
         },
         "differentiation": differentiation_snapshot,
+        "nearby_home_comparison_safeguard_triggered": nearby_home_comparison_safeguard_triggered,
+        "nearby_home_comparison_safeguard_message": (
+            nearby_home_comparison_safeguard_message if nearby_home_comparison_safeguard_triggered else None
+        ),
         "home_hardening_readiness_precision": "provisional" if readiness_provisional else "stable",
         "confidence_summary": homeowner_confidence_summary,
         "trust_summary": trust_summary,
@@ -5509,6 +5605,8 @@ def _run_assessment(
         "Submodel/weight framework and readiness rules are deterministic MVP heuristics for calibration and explainability.",
         "Scores are advisory heuristics and not carrier-approved underwriting or premium predictions.",
     ]
+    if nearby_home_comparison_safeguard_triggered:
+        scoring_notes.append(nearby_home_comparison_safeguard_message)
     for fallback in attribute_fallbacks:
         note = str(fallback.get("note") or "").strip()
         if note:
@@ -6985,6 +7083,23 @@ def _to_comparison_item(result: AssessmentResult) -> AssessmentComparisonItem:
     )
 
 
+def _comparison_safeguard_from_result(result: AssessmentResult) -> tuple[bool, str]:
+    homeowner_summary = result.homeowner_summary if isinstance(result.homeowner_summary, dict) else {}
+    trust_summary = homeowner_summary.get("trust_summary") if isinstance(homeowner_summary.get("trust_summary"), dict) else {}
+    trust_summary = trust_summary if isinstance(trust_summary, dict) else {}
+    mode = str(trust_summary.get("differentiation_mode") or "mostly_regional")
+    try:
+        confidence = float(trust_summary.get("neighborhood_differentiation_confidence") or 0.0)
+    except (TypeError, ValueError):
+        confidence = 0.0
+    triggered = should_trigger_nearby_home_comparison_safeguard(mode, confidence)
+    message = str(
+        trust_summary.get("nearby_home_comparison_safeguard_message")
+        or "This estimate is not precise enough to compare adjacent homes."
+    ).strip()
+    return triggered, message
+
+
 def _compare_results(base: AssessmentResult, other: AssessmentResult) -> AssessmentComparisonResult:
     def _delta(before: float | None, after: float | None) -> float | None:
         if before is None or after is None:
@@ -7001,24 +7116,53 @@ def _compare_results(base: AssessmentResult, other: AssessmentResult) -> Assessm
         base.model_governance.model_dump() if base.model_governance else {},
         other.model_governance.model_dump() if other.model_governance else {},
     )
+    base_guardrail, base_message = _comparison_safeguard_from_result(base)
+    other_guardrail, other_message = _comparison_safeguard_from_result(other)
+    comparison_safeguard_triggered = bool(base_guardrail or other_guardrail)
+    comparison_safeguard_message = base_message if base_guardrail else other_message
+    if comparison_safeguard_triggered:
+        version_comparison = dict(version_comparison or {})
+        version_comparison["comparison_precision_safeguard"] = {
+            "triggered": True,
+            "message": comparison_safeguard_message,
+            "base_triggered": bool(base_guardrail),
+            "other_triggered": bool(other_guardrail),
+            "reason": "low_neighborhood_differentiation_confidence",
+        }
 
     return AssessmentComparisonResult(
         base=_to_comparison_item(base),
         other=_to_comparison_item(other),
-        wildfire_risk_delta=_delta(base.wildfire_risk_score, other.wildfire_risk_score),
-        insurance_readiness_delta=_delta(base.insurance_readiness_score, other.insurance_readiness_score),
-        driver_differences={
-            "added": sorted(other_drivers - base_drivers),
-            "removed": sorted(base_drivers - other_drivers),
-        },
-        blocker_differences={
-            "added": sorted(other_blockers - base_blockers),
-            "removed": sorted(base_blockers - other_blockers),
-        },
-        mitigation_differences={
-            "added": sorted(other_mitigations - base_mitigations),
-            "removed": sorted(base_mitigations - other_mitigations),
-        },
+        wildfire_risk_delta=(
+            None if comparison_safeguard_triggered else _delta(base.wildfire_risk_score, other.wildfire_risk_score)
+        ),
+        insurance_readiness_delta=(
+            None if comparison_safeguard_triggered else _delta(base.insurance_readiness_score, other.insurance_readiness_score)
+        ),
+        driver_differences=(
+            {"added": [], "removed": []}
+            if comparison_safeguard_triggered
+            else {
+                "added": sorted(other_drivers - base_drivers),
+                "removed": sorted(base_drivers - other_drivers),
+            }
+        ),
+        blocker_differences=(
+            {"added": [], "removed": []}
+            if comparison_safeguard_triggered
+            else {
+                "added": sorted(other_blockers - base_blockers),
+                "removed": sorted(base_blockers - other_blockers),
+            }
+        ),
+        mitigation_differences=(
+            {"added": [], "removed": []}
+            if comparison_safeguard_triggered
+            else {
+                "added": sorted(other_mitigations - base_mitigations),
+                "removed": sorted(base_mitigations - other_mitigations),
+            }
+        ),
         version_comparison=version_comparison,
     )
 

@@ -36,6 +36,7 @@ STRUCTURE_VULNERABILITY_FIELDS = {
     "vent_type",
     "defensible_space_ft",
 }
+NEARBY_HOME_COMPARISON_CONFIDENCE_THRESHOLD = 45.0
 
 
 def _to_float(value: Any) -> float:
@@ -51,6 +52,25 @@ def _source_type(meta: Any) -> str:
     if isinstance(meta, dict):
         return str(meta.get("source_type") or "").strip().lower()
     return str(getattr(meta, "source_type", "") or "").strip().lower()
+
+
+def should_trigger_nearby_home_comparison_safeguard(
+    differentiation_mode: str | None,
+    neighborhood_differentiation_confidence: float | None,
+) -> bool:
+    mode = str(differentiation_mode or "").strip().lower()
+    try:
+        confidence = float(
+            0.0
+            if neighborhood_differentiation_confidence is None
+            else neighborhood_differentiation_confidence
+        )
+    except (TypeError, ValueError):
+        confidence = 0.0
+    return (
+        mode == "mostly_regional"
+        and confidence <= float(NEARBY_HOME_COMPARISON_CONFIDENCE_THRESHOLD)
+    )
 
 
 def build_differentiation_snapshot(
