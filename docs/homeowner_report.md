@@ -37,6 +37,7 @@ The report JSON includes:
     - `what_it_reduces`
     - `expected_effect` (`small` / `moderate` / `significant`)
 - `what_to_do_first`
+- `trust_summary` (user-facing confidence language + key uncertainty drivers)
 - `limitations_notice`
 - `report_header`
 - `property_summary`
@@ -63,6 +64,7 @@ Primary homeowner-facing score fields are:
 - `prioritized_mitigation_actions`
 - `confidence_and_limitations`
 - `confidence_summary`
+- `trust_summary`
 
 `insurance_readiness_summary` is retained as an optional/future-facing compatibility block.
 

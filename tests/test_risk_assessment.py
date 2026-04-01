@@ -4860,6 +4860,15 @@ def test_low_coverage_homeowner_summary_uses_limited_mode_and_grouped_limitation
     how_to_improve = confidence_summary.get("how_to_improve_confidence") or []
     assert isinstance(how_to_improve, list)
     assert len(how_to_improve) >= 1
+    trust_summary = homeowner_summary.get("trust_summary") or {}
+    assert isinstance(trust_summary, dict)
+    assert trust_summary.get("confidence_level") == "limited confidence"
+    uncertainty_drivers = trust_summary.get("uncertainty_drivers") or []
+    assert isinstance(uncertainty_drivers, list)
+    assert len(uncertainty_drivers) >= 1
+    assert isinstance(trust_summary.get("fallback_drivers") or [], list)
+    assert isinstance(trust_summary.get("missing_inputs") or [], list)
+    assert isinstance(trust_summary.get("coverage_gaps") or [], list)
 
     confidence_actions = homeowner_summary.get("confidence_improvement_actions") or []
     assert isinstance(confidence_actions, list)
@@ -4902,6 +4911,31 @@ def test_missing_factor_omission_reports_weight_and_counts(monkeypatch, tmp_path
     weighted = assessed["weighted_contributions"]
     assert any("effective_weight" in row for row in weighted.values())
     assert any(bool(row.get("omitted_due_to_missing")) for row in weighted.values())
+
+
+def test_homeowner_trust_summary_maps_internal_tiers_to_user_friendly_labels():
+    high = app_main._build_homeowner_trust_summary(
+        confidence_tier="high",
+        fallback_decisions=[],
+        missing_inputs=[],
+        preflight={},
+    )
+    moderate = app_main._build_homeowner_trust_summary(
+        confidence_tier="moderate",
+        fallback_decisions=[],
+        missing_inputs=[],
+        preflight={},
+    )
+    low = app_main._build_homeowner_trust_summary(
+        confidence_tier="low",
+        fallback_decisions=[],
+        missing_inputs=[],
+        preflight={},
+    )
+
+    assert high.get("confidence_level") == "high confidence"
+    assert moderate.get("confidence_level") == "moderate confidence"
+    assert low.get("confidence_level") == "limited confidence"
 
 
 def test_old_rows_without_provenance_defaults_are_readable(tmp_path):

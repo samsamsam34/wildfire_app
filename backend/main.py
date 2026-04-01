@@ -3684,6 +3684,128 @@ def _build_homeowner_confidence_summary(
     }
 
 
+def _to_homeowner_confidence_phrase(confidence_tier: str) -> str:
+    normalized = str(confidence_tier or "").strip().lower()
+    if normalized == "high":
+        return "high confidence"
+    if normalized in {"moderate", "medium"}:
+        return "moderate confidence"
+    return "limited confidence"
+
+
+def _friendly_missing_input_name(field_name: str) -> str:
+    token = str(field_name or "").strip().lower()
+    mapping = {
+        "roof_type": "roof type",
+        "vent_type": "vent type",
+        "defensible_space_ft": "defensible space condition",
+        "construction_year": "construction year",
+        "siding_type": "siding type",
+        "window_type": "window type",
+    }
+    if token in mapping:
+        return mapping[token]
+    return token.replace("_", " ")
+
+
+def _build_homeowner_trust_summary(
+    *,
+    confidence_tier: str,
+    fallback_decisions: list[dict[str, object]],
+    missing_inputs: list[str],
+    preflight: dict[str, Any],
+) -> dict[str, Any]:
+    confidence_level = _to_homeowner_confidence_phrase(confidence_tier)
+
+    fallback_drivers: list[str] = []
+    seen_fallback: set[str] = set()
+    for row in list(fallback_decisions or []):
+        note = str((row or {}).get("note") or "").strip()
+        if note:
+            key = note.lower()
+            if key not in seen_fallback:
+                seen_fallback.add(key)
+                fallback_drivers.append(note.rstrip("."))
+        else:
+            missing_input = str((row or {}).get("missing_input") or "").strip()
+            if missing_input:
+                fallback_label = _friendly_layer_name(missing_input.replace("_layer", ""))
+                phrase = f"{fallback_label} data used fallback assumptions."
+                key = phrase.lower()
+                if key not in seen_fallback:
+                    seen_fallback.add(key)
+                    fallback_drivers.append(phrase)
+        if len(fallback_drivers) >= 3:
+            break
+
+    missing_field_labels = [
+        _friendly_missing_input_name(field)
+        for field in list(missing_inputs or [])
+        if str(field).strip()
+    ]
+    missing_field_labels = list(dict.fromkeys(missing_field_labels))[:4]
+
+    coverage_gaps: list[str] = []
+    missing_core_layer_count = int(preflight.get("missing_core_layer_count") or 0)
+    feature_coverage_percent = float(preflight.get("feature_coverage_percent") or 0.0)
+    required_missing = [
+        _friendly_layer_name(str(layer))
+        for layer in list(preflight.get("region_required_layers_missing") or [])
+        if str(layer).strip()
+    ]
+    optional_missing = [
+        _friendly_layer_name(str(layer))
+        for layer in list(preflight.get("region_optional_layers_missing") or [])
+        if str(layer).strip()
+    ]
+    enrichment_missing = [
+        _friendly_layer_name(str(layer))
+        for layer in list(preflight.get("region_enrichment_layers_missing") or [])
+        if str(layer).strip()
+    ]
+
+    if missing_core_layer_count > 0:
+        coverage_gaps.append(
+            f"{missing_core_layer_count} core data layer(s) were unavailable in this region."
+        )
+    if required_missing:
+        coverage_gaps.append(
+            "Missing required regional layers: " + ", ".join(required_missing[:3]) + ("..." if len(required_missing) > 3 else "")
+        )
+    if optional_missing or enrichment_missing:
+        combined = (optional_missing + enrichment_missing)[:3]
+        coverage_gaps.append(
+            "Additional data layers were unavailable: " + ", ".join(combined) + ("..." if (len(optional_missing) + len(enrichment_missing)) > 3 else "")
+        )
+    if feature_coverage_percent < 60.0:
+        coverage_gaps.append(
+            f"Only {feature_coverage_percent:.1f}% of assessment signals were observed directly."
+        )
+
+    uncertainty_drivers: list[str] = []
+    if fallback_drivers:
+        uncertainty_drivers.append("Fallback assumptions were used for one or more inputs.")
+    if missing_field_labels:
+        uncertainty_drivers.append("Missing property details: " + ", ".join(missing_field_labels[:3]) + ("..." if len(missing_field_labels) > 3 else ""))
+    if coverage_gaps:
+        uncertainty_drivers.append(coverage_gaps[0])
+    uncertainty_drivers = uncertainty_drivers[:4]
+
+    if uncertainty_drivers:
+        summary = f"This assessment is presented with {confidence_level}. Main uncertainty drivers are listed below."
+    else:
+        summary = f"This assessment is presented with {confidence_level} using mostly observed property and regional data."
+
+    return {
+        "confidence_level": confidence_level,
+        "summary": summary,
+        "uncertainty_drivers": uncertainty_drivers,
+        "fallback_drivers": fallback_drivers,
+        "missing_inputs": missing_field_labels,
+        "coverage_gaps": coverage_gaps[:4],
+    }
+
+
 def _build_data_quality_summary(
     *,
     preflight: dict[str, Any],
@@ -5166,6 +5288,12 @@ def _run_assessment(
         geometry_basis=str(coverage_preflight.get("geometry_basis") or "geocode_point"),
         improvement_actions=confidence_improvement_actions,
     )
+    trust_summary = _build_homeowner_trust_summary(
+        confidence_tier=str(confidence_block.confidence_tier),
+        fallback_decisions=fallback_decisions,
+        missing_inputs=list(assumptions_block.missing_inputs or []),
+        preflight=coverage_preflight,
+    )
     homeowner_assessment_mode = _to_homeowner_assessment_mode(assessment_output_state)
     readiness_provisional = bool(
         float(risk.geometry_quality_score) < 0.62
@@ -5240,6 +5368,7 @@ def _run_assessment(
         },
         "home_hardening_readiness_precision": "provisional" if readiness_provisional else "stable",
         "confidence_summary": homeowner_confidence_summary,
+        "trust_summary": trust_summary,
         "assessment_limitations": grouped_limitations,
         "what_was_observed": what_was_observed,
         "what_was_estimated": what_was_estimated,

@@ -674,6 +674,12 @@ def build_homeowner_report(
         else {}
     )
     homeowner_confidence = homeowner_confidence if isinstance(homeowner_confidence, dict) else {}
+    homeowner_trust_summary = (
+        (result.homeowner_summary or {}).get("trust_summary")
+        if isinstance(result.homeowner_summary, dict)
+        else {}
+    )
+    homeowner_trust_summary = homeowner_trust_summary if isinstance(homeowner_trust_summary, dict) else {}
     confidence_headline = str(homeowner_confidence.get("headline") or "").strip() or _confidence_summary(result)
     confidence_limitations = [
         str(item).strip()
@@ -688,6 +694,7 @@ def build_homeowner_report(
         "confidence_tier": result.confidence_tier,
         "use_restriction": result.use_restriction,
         "confidence_statement": confidence_headline,
+        "trust_summary": homeowner_trust_summary,
         "observed_data": list(result.confidence_summary.observed_data or []),
         "estimated_data": list(result.confidence_summary.estimated_data or []),
         "missing_data": list(result.confidence_summary.missing_data or []),
@@ -889,6 +896,8 @@ def export_homeowner_report(
     if confidence_summary.get("confidence_tier") in {"low", "preliminary"} and limitations_notice:
         if "estimated" not in limitations_notice.lower() and "missing" not in limitations_notice.lower():
             limitations_notice = limitations_notice + " Some details were estimated or missing."
+    trust_summary = report.confidence_and_limitations.get("trust_summary")
+    trust_summary = trust_summary if isinstance(trust_summary, dict) else {}
 
     return {
         "assessment_id": report.assessment_id,
@@ -900,6 +909,7 @@ def export_homeowner_report(
         "most_impactful_actions": most_impactful,
         "what_to_do_first": what_to_do_first,
         "confidence_summary": confidence_summary,
+        "trust_summary": trust_summary,
         "limitations_notice": limitations_notice,
         "disclaimer": (
             "This report supports homeowner planning and conversations with contractors, agents, "
