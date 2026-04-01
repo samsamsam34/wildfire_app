@@ -4,6 +4,7 @@ The assessment API supports an optional calibrated public-outcome metadata block
 
 This is an **internal/advanced** signal derived from public observed wildfire damage outcomes.
 It is **not** carrier underwriting probability, claims likelihood, or insurer approval.
+For homeowner-first responses, keep this block disabled unless an advanced/internal consumer explicitly opts in.
 
 ## Opt-in usage
 

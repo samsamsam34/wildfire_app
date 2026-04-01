@@ -4,12 +4,15 @@ This API supports optional trust metadata on property assessments.
 
 These diagnostics are **not** ground-truth accuracy validation and **not** insurer/carrier approval signals.
 
+For homeowner-first product flows, keep diagnostics off by default and use the standard assessment/report payloads.
+
 ## Endpoints
 
 - `POST /risk/assess?include_diagnostics=true`
 - `GET /report/{assessment_id}?include_diagnostics=true`
 
 If `include_diagnostics` is omitted or `false`, responses keep the existing assessment shape.
+Treat this as the default for homeowner UX. Use diagnostics for advanced/internal analysis.
 
 Example request:
 

@@ -305,16 +305,21 @@
       </section>
 
       <section class="card">
+        <h2>Homeowner Journey (Primary)</h2>
+        <p style="margin-bottom:0.5rem;">Start here for the main experience.</p>
+        <ol style="margin:0; padding-left:1.15rem; color:var(--text);">
+          <li>Assess your address</li>
+          <li>View the homeowner report</li>
+          <li>Improve the result with missing home details</li>
+          <li>Simulate mitigation upgrades</li>
+        </ol>
+      </section>
+
+      <section class="card">
         <h2>1. Start With Your Address</h2>
-        <div class="row">
-          <div>
-            <label>API Key (for local testing)</label>
-            <input id="apiKey" value="dev-key-1" />
-          </div>
-          <div>
-            <label>Address</label>
-            <input id="address" placeholder="123 Main St, Boulder, CO" />
-          </div>
+        <div>
+          <label>Address</label>
+          <input id="address" placeholder="123 Main St, Boulder, CO" />
         </div>
       </section>
 
@@ -410,7 +415,7 @@
 
         <div class="actions">
           <button id="assessBtn" type="button">Run Assessment</button>
-          <button id="reassessBtn" type="button" class="secondary">Update Last Assessment</button>
+          <button id="reassessBtn" type="button" class="secondary">Update With New Details</button>
         </div>
         <p id="requestStatus" class="muted" style="margin-top:0.5rem;">Idle.</p>
       </section>
@@ -442,7 +447,7 @@
       </section>
 
       <section class="card">
-        <h2>6. Property Map</h2>
+        <h2>Optional: Property Map</h2>
         <p class="muted">See your home in geographic context with defensible-space zones and nearby wildfire layers.</p>
         <div id="assessmentMap"></div>
         <p id="mapEmptyText" class="map-empty">Run an assessment to load map layers.</p>
@@ -452,7 +457,30 @@
       </section>
 
       <section class="card">
-        <h2>7. See How Upgrades Could Help</h2>
+        <h2>6. View Homeowner Report</h2>
+        <p class="muted">See the homeowner-focused summary and shareable report formats.</p>
+        <p id="homeownerReportStatus" style="margin-top:0.55rem;">Run an assessment to load the homeowner report preview.</p>
+        <ul id="homeownerReportHighlights"><li class="muted">No homeowner report preview yet.</li></ul>
+        <div class="actions">
+          <button id="openReportBtn" type="button" class="secondary">Open Printable Report</button>
+          <button id="downloadPdfBtn" type="button" class="secondary">Download Homeowner PDF</button>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>7. Improve This Result</h2>
+        <p>Use missing-input suggestions below, update home details above, then click <strong>Update With New Details</strong>.</p>
+        <h3 style="margin-top:0.8rem;">Suggested Improvements</h3>
+        <ul id="improveSuggestions"><li class="muted">No suggestions yet.</li></ul>
+        <h3 style="margin-top:0.8rem;">Helpful Follow-Up Inputs</h3>
+        <ul id="improveInputs"><li class="muted">No follow-up inputs yet.</li></ul>
+        <div class="actions">
+          <button id="refreshImproveBtn" type="button" class="secondary">Refresh Suggestions</button>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>8. Simulate Mitigation Upgrades</h2>
         <p>Try a few changes to see how they could lower risk.</p>
 
         <div class="row" style="margin-top:0.6rem;">
@@ -549,18 +577,18 @@
       </section>
 
       <section class="card">
-        <h2>8. Report</h2>
-        <p class="muted">Optional: open a printable report or exported JSON.</p>
-        <div class="actions">
-          <button id="openReportBtn" type="button" class="secondary">Open Printable Report</button>
-          <button id="exportReportBtn" type="button" class="secondary">Open Export JSON</button>
-          <button id="downloadPdfBtn" type="button" class="secondary">Download Homeowner PDF</button>
-        </div>
-      </section>
-
-      <section class="card">
         <details>
-          <summary>Details: How this was estimated</summary>
+          <summary>Advanced / Internal Details</summary>
+          <div class="row">
+            <div>
+              <label>API Key (local/internal use)</label>
+              <input id="apiKey" value="dev-key-1" />
+            </div>
+          </div>
+          <div class="actions" style="margin-top:0.6rem;">
+            <button id="exportReportBtn" type="button" class="secondary">Open Raw Export JSON</button>
+            <button id="openInternalDiagnosticsBtn" type="button" class="secondary">Open Internal Diagnostics</button>
+          </div>
           <div class="row">
             <div>
               <h3>Confidence</h3>
@@ -678,6 +706,7 @@
       apiKeyInput.value = storedApiKey;
 
       let latestAssessment = null;
+      let latestHomeownerReport = null;
       let latestMapPayload = null;
       let assessmentMap = null;
       let mapBaseLayer = null;
@@ -1414,9 +1443,128 @@
         return inferPropertyFindingsFromContext(data.property_level_context || {});
       }
 
+      function renderImproveSectionFromBlock(block) {
+        const improveSuggestionsEl = document.getElementById("improveSuggestions");
+        const improveInputsEl = document.getElementById("improveInputs");
+        if (!improveSuggestionsEl || !improveInputsEl) return;
+
+        const suggestions = Array.isArray(block?.suggestions)
+          ? block.suggestions
+          : (Array.isArray(block?.improve_your_result_suggestions) ? block.improve_your_result_suggestions : []);
+        const followUps = Array.isArray(block?.optional_follow_up_inputs) ? block.optional_follow_up_inputs : [];
+
+        improveSuggestionsEl.innerHTML = suggestions.length > 0
+          ? suggestions.slice(0, 6).map((item) => `<li>${item}</li>`).join("")
+          : "<li class='muted'>No improvement suggestions available yet.</li>";
+
+        improveInputsEl.innerHTML = followUps.length > 0
+          ? followUps.slice(0, 6).map((item) => {
+              const label = String(item?.label || item?.input_key || "Input detail");
+              const prompt = String(item?.prompt || "");
+              return `<li><strong>${label}</strong>${prompt ? `: ${prompt}` : ""}</li>`;
+            }).join("")
+          : "<li class='muted'>No additional follow-up inputs suggested.</li>";
+      }
+
+      function resetHomeownerJourneyPanels(reason) {
+        latestHomeownerReport = null;
+        const statusEl = document.getElementById("homeownerReportStatus");
+        const highlightsEl = document.getElementById("homeownerReportHighlights");
+        if (statusEl) {
+          statusEl.textContent = reason || "Run an assessment to load the homeowner report preview.";
+        }
+        if (highlightsEl) {
+          highlightsEl.innerHTML = "<li class='muted'>No homeowner report preview yet.</li>";
+        }
+        renderImproveSectionFromBlock(null);
+      }
+
+      function renderHomeownerReportPreview(report) {
+        const statusEl = document.getElementById("homeownerReportStatus");
+        const highlightsEl = document.getElementById("homeownerReportHighlights");
+        if (!statusEl || !highlightsEl) return;
+
+        if (!report || typeof report !== "object") {
+          statusEl.textContent = "Homeowner report preview is not available for this assessment.";
+          highlightsEl.innerHTML = "<li class='muted'>No homeowner report preview yet.</li>";
+          return;
+        }
+
+        const headline = String(report?.headline_risk_summary || "").trim();
+        const whatFirst = String(report?.what_to_do_first?.action || report?.what_to_do_first?.title || "").trim();
+        const topActions = Array.isArray(report?.prioritized_actions) ? report.prioritized_actions : [];
+        const confidence = report?.confidence_summary || report?.confidence_and_limitations || {};
+        const trust = report?.trust_summary || report?.confidence_and_limitations?.trust_summary || {};
+        const lowDiff = trust?.low_differentiation_explanation || null;
+
+        statusEl.textContent = headline || "Homeowner report loaded.";
+        const rows = [];
+        if (whatFirst) rows.push(`<li><strong>What to do first:</strong> ${whatFirst}</li>`);
+        if (topActions.length > 0) {
+          const firstAction = String(topActions[0]?.action || topActions[0]?.title || "").trim();
+          if (firstAction) rows.push(`<li><strong>Top action:</strong> ${firstAction}</li>`);
+        }
+        if (Array.isArray(confidence?.why_confidence_is_limited) && confidence.why_confidence_is_limited.length > 0) {
+          rows.push(`<li><strong>Confidence note:</strong> ${String(confidence.why_confidence_is_limited[0])}</li>`);
+        }
+        if (lowDiff && typeof lowDiff === "object") {
+          rows.push(
+            `<li><strong>Nearby-home comparison:</strong> ${String(lowDiff.why_nearby_properties_may_appear_similar || "Result is based mostly on shared neighborhood conditions.")}</li>`
+          );
+        }
+        highlightsEl.innerHTML = rows.length > 0
+          ? rows.join("")
+          : "<li class='muted'>No homeowner report highlights available.</li>";
+      }
+
+      async function loadHomeownerReportPreview(assessmentId) {
+        const statusEl = document.getElementById("homeownerReportStatus");
+        const highlightsEl = document.getElementById("homeownerReportHighlights");
+        if (!assessmentId || !statusEl || !highlightsEl) return;
+        statusEl.textContent = "Loading homeowner report preview...";
+        try {
+          const report = await api(`/report/${assessmentId}/homeowner`);
+          if (!latestAssessment || latestAssessment.assessment_id !== assessmentId) return;
+          latestHomeownerReport = report;
+          renderHomeownerReportPreview(report);
+        } catch (err) {
+          latestHomeownerReport = null;
+          statusEl.textContent = `Homeowner report preview unavailable: ${err.message}`;
+          highlightsEl.innerHTML = "<li class='muted'>Open the printable report once the assessment is available.</li>";
+        }
+      }
+
+      function renderImproveSectionFromAssessment(data) {
+        const homeownerSummary = (data && typeof data.homeowner_summary === "object" && data.homeowner_summary)
+          ? data.homeowner_summary
+          : {};
+        const improveBlock = (homeownerSummary && typeof homeownerSummary.improve_your_result === "object")
+          ? homeownerSummary.improve_your_result
+          : null;
+        renderImproveSectionFromBlock(improveBlock);
+      }
+
+      async function refreshImproveSuggestions() {
+        if (!latestAssessment?.assessment_id) {
+          alert("Run an assessment first.");
+          return;
+        }
+        const btn = document.getElementById("refreshImproveBtn");
+        if (btn) btn.disabled = true;
+        try {
+          const options = await api(`/risk/improve/${latestAssessment.assessment_id}`);
+          renderImproveSectionFromBlock(options);
+        } catch (err) {
+          alert(`Could not refresh suggestions: ${err.message}`);
+        } finally {
+          if (btn) btn.disabled = false;
+        }
+      }
+
       function renderAssessment(data) {
         const resolution = data?.region_resolution || {};
         if (resolution?.coverage_available === false && resolution?.reason === "no_prepared_region_for_location") {
+          resetHomeownerJourneyPanels("Homeowner report preview is unavailable until this address is covered by prepared-region data.");
           renderUncoveredLocationState({
             coverage_available: false,
             resolved_region_id: null,
@@ -1658,11 +1806,14 @@
           }
         }
         renderAssessmentMap(data?.assessment_id);
+        renderImproveSectionFromAssessment(data);
+        loadHomeownerReportPreview(data?.assessment_id);
       }
 
       function renderUncoveredLocationState(detail) {
         latestAssessment = null;
         latestMapPayload = null;
+        resetHomeownerJourneyPanels("Homeowner report preview is unavailable for uncovered locations.");
         const reasonText = detail?.reason || "no_prepared_region_for_location";
         const recommendation = detail?.recommended_action || "Prepare and validate a region for this location, then retry assessment.";
         const diagnostics = Array.isArray(detail?.diagnostics) ? detail.diagnostics : [];
@@ -1744,6 +1895,7 @@
 
         latestAssessment = null;
         latestMapPayload = null;
+        resetHomeownerJourneyPanels("Homeowner report preview is unavailable until geocoding succeeds.");
         const scoreEl = document.getElementById("riskScore");
         scoreEl.textContent = "—";
         scoreEl.className = "score warn";
@@ -2914,9 +3066,13 @@
       document.getElementById("assessBtn").addEventListener("click", startAddressVerificationFlow);
       document.getElementById("reassessBtn").addEventListener("click", () => runAssessment(true));
       document.getElementById("simulateBtn").addEventListener("click", runSimulation);
+      document.getElementById("refreshImproveBtn")?.addEventListener("click", refreshImproveSuggestions);
       document.getElementById("openReportBtn").addEventListener("click", openReportView);
       document.getElementById("exportReportBtn").addEventListener("click", exportReport);
       document.getElementById("downloadPdfBtn").addEventListener("click", downloadHomeownerPdf);
+      document.getElementById("openInternalDiagnosticsBtn")?.addEventListener("click", () => {
+        window.open(`${apiBase}/internal/diagnostics`, "_blank", "noopener");
+      });
       document.getElementById("applyVerifyLocationBtn")?.addEventListener("click", applyVerificationPendingLocation);
       document.getElementById("confirmAddressBtn")?.addEventListener("click", confirmVerifiedAddressAndRunAssessment);
       document.getElementById("resetVerifyLocationBtn")?.addEventListener("click", resetVerificationLocationToSuggested);

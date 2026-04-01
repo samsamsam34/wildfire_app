@@ -18,6 +18,16 @@ It also supports reassessment, simulation, report retrieval/export, portfolio wo
 
 Runtime scoring reads prepared local data. Large GIS download/prep is handled offline by scripts.
 
+## Product Focus
+
+Primary audience right now is homeowners. The default product path is:
+1. assess an address
+2. view the homeowner report
+3. improve the result with missing home details
+4. simulate mitigation upgrades
+
+Insurer/portfolio/internal diagnostics/calibration capabilities remain available for advanced use, but they are secondary/internal surfaces and are not the default homeowner flow.
+
 ## What It Does
 
 - Runs factorized wildfire scoring across environmental and structure-focused submodels.
@@ -73,33 +83,38 @@ Compatibility fields such as `insurance_readiness_score` remain available, but a
 
 Full route docs are available at `/docs` when running locally.
 
-Core assessment:
+Homeowner primary flow:
 - `GET /health`
-- `POST /risk/assess` (`?include_diagnostics=true` for opt-in trust metadata, `?include_calibrated_outputs=true` for optional calibrated public-outcome metadata)
+- `POST /risk/assess`
 - `POST /risk/reassess/{assessment_id}`
 - `GET /risk/improve/{assessment_id}` (homeowner input gap check + follow-up prompts)
 - `POST /risk/improve/{assessment_id}` (rerun with added homeowner details + before/after summary)
 - `POST /risk/simulate`
-- `POST /risk/debug`
-- `POST /risk/layer-diagnostics`
-- `POST /regions/coverage-check` (check whether a location is covered by prepared regions)
-- `POST /regions/prepare`, `GET /regions/prepare/{job_id}` (queue/poll offline region-prep jobs)
-
-Reports:
-- `GET /report/{assessment_id}` (`?include_diagnostics=true` for opt-in trust metadata)
-- `GET /report/{assessment_id}/export`
-- `GET /report/{assessment_id}/view`
 - `GET /report/{assessment_id}/homeowner`
 - `GET /report/{assessment_id}/homeowner/pdf`
+
+Homeowner report and map views:
+- `GET /report/{assessment_id}`
+- `GET /report/{assessment_id}/view`
 - `GET /report/{assessment_id}/map`
 
-Portfolio and batch:
+Advanced/internal (secondary surfaces):
+- `POST /risk/assess?include_diagnostics=true` (opt-in trust metadata)
+- `POST /risk/assess?include_calibrated_outputs=true` (opt-in calibrated public-outcome metadata)
+- `POST /risk/debug`
+- `POST /risk/layer-diagnostics`
+- `GET /report/{assessment_id}?include_diagnostics=true`
+- `GET /report/{assessment_id}/export`
+- `POST /regions/coverage-check` (prepared-region coverage diagnostics)
+- `POST /regions/prepare`, `GET /regions/prepare/{job_id}` (offline region-prep jobs)
+
+Portfolio and batch (secondary/internal):
 - `POST /portfolio/assess`
 - `POST /portfolio/jobs`, `GET /portfolio/jobs/{job_id}`, `GET /portfolio/jobs/{job_id}/results`
 - `POST /portfolio/import/csv`
 - `GET /portfolio`, `GET /assessments`, `GET /assessments/summary`
 
-Review and operations:
+Review, governance, and operations (secondary/internal):
 - annotations, review status, assignment, workflow, comparison, scenario history
 - organizations and underwriting rulesets
 - audit and summary endpoints (`/audit/events`, `/admin/summary`)
