@@ -648,6 +648,34 @@ def test_neighboring_parcels_produce_distinct_parcel_based_metrics(monkeypatch):
     assert west_parcel_metrics.get("vegetation_within_parcel") != east_parcel_metrics.get("vegetation_within_parcel")
     assert west_parcel_metrics.get("cleared_area_ratio") != east_parcel_metrics.get("cleared_area_ratio")
     assert west_parcel_metrics.get("edge_exposure") != east_parcel_metrics.get("edge_exposure")
+    assert west_parcel_metrics.get("within_parcel_vegetation_ratio") != east_parcel_metrics.get(
+        "within_parcel_vegetation_ratio"
+    )
+    west_context = west_parcel_metrics.get("parcel_context") or {}
+    east_context = east_parcel_metrics.get("parcel_context") or {}
+    assert set(west_context.keys()) >= {
+        "parcel_area",
+        "within_parcel_vegetation_ratio",
+        "cross_boundary_exposure_ratio",
+        "neighbor_proximity_context",
+    }
+    assert set(east_context.keys()) >= {
+        "parcel_area",
+        "within_parcel_vegetation_ratio",
+        "cross_boundary_exposure_ratio",
+        "neighbor_proximity_context",
+    }
+
+    west_ring = (west_ctx.get("ring_metrics") or {}).get("ring_0_5_ft") or {}
+    east_ring = (east_ctx.get("ring_metrics") or {}).get("ring_0_5_ft") or {}
+    assert west_ring.get("ring_area_sqft_full_context") is not None
+    assert east_ring.get("ring_area_sqft_full_context") is not None
+    assert west_ring.get("vegetation_density_full_context") is not None
+    assert east_ring.get("vegetation_density_full_context") is not None
+    assert west_ring.get("cross_boundary_exposure_ratio") is not None
+    assert east_ring.get("cross_boundary_exposure_ratio") is not None
+    assert float(west_ring.get("ring_area_sqft_full_context")) >= float(west_ring.get("ring_area_sqft"))
+    assert float(east_ring.get("ring_area_sqft_full_context")) >= float(east_ring.get("ring_area_sqft"))
 
 
 @pytest.mark.skipif(Polygon is None, reason="Parcel-boundary sampling test requires shapely")
@@ -781,3 +809,13 @@ def test_matched_footprint_ring_sampling_is_clipped_to_parcel_boundary(monkeypat
     east_parcel_metrics = east_ctx.get("parcel_based_metrics") or {}
     assert west_parcel_metrics.get("vegetation_within_parcel") != east_parcel_metrics.get("vegetation_within_parcel")
     assert west_parcel_metrics.get("edge_exposure") != east_parcel_metrics.get("edge_exposure")
+    west_ring = (west_ctx.get("ring_metrics") or {}).get("ring_0_5_ft") or {}
+    east_ring = (east_ctx.get("ring_metrics") or {}).get("ring_0_5_ft") or {}
+    assert west_ring.get("sampling_boundary") == "parcel_clipped"
+    assert east_ring.get("sampling_boundary") == "parcel_clipped"
+    assert west_ring.get("ring_area_sqft_full_context") is not None
+    assert east_ring.get("ring_area_sqft_full_context") is not None
+    assert west_ring.get("vegetation_density_full_context") is not None
+    assert east_ring.get("vegetation_density_full_context") is not None
+    assert west_ring.get("cross_boundary_exposure_ratio") is not None
+    assert east_ring.get("cross_boundary_exposure_ratio") is not None

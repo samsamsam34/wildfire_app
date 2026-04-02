@@ -1666,6 +1666,12 @@ class WildfireDataClient:
         if parcel_polygon is None or bool(getattr(parcel_polygon, "is_empty", True)):
             return None
 
+        parcel_area_sqft = self._geometry_area_sqft(parcel_polygon)
+        parcel_area_acres = (
+            round(float(parcel_area_sqft) / 43560.0, 3)
+            if parcel_area_sqft is not None
+            else None
+        )
         parcel_canopy = self._summarize_ring_canopy(parcel_polygon, canopy_path=canopy_path)
         parcel_fuel = self._summarize_ring_fuel_presence(parcel_polygon, fuel_path=fuel_path)
 
@@ -1687,6 +1693,7 @@ class WildfireDataClient:
         )
 
         edge_exposure = None
+        outside_edge_exposure = None
         if Transformer and shapely_transform:
             try:
                 to_3857 = Transformer.from_crs("EPSG:4326", "EPSG:3857", always_xy=True).transform
@@ -1709,6 +1716,22 @@ class WildfireDataClient:
                             max(0.0, min(100.0, sum(w * v for w, v in terms) / max(1e-6, sum(w for w, _ in terms)))),
                             1,
                         )
+                outer_band = parcel_m.buffer(20.0 * 0.3048).difference(parcel_m)
+                if outer_band is not None and not bool(getattr(outer_band, "is_empty", True)):
+                    outer_wgs84 = shapely_transform(to_wgs84, outer_band)
+                    outer_canopy = self._summarize_ring_canopy(outer_wgs84, canopy_path=canopy_path)
+                    outer_fuel = self._summarize_ring_fuel_presence(outer_wgs84, fuel_path=fuel_path)
+                    outer_terms: list[tuple[float, float]] = []
+                    canopy_outer = self._coerce_float((outer_canopy or {}).get("vegetation_density"))
+                    if canopy_outer is not None:
+                        outer_terms.append((0.7, float(canopy_outer)))
+                    if outer_fuel is not None:
+                        outer_terms.append((0.3, float(outer_fuel)))
+                    if outer_terms:
+                        outside_edge_exposure = round(
+                            max(0.0, min(100.0, sum(w * v for w, v in outer_terms) / max(1e-6, sum(w for w, _ in outer_terms)))),
+                            1,
+                        )
             except Exception:
                 edge_exposure = None
         if edge_exposure is None:
@@ -1724,12 +1747,70 @@ class WildfireDataClient:
             elif far_density is not None:
                 edge_exposure = round(float(far_density), 1)
 
+        within_parcel_vegetation_ratio = (
+            round(max(0.0, min(1.0, float(vegetation_within_parcel) / 100.0)), 3)
+            if vegetation_within_parcel is not None
+            else None
+        )
+        cross_boundary_exposure_ratio = None
+        rings = ring_metrics if isinstance(ring_metrics, dict) else {}
+        cross_ratio_terms: list[tuple[float, float]] = []
+        for ring_key in ("ring_0_5_ft", "ring_5_30_ft", "ring_30_100_ft"):
+            row = rings.get(ring_key) or rings.get(ring_key.replace("ring_", "zone_")) or {}
+            if not isinstance(row, dict):
+                continue
+            full_ratio = self._coerce_float(row.get("cross_boundary_exposure_ratio"))
+            if full_ratio is None:
+                ring_area = self._coerce_float(row.get("ring_area_sqft"))
+                ring_area_full = self._coerce_float(row.get("ring_area_sqft_full_context"))
+                if ring_area is not None and ring_area_full is not None and ring_area_full > 0.0:
+                    full_ratio = max(0.0, min(1.0, (ring_area_full - ring_area) / ring_area_full))
+            if full_ratio is None:
+                continue
+            weight = (
+                self._coerce_float(row.get("vegetated_overlap_area_sqft_full_context"))
+                or self._coerce_float(row.get("ring_area_sqft_full_context"))
+                or self._coerce_float(row.get("ring_area_sqft"))
+                or 1.0
+            )
+            cross_ratio_terms.append((float(max(0.0, weight)), float(max(0.0, min(1.0, full_ratio)))))
+        if cross_ratio_terms:
+            numerator = sum(weight * ratio for weight, ratio in cross_ratio_terms)
+            denominator = sum(weight for weight, _ in cross_ratio_terms)
+            if denominator > 0.0:
+                cross_boundary_exposure_ratio = round(max(0.0, min(1.0, numerator / denominator)), 3)
+        elif vegetation_within_parcel is not None and outside_edge_exposure is not None:
+            outside = max(0.0, float(outside_edge_exposure))
+            inside = max(0.0, float(vegetation_within_parcel))
+            cross_boundary_exposure_ratio = round(outside / max(1e-6, outside + inside), 3)
+
+        neighbor_proximity_context = {
+            "edge_exposure_within_parcel": edge_exposure,
+            "edge_exposure_outside_parcel": outside_edge_exposure,
+            "boundary_mode": "parcel_polygon",
+        }
+        parcel_context = {
+            "parcel_area": {
+                "sqft": parcel_area_sqft,
+                "acres": parcel_area_acres,
+            },
+            "within_parcel_vegetation_ratio": within_parcel_vegetation_ratio,
+            "cross_boundary_exposure_ratio": cross_boundary_exposure_ratio,
+            "neighbor_proximity_context": neighbor_proximity_context,
+        }
+
         return {
             "vegetation_within_parcel": (
                 round(float(vegetation_within_parcel), 1) if vegetation_within_parcel is not None else None
             ),
             "cleared_area_ratio": cleared_area_ratio,
             "edge_exposure": edge_exposure,
+            "parcel_area_sqft": parcel_area_sqft,
+            "parcel_area_acres": parcel_area_acres,
+            "within_parcel_vegetation_ratio": within_parcel_vegetation_ratio,
+            "cross_boundary_exposure_ratio": cross_boundary_exposure_ratio,
+            "neighbor_proximity_context": neighbor_proximity_context,
+            "parcel_context": parcel_context,
             "boundary_mode": "parcel_polygon",
         }
 
@@ -1760,6 +1841,20 @@ class WildfireDataClient:
             if parcel_polygon is not None
             else {}
         )
+
+        def _blend_vegetation_density(
+            canopy_stats: dict[str, float] | None,
+            fuel_presence: float | None,
+        ) -> float | None:
+            if canopy_stats is None and fuel_presence is None:
+                return None
+            if canopy_stats is None:
+                return round(float(fuel_presence), 1) if fuel_presence is not None else None
+            vegetation_density = float(canopy_stats["vegetation_density"])
+            if fuel_presence is not None:
+                vegetation_density = (vegetation_density + float(fuel_presence)) / 2.0
+            return round(vegetation_density, 1)
+
         for ring_key, (inner_ft, outer_ft) in zone_bounds_ft.items():
             ring_geom = point_rings.get(ring_key)
             clipped_geom = (
@@ -1767,10 +1862,23 @@ class WildfireDataClient:
                 if ring_geom is not None and parcel_polygon is not None
                 else None
             )
-            if clipped_geom is not None:
-                canopy_stats = self._summarize_ring_canopy(clipped_geom, canopy_path=canopy_path)
-                fuel_presence = self._summarize_ring_fuel_presence(clipped_geom, fuel_path=fuel_path)
-                ring_area_sqft = self._geometry_area_sqft(clipped_geom)
+            full_canopy_stats: dict[str, float] | None = None
+            full_fuel_presence: float | None = None
+            full_ring_area_sqft: float | None = None
+            if parcel_polygon is not None and ring_geom is not None:
+                full_canopy_stats = self._summarize_ring_canopy(ring_geom, canopy_path=canopy_path)
+                full_fuel_presence = self._summarize_ring_fuel_presence(ring_geom, fuel_path=fuel_path)
+                full_ring_area_sqft = self._geometry_area_sqft(ring_geom)
+
+            if parcel_polygon is not None and ring_geom is not None:
+                if clipped_geom is not None:
+                    canopy_stats = self._summarize_ring_canopy(clipped_geom, canopy_path=canopy_path)
+                    fuel_presence = self._summarize_ring_fuel_presence(clipped_geom, fuel_path=fuel_path)
+                    ring_area_sqft = self._geometry_area_sqft(clipped_geom)
+                else:
+                    canopy_stats = None
+                    fuel_presence = None
+                    ring_area_sqft = 0.0
             else:
                 inner_m = inner_ft * 0.3048
                 outer_m = outer_ft * 0.3048
@@ -1815,15 +1923,13 @@ class WildfireDataClient:
                 zone = {
                     "canopy_mean": None,
                     "canopy_max": None,
-                    "vegetation_density": fuel_presence,
-                    "coverage_pct": fuel_presence,
+                    "vegetation_density": round(float(fuel_presence), 1) if fuel_presence is not None else None,
+                    "coverage_pct": round(float(fuel_presence), 1) if fuel_presence is not None else None,
                     "fuel_presence_proxy": fuel_presence,
                     "basis": "point_proxy",
                 }
             else:
-                vegetation_density = canopy_stats["vegetation_density"]
-                if fuel_presence is not None:
-                    vegetation_density = round((vegetation_density + fuel_presence) / 2.0, 1)
+                vegetation_density = _blend_vegetation_density(canopy_stats, fuel_presence)
                 zone = {
                     "canopy_mean": canopy_stats["canopy_mean"],
                     "canopy_max": canopy_stats["canopy_max"],
@@ -1837,7 +1943,9 @@ class WildfireDataClient:
                     ),
                     "basis": "point_proxy",
                 }
-                if clipped_geom is not None:
+                if parcel_polygon is not None and ring_geom is not None:
+                    zone["sampling_boundary"] = "parcel_clipped" if clipped_geom is not None else "outside_parcel"
+                elif clipped_geom is not None:
                     zone["sampling_boundary"] = "parcel_clipped"
             if "ring_area_sqft" not in zone:
                 ring_area_sqft = (
@@ -1850,6 +1958,50 @@ class WildfireDataClient:
                     ring_area_sqft=ring_area_sqft,
                     coverage_pct=self._coerce_float(zone.get("coverage_pct")),
                 )
+            if parcel_polygon is not None and ring_geom is not None:
+                if full_ring_area_sqft is None:
+                    full_ring_area_sqft = self._geometry_area_sqft(ring_geom)
+                full_coverage_pct = self._coerce_float((full_canopy_stats or {}).get("coverage_pct"))
+                full_overlap_sqft = self._estimated_overlap_area_sqft(
+                    ring_area_sqft=full_ring_area_sqft,
+                    coverage_pct=full_coverage_pct,
+                )
+                inside_overlap_sqft = self._coerce_float(zone.get("vegetated_overlap_area_sqft"))
+                cross_boundary_exposure_ratio = None
+                if full_overlap_sqft is not None and full_overlap_sqft > 0.0:
+                    inside_overlap_capped = max(
+                        0.0,
+                        min(float(full_overlap_sqft), float(inside_overlap_sqft or 0.0)),
+                    )
+                    outside_overlap_sqft = max(0.0, float(full_overlap_sqft) - inside_overlap_capped)
+                    cross_boundary_exposure_ratio = round(
+                        max(0.0, min(1.0, outside_overlap_sqft / float(full_overlap_sqft))),
+                        3,
+                    )
+                elif full_ring_area_sqft is not None and full_ring_area_sqft > 0.0:
+                    inside_area_sqft = self._coerce_float(zone.get("ring_area_sqft")) or 0.0
+                    cross_boundary_exposure_ratio = round(
+                        max(
+                            0.0,
+                            min(
+                                1.0,
+                                (float(full_ring_area_sqft) - float(max(0.0, inside_area_sqft)))
+                                / float(full_ring_area_sqft),
+                            ),
+                        ),
+                        3,
+                    )
+                zone["ring_area_sqft_full_context"] = full_ring_area_sqft
+                zone["vegetated_overlap_area_sqft_full_context"] = full_overlap_sqft
+                zone["canopy_mean_full_context"] = self._coerce_float((full_canopy_stats or {}).get("canopy_mean"))
+                zone["canopy_max_full_context"] = self._coerce_float((full_canopy_stats or {}).get("canopy_max"))
+                zone["coverage_pct_full_context"] = full_coverage_pct
+                zone["fuel_presence_proxy_full_context"] = full_fuel_presence
+                zone["vegetation_density_full_context"] = _blend_vegetation_density(
+                    full_canopy_stats,
+                    full_fuel_presence,
+                )
+                zone["cross_boundary_exposure_ratio"] = cross_boundary_exposure_ratio
             metrics[ring_key] = zone
             metrics[zone_aliases[ring_key]] = dict(zone)
         metrics["_meta"] = {
@@ -2515,6 +2667,20 @@ class WildfireDataClient:
             "ring_30_100_ft": "zone_30_100_ft",
             "ring_100_300_ft": "zone_100_300_ft",
         }
+
+        def _blend_vegetation_density(
+            canopy_stats: dict[str, float] | None,
+            fuel_presence: float | None,
+        ) -> float | None:
+            if canopy_stats is None and fuel_presence is None:
+                return None
+            if canopy_stats is None:
+                return round(float(fuel_presence), 1) if fuel_presence is not None else None
+            vegetation_density = float(canopy_stats["vegetation_density"])
+            if fuel_presence is not None:
+                vegetation_density = (vegetation_density + float(fuel_presence)) / 2.0
+            return round(vegetation_density, 1)
+
         for ring_key in ("ring_0_5_ft", "ring_5_30_ft", "ring_30_100_ft", "ring_100_300_ft"):
             ring_geom = rings.get(ring_key)
             if ring_geom is None:
@@ -2533,6 +2699,13 @@ class WildfireDataClient:
                 ring_geometry=ring_geom,
                 parcel_polygon=parcel_polygon,
             )
+            full_canopy_stats: dict[str, float] | None = None
+            full_fuel_presence: float | None = None
+            full_ring_area_sqft: float | None = None
+            if parcel_polygon is not None:
+                full_canopy_stats = self._summarize_ring_canopy(ring_geom, canopy_path=canopy_path)
+                full_fuel_presence = self._summarize_ring_fuel_presence(ring_geom, fuel_path=fuel_path)
+                full_ring_area_sqft = self._geometry_area_sqft(ring_geom)
             if sampling_geom is None:
                 metrics = {
                     "canopy_mean": None,
@@ -2540,8 +2713,34 @@ class WildfireDataClient:
                     "vegetation_density": None,
                     "coverage_pct": None,
                     "fuel_presence_proxy": None,
-                    "sampling_boundary": "parcel_clipped",
+                    "sampling_boundary": "outside_parcel",
+                    "ring_area_sqft": 0.0 if parcel_polygon is not None else None,
+                    "vegetated_overlap_area_sqft": 0.0 if parcel_polygon is not None else None,
                 }
+                if parcel_polygon is not None:
+                    if full_ring_area_sqft is None:
+                        full_ring_area_sqft = self._geometry_area_sqft(ring_geom)
+                    full_coverage_pct = self._coerce_float((full_canopy_stats or {}).get("coverage_pct"))
+                    full_overlap_sqft = self._estimated_overlap_area_sqft(
+                        ring_area_sqft=full_ring_area_sqft,
+                        coverage_pct=full_coverage_pct,
+                    )
+                    metrics["ring_area_sqft_full_context"] = full_ring_area_sqft
+                    metrics["vegetated_overlap_area_sqft_full_context"] = full_overlap_sqft
+                    metrics["canopy_mean_full_context"] = self._coerce_float((full_canopy_stats or {}).get("canopy_mean"))
+                    metrics["canopy_max_full_context"] = self._coerce_float((full_canopy_stats or {}).get("canopy_max"))
+                    metrics["coverage_pct_full_context"] = full_coverage_pct
+                    metrics["fuel_presence_proxy_full_context"] = full_fuel_presence
+                    metrics["vegetation_density_full_context"] = _blend_vegetation_density(
+                        full_canopy_stats,
+                        full_fuel_presence,
+                    )
+                    if full_overlap_sqft is not None and full_overlap_sqft > 0.0:
+                        metrics["cross_boundary_exposure_ratio"] = 1.0
+                    elif full_ring_area_sqft is not None and full_ring_area_sqft > 0.0:
+                        metrics["cross_boundary_exposure_ratio"] = 1.0
+                    else:
+                        metrics["cross_boundary_exposure_ratio"] = None
                 ring_metrics[ring_key] = metrics
                 ring_metrics[zone_aliases[ring_key]] = dict(metrics)
                 continue
@@ -2553,14 +2752,12 @@ class WildfireDataClient:
                 metrics = {
                     "canopy_mean": None,
                     "canopy_max": None,
-                    "vegetation_density": fuel_presence,
-                    "coverage_pct": fuel_presence,
+                    "vegetation_density": round(float(fuel_presence), 1) if fuel_presence is not None else None,
+                    "coverage_pct": round(float(fuel_presence), 1) if fuel_presence is not None else None,
                     "fuel_presence_proxy": fuel_presence,
                 }
             else:
-                vegetation_density = canopy_stats["vegetation_density"]
-                if fuel_presence is not None:
-                    vegetation_density = round((vegetation_density + fuel_presence) / 2.0, 1)
+                vegetation_density = _blend_vegetation_density(canopy_stats, fuel_presence)
                 ring_area_sqft = self._geometry_area_sqft(sampling_geom)
                 metrics = {
                     "canopy_mean": canopy_stats["canopy_mean"],
@@ -2583,6 +2780,50 @@ class WildfireDataClient:
                     ring_area_sqft=ring_area_sqft,
                     coverage_pct=self._coerce_float(metrics.get("coverage_pct")),
                 )
+            if parcel_polygon is not None:
+                if full_ring_area_sqft is None:
+                    full_ring_area_sqft = self._geometry_area_sqft(ring_geom)
+                full_coverage_pct = self._coerce_float((full_canopy_stats or {}).get("coverage_pct"))
+                full_overlap_sqft = self._estimated_overlap_area_sqft(
+                    ring_area_sqft=full_ring_area_sqft,
+                    coverage_pct=full_coverage_pct,
+                )
+                inside_overlap_sqft = self._coerce_float(metrics.get("vegetated_overlap_area_sqft"))
+                cross_boundary_exposure_ratio = None
+                if full_overlap_sqft is not None and full_overlap_sqft > 0.0:
+                    inside_overlap_capped = max(
+                        0.0,
+                        min(float(full_overlap_sqft), float(inside_overlap_sqft or 0.0)),
+                    )
+                    outside_overlap_sqft = max(0.0, float(full_overlap_sqft) - inside_overlap_capped)
+                    cross_boundary_exposure_ratio = round(
+                        max(0.0, min(1.0, outside_overlap_sqft / float(full_overlap_sqft))),
+                        3,
+                    )
+                elif full_ring_area_sqft is not None and full_ring_area_sqft > 0.0:
+                    inside_area_sqft = self._coerce_float(metrics.get("ring_area_sqft")) or 0.0
+                    cross_boundary_exposure_ratio = round(
+                        max(
+                            0.0,
+                            min(
+                                1.0,
+                                (float(full_ring_area_sqft) - float(max(0.0, inside_area_sqft)))
+                                / float(full_ring_area_sqft),
+                            ),
+                        ),
+                        3,
+                    )
+                metrics["ring_area_sqft_full_context"] = full_ring_area_sqft
+                metrics["vegetated_overlap_area_sqft_full_context"] = full_overlap_sqft
+                metrics["canopy_mean_full_context"] = self._coerce_float((full_canopy_stats or {}).get("canopy_mean"))
+                metrics["canopy_max_full_context"] = self._coerce_float((full_canopy_stats or {}).get("canopy_max"))
+                metrics["coverage_pct_full_context"] = full_coverage_pct
+                metrics["fuel_presence_proxy_full_context"] = full_fuel_presence
+                metrics["vegetation_density_full_context"] = _blend_vegetation_density(
+                    full_canopy_stats,
+                    full_fuel_presence,
+                )
+                metrics["cross_boundary_exposure_ratio"] = cross_boundary_exposure_ratio
             ring_metrics[ring_key] = metrics
             ring_metrics[zone_aliases[ring_key]] = dict(metrics)
 
