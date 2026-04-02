@@ -1846,6 +1846,7 @@ def _normalize_property_level_context(raw_context: object) -> dict[str, Any]:
             "source_conflict_flag": False,
             "fallback_mode": "point_based",
             "ring_metrics": None,
+            "near_structure_features": {},
         }
 
     normalized = dict(raw_context)
@@ -2073,6 +2074,68 @@ def _normalize_property_level_context(raw_context: object) -> dict[str, Any]:
         normalized["ring_metrics"] = ring_metrics
     else:
         normalized["ring_metrics"] = None
+    near_structure_features = normalized.get("near_structure_features")
+    if isinstance(near_structure_features, dict) and near_structure_features:
+        normalized["near_structure_features"] = dict(near_structure_features)
+    else:
+        ring0 = {}
+        ring5 = {}
+        if isinstance(normalized.get("ring_metrics"), dict):
+            ring0 = (
+                normalized["ring_metrics"].get("ring_0_5_ft")
+                or normalized["ring_metrics"].get("zone_0_5_ft")
+                or {}
+            )
+            ring5 = (
+                normalized["ring_metrics"].get("ring_5_30_ft")
+                or normalized["ring_metrics"].get("zone_5_30_ft")
+                or {}
+            )
+        veg_density_0_5 = _safe_float(normalized.get("near_structure_vegetation_0_5_pct"))
+        if veg_density_0_5 is None:
+            veg_density_0_5 = _safe_float((ring0 or {}).get("vegetation_density"))
+        veg_density_5_30 = _safe_float(normalized.get("near_structure_vegetation_5_30_pct"))
+        if veg_density_5_30 is None:
+            veg_density_5_30 = _safe_float((ring5 or {}).get("vegetation_density"))
+        canopy_overlap = _safe_float(normalized.get("canopy_adjacency_proxy_pct"))
+        if canopy_overlap is None:
+            canopy_overlap = _safe_float((ring0 or {}).get("imagery_canopy_proxy_pct"))
+        if canopy_overlap is None:
+            canopy_overlap = _safe_float((ring0 or {}).get("coverage_pct"))
+        hardscape_ratio = _safe_float((ring0 or {}).get("imagery_impervious_low_fuel_pct"))
+        if hardscape_ratio is None and veg_density_0_5 is not None:
+            hardscape_ratio = round(max(0.0, min(100.0, 100.0 - veg_density_0_5)), 1)
+        geometry_type = (
+            str(((normalized.get("ring_metrics") or {}).get("geometry_type") or "")).strip().lower()
+            if isinstance(normalized.get("ring_metrics"), dict)
+            else ""
+        )
+        if geometry_type not in {"footprint", "point"}:
+            geometry_type = "footprint" if bool(normalized.get("footprint_used")) else "point"
+        precision_flag = (
+            str(((normalized.get("ring_metrics") or {}).get("precision_flag") or "")).strip().lower()
+            if isinstance(normalized.get("ring_metrics"), dict)
+            else ""
+        )
+        if not precision_flag:
+            precision_flag = "footprint_relative" if geometry_type == "footprint" else "fallback_point_proxy"
+        imagery_available = bool(normalized.get("naip_feature_source"))
+        confidence_flag = (
+            "high"
+            if (imagery_available and geometry_type == "footprint")
+            else ("moderate" if imagery_available else "low")
+        )
+        normalized["near_structure_features"] = {
+            "veg_density_0_5": veg_density_0_5,
+            "veg_density_5_30": veg_density_5_30,
+            "canopy_overlap": canopy_overlap,
+            "hardscape_ratio": hardscape_ratio,
+            "geometry_type": geometry_type,
+            "precision_flag": precision_flag,
+            "imagery_available": imagery_available,
+            "confidence_flag": confidence_flag,
+            "source": "naip_imagery" if imagery_available else "fallback_layers",
+        }
     return normalized
 
 
@@ -6403,6 +6466,7 @@ def _run_assessment(
         top_near_structure_risk_drivers=top_near_structure_risk_drivers,
         prioritized_vegetation_actions=prioritized_vegetation_actions,
         defensible_space_limitations_summary=defensible_space_limitations_summary,
+        near_structure_features=dict(property_level_context.get("near_structure_features") or {}),
         top_risk_drivers=top_risk_drivers,
         top_risk_drivers_detailed=ranked_driver_details[:3],
         prioritized_mitigation_actions=prioritized_mitigation_actions,

@@ -345,6 +345,9 @@ def _assert_core_contract(body: dict) -> None:
     assert isinstance(body["prioritized_mitigation_actions"], list)
     assert isinstance(body["confidence_summary"], dict)
     assert isinstance(body["assumptions_and_unknowns"], list)
+    assert isinstance(body.get("near_structure_features"), dict)
+    for key in ("veg_density_0_5", "veg_density_5_30", "canopy_overlap", "hardscape_ratio"):
+        assert key in body["near_structure_features"]
     assert body["use_restriction"] in {
         "shareable",
         "homeowner_review_recommended",
@@ -746,6 +749,9 @@ def test_nearby_homes_with_distinct_footprints_surface_distinct_ring_metrics_and
     assert b["geometry_resolution"]["parcel_match_status"] == "matched"
     assert a["geometry_resolution"]["ring_generation_mode"] == "footprint_aware_rings"
     assert b["geometry_resolution"]["ring_generation_mode"] == "footprint_aware_rings"
+    assert a["near_structure_features"]["geometry_type"] == "footprint"
+    assert b["near_structure_features"]["geometry_type"] == "footprint"
+    assert a["near_structure_features"]["veg_density_0_5"] != b["near_structure_features"]["veg_density_0_5"]
 
 
 def test_low_quality_anchor_geometry_resolution_is_explicitly_cautious(monkeypatch, tmp_path):
@@ -800,6 +806,37 @@ def test_low_quality_anchor_geometry_resolution_is_explicitly_cautious(monkeypat
     assert trust_summary.get("geometry_specificity_limited") is True
     condensed = trust_summary.get("geometry_resolution_summary") or {}
     assert condensed.get("ring_generation_mode") == "point_annulus_fallback"
+
+
+def test_near_structure_features_fallback_marks_lower_confidence_when_imagery_unavailable(monkeypatch, tmp_path):
+    context = _ctx(
+        52.0,
+        56.0,
+        49.0,
+        ring_metrics={
+            "ring_0_5_ft": {"vegetation_density": 61.0, "coverage_pct": 58.0},
+            "ring_5_30_ft": {"vegetation_density": 54.0, "coverage_pct": 51.0},
+        },
+    )
+    context.property_level_context.update(
+        {
+            "footprint_used": False,
+            "ring_generation_mode": "point_annulus_fallback",
+            "naip_feature_source": None,
+            "near_structure_vegetation_0_5_pct": 61.0,
+            "near_structure_vegetation_5_30_pct": 54.0,
+            "canopy_adjacency_proxy_pct": 57.0,
+        }
+    )
+    _setup(monkeypatch, tmp_path, context)
+
+    assessed = _run(_payload("Fallback Imagery Missing Ln", {"roof_type": "class a"}))
+    near = assessed.get("near_structure_features") or {}
+
+    assert near.get("source") == "fallback_layers"
+    assert near.get("imagery_available") is False
+    assert near.get("confidence_flag") == "low"
+    assert near.get("precision_flag") in {"fallback_point_proxy", "footprint_relative"}
 
 
 def test_parcel_only_geometry_resolution_surfaces_explicit_status(monkeypatch, tmp_path):

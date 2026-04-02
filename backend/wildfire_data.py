@@ -484,6 +484,9 @@ class WildfireDataClient:
             "Near-structure vegetation metrics were enriched with precomputed NAIP imagery features."
         )
         sources.append("NAIP imagery-derived ring features")
+        ring_context["near_structure_features"] = self._build_near_structure_feature_block(
+            ring_context=ring_context
+        )
         return ring_context, assumptions, sources
 
     def _legacy_layer_configured(self, configured_paths: dict[str, str]) -> bool:
@@ -1084,6 +1087,77 @@ class WildfireDataClient:
                 if has_footprint
                 else "point_proxy_relative"
             ),
+        }
+
+    def _build_near_structure_feature_block(
+        self,
+        *,
+        ring_context: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        context = ring_context if isinstance(ring_context, dict) else {}
+        ring_metrics = context.get("ring_metrics") if isinstance(context.get("ring_metrics"), dict) else {}
+        ring_0_5 = ring_metrics.get("ring_0_5_ft") or ring_metrics.get("zone_0_5_ft") or {}
+        ring_5_30 = ring_metrics.get("ring_5_30_ft") or ring_metrics.get("zone_5_30_ft") or {}
+
+        veg_density_0_5 = self._coerce_float(context.get("near_structure_vegetation_0_5_pct"))
+        if veg_density_0_5 is None:
+            veg_density_0_5 = self._coerce_float((ring_0_5 or {}).get("vegetation_density"))
+        veg_density_5_30 = self._coerce_float(context.get("near_structure_vegetation_5_30_pct"))
+        if veg_density_5_30 is None:
+            veg_density_5_30 = self._coerce_float((ring_5_30 or {}).get("vegetation_density"))
+
+        canopy_overlap = self._coerce_float(context.get("canopy_adjacency_proxy_pct"))
+        if canopy_overlap is None:
+            canopy_overlap = self._coerce_float((ring_0_5 or {}).get("imagery_canopy_proxy_pct"))
+        if canopy_overlap is None:
+            canopy_overlap = self._coerce_float((ring_0_5 or {}).get("coverage_pct"))
+
+        hardscape_ratio = self._coerce_float((ring_0_5 or {}).get("imagery_impervious_low_fuel_pct"))
+        if hardscape_ratio is None and veg_density_0_5 is not None:
+            hardscape_ratio = round(max(0.0, min(100.0, 100.0 - veg_density_0_5)), 1)
+        elif hardscape_ratio is None and veg_density_5_30 is not None:
+            hardscape_ratio = round(max(0.0, min(100.0, 100.0 - veg_density_5_30)), 1)
+
+        geometry_type = str(
+            ring_metrics.get("geometry_type")
+            or ("footprint" if bool(context.get("footprint_used")) else "point")
+        ).strip().lower()
+        if geometry_type not in {"footprint", "point"}:
+            geometry_type = "footprint" if bool(context.get("footprint_used")) else "point"
+        precision_flag = str(
+            ring_metrics.get("precision_flag")
+            or ("footprint_relative" if geometry_type == "footprint" else "fallback_point_proxy")
+        ).strip().lower()
+        if not precision_flag:
+            precision_flag = "footprint_relative" if geometry_type == "footprint" else "fallback_point_proxy"
+
+        imagery_available = bool(context.get("naip_feature_source") == "prepared_region_naip")
+        if imagery_available and geometry_type == "footprint":
+            confidence_flag = "high"
+        elif imagery_available:
+            confidence_flag = "moderate"
+        else:
+            confidence_flag = "low"
+
+        notes: list[str] = []
+        if imagery_available:
+            notes.append("Near-structure features are derived from NAIP imagery enrichment.")
+        else:
+            notes.append("Near-structure features are approximated from fallback canopy/fuel layers.")
+        if precision_flag == "fallback_point_proxy":
+            notes.append("Point-based proxy geometry reduces near-structure feature precision.")
+
+        return {
+            "veg_density_0_5": veg_density_0_5,
+            "veg_density_5_30": veg_density_5_30,
+            "canopy_overlap": canopy_overlap,
+            "hardscape_ratio": hardscape_ratio,
+            "geometry_type": geometry_type,
+            "precision_flag": precision_flag,
+            "imagery_available": imagery_available,
+            "confidence_flag": confidence_flag,
+            "source": "naip_imagery" if imagery_available else "fallback_layers",
+            "notes": notes,
         }
 
     def _sample_annulus(
@@ -2657,6 +2731,9 @@ class WildfireDataClient:
             ring_context=ring_context,
             runtime_paths=runtime_paths,
             region_context=region_context,
+        )
+        ring_context["near_structure_features"] = self._build_near_structure_feature_block(
+            ring_context=ring_context
         )
         ring_assumptions.extend(naip_assumptions)
         ring_sources.extend(naip_sources)
