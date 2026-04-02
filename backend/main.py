@@ -2220,6 +2220,40 @@ def _normalize_property_level_context(raw_context: object) -> dict[str, Any]:
     raw_property_linkage = normalized.get("property_linkage")
     if isinstance(raw_property_linkage, dict):
         normalized["property_linkage"] = {
+            "anchor_status": (
+                str(raw_property_linkage.get("anchor_status") or "").strip().lower() or "unresolved"
+            ),
+            "anchor_confidence": round(
+                max(0.0, min(100.0, _safe_float(raw_property_linkage.get("anchor_confidence")) or 0.0)),
+                1,
+            ),
+            "anchor_source": (
+                str(raw_property_linkage.get("anchor_source")).strip()
+                if raw_property_linkage.get("anchor_source") is not None
+                else None
+            ),
+            "selected_structure_id": (
+                str(raw_property_linkage.get("selected_structure_id")).strip()
+                if raw_property_linkage.get("selected_structure_id") is not None
+                else None
+            ),
+            "parcel_source": (
+                str(raw_property_linkage.get("parcel_source")).strip()
+                if raw_property_linkage.get("parcel_source") is not None
+                else None
+            ),
+            "footprint_source": (
+                str(raw_property_linkage.get("footprint_source")).strip()
+                if raw_property_linkage.get("footprint_source") is not None
+                else None
+            ),
+            "parcel_candidate_count": max(0, int(raw_property_linkage.get("parcel_candidate_count") or 0)),
+            "footprint_candidate_count": max(0, int(raw_property_linkage.get("footprint_candidate_count") or 0)),
+            "mismatch_flags": [
+                str(flag).strip()
+                for flag in (raw_property_linkage.get("mismatch_flags") or [])
+                if str(flag).strip()
+            ][:8],
             "geocode_confidence": round(
                 max(0.0, min(100.0, _safe_float(raw_property_linkage.get("geocode_confidence")) or 0.0)),
                 1,
@@ -2252,6 +2286,40 @@ def _normalize_property_level_context(raw_context: object) -> dict[str, Any]:
         }
     else:
         normalized["property_linkage"] = {
+            "anchor_status": "unresolved",
+            "anchor_confidence": round(
+                max(0.0, min(100.0, _safe_float(normalized.get("property_anchor_quality_score")) or 0.0)),
+                1,
+            ),
+            "anchor_source": (
+                str(normalized.get("property_anchor_source")).strip()
+                if normalized.get("property_anchor_source") is not None
+                else None
+            ),
+            "selected_structure_id": (
+                str(normalized.get("selected_structure_id")).strip()
+                if normalized.get("selected_structure_id") is not None
+                else None
+            ),
+            "parcel_source": (
+                str((normalized.get("parcel_resolution") or {}).get("source")).strip()
+                if (normalized.get("parcel_resolution") or {}).get("source") is not None
+                else None
+            ),
+            "footprint_source": (
+                str((normalized.get("footprint_resolution") or {}).get("selected_source")).strip()
+                if (normalized.get("footprint_resolution") or {}).get("selected_source") is not None
+                else None
+            ),
+            "parcel_candidate_count": max(
+                0,
+                int((normalized.get("parcel_resolution") or {}).get("candidates_considered") or 0),
+            ),
+            "footprint_candidate_count": max(
+                0,
+                int((normalized.get("footprint_resolution") or {}).get("candidates_considered") or 0),
+            ),
+            "mismatch_flags": [],
             "geocode_confidence": 0.0,
             "parcel_confidence": round(
                 max(0.0, min(100.0, _safe_float((normalized.get("parcel_resolution") or {}).get("confidence")) or 0.0)),

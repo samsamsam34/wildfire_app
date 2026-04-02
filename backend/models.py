@@ -962,6 +962,17 @@ class ParcelResolutionSummary(BaseModel):
 
 
 class PropertyLinkageSummary(BaseModel):
+    anchor_status: str = "unresolved"
+    anchor_confidence: float = 0.0
+    anchor_source: Optional[str] = None
+    selected_structure_id: Optional[str] = None
+    parcel_source: Optional[str] = None
+    footprint_source: Optional[str] = None
+    parcel_candidate_count: int = 0
+    footprint_candidate_count: int = 0
+    mismatch_flags: List[str] = Field(default_factory=list)
+
+    # Legacy compatibility fields
     geocode_confidence: float = 0.0
     parcel_confidence: float = 0.0
     footprint_confidence: float = 0.0
