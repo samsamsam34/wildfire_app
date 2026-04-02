@@ -2713,6 +2713,19 @@ def _build_geometry_resolution_summary(
         anchor_quality_score = 0.0
     if anchor_quality_score > 1.0 and anchor_quality_score <= 100.0:
         anchor_quality_score = anchor_quality_score / 100.0
+    if anchor_quality_score <= 0.0:
+        precision_hint = str(
+            ctx.get("property_anchor_precision") or ctx.get("geocode_precision") or "unknown"
+        ).strip().lower()
+        anchor_quality_score = {
+            "rooftop": 0.92,
+            "parcel_or_address_point": 0.88,
+            "parcel": 0.85,
+            "user_selected_point": 0.86,
+            "interpolated": 0.68,
+            "approximate": 0.48,
+            "unknown": 0.55,
+        }.get(precision_hint, 0.55)
     anchor_quality_score = round(max(0.0, min(1.0, anchor_quality_score)), 3)
 
     parcel_match_status = "not_found"
@@ -2816,8 +2829,6 @@ def _build_geometry_resolution_summary(
         mismatch_reasons.append("Matched footprint does not align with the matched parcel boundary.")
     if parcel_match_status == "multiple_candidates":
         mismatch_reasons.append("Parcel resolution returned multiple plausible parcels.")
-    if parcel_match_status in {"not_found", "provider_unavailable"} and footprint_match_status == "matched":
-        mismatch_reasons.append("Footprint matched but parcel linkage is unresolved.")
     if multiple_footprints_on_parcel and footprint_match_status in {"matched", "ambiguous"}:
         mismatch_reasons.append("Multiple structures exist on the parcel and structure selection may be ambiguous.")
     if source_conflict_flag:
@@ -3488,14 +3499,14 @@ def _build_feature_coverage_preflight(
         assessment_specificity_tier = "regional_estimate"
     if bundle_metrics_present and fallback_dominance_ratio >= 0.80:
         assessment_specificity_tier = "regional_estimate"
-    if property_data_confidence < 30.0:
+    if property_data_confidence < 25.0:
         assessment_specificity_tier = "regional_estimate"
     elif property_data_confidence < 50.0 and assessment_specificity_tier == "property_specific":
         assessment_specificity_tier = "address_level"
     if property_mismatch_flag:
         if assessment_specificity_tier == "property_specific":
             assessment_specificity_tier = "address_level"
-        else:
+        elif assessment_specificity_tier == "address_level" and property_data_confidence < 35.0:
             assessment_specificity_tier = "regional_estimate"
 
     limited_assessment_flag = (
@@ -4990,14 +5001,14 @@ def _build_specificity_summary(
         and local_differentiation_score < 35.0
     ):
         specificity_tier = "regional_estimate"
-    if property_data_confidence < 30.0:
+    if property_data_confidence < 25.0:
         specificity_tier = "regional_estimate"
     elif property_data_confidence < 50.0 and specificity_tier == "property_specific":
         specificity_tier = "address_level"
     if property_mismatch_flag:
         if specificity_tier == "property_specific":
             specificity_tier = "address_level"
-        else:
+        elif specificity_tier == "address_level" and property_data_confidence < 35.0:
             specificity_tier = "regional_estimate"
 
     nearby_home_guardrail = bool(trust_summary.get("nearby_home_comparison_safeguard_triggered"))
@@ -9552,13 +9563,17 @@ def _geocode_address_or_raise(
         "address_component_comparison": None,
     }
     if isinstance(geocoder_meta, dict):
-        meta_normalized_address = str(geocoder_meta.get("normalized_address") or "").strip()
-        if meta_normalized_address:
-            if normalize_address(meta_normalized_address) != normalize_address(submitted_address):
-                # Ignore stale metadata from a previous geocode invocation.
-                geocoder_meta = {}
-        meta_submitted_address = str(geocoder_meta.get("submitted_address") or "").strip()
-        if meta_submitted_address and normalize_address(meta_submitted_address) != normalize_address(submitted_address):
+        submitted_normalized = normalize_address(submitted_address)
+        meta_address_tokens: list[str] = []
+        for key in ("submitted_address", "normalized_address", "matched_address", "geocoded_address"):
+            raw = str(geocoder_meta.get(key) or "").strip()
+            if raw:
+                meta_address_tokens.append(normalize_address(raw))
+        # Ignore stale metadata from a previous geocode invocation when it
+        # cannot be tied back to the current address.
+        if meta_address_tokens and submitted_normalized not in set(meta_address_tokens):
+            geocoder_meta = {}
+        elif not meta_address_tokens:
             geocoder_meta = {}
     if isinstance(geocoder_meta, dict) and geocoder_meta:
         matched_address = geocoder_meta.get("matched_address")
@@ -14122,6 +14137,13 @@ def get_assessment_map(
 def get_homeowner_report(
     assessment_id: str,
     include_professional_debug_metadata: bool = Query(default=False),
+    include_optional_calibration_metadata: bool = Query(
+        default=False,
+        description=(
+            "Include optional public-outcome calibration metadata in homeowner report output. "
+            "This is secondary/internal context and not primary homeowner guidance."
+        ),
+    ),
     ctx: ActorContext = Depends(get_actor_context),
 ) -> HomeownerReport:
     result = store.get(assessment_id)
@@ -14131,6 +14153,7 @@ def get_homeowner_report(
     return build_homeowner_report(
         _refresh_result_governance(result),
         include_professional_debug_metadata=include_professional_debug_metadata,
+        include_optional_calibration_metadata=include_optional_calibration_metadata,
     )
 
 
@@ -14138,6 +14161,13 @@ def get_homeowner_report(
 def download_homeowner_report_pdf(
     assessment_id: str,
     include_professional_debug_metadata: bool = Query(default=False),
+    include_optional_calibration_metadata: bool = Query(
+        default=False,
+        description=(
+            "Include optional public-outcome calibration metadata in homeowner PDF output. "
+            "This is secondary/internal context and not primary homeowner guidance."
+        ),
+    ),
     ctx: ActorContext = Depends(get_actor_context),
 ) -> Response:
     result = store.get(assessment_id)
@@ -14147,6 +14177,7 @@ def download_homeowner_report_pdf(
     report = build_homeowner_report(
         _refresh_result_governance(result),
         include_professional_debug_metadata=include_professional_debug_metadata,
+        include_optional_calibration_metadata=include_optional_calibration_metadata,
     )
     pdf_bytes = render_homeowner_report_pdf(report)
     filename = f"wildfire_homeowner_report_{assessment_id}.pdf"

@@ -13,6 +13,9 @@ Optional query flag:
 - `include_professional_debug_metadata=true`
   - Adds internal diagnostic blocks to the JSON view for review/debug use.
   - Omitted by default for consumer-facing output.
+- `include_optional_calibration_metadata=true`
+  - Adds optional public-outcome calibration metadata to homeowner report output.
+  - Omitted by default so homeowner output stays focused on property confidence, specificity, risk drivers, and actions.
 
 ## Programmatic export
 
@@ -20,6 +23,8 @@ For a clean, shareable non-technical payload (or PDF bytes), use:
 
 - `backend.homeowner_report.export_homeowner_report(result, output_format="structured")`
 - `backend.homeowner_report.export_homeowner_report(result, output_format="pdf")`
+- Optional internal context:
+  - `backend.homeowner_report.export_homeowner_report(result, output_format="structured", include_optional_calibration_metadata=True)`
 
 The structured export intentionally focuses on homeowner-facing sections and omits technical diagnostics.
 

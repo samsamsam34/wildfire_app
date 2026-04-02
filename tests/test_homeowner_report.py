@@ -159,6 +159,7 @@ def test_homeowner_report_and_pdf_generate_for_complete_assessment(monkeypatch, 
     assert list(first_screen.keys()) == [
         "overall_wildfire_risk",
         "specificity_summary",
+        "property_confidence_summary",
         "top_risk_drivers",
         "top_actions",
         "what_to_do_first",
@@ -170,6 +171,8 @@ def test_homeowner_report_and_pdf_generate_for_complete_assessment(monkeypatch, 
     assert len(first_screen.get("top_risk_drivers") or []) <= 3
     assert len(first_screen.get("top_actions") or []) <= 3
     assert len(str(first_screen.get("limitations_note") or "")) <= 320
+    assert isinstance(first_screen.get("property_confidence_summary"), dict)
+    assert str((first_screen.get("property_confidence_summary") or {}).get("level") or "").strip()
     assert len(report["top_recommended_actions"]) <= 3
     for action in report["top_recommended_actions"]:
         assert isinstance(action.get("why_this_matters"), str)
@@ -736,6 +739,7 @@ def test_export_homeowner_report_generates_clean_structured_output_across_confid
         assert list((exported.get("first_screen") or {}).keys()) == [
             "overall_wildfire_risk",
             "specificity_summary",
+            "property_confidence_summary",
             "top_risk_drivers",
             "top_actions",
             "what_to_do_first",
@@ -817,19 +821,27 @@ def test_homeowner_report_demotes_optional_calibration_metadata_in_consumer_view
         "insurance_readiness_score_available",
     ]
     assert score_keys.index("calibrated_damage_likelihood") > score_keys.index("use_restriction")
-    assert score_summary.get("calibration_status") == "applied"
-    assert score_summary.get("calibrated_damage_likelihood") == 0.41
+    assert score_summary.get("calibration_status") == "hidden_in_homeowner_view"
+    assert score_summary.get("calibrated_damage_likelihood") is None
     score_note = str(score_summary.get("public_outcome_calibration_note") or "").lower()
-    assert "optional/additive" in score_note
-    assert "secondary/internal" in score_note
+    assert "hidden in homeowner view by default" in score_note
 
     metadata = report.get("metadata") or {}
-    optional_calibration = metadata.get("optional_public_outcome_calibration") or {}
+    assert metadata.get("optional_public_outcome_calibration") is None
+
+    assert report.get("professional_debug_metadata") is None
+
+    explicit_report = client.get(
+        f"/report/{assessed['assessment_id']}/homeowner?include_optional_calibration_metadata=true"
+    ).json()
+    explicit_score_summary = explicit_report.get("score_summary") or {}
+    assert explicit_score_summary.get("calibration_status") == "applied"
+    assert explicit_score_summary.get("calibrated_damage_likelihood") == 0.41
+    explicit_metadata = explicit_report.get("metadata") or {}
+    optional_calibration = explicit_metadata.get("optional_public_outcome_calibration") or {}
     assert optional_calibration.get("available") is True
     assert "additive context only" in str(optional_calibration.get("summary") or "").lower()
     assert "not be interpreted as insurer underwriting" in str(optional_calibration.get("caveat") or "").lower()
-
-    assert report.get("professional_debug_metadata") is None
 
     debug_report = client.get(
         f"/report/{assessed['assessment_id']}/homeowner?include_professional_debug_metadata=true"
@@ -874,7 +886,37 @@ def test_export_homeowner_report_includes_optional_calibration_block_without_for
     export_keys = list(exported.keys())
     assert export_keys.index("optional_public_outcome_calibration") > export_keys.index("what_to_do_first")
     assert export_keys.index("optional_public_outcome_calibration") > export_keys.index("limitations_notice")
-    optional_calibration = exported.get("optional_public_outcome_calibration") or {}
+    assert exported.get("optional_public_outcome_calibration") is None
+
+    exported_with_calibration = export_homeowner_report(
+        calibrated,
+        output_format="structured",
+        include_optional_calibration_metadata=True,
+    )
+    optional_calibration = exported_with_calibration.get("optional_public_outcome_calibration") or {}
     assert optional_calibration.get("available") is True
     assert optional_calibration.get("calibrated_public_outcome_probability") == 0.36
     assert "additive context only" in str(optional_calibration.get("summary") or "").lower()
+
+
+def test_homeowner_report_foregrounds_property_confidence_and_specificity(monkeypatch, tmp_path: Path):
+    context = _ctx(env=47.0, wildland=39.0, historic=28.0)
+    _setup(monkeypatch, tmp_path, context)
+    assessed = _run_assessment("79 Property Confidence First Ln, Missoula, MT 59802")
+
+    report = client.get(f"/report/{assessed['assessment_id']}/homeowner").json()
+    first_screen = report.get("first_screen") or {}
+    assert isinstance(first_screen.get("specificity_summary"), dict)
+    assert isinstance(first_screen.get("property_confidence_summary"), dict)
+    assert str((first_screen.get("specificity_summary") or {}).get("specificity_tier") or "").strip()
+    assert str((first_screen.get("property_confidence_summary") or {}).get("level") or "").strip()
+
+    first_screen_text = " ".join(
+        [
+            str((first_screen.get("overall_wildfire_risk") or {}).get("headline") or ""),
+            " ".join(str(x) for x in (first_screen.get("top_risk_drivers") or [])),
+            " ".join(str((x or {}).get("action") or "") for x in (first_screen.get("top_actions") or [])),
+            str(first_screen.get("limitations_note") or ""),
+        ]
+    ).lower()
+    assert "calibrat" not in first_screen_text

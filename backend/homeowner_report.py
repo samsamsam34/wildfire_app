@@ -204,8 +204,10 @@ def _specificity_summary(result: AssessmentResult, homeowner_trust_summary: dict
 def _apply_specificity_tone_guardrail(base_tone: str, specificity_summary: dict[str, Any]) -> str:
     tier = str(specificity_summary.get("specificity_tier") or "").strip().lower()
     comparison_allowed = bool(specificity_summary.get("comparison_allowed"))
-    if tier in {"regional_estimate", "insufficient_data"} or not comparison_allowed:
+    if tier in {"regional_estimate", "insufficient_data"}:
         return "advisory"
+    if tier == "property_specific" and not comparison_allowed:
+        return "advisory" if base_tone == "advisory" else "slightly_hedged"
     if tier == "address_level" and base_tone == "direct":
         return "slightly_hedged"
     return base_tone
@@ -246,6 +248,7 @@ def _simplify_homeowner_action(action_row: dict[str, object]) -> dict[str, objec
 def _build_first_screen_payload(
     *,
     specificity_summary: dict[str, Any],
+    property_confidence_summary: dict[str, Any],
     overall_wildfire_risk: dict[str, object],
     headline_risk_summary: str,
     top_risk_drivers: list[str],
@@ -260,6 +263,7 @@ def _build_first_screen_payload(
     return {
         "overall_wildfire_risk": dict(overall_wildfire_risk or {}),
         "specificity_summary": dict(specificity_summary),
+        "property_confidence_summary": dict(property_confidence_summary or {}),
         "top_risk_drivers": [str(row).strip() for row in list(top_risk_drivers or [])[:3] if str(row).strip()],
         "top_actions": top_actions,
         "what_to_do_first": _simplify_homeowner_action(dict(what_to_do_first or {})) if what_to_do_first else {},
@@ -785,6 +789,7 @@ def build_homeowner_report(
     result: AssessmentResult,
     *,
     include_professional_debug_metadata: bool = False,
+    include_optional_calibration_metadata: bool = False,
 ) -> HomeownerReport:
     resolved_region_id = result.resolved_region_id or str(result.property_level_context.get("region_id") or "") or None
     report_generated_at = result.generated_at.astimezone(timezone.utc).isoformat()
@@ -809,6 +814,18 @@ def build_homeowner_report(
         else {}
     )
     homeowner_trust_summary = homeowner_trust_summary if isinstance(homeowner_trust_summary, dict) else {}
+    property_confidence_summary = (
+        homeowner_trust_summary.get("property_confidence_summary")
+        if isinstance(homeowner_trust_summary.get("property_confidence_summary"), dict)
+        else {}
+    )
+    if not isinstance(property_confidence_summary, dict):
+        property_confidence_summary = {}
+    if not property_confidence_summary:
+        if hasattr(result.property_confidence_summary, "model_dump"):
+            property_confidence_summary = dict(result.property_confidence_summary.model_dump())
+        elif isinstance(result.property_confidence_summary, dict):
+            property_confidence_summary = dict(result.property_confidence_summary)
     specificity_summary = _specificity_summary(result, homeowner_trust_summary)
     tone_level = _apply_specificity_tone_guardrail(_select_tone_level(result), specificity_summary)
     nearby_home_comparison_safeguard_triggered = bool(
@@ -895,6 +912,7 @@ def build_homeowner_report(
             "This report is decision-support guidance based on prepared geospatial data and provided inputs; "
             "it is not a guarantee of insurability or wildfire safety."
         ),
+        "property_confidence_summary": property_confidence_summary,
     }
     if include_professional_debug_metadata:
         confidence_and_limitations["fallback_decisions"] = [
@@ -953,6 +971,7 @@ def build_homeowner_report(
     )
     first_screen = _build_first_screen_payload(
         specificity_summary=specificity_summary,
+        property_confidence_summary=property_confidence_summary,
         overall_wildfire_risk=overall_wildfire_risk,
         headline_risk_summary=headline_risk_summary,
         top_risk_drivers=top_risk_drivers,
@@ -960,7 +979,23 @@ def build_homeowner_report(
         what_to_do_first=what_to_do_first,
         limitations_notice=limitations_notice,
     )
-    optional_calibration = _optional_public_outcome_calibration_metadata(result)
+    calibration_metadata_requested = bool(
+        include_professional_debug_metadata or include_optional_calibration_metadata
+    )
+    optional_calibration = (
+        _optional_public_outcome_calibration_metadata(result)
+        if calibration_metadata_requested
+        else None
+    )
+    calibration_prob = (
+        result.calibrated_damage_likelihood if calibration_metadata_requested else None
+    )
+    empirical_damage_prob = (
+        result.empirical_damage_likelihood_proxy if calibration_metadata_requested else None
+    )
+    empirical_loss_prob = (
+        result.empirical_loss_likelihood_proxy if calibration_metadata_requested else None
+    )
 
     return HomeownerReport(
         assessment_id=result.assessment_id,
@@ -1010,15 +1045,26 @@ def build_homeowner_report(
             "public_outcome_calibration_note": (
                 "Optional/additive metadata only (secondary/internal); deterministic risk drivers, actions, specificity, "
                 "and limitations are the primary homeowner guidance."
-                if optional_calibration is not None
-                else "No optional public-outcome calibration metadata is currently applied."
+                if calibration_metadata_requested and optional_calibration is not None
+                else (
+                    "No optional public-outcome calibration metadata is currently applied."
+                    if calibration_metadata_requested
+                    else (
+                        "Optional public-outcome calibration metadata is hidden in homeowner view by default; "
+                        "request include_optional_calibration_metadata=true for internal review context."
+                    )
+                )
             ),
             # Compatibility fields retained as secondary metadata; not used in homeowner first-screen guidance.
             "calibration_applied": result.calibration_applied,
-            "calibration_status": result.calibration_status,
-            "calibrated_damage_likelihood": result.calibrated_damage_likelihood,
-            "empirical_damage_likelihood_proxy": result.empirical_damage_likelihood_proxy,
-            "empirical_loss_likelihood_proxy": result.empirical_loss_likelihood_proxy,
+            "calibration_status": (
+                result.calibration_status
+                if calibration_metadata_requested
+                else "hidden_in_homeowner_view"
+            ),
+            "calibrated_damage_likelihood": calibration_prob,
+            "empirical_damage_likelihood_proxy": empirical_damage_prob,
+            "empirical_loss_likelihood_proxy": empirical_loss_prob,
         },
         key_risk_drivers=key_risk_drivers,
         top_risk_drivers_detailed=(
@@ -1076,10 +1122,18 @@ def build_homeowner_report(
             "model_governance": _dump_value(result.model_governance),
             "region_data_version": result.region_data_version,
             "data_bundle_version": result.data_bundle_version,
-            "calibration_version": result.calibration_version,
-            "calibration_method": result.calibration_method,
-            "calibration_limitations": list(result.calibration_limitations or []),
-            "calibration_scope_warning": result.calibration_scope_warning,
+            "calibration_version": (
+                result.calibration_version if calibration_metadata_requested else None
+            ),
+            "calibration_method": (
+                result.calibration_method if calibration_metadata_requested else None
+            ),
+            "calibration_limitations": (
+                list(result.calibration_limitations or []) if calibration_metadata_requested else []
+            ),
+            "calibration_scope_warning": (
+                result.calibration_scope_warning if calibration_metadata_requested else None
+            ),
             "optional_public_outcome_calibration": optional_calibration,
             "ruleset": {
                 "ruleset_id": result.ruleset_id,
@@ -1125,8 +1179,13 @@ def export_homeowner_report(
     result: AssessmentResult,
     *,
     output_format: Literal["structured", "pdf"] = "structured",
+    include_optional_calibration_metadata: bool = False,
 ) -> dict[str, object] | bytes:
-    report = build_homeowner_report(result, include_professional_debug_metadata=False)
+    report = build_homeowner_report(
+        result,
+        include_professional_debug_metadata=False,
+        include_optional_calibration_metadata=include_optional_calibration_metadata,
+    )
     if output_format == "pdf":
         return render_homeowner_report_pdf(report)
 
@@ -1155,6 +1214,11 @@ def export_homeowner_report(
     )
     first_screen = report.first_screen if isinstance(report.first_screen, dict) and report.first_screen else _build_first_screen_payload(
         specificity_summary=(_dump_value(report.specificity_summary) if report.specificity_summary else {}),
+        property_confidence_summary=(
+            trust_summary.get("property_confidence_summary")
+            if isinstance(trust_summary.get("property_confidence_summary"), dict)
+            else {}
+        ),
         overall_wildfire_risk={
             "label": "Overall wildfire risk",
             "risk_band": _risk_band(_to_float((report.score_summary or {}).get("overall_wildfire_risk"))),
@@ -1180,10 +1244,17 @@ def export_homeowner_report(
         "what_to_do_first": what_to_do_first,
         "confidence_summary": confidence_summary,
         "specificity_summary": (_dump_value(report.specificity_summary) if report.specificity_summary else {}),
+        "property_confidence_summary": (
+            trust_summary.get("property_confidence_summary")
+            if isinstance(trust_summary.get("property_confidence_summary"), dict)
+            else {}
+        ),
         "trust_summary": trust_summary,
         "improve_your_result": improve_your_result,
         "limitations_notice": limitations_notice,
-        "optional_public_outcome_calibration": optional_calibration,
+        "optional_public_outcome_calibration": (
+            optional_calibration if include_optional_calibration_metadata else None
+        ),
         "disclaimer": (
             "This report supports homeowner planning and conversations with contractors, agents, "
             "or insurers. It is not a guarantee of wildfire outcomes or insurability."
@@ -1282,6 +1353,25 @@ def _build_report_lines(report: HomeownerReport) -> list[str]:
         what_means = str(fs_specificity.get("what_this_means") or "").strip()
         if what_means:
             lines.extend(_wrap_text_line(what_means, prefix="- "))
+    fs_property_confidence = (
+        first_screen.get("property_confidence_summary")
+        if isinstance(first_screen.get("property_confidence_summary"), dict)
+        else {}
+    )
+    if fs_property_confidence:
+        lines.extend(
+            _wrap_text_line(
+                f"Property Confidence: {fs_property_confidence.get('level', 'unknown')} "
+                f"(score={fs_property_confidence.get('score', 'n/a')})",
+                prefix="- ",
+            )
+        )
+        reasons = fs_property_confidence.get("key_reasons")
+        if isinstance(reasons, list):
+            for reason in reasons[:2]:
+                text = str(reason or "").strip()
+                if text:
+                    lines.extend(_wrap_text_line(text, prefix="  - "))
     lines.extend(_wrap_text_line("Top Risk Drivers:", prefix="- "))
     for driver in list(fs_drivers or [])[:3]:
         lines.extend(_wrap_text_line(str(driver), prefix="  - "))

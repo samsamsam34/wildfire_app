@@ -48,11 +48,16 @@ def _geocode_confidence_score(geocode_meta: dict[str, Any]) -> float:
 
 def _anchor_stage(geocode_meta: dict[str, Any], property_level_context: dict[str, Any]) -> tuple[str, float, str | None]:
     geocode_score = _geocode_confidence_score(geocode_meta)
-    anchor_score = _normalize_fraction_or_percent(
+    raw_anchor_score = (
         property_level_context.get("property_anchor_quality_score")
         if property_level_context.get("property_anchor_quality_score") is not None
         else property_level_context.get("anchor_quality_score")
     )
+    anchor_score = _normalize_fraction_or_percent(raw_anchor_score)
+    # Treat zero-quality placeholders as missing so geocode confidence remains
+    # usable when anchor quality was never explicitly computed.
+    if anchor_score is not None and anchor_score <= 0.0:
+        anchor_score = None
     anchor_confidence = round(_clamp_0_100(anchor_score if anchor_score is not None else geocode_score), 1)
     geocode_status = str(geocode_meta.get("geocode_status") or "").strip().lower()
     geocode_precision = str(geocode_meta.get("geocode_precision") or "").strip().lower()
