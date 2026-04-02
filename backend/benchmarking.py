@@ -777,6 +777,17 @@ def _scenario_snapshot(
         or homeowner_confidence_summary.get("label")
         or str(result.confidence_tier)
     ).strip()
+    property_confidence_summary = (
+        result.property_confidence_summary.model_dump()
+        if hasattr(result.property_confidence_summary, "model_dump")
+        else (
+            dict(result.property_confidence_summary)
+            if isinstance(result.property_confidence_summary, dict)
+            else {}
+        )
+    )
+    if not isinstance(property_confidence_summary, dict):
+        property_confidence_summary = {}
     specificity_obj = (
         result.specificity_summary.model_dump()
         if hasattr(result.specificity_summary, "model_dump")
@@ -825,6 +836,7 @@ def _scenario_snapshot(
             "inferred_fields": list(result.assessment_diagnostics.inferred_inputs or []),
             "inferred_fields_count": len(result.assessment_diagnostics.inferred_inputs or []),
         },
+        "property_confidence_summary": property_confidence_summary,
         "specificity": {
             "specificity_tier": specificity_tier,
             "comparison_allowed": comparison_allowed,

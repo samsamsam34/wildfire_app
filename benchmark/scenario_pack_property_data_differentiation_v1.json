@@ -1,0 +1,735 @@
+{
+  "benchmark_pack_version": "property-data-stage-v1",
+  "factor_schema_version": "v1",
+  "description": "Property-data differentiation benchmark comparing geocode-only through footprint+NAIP+structure-enrichment stages.",
+  "scenarios": [
+    {
+      "scenario_id": "stage_geocode_only_dense",
+      "description": "Geocode-only baseline (dense variant): no parcel/footprint confirmation, point fallback.",
+      "profile_tags": ["property_data_stage", "stage:geocode_only", "dense"],
+      "input_payload": {
+        "address": "101 Stage Benchmark Ln, Missoula, MT",
+        "attributes": {
+          "roof_type": null,
+          "vent_type": null,
+          "window_type": null,
+          "defensible_space_ft": null,
+          "construction_year": null
+        }
+      },
+      "location": {"lat": 46.87231, "lon": -113.99412, "geocode_source": "benchmark-stage-v1"},
+      "context": {
+        "burn_probability_index": 63.0,
+        "hazard_severity_index": 66.0,
+        "fuel_index": 67.0,
+        "moisture_index": 58.0,
+        "canopy_index": 61.0,
+        "wildland_distance_index": 64.0,
+        "historic_fire_index": 55.0,
+        "property_level_context": {
+          "region_property_specific_readiness": "limited_regional_ready",
+          "footprint_used": false,
+          "footprint_status": "not_found",
+          "fallback_mode": "point_based",
+          "geometry_basis": "geocode_point",
+          "selection_mode": "point",
+          "structure_geometry_confidence": 0.28,
+          "ring_generation_mode": "point_annulus_fallback",
+          "final_structure_geometry_source": "raw_geocode_point",
+          "property_anchor_source": "raw_geocode_point",
+          "property_anchor_quality_score": 34.0,
+          "naip_feature_source": "layer_fallback",
+          "ring_metrics": {
+            "ring_0_5_ft": {"vegetation_density": 44.0},
+            "ring_5_30_ft": {"vegetation_density": 51.0},
+            "ring_30_100_ft": {"vegetation_density": 53.0}
+          },
+          "parcel_resolution": {"status": "not_found", "confidence": 25.0},
+          "footprint_resolution": {"match_status": "none", "confidence_score": 0.0, "fallback_used": true},
+          "property_linkage": {
+            "anchor_status": "resolved",
+            "anchor_confidence": 40.0,
+            "parcel_status": "not_found",
+            "parcel_confidence": 24.0,
+            "footprint_status": "none",
+            "footprint_confidence": 16.0,
+            "overall_property_confidence": 28.0,
+            "mismatch_flags": ["no_confident_structure_match"]
+          },
+          "feature_bundle_summary": {
+            "coverage_metrics": {
+              "observed_feature_count": 6.0,
+              "inferred_feature_count": 4.0,
+              "fallback_feature_count": 7.0,
+              "missing_feature_count": 3.0,
+              "observed_weight_fraction": 0.32,
+              "fallback_dominance_ratio": 0.78,
+              "structure_geometry_quality_score": 0.34,
+              "environmental_layer_coverage_score": 78.0,
+              "regional_enrichment_consumption_score": 41.0,
+              "property_specificity_score": 31.0
+            }
+          }
+        }
+      },
+      "expected": {
+        "assessment_status_in": ["fully_scored", "partially_scored", "insufficient_data"],
+        "fallback_mode": "point_based",
+        "specificity_tiers": ["regional_estimate", "address_level", "insufficient_data"],
+        "comparison_allowed": false
+      }
+    },
+    {
+      "scenario_id": "stage_geocode_only_clear",
+      "description": "Geocode-only baseline (clear variant): should remain close to dense due weak local evidence.",
+      "profile_tags": ["property_data_stage", "stage:geocode_only", "clear"],
+      "input_payload": {
+        "address": "103 Stage Benchmark Ln, Missoula, MT",
+        "attributes": {
+          "roof_type": null,
+          "vent_type": null,
+          "window_type": null,
+          "defensible_space_ft": null,
+          "construction_year": null
+        }
+      },
+      "location": {"lat": 46.87233, "lon": -113.99414, "geocode_source": "benchmark-stage-v1"},
+      "context": {
+        "burn_probability_index": 63.0,
+        "hazard_severity_index": 66.0,
+        "fuel_index": 67.0,
+        "moisture_index": 58.0,
+        "canopy_index": 61.0,
+        "wildland_distance_index": 64.0,
+        "historic_fire_index": 55.0,
+        "property_level_context": {
+          "region_property_specific_readiness": "limited_regional_ready",
+          "footprint_used": false,
+          "footprint_status": "not_found",
+          "fallback_mode": "point_based",
+          "geometry_basis": "geocode_point",
+          "selection_mode": "point",
+          "structure_geometry_confidence": 0.28,
+          "ring_generation_mode": "point_annulus_fallback",
+          "final_structure_geometry_source": "raw_geocode_point",
+          "property_anchor_source": "raw_geocode_point",
+          "property_anchor_quality_score": 34.0,
+          "naip_feature_source": "layer_fallback",
+          "ring_metrics": {
+            "ring_0_5_ft": {"vegetation_density": 44.0},
+            "ring_5_30_ft": {"vegetation_density": 51.0},
+            "ring_30_100_ft": {"vegetation_density": 53.0}
+          },
+          "parcel_resolution": {"status": "not_found", "confidence": 25.0},
+          "footprint_resolution": {"match_status": "none", "confidence_score": 0.0, "fallback_used": true},
+          "property_linkage": {
+            "anchor_status": "resolved",
+            "anchor_confidence": 40.0,
+            "parcel_status": "not_found",
+            "parcel_confidence": 24.0,
+            "footprint_status": "none",
+            "footprint_confidence": 16.0,
+            "overall_property_confidence": 28.0,
+            "mismatch_flags": ["no_confident_structure_match"]
+          },
+          "feature_bundle_summary": {
+            "coverage_metrics": {
+              "observed_feature_count": 6.0,
+              "inferred_feature_count": 4.0,
+              "fallback_feature_count": 7.0,
+              "missing_feature_count": 3.0,
+              "observed_weight_fraction": 0.32,
+              "fallback_dominance_ratio": 0.78,
+              "structure_geometry_quality_score": 0.34,
+              "environmental_layer_coverage_score": 78.0,
+              "regional_enrichment_consumption_score": 41.0,
+              "property_specificity_score": 31.0
+            }
+          }
+        }
+      },
+      "expected": {
+        "assessment_status_in": ["fully_scored", "partially_scored", "insufficient_data"],
+        "fallback_mode": "point_based",
+        "specificity_tiers": ["regional_estimate", "address_level", "insufficient_data"],
+        "comparison_allowed": false
+      }
+    },
+    {
+      "scenario_id": "stage_parcel_matched_dense",
+      "description": "Parcel matched, footprint unresolved (dense variant).",
+      "profile_tags": ["property_data_stage", "stage:parcel_matched", "dense"],
+      "input_payload": {
+        "address": "201 Stage Benchmark Ln, Missoula, MT",
+        "attributes": {
+          "roof_type": null,
+          "vent_type": null,
+          "window_type": null,
+          "defensible_space_ft": null,
+          "construction_year": null
+        }
+      },
+      "location": {"lat": 46.87234, "lon": -113.99418, "geocode_source": "benchmark-stage-v1"},
+      "context": {
+        "property_level_context": {
+          "region_property_specific_readiness": "address_level_only",
+          "footprint_used": false,
+          "footprint_status": "not_found",
+          "fallback_mode": "point_based",
+          "geometry_basis": "parcel",
+          "selection_mode": "point",
+          "structure_geometry_confidence": 0.52,
+          "ring_generation_mode": "point_annulus_parcel_clipped",
+          "final_structure_geometry_source": "parcel_inferred_home_location",
+          "property_anchor_source": "parcel_geometry",
+          "property_anchor_quality_score": 66.0,
+          "parcel_geometry": {"type": "Polygon", "coordinates": [[[-113.99430, 46.87225], [-113.99405, 46.87225], [-113.99405, 46.87244], [-113.99430, 46.87244], [-113.99430, 46.87225]]]},
+          "parcel_resolution": {"status": "matched", "confidence": 72.0},
+          "footprint_resolution": {"match_status": "none", "confidence_score": 0.0, "fallback_used": true},
+          "property_linkage": {
+            "anchor_status": "resolved",
+            "anchor_confidence": 66.0,
+            "parcel_status": "matched",
+            "parcel_confidence": 72.0,
+            "footprint_status": "none",
+            "footprint_confidence": 24.0,
+            "overall_property_confidence": 46.0,
+            "mismatch_flags": ["no_confident_structure_match"]
+          },
+          "ring_metrics": {
+            "ring_0_5_ft": {"vegetation_density": 47.0},
+            "ring_5_30_ft": {"vegetation_density": 53.0},
+            "ring_30_100_ft": {"vegetation_density": 54.0}
+          },
+          "feature_bundle_summary": {
+            "coverage_metrics": {
+              "observed_feature_count": 8.0,
+              "inferred_feature_count": 5.0,
+              "fallback_feature_count": 6.0,
+              "missing_feature_count": 2.0,
+              "observed_weight_fraction": 0.41,
+              "fallback_dominance_ratio": 0.66,
+              "structure_geometry_quality_score": 0.58,
+              "environmental_layer_coverage_score": 80.0,
+              "regional_enrichment_consumption_score": 56.0,
+              "property_specificity_score": 46.0
+            }
+          }
+        }
+      },
+      "expected": {
+        "assessment_status_in": ["fully_scored", "partially_scored", "insufficient_data"],
+        "fallback_mode": "point_based",
+        "specificity_tiers": ["address_level", "regional_estimate", "insufficient_data"],
+        "comparison_allowed": false
+      }
+    },
+    {
+      "scenario_id": "stage_parcel_matched_clear",
+      "description": "Parcel matched, footprint unresolved (clear variant).",
+      "profile_tags": ["property_data_stage", "stage:parcel_matched", "clear"],
+      "input_payload": {
+        "address": "203 Stage Benchmark Ln, Missoula, MT",
+        "attributes": {
+          "roof_type": null,
+          "vent_type": null,
+          "window_type": null,
+          "defensible_space_ft": null,
+          "construction_year": null
+        }
+      },
+      "location": {"lat": 46.87236, "lon": -113.99416, "geocode_source": "benchmark-stage-v1"},
+      "context": {
+        "property_level_context": {
+          "region_property_specific_readiness": "address_level_only",
+          "footprint_used": false,
+          "footprint_status": "not_found",
+          "fallback_mode": "point_based",
+          "geometry_basis": "parcel",
+          "selection_mode": "point",
+          "structure_geometry_confidence": 0.52,
+          "ring_generation_mode": "point_annulus_parcel_clipped",
+          "final_structure_geometry_source": "parcel_inferred_home_location",
+          "property_anchor_source": "parcel_geometry",
+          "property_anchor_quality_score": 66.0,
+          "parcel_geometry": {"type": "Polygon", "coordinates": [[[-113.99422, 46.87224], [-113.99396, 46.87224], [-113.99396, 46.87243], [-113.99422, 46.87243], [-113.99422, 46.87224]]]},
+          "parcel_resolution": {"status": "matched", "confidence": 72.0},
+          "footprint_resolution": {"match_status": "none", "confidence_score": 0.0, "fallback_used": true},
+          "property_linkage": {
+            "anchor_status": "resolved",
+            "anchor_confidence": 66.0,
+            "parcel_status": "matched",
+            "parcel_confidence": 72.0,
+            "footprint_status": "none",
+            "footprint_confidence": 24.0,
+            "overall_property_confidence": 46.0,
+            "mismatch_flags": ["no_confident_structure_match"]
+          },
+          "ring_metrics": {
+            "ring_0_5_ft": {"vegetation_density": 44.0},
+            "ring_5_30_ft": {"vegetation_density": 49.0},
+            "ring_30_100_ft": {"vegetation_density": 51.0}
+          },
+          "feature_bundle_summary": {
+            "coverage_metrics": {
+              "observed_feature_count": 8.0,
+              "inferred_feature_count": 5.0,
+              "fallback_feature_count": 6.0,
+              "missing_feature_count": 2.0,
+              "observed_weight_fraction": 0.41,
+              "fallback_dominance_ratio": 0.66,
+              "structure_geometry_quality_score": 0.58,
+              "environmental_layer_coverage_score": 80.0,
+              "regional_enrichment_consumption_score": 56.0,
+              "property_specificity_score": 46.0
+            }
+          }
+        }
+      },
+      "expected": {
+        "assessment_status_in": ["fully_scored", "partially_scored", "insufficient_data"],
+        "fallback_mode": "point_based",
+        "specificity_tiers": ["address_level", "regional_estimate", "insufficient_data"],
+        "comparison_allowed": false
+      }
+    },
+    {
+      "scenario_id": "stage_footprint_matched_dense",
+      "description": "Footprint matched (dense near-structure vegetation).",
+      "profile_tags": ["property_data_stage", "stage:footprint_matched", "dense"],
+      "input_payload": {
+        "address": "301 Stage Benchmark Ln, Missoula, MT",
+        "attributes": {
+          "roof_type": null,
+          "vent_type": null,
+          "window_type": null,
+          "defensible_space_ft": null,
+          "construction_year": null
+        }
+      },
+      "location": {"lat": 46.87244, "lon": -113.99424, "geocode_source": "benchmark-stage-v1"},
+      "context": {
+        "property_level_context": {
+          "region_property_specific_readiness": "address_level_only",
+          "footprint_used": true,
+          "footprint_status": "matched",
+          "fallback_mode": "footprint",
+          "geometry_basis": "footprint",
+          "selection_mode": "polygon",
+          "structure_geometry_confidence": 0.79,
+          "ring_generation_mode": "footprint_buffer_rings",
+          "final_structure_geometry_source": "building_footprint",
+          "property_anchor_source": "building_footprint",
+          "property_anchor_quality_score": 81.0,
+          "parcel_resolution": {"status": "matched", "confidence": 81.0},
+          "footprint_resolution": {"match_status": "matched", "confidence_score": 0.84, "fallback_used": false},
+          "property_linkage": {
+            "anchor_status": "resolved",
+            "anchor_confidence": 82.0,
+            "parcel_status": "matched",
+            "parcel_confidence": 81.0,
+            "footprint_status": "matched",
+            "footprint_confidence": 84.0,
+            "overall_property_confidence": 72.0,
+            "mismatch_flags": []
+          },
+          "ring_metrics": {
+            "ring_0_5_ft": {"vegetation_density": 88.0},
+            "ring_5_30_ft": {"vegetation_density": 76.0},
+            "ring_30_100_ft": {"vegetation_density": 64.0}
+          },
+          "feature_bundle_summary": {
+            "coverage_metrics": {
+              "observed_feature_count": 11.0,
+              "inferred_feature_count": 4.0,
+              "fallback_feature_count": 4.0,
+              "missing_feature_count": 1.0,
+              "observed_weight_fraction": 0.58,
+              "fallback_dominance_ratio": 0.46,
+              "structure_geometry_quality_score": 0.81,
+              "environmental_layer_coverage_score": 80.0,
+              "regional_enrichment_consumption_score": 72.0,
+              "property_specificity_score": 67.0
+            }
+          }
+        }
+      },
+      "expected": {
+        "assessment_status_in": ["fully_scored", "partially_scored"],
+        "fallback_mode": "footprint",
+        "specificity_tiers": ["regional_estimate", "address_level", "property_specific"]
+      }
+    },
+    {
+      "scenario_id": "stage_footprint_matched_clear",
+      "description": "Footprint matched (clear near-structure vegetation).",
+      "profile_tags": ["property_data_stage", "stage:footprint_matched", "clear"],
+      "input_payload": {
+        "address": "303 Stage Benchmark Ln, Missoula, MT",
+        "attributes": {
+          "roof_type": null,
+          "vent_type": null,
+          "window_type": null,
+          "defensible_space_ft": null,
+          "construction_year": null
+        }
+      },
+      "location": {"lat": 46.87246, "lon": -113.99426, "geocode_source": "benchmark-stage-v1"},
+      "context": {
+        "property_level_context": {
+          "region_property_specific_readiness": "address_level_only",
+          "footprint_used": true,
+          "footprint_status": "matched",
+          "fallback_mode": "footprint",
+          "geometry_basis": "footprint",
+          "selection_mode": "polygon",
+          "structure_geometry_confidence": 0.79,
+          "ring_generation_mode": "footprint_buffer_rings",
+          "final_structure_geometry_source": "building_footprint",
+          "property_anchor_source": "building_footprint",
+          "property_anchor_quality_score": 81.0,
+          "parcel_resolution": {"status": "matched", "confidence": 81.0},
+          "footprint_resolution": {"match_status": "matched", "confidence_score": 0.84, "fallback_used": false},
+          "property_linkage": {
+            "anchor_status": "resolved",
+            "anchor_confidence": 82.0,
+            "parcel_status": "matched",
+            "parcel_confidence": 81.0,
+            "footprint_status": "matched",
+            "footprint_confidence": 84.0,
+            "overall_property_confidence": 72.0,
+            "mismatch_flags": []
+          },
+          "ring_metrics": {
+            "ring_0_5_ft": {"vegetation_density": 19.0},
+            "ring_5_30_ft": {"vegetation_density": 28.0},
+            "ring_30_100_ft": {"vegetation_density": 35.0}
+          },
+          "feature_bundle_summary": {
+            "coverage_metrics": {
+              "observed_feature_count": 11.0,
+              "inferred_feature_count": 4.0,
+              "fallback_feature_count": 4.0,
+              "missing_feature_count": 1.0,
+              "observed_weight_fraction": 0.58,
+              "fallback_dominance_ratio": 0.46,
+              "structure_geometry_quality_score": 0.81,
+              "environmental_layer_coverage_score": 80.0,
+              "regional_enrichment_consumption_score": 72.0,
+              "property_specificity_score": 67.0
+            }
+          }
+        }
+      },
+      "expected": {
+        "assessment_status_in": ["fully_scored", "partially_scored"],
+        "fallback_mode": "footprint",
+        "specificity_tiers": ["regional_estimate", "address_level", "property_specific"]
+      }
+    },
+    {
+      "scenario_id": "stage_footprint_naip_dense",
+      "description": "Footprint + NAIP structure features (dense variant).",
+      "profile_tags": ["property_data_stage", "stage:footprint_naip", "dense"],
+      "input_payload": {
+        "address": "401 Stage Benchmark Ln, Missoula, MT",
+        "attributes": {
+          "roof_type": null,
+          "vent_type": null,
+          "window_type": null,
+          "defensible_space_ft": null,
+          "construction_year": null
+        }
+      },
+      "location": {"lat": 46.87254, "lon": -113.99434, "geocode_source": "benchmark-stage-v1"},
+      "context": {
+        "property_level_context": {
+          "region_property_specific_readiness": "property_specific_ready",
+          "footprint_used": true,
+          "footprint_status": "matched",
+          "fallback_mode": "footprint",
+          "geometry_basis": "footprint",
+          "structure_geometry_confidence": 0.87,
+          "ring_generation_mode": "footprint_buffer_rings",
+          "final_structure_geometry_source": "building_footprint",
+          "property_anchor_source": "building_footprint",
+          "property_anchor_quality_score": 87.0,
+          "naip_feature_source": "prepared_region_naip",
+          "naip_feature_artifact_path": "data/regions/benchmark/naip_structure_features.json",
+          "near_structure_vegetation_0_5_pct": 86.0,
+          "canopy_adjacency_proxy_pct": 74.0,
+          "vegetation_continuity_proxy_pct": 69.0,
+          "nearest_high_fuel_patch_distance_ft": 14.0,
+          "parcel_resolution": {"status": "matched", "confidence": 84.0},
+          "footprint_resolution": {"match_status": "matched", "confidence_score": 0.9, "fallback_used": false},
+          "property_linkage": {
+            "anchor_status": "resolved",
+            "anchor_confidence": 88.0,
+            "parcel_status": "matched",
+            "parcel_confidence": 84.0,
+            "footprint_status": "matched",
+            "footprint_confidence": 90.0,
+            "overall_property_confidence": 80.0,
+            "mismatch_flags": []
+          },
+          "ring_metrics": {
+            "ring_0_5_ft": {"vegetation_density": 90.0},
+            "ring_5_30_ft": {"vegetation_density": 80.0},
+            "ring_30_100_ft": {"vegetation_density": 66.0}
+          },
+          "feature_bundle_summary": {
+            "coverage_metrics": {
+              "observed_feature_count": 13.0,
+              "inferred_feature_count": 3.0,
+              "fallback_feature_count": 2.0,
+              "missing_feature_count": 1.0,
+              "observed_weight_fraction": 0.72,
+              "fallback_dominance_ratio": 0.31,
+              "structure_geometry_quality_score": 0.88,
+              "environmental_layer_coverage_score": 82.0,
+              "regional_enrichment_consumption_score": 80.0,
+              "property_specificity_score": 79.0
+            }
+          }
+        }
+      },
+      "expected": {
+        "assessment_status_in": ["fully_scored", "partially_scored"],
+        "fallback_mode": "footprint",
+        "specificity_tiers": ["regional_estimate", "address_level", "property_specific"]
+      }
+    },
+    {
+      "scenario_id": "stage_footprint_naip_clear",
+      "description": "Footprint + NAIP structure features (clear variant).",
+      "profile_tags": ["property_data_stage", "stage:footprint_naip", "clear"],
+      "input_payload": {
+        "address": "403 Stage Benchmark Ln, Missoula, MT",
+        "attributes": {
+          "roof_type": null,
+          "vent_type": null,
+          "window_type": null,
+          "defensible_space_ft": null,
+          "construction_year": null
+        }
+      },
+      "location": {"lat": 46.87256, "lon": -113.99436, "geocode_source": "benchmark-stage-v1"},
+      "context": {
+        "property_level_context": {
+          "region_property_specific_readiness": "property_specific_ready",
+          "footprint_used": true,
+          "footprint_status": "matched",
+          "fallback_mode": "footprint",
+          "geometry_basis": "footprint",
+          "structure_geometry_confidence": 0.87,
+          "ring_generation_mode": "footprint_buffer_rings",
+          "final_structure_geometry_source": "building_footprint",
+          "property_anchor_source": "building_footprint",
+          "property_anchor_quality_score": 87.0,
+          "naip_feature_source": "prepared_region_naip",
+          "naip_feature_artifact_path": "data/regions/benchmark/naip_structure_features.json",
+          "near_structure_vegetation_0_5_pct": 21.0,
+          "canopy_adjacency_proxy_pct": 24.0,
+          "vegetation_continuity_proxy_pct": 29.0,
+          "nearest_high_fuel_patch_distance_ft": 58.0,
+          "parcel_resolution": {"status": "matched", "confidence": 84.0},
+          "footprint_resolution": {"match_status": "matched", "confidence_score": 0.9, "fallback_used": false},
+          "property_linkage": {
+            "anchor_status": "resolved",
+            "anchor_confidence": 88.0,
+            "parcel_status": "matched",
+            "parcel_confidence": 84.0,
+            "footprint_status": "matched",
+            "footprint_confidence": 90.0,
+            "overall_property_confidence": 80.0,
+            "mismatch_flags": []
+          },
+          "ring_metrics": {
+            "ring_0_5_ft": {"vegetation_density": 18.0},
+            "ring_5_30_ft": {"vegetation_density": 27.0},
+            "ring_30_100_ft": {"vegetation_density": 34.0}
+          },
+          "feature_bundle_summary": {
+            "coverage_metrics": {
+              "observed_feature_count": 13.0,
+              "inferred_feature_count": 3.0,
+              "fallback_feature_count": 2.0,
+              "missing_feature_count": 1.0,
+              "observed_weight_fraction": 0.72,
+              "fallback_dominance_ratio": 0.31,
+              "structure_geometry_quality_score": 0.88,
+              "environmental_layer_coverage_score": 82.0,
+              "regional_enrichment_consumption_score": 80.0,
+              "property_specificity_score": 79.0
+            }
+          }
+        }
+      },
+      "expected": {
+        "assessment_status_in": ["fully_scored", "partially_scored"],
+        "fallback_mode": "footprint",
+        "specificity_tiers": ["regional_estimate", "address_level", "property_specific"]
+      }
+    },
+    {
+      "scenario_id": "stage_footprint_naip_enriched_dense",
+      "description": "Footprint + NAIP + public-record/user structure enrichment (dense variant).",
+      "profile_tags": ["property_data_stage", "stage:footprint_naip_enriched", "dense"],
+      "input_payload": {
+        "address": "501 Stage Benchmark Ln, Missoula, MT",
+        "attributes": {
+          "roof_type": "wood_shingle",
+          "vent_type": "standard",
+          "window_type": "single_pane",
+          "defensible_space_ft": 8.0,
+          "construction_year": 1974
+        },
+        "selected_structure_id": "stage-benchmark-501"
+      },
+      "location": {"lat": 46.87262, "lon": -113.99444, "geocode_source": "benchmark-stage-v1"},
+      "context": {
+        "property_level_context": {
+          "region_property_specific_readiness": "property_specific_ready",
+          "footprint_used": true,
+          "footprint_status": "matched",
+          "fallback_mode": "footprint",
+          "geometry_basis": "footprint",
+          "structure_geometry_confidence": 0.94,
+          "ring_generation_mode": "footprint_buffer_rings",
+          "final_structure_geometry_source": "user_selected_structure",
+          "property_anchor_source": "user_selected_structure",
+          "property_anchor_quality_score": 94.0,
+          "naip_feature_source": "prepared_region_naip",
+          "naip_feature_artifact_path": "data/regions/benchmark/naip_structure_features.json",
+          "near_structure_vegetation_0_5_pct": 88.0,
+          "canopy_adjacency_proxy_pct": 76.0,
+          "vegetation_continuity_proxy_pct": 70.0,
+          "nearest_high_fuel_patch_distance_ft": 12.0,
+          "structure_attributes": {
+            "year_built": 1974,
+            "building_area_sqft": 2280.0,
+            "land_use_class": "single_family_residential",
+            "roof_material_public_record": "wood_shingle"
+          },
+          "parcel_resolution": {"status": "matched", "confidence": 90.0},
+          "footprint_resolution": {"match_status": "matched", "confidence_score": 0.95, "fallback_used": false},
+          "property_linkage": {
+            "anchor_status": "resolved",
+            "anchor_confidence": 95.0,
+            "parcel_status": "matched",
+            "parcel_confidence": 90.0,
+            "footprint_status": "matched",
+            "footprint_confidence": 95.0,
+            "overall_property_confidence": 90.0,
+            "mismatch_flags": []
+          },
+          "ring_metrics": {
+            "ring_0_5_ft": {"vegetation_density": 91.0},
+            "ring_5_30_ft": {"vegetation_density": 82.0},
+            "ring_30_100_ft": {"vegetation_density": 67.0}
+          },
+          "feature_bundle_summary": {
+            "coverage_metrics": {
+              "observed_feature_count": 15.0,
+              "inferred_feature_count": 2.0,
+              "fallback_feature_count": 1.0,
+              "missing_feature_count": 0.0,
+              "observed_weight_fraction": 0.84,
+              "fallback_dominance_ratio": 0.19,
+              "structure_geometry_quality_score": 0.94,
+              "environmental_layer_coverage_score": 82.0,
+              "regional_enrichment_consumption_score": 84.0,
+              "property_specificity_score": 88.0
+            }
+          }
+        }
+      },
+      "expected": {
+        "assessment_status_in": ["fully_scored", "partially_scored"],
+        "fallback_mode": "footprint",
+        "specificity_tiers": ["regional_estimate", "address_level", "property_specific"]
+      }
+    },
+    {
+      "scenario_id": "stage_footprint_naip_enriched_clear",
+      "description": "Footprint + NAIP + public-record/user structure enrichment (clear variant).",
+      "profile_tags": ["property_data_stage", "stage:footprint_naip_enriched", "clear"],
+      "input_payload": {
+        "address": "503 Stage Benchmark Ln, Missoula, MT",
+        "attributes": {
+          "roof_type": "class_a",
+          "vent_type": "ember_resistant",
+          "window_type": "dual_pane_tempered",
+          "defensible_space_ft": 32.0,
+          "construction_year": 2008
+        },
+        "selected_structure_id": "stage-benchmark-503"
+      },
+      "location": {"lat": 46.87264, "lon": -113.99446, "geocode_source": "benchmark-stage-v1"},
+      "context": {
+        "property_level_context": {
+          "region_property_specific_readiness": "property_specific_ready",
+          "footprint_used": true,
+          "footprint_status": "matched",
+          "fallback_mode": "footprint",
+          "geometry_basis": "footprint",
+          "structure_geometry_confidence": 0.94,
+          "ring_generation_mode": "footprint_buffer_rings",
+          "final_structure_geometry_source": "user_selected_structure",
+          "property_anchor_source": "user_selected_structure",
+          "property_anchor_quality_score": 94.0,
+          "naip_feature_source": "prepared_region_naip",
+          "naip_feature_artifact_path": "data/regions/benchmark/naip_structure_features.json",
+          "near_structure_vegetation_0_5_pct": 16.0,
+          "canopy_adjacency_proxy_pct": 20.0,
+          "vegetation_continuity_proxy_pct": 26.0,
+          "nearest_high_fuel_patch_distance_ft": 61.0,
+          "structure_attributes": {
+            "year_built": 2008,
+            "building_area_sqft": 2360.0,
+            "land_use_class": "single_family_residential",
+            "roof_material_public_record": "class_a"
+          },
+          "parcel_resolution": {"status": "matched", "confidence": 90.0},
+          "footprint_resolution": {"match_status": "matched", "confidence_score": 0.95, "fallback_used": false},
+          "property_linkage": {
+            "anchor_status": "resolved",
+            "anchor_confidence": 95.0,
+            "parcel_status": "matched",
+            "parcel_confidence": 90.0,
+            "footprint_status": "matched",
+            "footprint_confidence": 95.0,
+            "overall_property_confidence": 90.0,
+            "mismatch_flags": []
+          },
+          "ring_metrics": {
+            "ring_0_5_ft": {"vegetation_density": 15.0},
+            "ring_5_30_ft": {"vegetation_density": 24.0},
+            "ring_30_100_ft": {"vegetation_density": 31.0}
+          },
+          "feature_bundle_summary": {
+            "coverage_metrics": {
+              "observed_feature_count": 15.0,
+              "inferred_feature_count": 2.0,
+              "fallback_feature_count": 1.0,
+              "missing_feature_count": 0.0,
+              "observed_weight_fraction": 0.84,
+              "fallback_dominance_ratio": 0.19,
+              "structure_geometry_quality_score": 0.94,
+              "environmental_layer_coverage_score": 82.0,
+              "regional_enrichment_consumption_score": 84.0,
+              "property_specificity_score": 88.0
+            }
+          }
+        }
+      },
+      "expected": {
+        "assessment_status_in": ["fully_scored", "partially_scored"],
+        "fallback_mode": "footprint",
+        "specificity_tiers": ["regional_estimate", "address_level", "property_specific"]
+      }
+    }
+  ],
+  "relative_assertions": [],
+  "monotonic_assertions": []
+}

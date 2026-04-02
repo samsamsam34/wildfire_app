@@ -140,6 +140,7 @@ def test_run_benchmark_suite_outputs_artifact_and_passes(tmp_path):
     first_snapshot = artifact["scenario_results"][0]["snapshot"]
     assert "evidence_metrics" in first_snapshot
     assert "fallback_weight_fraction" in first_snapshot["evidence_metrics"]
+    assert "property_confidence_summary" in first_snapshot
 
 
 def test_run_benchmark_suite_detects_monotonic_failure(tmp_path):
