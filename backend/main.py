@@ -64,6 +64,7 @@ from backend.public_outcome_artifacts import load_public_outcome_governance_snap
 from backend.layer_diagnostics import LAYER_SPECS
 from backend.mitigation import build_mitigation_plan
 from backend.property_linkage import build_property_linkage_summary
+from backend.structure_enrichment import enrich_structure_attributes
 from backend.models import (
     AssessmentDiagnostics,
     AssessmentStatus,
@@ -1821,7 +1822,11 @@ def _build_property_findings(property_level_context: dict[str, Any]) -> list[str
     return findings[:3]
 
 
-def _normalize_property_level_context(raw_context: object) -> dict[str, Any]:
+def _normalize_property_level_context(
+    raw_context: object,
+    *,
+    user_attributes: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     if not isinstance(raw_context, dict):
         return {
             "footprint_used": False,
@@ -2460,6 +2465,9 @@ def _normalize_property_level_context(raw_context: object) -> dict[str, Any]:
         density_row = raw_structure_attributes.get("density_context")
         shape_row = raw_structure_attributes.get("shape_complexity")
         provenance = raw_structure_attributes.get("provenance")
+        attribute_provenance = raw_structure_attributes.get("attribute_provenance")
+        attribute_confidence = raw_structure_attributes.get("attribute_confidence")
+        attribute_sources = raw_structure_attributes.get("attribute_sources")
         normalized["structure_attributes"] = {
             "area": {
                 "sqft": _safe_float((area_row or {}).get("sqft")) if isinstance(area_row, dict) else None,
@@ -2537,6 +2545,81 @@ def _normalize_property_level_context(raw_context: object) -> dict[str, Any]:
                     else "unavailable"
                 ),
             },
+            "year_built": (
+                int(round(_safe_float(raw_structure_attributes.get("year_built"))))
+                if _safe_float(raw_structure_attributes.get("year_built")) is not None
+                else None
+            ),
+            "building_area_sqft": _safe_float(raw_structure_attributes.get("building_area_sqft")),
+            "land_use_class": (
+                str(raw_structure_attributes.get("land_use_class")).strip()
+                if str(raw_structure_attributes.get("land_use_class") or "").strip()
+                else None
+            ),
+            "roof_material_public_record": (
+                str(raw_structure_attributes.get("roof_material_public_record")).strip()
+                if str(raw_structure_attributes.get("roof_material_public_record") or "").strip()
+                else None
+            ),
+            "attribute_provenance": {
+                "year_built": (
+                    str((attribute_provenance or {}).get("year_built") or "missing")
+                    if isinstance(attribute_provenance, dict)
+                    else "missing"
+                ),
+                "building_area_sqft": (
+                    str((attribute_provenance or {}).get("building_area_sqft") or "missing")
+                    if isinstance(attribute_provenance, dict)
+                    else "missing"
+                ),
+                "land_use_class": (
+                    str((attribute_provenance or {}).get("land_use_class") or "missing")
+                    if isinstance(attribute_provenance, dict)
+                    else "missing"
+                ),
+                "roof_material_public_record": (
+                    str((attribute_provenance or {}).get("roof_material_public_record") or "missing")
+                    if isinstance(attribute_provenance, dict)
+                    else "missing"
+                ),
+            },
+            "attribute_confidence": {
+                "year_built": max(0.0, min(1.0, _safe_float((attribute_confidence or {}).get("year_built")) or 0.0)),
+                "building_area_sqft": max(
+                    0.0, min(1.0, _safe_float((attribute_confidence or {}).get("building_area_sqft")) or 0.0)
+                ),
+                "land_use_class": max(0.0, min(1.0, _safe_float((attribute_confidence or {}).get("land_use_class")) or 0.0)),
+                "roof_material_public_record": max(
+                    0.0,
+                    min(1.0, _safe_float((attribute_confidence or {}).get("roof_material_public_record")) or 0.0),
+                ),
+            },
+            "attribute_sources": {
+                "year_built": (
+                    str((attribute_sources or {}).get("year_built")).strip()
+                    if isinstance(attribute_sources, dict)
+                    and str((attribute_sources or {}).get("year_built") or "").strip()
+                    else None
+                ),
+                "building_area_sqft": (
+                    str((attribute_sources or {}).get("building_area_sqft")).strip()
+                    if isinstance(attribute_sources, dict)
+                    and str((attribute_sources or {}).get("building_area_sqft") or "").strip()
+                    else None
+                ),
+                "land_use_class": (
+                    str((attribute_sources or {}).get("land_use_class")).strip()
+                    if isinstance(attribute_sources, dict)
+                    and str((attribute_sources or {}).get("land_use_class") or "").strip()
+                    else None
+                ),
+                "roof_material_public_record": (
+                    str((attribute_sources or {}).get("roof_material_public_record")).strip()
+                    if isinstance(attribute_sources, dict)
+                    and str((attribute_sources or {}).get("roof_material_public_record") or "").strip()
+                    else None
+                ),
+            },
         }
     else:
         normalized["structure_attributes"] = {
@@ -2557,7 +2640,42 @@ def _normalize_property_level_context(raw_context: object) -> dict[str, Any]:
                 "estimated_age_proxy": "unavailable",
                 "shape_complexity": "unavailable",
             },
+            "year_built": None,
+            "building_area_sqft": None,
+            "land_use_class": None,
+            "roof_material_public_record": None,
+            "attribute_provenance": {
+                "year_built": "missing",
+                "building_area_sqft": "missing",
+                "land_use_class": "missing",
+                "roof_material_public_record": "missing",
+            },
+            "attribute_confidence": {
+                "year_built": 0.0,
+                "building_area_sqft": 0.0,
+                "land_use_class": 0.0,
+                "roof_material_public_record": 0.0,
+            },
+            "attribute_sources": {
+                "year_built": None,
+                "building_area_sqft": None,
+                "land_use_class": None,
+                "roof_material_public_record": None,
+            },
         }
+    normalized["structure_attributes"] = enrich_structure_attributes(
+        base_structure_attributes=normalized.get("structure_attributes"),
+        public_record_fields={
+            "year_built": (normalized.get("structure_attributes") or {}).get("year_built"),
+            "building_area_sqft": (normalized.get("structure_attributes") or {}).get("building_area_sqft"),
+            "land_use_class": (normalized.get("structure_attributes") or {}).get("land_use_class"),
+            "roof_material_public_record": (
+                (normalized.get("structure_attributes") or {}).get("roof_material_public_record")
+            ),
+            "source_by_field": dict(((normalized.get("structure_attributes") or {}).get("attribute_sources") or {})),
+        },
+        user_attributes=user_attributes,
+    )
     return normalized
 
 
@@ -6200,7 +6318,14 @@ def _run_assessment(
         context = wildfire_data.collect_context(lat, lon)
     scoring_attrs = normalize_property_attributes(payload.attributes)
     normalization_changes = normalized_attribute_changes(payload.attributes, scoring_attrs)
-    property_level_context = _normalize_property_level_context(context.property_level_context)
+    property_level_context = _normalize_property_level_context(
+        context.property_level_context,
+        user_attributes=(
+            payload.attributes.model_dump()
+            if hasattr(payload.attributes, "model_dump")
+            else dict(getattr(payload, "attributes", {}) or {})
+        ),
+    )
     geocode_provider = str(geocode_meta.get("geocode_provider") or geocode_meta.get("provider") or geocode_source or "")
     property_level_context["geocode_provider"] = geocode_provider or None
     property_level_context["geocoded_address"] = geocode_meta.get("geocoded_address") or geocode_meta.get("matched_address")

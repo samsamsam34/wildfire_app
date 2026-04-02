@@ -453,6 +453,91 @@ def test_structure_attributes_fallback_when_footprint_missing(monkeypatch):
     assert attrs.get("provenance", {}).get("density_context") == "inferred"
 
 
+def test_structure_attributes_public_record_enrichment_marks_observed_provenance(monkeypatch):
+    client = WildfireDataClient()
+
+    class StubFootprints:
+        def get_building_footprint(self, _lat, _lon, **_kwargs):
+            return BuildingFootprintResult(
+                found=False,
+                source="stub.geojson",
+                confidence=0.0,
+                match_status="none",
+                assumptions=["no footprint match in fixture"],
+            )
+
+        def get_neighbor_structure_metrics(self, **_kwargs):
+            return {
+                "nearby_structure_count_100_ft": 1,
+                "nearby_structure_count_300_ft": 4,
+                "nearest_structure_distance_ft": 36.0,
+            }
+
+    client.footprints = StubFootprints()
+    monkeypatch.setattr(
+        client,
+        "_build_point_proxy_ring_metrics",
+        lambda **_kwargs: {
+            "ring_0_5_ft": {"vegetation_density": 30.0},
+            "ring_5_30_ft": {"vegetation_density": 45.0},
+            "ring_30_100_ft": {"vegetation_density": 40.0},
+            "ring_100_300_ft": {"vegetation_density": 28.0},
+            "geometry_type": "point",
+            "precision_flag": "fallback_point_proxy",
+        },
+    )
+    monkeypatch.setattr(
+        client,
+        "_compute_structure_aware_vegetation_features",
+        lambda **_kwargs: {
+            "near_structure_vegetation_0_5_pct": 30.0,
+            "near_structure_vegetation_5_30_pct": 45.0,
+            "vegetation_edge_directional_concentration_pct": 12.0,
+            "canopy_dense_fuel_asymmetry_pct": 7.0,
+            "nearest_continuous_vegetation_distance_ft": 24.0,
+            "vegetation_directional_sectors": {},
+            "vegetation_directional_precision": "point_proxy",
+            "vegetation_directional_precision_score": 0.34,
+            "vegetation_directional_basis": "point_proxy_relative",
+            "directional_risk": {},
+        },
+    )
+    monkeypatch.setattr(
+        client,
+        "_compute_structure_relative_slope",
+        lambda **_kwargs: {
+            "local_slope": 8.0,
+            "precision_flag": "fallback_point_proxy",
+            "source": "sampled",
+        },
+    )
+
+    context, _assumptions, _sources = client._compute_structure_ring_metrics(
+        46.872300,
+        -113.994100,
+        canopy_path="canopy.tif",
+        fuel_path="fuel.tif",
+        slope_path="slope.tif",
+        parcel_properties={
+            "year_built": 1992,
+            "gross_building_area": 2260,
+            "land_use": "single_family_residential",
+            "roof_material": "tile",
+        },
+    )
+
+    attrs = context.get("structure_attributes") or {}
+    assert attrs.get("year_built") == 1992
+    assert attrs.get("building_area_sqft") == 2260.0
+    assert attrs.get("land_use_class") == "single_family_residential"
+    assert attrs.get("roof_material_public_record") == "tile"
+    provenance = attrs.get("attribute_provenance") or {}
+    assert provenance.get("year_built") == "observed_public_record"
+    assert provenance.get("building_area_sqft") == "observed_public_record"
+    assert provenance.get("land_use_class") == "observed_public_record"
+    assert provenance.get("roof_material_public_record") == "observed_public_record"
+
+
 @pytest.mark.skipif(Polygon is None, reason="Parcel-boundary sampling test requires shapely")
 def test_neighboring_parcels_produce_distinct_parcel_based_metrics(monkeypatch):
     if wildfire_data_module.Transformer is None:

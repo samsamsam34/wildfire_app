@@ -476,6 +476,22 @@ Geometry source registry workflow:
   - `structure_match_distance_m` (used to flag potential alignment issues)
 - Full registry reference: [`docs/geometry_source_registry.md`](docs/geometry_source_registry.md)
 
+Optional public-record structure enrichment:
+- Regions can optionally provide parcel/address public-record attributes (for example `year_built`, `land_use`, gross building area, assessor roof/material fields).
+- Runtime normalizes these into `property_level_context.structure_attributes`:
+  - `year_built`
+  - `building_area_sqft`
+  - `land_use_class`
+  - `roof_material_public_record`
+  - `attribute_provenance`
+  - `attribute_confidence`
+- Field provenance is explicit and constrained to:
+  - `observed_public_record`
+  - `inferred_from_geometry`
+  - `user_provided`
+  - `missing`
+- These enrichments are optional by region; missing public-record coverage does not block assessment.
+
 Offline prep/validation scripts:
 - Preferred (canonical): `scripts/prepare_region_from_catalog_or_sources.py` (plan/fill/build/validate in one command)
 - Validation: `scripts/validate_prepared_region.py`

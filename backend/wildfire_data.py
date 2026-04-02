@@ -27,6 +27,10 @@ from backend.layer_diagnostics import (
     update_layer_audit,
 )
 from backend.property_anchor import PropertyAnchorResolver
+from backend.structure_enrichment import (
+    enrich_structure_attributes,
+    extract_structure_public_record_fields,
+)
 from backend.open_data_adapters import (
     GridMETAdapter,
     MTBSAdapter,
@@ -1521,6 +1525,7 @@ class WildfireDataClient:
         footprint: Any | None,
         neighbor_metrics: dict[str, Any] | None,
         proxy_year: float | None,
+        public_record_fields: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         area_sqft = self._geometry_area_sqft(footprint)
         perimeter_ft = self._geometry_perimeter_ft(footprint)
@@ -1560,7 +1565,7 @@ class WildfireDataClient:
             "estimated_age_proxy": "inferred" if inferred_age_proxy is not None else "unavailable",
             "shape_complexity": "inferred" if shape_complexity is not None else "unavailable",
         }
-        return {
+        base_attributes = {
             "area": {
                 "sqft": area_sqft,
                 "source": "building_footprint_geometry" if area_sqft is not None else None,
@@ -1580,6 +1585,11 @@ class WildfireDataClient:
             },
             "provenance": provenance,
         }
+        return enrich_structure_attributes(
+            base_structure_attributes=base_attributes,
+            public_record_fields=public_record_fields,
+            user_attributes=None,
+        )
 
     @staticmethod
     def _estimated_overlap_area_sqft(
@@ -1968,6 +1978,9 @@ class WildfireDataClient:
         selected_structure_geometry: dict[str, Any] | None = None,
         geocoded_lat: float | None = None,
         geocoded_lon: float | None = None,
+        parcel_properties: dict[str, Any] | None = None,
+        address_point_properties: dict[str, Any] | None = None,
+        region_public_record_fields: dict[str, Any] | None = None,
     ) -> tuple[dict[str, Any], list[str], list[str]]:
         assumptions: list[str] = []
         sources: list[str] = []
@@ -2022,6 +2035,11 @@ class WildfireDataClient:
 
         geocode_fallback_lat = float(geocoded_lat) if geocoded_lat is not None else float(lat)
         geocode_fallback_lon = float(geocoded_lon) if geocoded_lon is not None else float(lon)
+        structure_public_record_fields = extract_structure_public_record_fields(
+            parcel_properties=parcel_properties,
+            address_point_properties=address_point_properties,
+            region_public_record_fields=region_public_record_fields,
+        )
 
         def _infer_point_from_parcel(
             polygon: Any | None,
@@ -2122,6 +2140,7 @@ class WildfireDataClient:
                     footprint=None,
                     neighbor_metrics=None,
                     proxy_year=None,
+                    public_record_fields=structure_public_record_fields,
                 )
                 return {
                     "footprint_used": False,
@@ -2342,6 +2361,7 @@ class WildfireDataClient:
                 footprint=None,
                 neighbor_metrics=neighbor_metrics,
                 proxy_year=proxy_year,
+                public_record_fields=structure_public_record_fields,
             )
             status = "not_found"
             assumptions_blob = " ".join(result.assumptions).lower()
@@ -2573,6 +2593,7 @@ class WildfireDataClient:
             footprint=result.footprint,
             neighbor_metrics=neighbor_metrics,
             proxy_year=proxy_year,
+            public_record_fields=structure_public_record_fields,
         )
 
         if ring_metrics:
@@ -3363,6 +3384,13 @@ class WildfireDataClient:
             selected_structure_geometry=selected_structure_geometry if isinstance(selected_structure_geometry, dict) else None,
             geocoded_lat=float(lat),
             geocoded_lon=float(lon),
+            parcel_properties=anchor.parcel_properties,
+            address_point_properties=anchor.address_point_properties,
+            region_public_record_fields=(
+                dict(region_context.get("public_record_fields") or {})
+                if isinstance(region_context.get("public_record_fields"), dict)
+                else None
+            ),
         )
         ring_context, naip_assumptions, naip_sources = self._apply_naip_feature_enrichment(
             ring_context=ring_context,

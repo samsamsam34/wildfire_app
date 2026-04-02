@@ -55,6 +55,8 @@ class PropertyAnchorResolution:
     alignment_notes: list[str] = field(default_factory=list)
     parcel_resolution: dict[str, Any] = field(default_factory=dict)
     parcel_bounding_approximation_geojson: dict[str, Any] | None = None
+    parcel_properties: dict[str, Any] = field(default_factory=dict)
+    address_point_properties: dict[str, Any] = field(default_factory=dict)
 
     def to_context(self) -> dict[str, Any]:
         return {
@@ -89,6 +91,8 @@ class PropertyAnchorResolution:
             "alignment_notes": list(self.alignment_notes),
             "parcel_resolution": dict(self.parcel_resolution or {}),
             "parcel_bounding_approximation": self.parcel_bounding_approximation_geojson,
+            "parcel_properties": dict(self.parcel_properties or {}),
+            "address_point_properties": dict(self.address_point_properties or {}),
         }
 
 
@@ -642,4 +646,6 @@ class PropertyAnchorResolver:
             alignment_notes=alignment_notes,
             parcel_resolution=parcel_resolution.to_summary(),
             parcel_bounding_approximation_geojson=parcel_resolution.approximation_geometry_geojson,
+            parcel_properties=parcel_props,
+            address_point_properties=address_props,
         )
