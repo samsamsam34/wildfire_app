@@ -945,6 +945,20 @@ class ParcelResolutionSummary(BaseModel):
     bounding_geometry: Optional[Dict[str, Any]] = None
 
 
+class PropertyLinkageSummary(BaseModel):
+    geocode_confidence: float = 0.0
+    parcel_confidence: float = 0.0
+    footprint_confidence: float = 0.0
+    overall_property_confidence: float = 0.0
+    parcel_status: str = "not_found"
+    footprint_status: str = "none"
+    footprint_match_method: Optional[str] = None
+    multiple_footprints_on_parcel: bool = False
+    footprint_outside_parcel: bool = False
+    structure_candidate_count: int = 0
+    selection_notes: List[str] = Field(default_factory=list)
+
+
 class AssessmentResult(BaseModel):
     assessment_id: str
     address: str
@@ -1044,6 +1058,7 @@ class AssessmentResult(BaseModel):
     geometry_resolution: GeometryResolutionSummary = Field(default_factory=GeometryResolutionSummary)
     footprint_resolution: FootprintResolutionSummary = Field(default_factory=FootprintResolutionSummary)
     parcel_resolution: ParcelResolutionSummary = Field(default_factory=ParcelResolutionSummary)
+    property_linkage: PropertyLinkageSummary = Field(default_factory=PropertyLinkageSummary)
     assessment_output_state: AssessmentOutputState = "insufficient_data"
     assessment_mode: AssessmentMode = "insufficient_data"
     scoring_status: str = "insufficient_data_to_score"

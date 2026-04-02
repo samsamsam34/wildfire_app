@@ -62,6 +62,7 @@ from backend.internal_diagnostics_artifacts import (
 from backend.public_outcome_artifacts import load_public_outcome_governance_snapshot
 from backend.layer_diagnostics import LAYER_SPECS
 from backend.mitigation import build_mitigation_plan
+from backend.property_linkage import build_property_linkage_summary
 from backend.models import (
     AssessmentDiagnostics,
     AssessmentStatus,
@@ -1883,6 +1884,19 @@ def _normalize_property_level_context(raw_context: object) -> dict[str, Any]:
                 "lookup_method": "none",
                 "lookup_distance_m": None,
             },
+            "property_linkage": {
+                "geocode_confidence": 0.0,
+                "parcel_confidence": 0.0,
+                "footprint_confidence": 0.0,
+                "overall_property_confidence": 0.0,
+                "parcel_status": "not_found",
+                "footprint_status": "none",
+                "footprint_match_method": None,
+                "multiple_footprints_on_parcel": False,
+                "footprint_outside_parcel": False,
+                "structure_candidate_count": 0,
+                "selection_notes": [],
+            },
             "parcel_bounding_approximation": None,
             "alignment_notes": [],
             "source_conflict_flag": False,
@@ -2183,6 +2197,66 @@ def _normalize_property_level_context(raw_context: object) -> dict[str, Any]:
     normalized["parcel_bounding_approximation"] = (
         bounding_geometry if isinstance(bounding_geometry, dict) else None
     )
+    raw_property_linkage = normalized.get("property_linkage")
+    if isinstance(raw_property_linkage, dict):
+        normalized["property_linkage"] = {
+            "geocode_confidence": round(
+                max(0.0, min(100.0, _safe_float(raw_property_linkage.get("geocode_confidence")) or 0.0)),
+                1,
+            ),
+            "parcel_confidence": round(
+                max(0.0, min(100.0, _safe_float(raw_property_linkage.get("parcel_confidence")) or 0.0)),
+                1,
+            ),
+            "footprint_confidence": round(
+                max(0.0, min(100.0, _safe_float(raw_property_linkage.get("footprint_confidence")) or 0.0)),
+                1,
+            ),
+            "overall_property_confidence": round(
+                max(0.0, min(100.0, _safe_float(raw_property_linkage.get("overall_property_confidence")) or 0.0)),
+                1,
+            ),
+            "parcel_status": str(raw_property_linkage.get("parcel_status") or "not_found").strip().lower() or "not_found",
+            "footprint_status": str(raw_property_linkage.get("footprint_status") or "none").strip().lower() or "none",
+            "footprint_match_method": (
+                str(raw_property_linkage.get("footprint_match_method"))
+                if raw_property_linkage.get("footprint_match_method")
+                else None
+            ),
+            "multiple_footprints_on_parcel": bool(raw_property_linkage.get("multiple_footprints_on_parcel")),
+            "footprint_outside_parcel": bool(raw_property_linkage.get("footprint_outside_parcel")),
+            "structure_candidate_count": max(0, int(raw_property_linkage.get("structure_candidate_count") or 0)),
+            "selection_notes": [
+                str(note) for note in (raw_property_linkage.get("selection_notes") or []) if str(note).strip()
+            ][:4],
+        }
+    else:
+        normalized["property_linkage"] = {
+            "geocode_confidence": 0.0,
+            "parcel_confidence": round(
+                max(0.0, min(100.0, _safe_float((normalized.get("parcel_resolution") or {}).get("confidence")) or 0.0)),
+                1,
+            ),
+            "footprint_confidence": round(
+                max(
+                    0.0,
+                    min(
+                        100.0,
+                        (_safe_float((normalized.get("footprint_resolution") or {}).get("confidence_score")) or 0.0)
+                        * 100.0,
+                    ),
+                ),
+                1,
+            ),
+            "overall_property_confidence": 0.0,
+            "parcel_status": str((normalized.get("parcel_resolution") or {}).get("status") or "not_found"),
+            "footprint_status": str((normalized.get("footprint_resolution") or {}).get("match_status") or "none"),
+            "footprint_match_method": (normalized.get("footprint_resolution") or {}).get("match_method"),
+            "multiple_footprints_on_parcel": False,
+            "footprint_outside_parcel": False,
+            "structure_candidate_count": max(0, int(normalized.get("candidate_structure_count") or 0)),
+            "selection_notes": [],
+        }
     normalized.setdefault("matched_structure_id", None)
     notes = normalized.get("alignment_notes")
     normalized["alignment_notes"] = notes if isinstance(notes, list) else []
@@ -5672,6 +5746,10 @@ def _run_assessment(
         property_level_context["ring_generation_mode"] = (
             "footprint_aware_rings" if bool(property_level_context.get("footprint_used")) else "point_annulus_fallback"
         )
+    property_level_context["property_linkage"] = build_property_linkage_summary(
+        geocode_meta=geocode_meta,
+        property_level_context=property_level_context,
+    )
     geometry_resolution = _build_geometry_resolution_summary(property_level_context)
     property_level_context["geometry_resolution"] = geometry_resolution.model_dump()
     if requested_property_anchor_point is not None:
@@ -6742,6 +6820,7 @@ def _run_assessment(
         geometry_resolution=geometry_resolution,
         footprint_resolution=dict(property_level_context.get("footprint_resolution") or {}),
         parcel_resolution=dict(property_level_context.get("parcel_resolution") or {}),
+        property_linkage=dict(property_level_context.get("property_linkage") or {}),
         assessment_output_state=str(assessment_output_state or "insufficient_data"),
         assessment_mode=homeowner_assessment_mode,
         scoring_status=scoring_status,
@@ -6993,6 +7072,7 @@ def _run_assessment(
         "geometry_resolution": result.geometry_resolution.model_dump(),
         "footprint_resolution": result.footprint_resolution.model_dump(),
         "parcel_resolution": result.parcel_resolution.model_dump(),
+        "property_linkage": result.property_linkage.model_dump(),
         "submodel_scores": {
             name: {
                 "score": sm.score,
