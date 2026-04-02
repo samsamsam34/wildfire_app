@@ -657,6 +657,7 @@ The repo includes a versioned benchmark scenario pack for calibration discipline
 - `benchmark/scenario_pack_v1.json`
 - `benchmark/scenario_pack_confidence_v2.json` (geometry/enrichment/fallback-confidence stress pack)
 - `benchmark/scenario_pack_nearby_differentiation_v1.json` (adjacent-home local-differentiation stress pack)
+- `benchmark/scenario_pack_nearby_differentiation_v2.json` (release-grade adjacent-home differentiation + honest-abstention pack)
 - runner: `scripts/run_benchmark_suite.py`
 - confidence runner: `scripts/run_confidence_benchmark_pack.py`
 
@@ -684,7 +685,15 @@ Run the nearby-home differentiation pack (local-factor separation + cautious mis
 
 ```bash
 python scripts/run_benchmark_suite.py \
-  --pack benchmark/scenario_pack_nearby_differentiation_v1.json
+  --pack benchmark/scenario_pack_nearby_differentiation_v2.json
+```
+
+Run the nearby-home release gate (CI-safe blocking mode):
+
+```bash
+python scripts/run_benchmark_suite.py \
+  --nearby-suite \
+  --enforce-nearby-release-gate
 ```
 
 What it checks:
@@ -696,6 +705,14 @@ What it checks:
 
 Benchmark artifacts include aggregated governance metadata, a `model_governance` block, and
 `nearby_differentiation_performance` when nearby-home scenarios are present.
+When nearby scenarios are present, the runner also writes:
+- `benchmark_run_<timestamp>_nearby_release_gate.json`
+- `benchmark_run_<timestamp>_nearby_release_gate.md`
+
+These summarize:
+- separation success rate
+- false similarity cases (collapsed without low-specificity warning)
+- abstention success rate when data is weak
 
 Use `POST /risk/debug?include_benchmark_hints=true` or `GET /report/{assessment_id}/export?include_benchmark_hints=true` to include lightweight benchmark resemblance and sanity-check hints in diagnostics/export output.
 

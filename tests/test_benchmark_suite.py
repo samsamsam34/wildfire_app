@@ -7,6 +7,7 @@ from pathlib import Path
 
 from backend.benchmarking import (
     compare_benchmark_artifacts,
+    evaluate_nearby_release_gate,
     load_benchmark_pack,
     run_benchmark_suite,
 )
@@ -222,6 +223,79 @@ def test_run_benchmark_suite_script_exit_behavior(tmp_path):
     assert bad.returncode != 0, bad.stdout
 
 
+def test_nearby_release_gate_helper_flags_false_similarity_cases():
+    artifact = {
+        "nearby_differentiation_performance": {
+            "available": True,
+            "assertion_fail_count": 0,
+            "local_subscore_assertions": {"count": 4, "passed": 4, "failed": 0},
+            "separation_analysis": {
+                "pair_count": 4,
+                "collapsed_not_flagged_count": 1,
+            },
+            "separation_success_rate": 0.75,
+            "abstention_success_rate_when_data_weak": 0.5,
+            "false_similarity_case_count": 1,
+            "false_similarity_cases": [{"assertion_id": "pair_a"}],
+        }
+    }
+    gate = evaluate_nearby_release_gate(artifact, require_available=True)
+    assert gate["passed"] is False
+    assert gate["summary_metrics"]["false_similarity_case_count"] == 1
+    assert gate["false_similarity_cases"][0]["assertion_id"] == "pair_a"
+    assert any("without low-specificity warning" in reason.lower() for reason in gate["reasons"])
+
+
+def test_run_benchmark_suite_enforce_nearby_release_gate_requires_nearby_suite(tmp_path):
+    script = Path("scripts") / "run_benchmark_suite.py"
+    passing_pack = tmp_path / "pack_pass.json"
+    out_dir = tmp_path / "artifacts"
+    _write_pack(passing_pack, passing=True)
+
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(script),
+            "--pack",
+            str(passing_pack),
+            "--output-dir",
+            str(out_dir),
+            "--enforce-nearby-release-gate",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 3, proc.stdout + proc.stderr
+    assert '"nearby_release_gate"' in proc.stdout
+    assert '"passed": false' in proc.stdout.lower()
+
+
+def test_run_benchmark_suite_nearby_suite_passes_release_gate(tmp_path):
+    script = Path("scripts") / "run_benchmark_suite.py"
+    out_dir = tmp_path / "nearby_release_gate"
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(script),
+            "--nearby-suite",
+            "--output-dir",
+            str(out_dir),
+            "--enforce-nearby-release-gate",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert '"nearby_release_gate"' in proc.stdout
+    assert '"passed": true' in proc.stdout.lower()
+    summary_json = list(out_dir.glob("*_nearby_release_gate.json"))
+    summary_md = list(out_dir.glob("*_nearby_release_gate.md"))
+    assert summary_json, "Expected nearby release gate JSON sidecar artifact."
+    assert summary_md, "Expected nearby release gate markdown sidecar artifact."
+
+
 def test_run_confidence_benchmark_pack_script_outputs_summary(tmp_path):
     script = Path("scripts") / "run_confidence_benchmark_pack.py"
     out_dir = tmp_path / "confidence_artifacts"
@@ -292,6 +366,13 @@ def test_nearby_differentiation_v2_pack_measures_separation_and_honest_abstentio
     assert int(separation.get("collapsed_toward_similarity_count") or 0) >= 1
     assert int(separation.get("collapsed_correctly_flagged_low_specificity_count") or 0) >= 1
     assert int(separation.get("collapsed_not_flagged_count") or 0) == 0
+    assert isinstance(nearby.get("separation_success_rate"), float)
+    assert float(nearby.get("separation_success_rate") or 0.0) >= 0.5
+    assert nearby.get("abstention_success_rate_when_data_weak") is None or isinstance(
+        nearby.get("abstention_success_rate_when_data_weak"), float
+    )
+    assert int(nearby.get("false_similarity_case_count") or 0) == 0
+    assert isinstance(nearby.get("false_similarity_cases"), list)
 
     snapshots = {
         row["scenario_id"]: row["snapshot"]
@@ -305,6 +386,7 @@ def test_nearby_differentiation_v2_pack_measures_separation_and_honest_abstentio
     assert float(dense["scores"]["home_ignition_vulnerability_score"]) > float(
         clear["scores"]["home_ignition_vulnerability_score"]
     )
+    assert list(dense.get("top_risk_drivers") or []) != list(clear.get("top_risk_drivers") or [])
     assert dense["specificity"]["comparison_allowed"] is True
     assert clear["specificity"]["comparison_allowed"] is True
 
@@ -313,3 +395,26 @@ def test_nearby_differentiation_v2_pack_measures_separation_and_honest_abstentio
     assert bool(missing["specificity"]["comparison_allowed"]) is False
     assert bool(available["specificity"]["comparison_allowed"]) is True
     assert str(missing["specificity"]["specificity_tier"]) in {"regional_estimate", "address_level", "insufficient_data"}
+
+    inputs_absent = snapshots["nearby_v2_inputs_absent"]
+    inputs_present = snapshots["nearby_v2_inputs_present"]
+    assert float(inputs_present["confidence"]["confidence_score"]) > float(inputs_absent["confidence"]["confidence_score"])
+    assert float(inputs_absent["scores"]["home_ignition_vulnerability_score"]) >= float(
+        inputs_present["scores"]["home_ignition_vulnerability_score"]
+    )
+    assert bool(inputs_absent["specificity"]["comparison_allowed"]) is False
+    assert bool(inputs_present["specificity"]["comparison_allowed"]) is True
+
+    naip_dense = snapshots["nearby_v2_naip_dense_footprint"]
+    naip_sparse = snapshots["nearby_v2_naip_sparse_footprint"]
+    assert float(naip_dense["scores"]["home_ignition_vulnerability_score"]) > float(
+        naip_sparse["scores"]["home_ignition_vulnerability_score"]
+    )
+    assert float(naip_dense["scores"]["wildfire_risk_score"]) > float(naip_sparse["scores"]["wildfire_risk_score"])
+
+    point_dense = snapshots["nearby_v2_naip_dense_point_fallback"]
+    point_sparse = snapshots["nearby_v2_naip_sparse_point_fallback"]
+    assert str(point_dense["differentiation"]["differentiation_mode"]) == "mostly_regional"
+    assert str(point_sparse["differentiation"]["differentiation_mode"]) == "mostly_regional"
+    assert bool(point_dense["specificity"]["comparison_allowed"]) is False
+    assert bool(point_sparse["specificity"]["comparison_allowed"]) is False

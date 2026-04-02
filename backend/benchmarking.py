@@ -20,6 +20,7 @@ from backend.version import (
 )
 
 DEFAULT_PACK_PATH = Path("benchmark") / "scenario_pack_v1.json"
+DEFAULT_NEARBY_PACK_PATH = Path("benchmark") / "scenario_pack_nearby_differentiation_v2.json"
 DEFAULT_RESULTS_DIR = Path("benchmark") / "results"
 DEFAULT_SCORING_CONFIG = load_scoring_config()
 
@@ -1051,6 +1052,10 @@ def _build_nearby_differentiation_performance_summary(
             "notes": [
                 "No nearby-home differentiation scenarios were tagged in this pack.",
             ],
+            "separation_success_rate": None,
+            "abstention_success_rate_when_data_weak": None,
+            "false_similarity_case_count": 0,
+            "false_similarity_cases": [],
         }
 
     relevant_assertions: list[dict[str, Any]] = []
@@ -1204,6 +1209,23 @@ def _build_nearby_differentiation_performance_summary(
         for row in relevant_assertions
         if not bool(row.get("passed", False))
     ]
+    pair_count = len(pair_rows)
+    false_similarity_cases = [
+        row
+        for row in pair_rows
+        if bool(row.get("collapsed_toward_similarity")) and not bool(row.get("low_specificity_flagged"))
+    ]
+    false_similarity_case_count = len(false_similarity_cases)
+    separation_success_rate = (
+        round(float(separation_achieved_count) / float(pair_count), 4)
+        if pair_count > 0
+        else None
+    )
+    abstention_success_rate = (
+        round(float(collapsed_correctly_flagged_count) / float(collapsed_toward_similarity_count), 4)
+        if collapsed_toward_similarity_count > 0
+        else None
+    )
     return {
         "available": True,
         "scenario_count": len(nearby_scenario_ids),
@@ -1223,18 +1245,77 @@ def _build_nearby_differentiation_performance_summary(
             "failed": max(0, caution_total - caution_pass),
         },
         "separation_analysis": {
-            "pair_count": len(pair_rows),
+            "pair_count": pair_count,
             "separation_achieved_count": separation_achieved_count,
             "collapsed_toward_similarity_count": collapsed_toward_similarity_count,
             "collapsed_correctly_flagged_low_specificity_count": collapsed_correctly_flagged_count,
-            "collapsed_not_flagged_count": max(0, collapsed_toward_similarity_count - collapsed_correctly_flagged_count),
+            "collapsed_not_flagged_count": false_similarity_case_count,
             "pairs": pair_rows,
         },
+        "separation_success_rate": separation_success_rate,
+        "abstention_success_rate_when_data_weak": abstention_success_rate,
+        "false_similarity_case_count": false_similarity_case_count,
+        "false_similarity_cases": false_similarity_cases,
         "scenario_diagnostics": scenario_diagnostics,
         "notes": [
             "Nearby-home differentiation scenarios should separate local sub-scores while confidence/differentiation diagnostics track data quality.",
             "Honest abstention is treated as success when local-condition differences collapse under low-specificity evidence and safeguard flags are raised.",
         ],
+    }
+
+
+def evaluate_nearby_release_gate(
+    artifact: dict[str, Any],
+    *,
+    require_available: bool = True,
+) -> dict[str, Any]:
+    nearby = (
+        artifact.get("nearby_differentiation_performance")
+        if isinstance(artifact.get("nearby_differentiation_performance"), dict)
+        else {}
+    )
+    available = bool(nearby.get("available"))
+    assertion_fail_count = int(nearby.get("assertion_fail_count") or 0)
+    local_subscore_fail_count = int((nearby.get("local_subscore_assertions") or {}).get("failed") or 0)
+    separation = nearby.get("separation_analysis") if isinstance(nearby.get("separation_analysis"), dict) else {}
+    collapsed_not_flagged_count = int(separation.get("collapsed_not_flagged_count") or 0)
+    pair_count = int(separation.get("pair_count") or 0)
+    separation_success_rate = nearby.get("separation_success_rate")
+    abstention_success_rate = nearby.get("abstention_success_rate_when_data_weak")
+    false_similarity_case_count = int(nearby.get("false_similarity_case_count") or 0)
+    false_similarity_cases = (
+        nearby.get("false_similarity_cases")
+        if isinstance(nearby.get("false_similarity_cases"), list)
+        else []
+    )
+
+    reasons: list[str] = []
+    if require_available and not available:
+        reasons.append("Nearby-home differentiation scenarios were not available in this benchmark artifact.")
+    if assertion_fail_count > 0:
+        reasons.append(f"Nearby-home assertions failed: {assertion_fail_count}.")
+    if local_subscore_fail_count > 0:
+        reasons.append(
+            "Local sub-score directional assertions failed for nearby-home scenarios."
+        )
+    if collapsed_not_flagged_count > 0:
+        reasons.append(
+            "Nearby-home scenarios collapsed toward similar outputs without low-specificity warning."
+        )
+
+    passed = not reasons
+    return {
+        "applicable": available,
+        "required": bool(require_available),
+        "passed": passed,
+        "reasons": reasons,
+        "summary_metrics": {
+            "pair_count": pair_count,
+            "separation_success_rate": separation_success_rate,
+            "abstention_success_rate_when_data_weak": abstention_success_rate,
+            "false_similarity_case_count": false_similarity_case_count,
+        },
+        "false_similarity_cases": false_similarity_cases,
     }
 
 
