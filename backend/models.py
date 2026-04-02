@@ -119,6 +119,8 @@ class AddressRequest(BaseModel):
     selection_mode: SelectionMode = "polygon"
     property_anchor_point: Optional[Coordinates] = None
     user_selected_point: Optional[Coordinates] = None
+    selected_parcel_id: Optional[str] = None
+    selected_parcel_geometry: Optional[Dict[str, Any]] = None
     selected_structure_id: Optional[str] = None
     selected_structure_geometry: Optional[Dict[str, Any]] = None
     audience: Audience = "homeowner"
@@ -144,8 +146,12 @@ class HomeownerImprovementRunRequest(BaseModel):
     selection_mode: Optional[SelectionMode] = None
     property_anchor_point: Optional[Coordinates] = None
     user_selected_point: Optional[Coordinates] = None
+    selected_parcel_id: Optional[str] = None
+    selected_parcel_geometry: Optional[Dict[str, Any]] = None
     selected_structure_id: Optional[str] = None
     selected_structure_geometry: Optional[Dict[str, Any]] = None
+    confirm_selected_parcel: bool = False
+    confirm_selected_footprint: bool = False
     confirmed_fields: List[str] = Field(default_factory=list)
     audience: Audience = "homeowner"
     ruleset_id: Optional[str] = None
@@ -767,6 +773,7 @@ class HomeownerImprovementRunResponse(BaseModel):
     after_summary: Dict[str, Any] = Field(default_factory=dict)
     what_changed: Dict[str, Any] = Field(default_factory=dict)
     what_changed_summary: Dict[str, Any] = Field(default_factory=dict)
+    geometry_update_summary: Dict[str, Any] = Field(default_factory=dict)
     why_it_matters: List[str] = Field(default_factory=list)
     confidence_improved: bool = False
     recommendations_adjusted: bool = False

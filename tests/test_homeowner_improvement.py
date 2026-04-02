@@ -393,3 +393,157 @@ def test_homeowner_polygon_geometry_correction_updates_what_changed_and_improves
     )
     assert updated_conf > baseline_conf
     assert updated_diff > baseline_diff
+
+
+def test_homeowner_confirmation_flow_supports_map_pin_parcel_and_footprint(monkeypatch, tmp_path: Path) -> None:
+    auth.API_KEYS = set()
+    monkeypatch.setattr(app_main.geocoder, "geocode", lambda _address: (46.8721, -113.9940, "test-geocoder"))
+
+    call_kwargs: list[dict] = []
+
+    selected_parcel_geometry = {
+        "type": "Feature",
+        "properties": {"parcel_id": "parcel-auto-77"},
+        "geometry": {
+            "type": "Polygon",
+            "coordinates": [
+                [
+                    [-113.99420, 46.87200],
+                    [-113.99380, 46.87200],
+                    [-113.99380, 46.87228],
+                    [-113.99420, 46.87228],
+                    [-113.99420, 46.87200],
+                ]
+            ],
+        },
+    }
+    selected_structure_geometry = {
+        "type": "Feature",
+        "properties": {"structure_id": "foot-auto-77"},
+        "geometry": {
+            "type": "Polygon",
+            "coordinates": [
+                [
+                    [-113.99409, 46.87208],
+                    [-113.99399, 46.87208],
+                    [-113.99399, 46.87216],
+                    [-113.99409, 46.87216],
+                    [-113.99409, 46.87208],
+                ]
+            ],
+        },
+    }
+
+    def _collect(_lat, _lon, **kwargs):
+        call_kwargs.append(dict(kwargs))
+        context = _ctx()
+        confirmed_geometry = bool(
+            isinstance(kwargs.get("selected_parcel_geometry"), dict)
+            and isinstance(kwargs.get("selected_structure_geometry"), dict)
+        )
+        if confirmed_geometry:
+            context.property_level_context.update(
+                {
+                    "footprint_used": True,
+                    "footprint_status": "used",
+                    "fallback_mode": "footprint",
+                    "geometry_basis": "footprint",
+                    "structure_match_status": "matched",
+                    "ring_generation_mode": "footprint_aware_rings",
+                    "property_anchor_source": "user_selected_point",
+                    "property_anchor_quality_score": 0.93,
+                    "anchor_quality_score": 0.93,
+                    "parcel_id": "parcel-auto-77",
+                    "parcel_lookup_method": "user_confirmed_parcel",
+                    "selected_parcel_id": "parcel-auto-77",
+                    "selected_parcel_geometry": kwargs.get("selected_parcel_geometry"),
+                    "selected_structure_id": kwargs.get("selected_structure_id") or "foot-auto-77",
+                    "selected_structure_geometry": kwargs.get("selected_structure_geometry"),
+                    "final_structure_geometry_source": "user_selected_polygon",
+                    "structure_match_confidence": 0.95,
+                    "naip_feature_source": "prepared_region_naip",
+                }
+            )
+        else:
+            context.property_level_context.update(
+                {
+                    "footprint_used": False,
+                    "footprint_status": "not_found",
+                    "fallback_mode": "point_based",
+                    "geometry_basis": "point",
+                    "structure_match_status": "none",
+                    "ring_generation_mode": "point_annulus_fallback",
+                    "property_anchor_source": "approximate_geocode",
+                    "property_anchor_quality_score": 0.34,
+                    "anchor_quality_score": 0.34,
+                    "parcel_id": "parcel-auto-77",
+                    "parcel_lookup_method": "contains_point",
+                    "selected_parcel_id": "parcel-auto-77",
+                    "selected_parcel_geometry": selected_parcel_geometry,
+                    "selected_structure_id": "foot-auto-77",
+                    "selected_structure_geometry": selected_structure_geometry,
+                    "naip_feature_source": None,
+                }
+            )
+        return context
+
+    monkeypatch.setattr(app_main.wildfire_data, "collect_context", _collect)
+    monkeypatch.setattr(app_main, "store", AssessmentStore(str(tmp_path / "homeowner_improvement_confirm.db")))
+
+    baseline = _assess("77 Geometry Confirmation Rd, Missoula, MT 59802")
+    baseline_specificity = (baseline.get("specificity_summary") or {}).get("specificity_tier")
+
+    response = client.post(
+        f"/risk/improve/{baseline['assessment_id']}",
+        json={
+            "confirm_selected_parcel": True,
+            "confirm_selected_footprint": True,
+            "property_anchor_point": {"latitude": 46.87214, "longitude": -113.99390},
+            "selected_parcel_id": "parcel-auto-77",
+            "selected_parcel_geometry": selected_parcel_geometry,
+            "selected_structure_id": "foot-auto-77",
+            "selected_structure_geometry": selected_structure_geometry,
+            "audience": "homeowner",
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+
+    assert len(call_kwargs) >= 2
+    improve_kwargs = call_kwargs[-1]
+    assert str(improve_kwargs.get("selected_parcel_id") or "") == "parcel-auto-77"
+    assert isinstance(improve_kwargs.get("selected_parcel_geometry"), dict)
+    assert str(improve_kwargs.get("selected_structure_id") or "") == "foot-auto-77"
+    assert isinstance(improve_kwargs.get("selected_structure_geometry"), dict)
+
+    assert isinstance((body.get("what_changed") or {}).get("parcel_geometry_update"), dict)
+    assert isinstance((body.get("what_changed") or {}).get("structure_geometry_update"), dict)
+
+    geometry_update_summary = body.get("geometry_update_summary") or {}
+    assert isinstance(geometry_update_summary, dict)
+    assert geometry_update_summary.get("property_confidence_after") is not None
+    assert float(geometry_update_summary.get("property_confidence_after") or 0.0) > float(
+        geometry_update_summary.get("property_confidence_before") or 0.0
+    )
+    assert str(geometry_update_summary.get("specificity_before") or "") in {
+        "property_specific",
+        "address_level",
+        "regional_estimate",
+        "insufficient_data",
+    }
+    assert str(geometry_update_summary.get("specificity_after") or "") in {
+        "property_specific",
+        "address_level",
+        "regional_estimate",
+        "insufficient_data",
+    }
+    assert isinstance(geometry_update_summary.get("key_changes"), list)
+    assert any("parcel linkage" in str(row).lower() for row in (geometry_update_summary.get("key_changes") or []))
+    assert any("structure-relative ring extraction" in str(row).lower() for row in (geometry_update_summary.get("key_changes") or []))
+
+    updated_report = client.get(f"/report/{body['updated_assessment_id']}")
+    assert updated_report.status_code == 200
+    updated = updated_report.json()
+    updated_specificity = (updated.get("specificity_summary") or {}).get("specificity_tier")
+    assert baseline_specificity in {"regional_estimate", "address_level", "insufficient_data", "property_specific"}
+    assert updated_specificity in {"property_specific", "address_level"}

@@ -1855,6 +1855,8 @@ def _normalize_property_level_context(
             "selection_mode": "polygon",
             "property_anchor_point": None,
             "user_selected_point": None,
+            "selected_parcel_id": None,
+            "selected_parcel_geometry": None,
             "selected_structure_id": None,
             "selected_structure_geometry": None,
             "final_structure_geometry_source": "auto_detected",
@@ -2048,6 +2050,14 @@ def _normalize_property_level_context(
             normalized["user_selected_point"] = None
     else:
         normalized["user_selected_point"] = None
+    selected_parcel_id = normalized.get("selected_parcel_id")
+    normalized["selected_parcel_id"] = (
+        str(selected_parcel_id).strip() if selected_parcel_id is not None and str(selected_parcel_id).strip() else None
+    )
+    selected_parcel_geometry = normalized.get("selected_parcel_geometry")
+    normalized["selected_parcel_geometry"] = (
+        selected_parcel_geometry if isinstance(selected_parcel_geometry, dict) else None
+    )
     selected_structure_id = normalized.get("selected_structure_id")
     normalized["selected_structure_id"] = (
         str(selected_structure_id).strip() if selected_structure_id is not None and str(selected_structure_id).strip() else None
@@ -2142,6 +2152,10 @@ def _normalize_property_level_context(
     normalized.setdefault("parcel_lookup_distance_m", None)
     normalized.setdefault("parcel_geometry", None)
     normalized.setdefault("parcel_address_point", None)
+    if normalized.get("selected_parcel_id") is None and normalized.get("parcel_id") is not None:
+        normalized["selected_parcel_id"] = str(normalized.get("parcel_id")).strip() or None
+    if normalized.get("selected_parcel_geometry") is None and isinstance(normalized.get("parcel_geometry"), dict):
+        normalized["selected_parcel_geometry"] = normalized.get("parcel_geometry")
     raw_parcel_resolution = normalized.get("parcel_resolution")
     if isinstance(raw_parcel_resolution, dict):
         status = str(raw_parcel_resolution.get("status") or "").strip().lower() or "not_found"
@@ -6405,6 +6419,14 @@ def _run_assessment(
         if payload.selected_structure_id is not None and str(payload.selected_structure_id).strip()
         else None
     )
+    requested_parcel_id = (
+        str(payload.selected_parcel_id).strip()
+        if payload.selected_parcel_id is not None and str(payload.selected_parcel_id).strip()
+        else None
+    )
+    requested_parcel_geometry = (
+        payload.selected_parcel_geometry if isinstance(payload.selected_parcel_geometry, dict) else None
+    )
     requested_structure_geometry = (
         payload.selected_structure_geometry if isinstance(payload.selected_structure_geometry, dict) else None
     )
@@ -6446,6 +6468,8 @@ def _run_assessment(
         "selection_mode": requested_selection_mode,
         "property_anchor_point": requested_property_anchor_point,
         "user_selected_point": requested_user_selected_point,
+        "selected_parcel_id": requested_parcel_id,
+        "selected_parcel_geometry": requested_parcel_geometry,
         "selected_structure_id": requested_structure_id,
         "selected_structure_geometry": requested_structure_geometry,
     }
@@ -8359,6 +8383,20 @@ def _payload_from_assessment(existing: AssessmentResult) -> AddressRequest:
         selection_mode=selection_mode,
         property_anchor_point=selected_point_payload,
         user_selected_point=selected_point_payload,
+        selected_parcel_id=(
+            str(property_ctx.get("selected_parcel_id") or property_ctx.get("parcel_id"))
+            if (property_ctx.get("selected_parcel_id") or property_ctx.get("parcel_id"))
+            else None
+        ),
+        selected_parcel_geometry=(
+            property_ctx.get("selected_parcel_geometry")
+            if isinstance(property_ctx.get("selected_parcel_geometry"), dict)
+            else (
+                property_ctx.get("parcel_geometry")
+                if isinstance(property_ctx.get("parcel_geometry"), dict)
+                else None
+            )
+        ),
         selected_structure_id=(
             str(property_ctx.get("selected_structure_id"))
             if property_ctx.get("selected_structure_id")
@@ -12864,21 +12902,61 @@ def rerun_assessment_with_homeowner_inputs(
 
     merged_attrs = _merge_attributes(base_req.attributes, improvement_attrs)
     normalized_changes = normalized_attribute_changes(base_req.attributes, merged_attrs)
+    effective_selected_parcel_id = (
+        str(payload.selected_parcel_id).strip()
+        if payload.selected_parcel_id is not None and str(payload.selected_parcel_id).strip()
+        else (
+            str(base_req.selected_parcel_id).strip()
+            if payload.confirm_selected_parcel and base_req.selected_parcel_id is not None and str(base_req.selected_parcel_id).strip()
+            else None
+        )
+    )
+    effective_selected_parcel_geometry = (
+        payload.selected_parcel_geometry
+        if isinstance(payload.selected_parcel_geometry, dict)
+        else (
+            base_req.selected_parcel_geometry
+            if payload.confirm_selected_parcel and isinstance(base_req.selected_parcel_geometry, dict)
+            else None
+        )
+    )
+    effective_selected_structure_id = (
+        str(payload.selected_structure_id).strip()
+        if payload.selected_structure_id is not None and str(payload.selected_structure_id).strip()
+        else (
+            str(base_req.selected_structure_id).strip()
+            if payload.confirm_selected_footprint and base_req.selected_structure_id is not None and str(base_req.selected_structure_id).strip()
+            else None
+        )
+    )
+    effective_selected_structure_geometry = (
+        payload.selected_structure_geometry
+        if isinstance(payload.selected_structure_geometry, dict)
+        else (
+            base_req.selected_structure_geometry
+            if payload.confirm_selected_footprint and isinstance(base_req.selected_structure_geometry, dict)
+            else None
+        )
+    )
     if (
         not normalized_changes
         and not payload.confirmed_fields
         and mapped_defensible_space_ft is None
+        and not payload.confirm_selected_parcel
+        and not payload.confirm_selected_footprint
         and payload.property_anchor_point is None
         and payload.user_selected_point is None
-        and payload.selected_structure_geometry is None
-        and payload.selected_structure_id is None
+        and effective_selected_parcel_geometry is None
+        and effective_selected_parcel_id is None
+        and effective_selected_structure_geometry is None
+        and effective_selected_structure_id is None
     ):
         raise HTTPException(
             status_code=400,
             detail=(
                 "No property-detail updates were provided. Submit roof_type, vent_type, "
                 "window_type, defensible_space_ft, defensible_space_condition, map-point correction, "
-                "or a selected/drawn building polygon."
+                "confirm parcel/footprint geometry, or provide a selected/drawn building polygon."
             ),
         )
 
@@ -12899,28 +12977,34 @@ def rerun_assessment_with_homeowner_inputs(
         structure_geometry_source=(
             payload.structure_geometry_source
             or (
-                "user_modified"
-                if isinstance(payload.selected_structure_geometry, dict)
-                else base_req.structure_geometry_source
+                "user_selected"
+                if payload.confirm_selected_footprint
+                else (
+                    "user_modified"
+                    if isinstance(effective_selected_structure_geometry, dict)
+                    else base_req.structure_geometry_source
+                )
             )
         ),
         selection_mode=(
             payload.selection_mode
             if payload.selection_mode in {"polygon", "point"}
             else (
-            "point"
-            if (payload.property_anchor_point is not None or payload.user_selected_point is not None)
-            else base_req.selection_mode
+                "point"
+                if (payload.property_anchor_point is not None or payload.user_selected_point is not None)
+                else (
+                    "polygon"
+                    if isinstance(effective_selected_structure_geometry, dict)
+                    else base_req.selection_mode
+                )
             )
         ),
         property_anchor_point=payload.property_anchor_point or base_req.property_anchor_point,
         user_selected_point=payload.user_selected_point or payload.property_anchor_point or base_req.user_selected_point,
-        selected_structure_id=payload.selected_structure_id or base_req.selected_structure_id,
-        selected_structure_geometry=(
-            payload.selected_structure_geometry
-            if isinstance(payload.selected_structure_geometry, dict)
-            else base_req.selected_structure_geometry
-        ),
+        selected_parcel_id=effective_selected_parcel_id,
+        selected_parcel_geometry=effective_selected_parcel_geometry,
+        selected_structure_id=effective_selected_structure_id,
+        selected_structure_geometry=effective_selected_structure_geometry,
         audience=payload.audience or base_req.audience,
         tags=base_req.tags,
         organization_id=existing.organization_id,
@@ -12995,7 +13079,41 @@ def rerun_assessment_with_homeowner_inputs(
         change_notes.append(
             "Home location pin was updated and the assessment anchor was re-run."
         )
-    if payload.selected_structure_geometry is not None or payload.selected_structure_id is not None:
+    if (
+        payload.selected_parcel_geometry is not None
+        or payload.selected_parcel_id is not None
+        or payload.confirm_selected_parcel
+    ):
+        what_changed["parcel_geometry_update"] = {
+            "before_parcel_id": (
+                base_req.selected_parcel_id
+                if base_req.selected_parcel_id
+                else (
+                    str(((existing.property_level_context or {}).get("parcel_id")))
+                    if isinstance(existing.property_level_context, dict) and (existing.property_level_context or {}).get("parcel_id")
+                    else None
+                )
+            ),
+            "after_parcel_id": (
+                effective_selected_parcel_id
+                if effective_selected_parcel_id
+                else (
+                    str(((updated.property_level_context or {}).get("parcel_id")))
+                    if isinstance(updated.property_level_context, dict) and (updated.property_level_context or {}).get("parcel_id")
+                    else None
+                )
+            ),
+            "geometry_provided": bool(isinstance(effective_selected_parcel_geometry, dict)),
+            "confirmed_existing_parcel": bool(payload.confirm_selected_parcel and payload.selected_parcel_geometry is None),
+        }
+        change_notes.append(
+            "Parcel confirmation was applied and property linkage was re-run."
+        )
+    if (
+        payload.selected_structure_geometry is not None
+        or payload.selected_structure_id is not None
+        or payload.confirm_selected_footprint
+    ):
         what_changed["structure_geometry_update"] = {
             "before_structure_id": (
                 base_req.selected_structure_id
@@ -13003,11 +13121,12 @@ def rerun_assessment_with_homeowner_inputs(
                 else None
             ),
             "after_structure_id": (
-                payload.selected_structure_id
-                if payload.selected_structure_id
+                effective_selected_structure_id
+                if effective_selected_structure_id
                 else (updated.matched_structure_id if updated.matched_structure_id else None)
             ),
-            "geometry_provided": bool(isinstance(payload.selected_structure_geometry, dict)),
+            "geometry_provided": bool(isinstance(effective_selected_structure_geometry, dict)),
+            "confirmed_existing_footprint": bool(payload.confirm_selected_footprint and payload.selected_structure_geometry is None),
         }
         change_notes.append(
             "Building geometry selection was updated and structure-relative rings were recomputed."
@@ -13017,14 +13136,20 @@ def rerun_assessment_with_homeowner_inputs(
     after_specificity = str((updated.specificity_summary or {}).specificity_tier) if hasattr(updated.specificity_summary, "specificity_tier") else str((updated.specificity_summary or {}).get("specificity_tier") if isinstance(updated.specificity_summary, dict) else "regional_estimate")
     before_conf = float(existing.confidence_score or 0.0)
     after_conf = float(updated.confidence_score or 0.0)
+    before_property_confidence = float(existing.property_data_confidence or 0.0)
+    after_property_confidence = float(updated.property_data_confidence or 0.0)
     before_risk = float(existing.wildfire_risk_score or 0.0) if existing.wildfire_risk_score is not None else None
     after_risk = float(updated.wildfire_risk_score or 0.0) if updated.wildfire_risk_score is not None else None
 
     geometry_updated = bool(
         payload.property_anchor_point is not None
         or payload.user_selected_point is not None
+        or payload.selected_parcel_geometry is not None
+        or payload.selected_parcel_id is not None
+        or payload.confirm_selected_parcel
         or payload.selected_structure_geometry is not None
         or payload.selected_structure_id is not None
+        or payload.confirm_selected_footprint
     )
     score_change = {
         "before": before_risk,
@@ -13079,6 +13204,32 @@ def rerun_assessment_with_homeowner_inputs(
         **existing_summary_confidence_change,
         **confidence_change,
     }
+    geometry_update_key_changes: list[str] = []
+    if payload.property_anchor_point is not None or payload.user_selected_point is not None:
+        geometry_update_key_changes.append("Map pin correction updated the property anchor.")
+    if (
+        payload.selected_parcel_geometry is not None
+        or payload.selected_parcel_id is not None
+        or payload.confirm_selected_parcel
+    ):
+        geometry_update_key_changes.append("Parcel linkage was rerun using homeowner-confirmed parcel context.")
+    if (
+        payload.selected_structure_geometry is not None
+        or payload.selected_structure_id is not None
+        or payload.confirm_selected_footprint
+    ):
+        geometry_update_key_changes.append("Structure-relative ring extraction was rerun using homeowner-confirmed building geometry.")
+    if after_property_confidence > before_property_confidence:
+        geometry_update_key_changes.append("Property identification confidence improved after geometry updates.")
+    if before_specificity != after_specificity:
+        geometry_update_key_changes.append(f"Specificity changed from {before_specificity} to {after_specificity}.")
+    geometry_update_summary = {
+        "property_confidence_before": round(before_property_confidence, 1),
+        "property_confidence_after": round(after_property_confidence, 1),
+        "specificity_before": before_specificity,
+        "specificity_after": after_specificity,
+        "key_changes": list(dict.fromkeys(geometry_update_key_changes))[:6],
+    }
 
     confidence_improved = float(updated.confidence_score or 0.0) > float(existing.confidence_score or 0.0)
     recommendations_adjusted = (
@@ -13097,6 +13248,10 @@ def rerun_assessment_with_homeowner_inputs(
             "ruleset_id": ruleset.ruleset_id,
             "changed_fields": sorted(list(normalized_changes.keys())),
             "defensible_space_condition": payload.defensible_space_condition,
+            "confirm_selected_parcel": bool(payload.confirm_selected_parcel),
+            "confirm_selected_footprint": bool(payload.confirm_selected_footprint),
+            "selected_parcel_id": effective_selected_parcel_id,
+            "selected_structure_id": effective_selected_structure_id,
         },
     )
     return HomeownerImprovementRunResponse(
@@ -13106,6 +13261,7 @@ def rerun_assessment_with_homeowner_inputs(
         after_summary=summarize_assessment_for_improvement(updated),
         what_changed=what_changed,
         what_changed_summary=what_changed_summary,
+        geometry_update_summary=geometry_update_summary,
         why_it_matters=why_it_matters,
         confidence_improved=confidence_improved,
         recommendations_adjusted=recommendations_adjusted,

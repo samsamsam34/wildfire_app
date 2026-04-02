@@ -22,6 +22,26 @@ _IMPROVEMENT_INPUT_SPECS: tuple[dict[str, Any], ...] = (
         "base_lift": 100,
     },
     {
+        "input_key": "confirm_selected_parcel",
+        "assessment_field": "selected_parcel_id",
+        "label": "Confirm parcel boundary",
+        "prompt": "Confirm your parcel boundary on the map so parcel-relative features stay on your property.",
+        "input_type": "map_polygon",
+        "options": [],
+        "suggestion": "Confirming your parcel boundary can improve property anchoring and specificity.",
+        "base_lift": 97,
+    },
+    {
+        "input_key": "confirm_selected_footprint",
+        "assessment_field": "selected_structure_id",
+        "label": "Confirm building footprint",
+        "prompt": "Confirm the selected building footprint to keep defensible-space rings tied to your home.",
+        "input_type": "map_polygon",
+        "options": [],
+        "suggestion": "Confirming your building footprint can improve structure-level feature precision.",
+        "base_lift": 96,
+    },
+    {
         "input_key": "select_building_polygon",
         "assessment_field": "selected_structure_geometry",
         "label": "Select your building",
@@ -440,7 +460,13 @@ def build_homeowner_improvement_options(result: AssessmentResult) -> HomeownerIm
     )
 
     candidate_rows: list[dict[str, Any]] = []
-    geometry_input_keys = {"map_point_correction", "select_building_polygon", "draw_structure_manually"}
+    geometry_input_keys = {
+        "map_point_correction",
+        "confirm_selected_parcel",
+        "confirm_selected_footprint",
+        "select_building_polygon",
+        "draw_structure_manually",
+    }
     for spec in _IMPROVEMENT_INPUT_SPECS:
         field = str(spec["assessment_field"])
         input_key = str(spec["input_key"])
@@ -464,6 +490,10 @@ def build_homeowner_improvement_options(result: AssessmentResult) -> HomeownerIm
                 score += 8.0
             if property_mismatch_flag:
                 score += 12.0
+            if input_key == "confirm_selected_parcel" and parcel_match_status not in {"matched", "multiple_candidates"}:
+                score -= 6.0
+            if input_key == "confirm_selected_footprint" and footprint_status in {"none", "provider_unavailable", "error"}:
+                score -= 6.0
             if input_key == "draw_structure_manually" and footprint_status not in {"none", "provider_unavailable", "error"}:
                 score -= 10.0
         candidate_rows.append(

@@ -1897,6 +1897,24 @@ class WildfireDataClient:
         return None
 
     @staticmethod
+    def _extract_parcel_id_from_payload(raw: dict[str, Any] | None) -> str | None:
+        if not isinstance(raw, dict):
+            return None
+        for container_key in ("properties",):
+            props = raw.get(container_key)
+            if not isinstance(props, dict):
+                continue
+            for key in ("parcel_id", "parcelid", "apn", "APN", "parcel_number", "id", "OBJECTID", "objectid"):
+                value = props.get(key)
+                if value is not None and str(value).strip():
+                    return str(value).strip()
+        for key in ("parcel_id", "parcelid", "apn", "id"):
+            value = raw.get(key)
+            if value is not None and str(value).strip():
+                return str(value).strip()
+        return None
+
+    @staticmethod
     def _normalize_source_path(path: str | None) -> str:
         if not path:
             return ""
@@ -1939,6 +1957,29 @@ class WildfireDataClient:
         if geom.geom_type not in {"Polygon", "MultiPolygon"}:
             return None, "User-selected structure must be a polygon footprint."
         return geom, None
+
+    @staticmethod
+    def _coerce_selected_parcel_geometry(
+        raw_geometry: dict[str, Any] | None,
+    ) -> tuple[Any | None, dict[str, Any], str | None]:
+        if not isinstance(raw_geometry, dict):
+            return None, {}, "User-selected parcel geometry payload is missing or invalid."
+        if not shape:
+            return None, {}, "Shapely is unavailable; cannot parse user-selected parcel geometry."
+        geometry_obj = raw_geometry.get("geometry") if raw_geometry.get("type") == "Feature" else raw_geometry
+        props = raw_geometry.get("properties") if raw_geometry.get("type") == "Feature" else None
+        props_dict = dict(props) if isinstance(props, dict) else {}
+        if not isinstance(geometry_obj, dict):
+            return None, props_dict, "User-selected parcel payload is missing a GeoJSON geometry object."
+        try:
+            geom = shape(geometry_obj)
+        except Exception as exc:
+            return None, props_dict, f"User-selected parcel geometry could not be parsed: {exc}"
+        if geom.is_empty:
+            return None, props_dict, "User-selected parcel geometry is empty."
+        if geom.geom_type not in {"Polygon", "MultiPolygon"}:
+            return None, props_dict, "User-selected parcel must be a polygon."
+        return geom, props_dict, None
 
     @staticmethod
     def _coerce_user_selected_point(
@@ -3014,6 +3055,8 @@ class WildfireDataClient:
         selection_mode: str | None = None,
         property_anchor_point: dict[str, Any] | None = None,
         user_selected_point: dict[str, Any] | None = None,
+        selected_parcel_id: str | None = None,
+        selected_parcel_geometry: dict[str, Any] | None = None,
         selected_structure_id: str | None = None,
         selected_structure_geometry: dict[str, Any] | None = None,
     ) -> WildfireContext:
@@ -3026,6 +3069,11 @@ class WildfireDataClient:
         normalized_selection_mode = str(selection_mode or "polygon").strip().lower()
         if normalized_selection_mode not in {"polygon", "point"}:
             normalized_selection_mode = "polygon"
+        normalized_selected_parcel_id = (
+            str(selected_parcel_id).strip()
+            if selected_parcel_id is not None and str(selected_parcel_id).strip()
+            else None
+        )
         user_selected_point_coords: tuple[float, float] | None = None
         if normalized_selection_mode == "point":
             point_payload = property_anchor_point if isinstance(property_anchor_point, dict) else user_selected_point
@@ -3061,6 +3109,14 @@ class WildfireDataClient:
                         "longitude": round(float(user_selected_point_coords[1]), 7),
                     }
                     if user_selected_point_coords is not None
+                    else None
+                ),
+                "selected_parcel_id": str(normalized_selected_parcel_id or ""),
+                "selected_parcel_geometry_hash": (
+                    hashlib.sha256(
+                        json.dumps(selected_parcel_geometry, sort_keys=True, default=str).encode("utf-8")
+                    ).hexdigest()
+                    if isinstance(selected_parcel_geometry, dict)
                     else None
                 ),
                 "selected_structure_id": str(selected_structure_id or ""),
@@ -3169,6 +3225,10 @@ class WildfireDataClient:
                 if user_selected_point_coords is not None
                 else None
             ),
+            "selected_parcel_id": normalized_selected_parcel_id,
+            "selected_parcel_geometry": (
+                selected_parcel_geometry if isinstance(selected_parcel_geometry, dict) else None
+            ),
             "selected_structure_id": selected_structure_id,
             "selected_structure_geometry": selected_structure_geometry if isinstance(selected_structure_geometry, dict) else None,
             "final_structure_geometry_source": "auto_detected",
@@ -3269,6 +3329,72 @@ class WildfireDataClient:
             property_anchor_override_source=explicit_anchor_source,
             property_anchor_override_precision=explicit_anchor_precision,
         )
+        selected_parcel_polygon = None
+        selected_parcel_props: dict[str, Any] = {}
+        if isinstance(selected_parcel_geometry, dict):
+            selected_parcel_polygon, selected_parcel_props, selected_parcel_error = self._coerce_selected_parcel_geometry(
+                selected_parcel_geometry
+            )
+            if selected_parcel_polygon is None and selected_parcel_error:
+                assumptions.append(selected_parcel_error)
+            elif selected_parcel_polygon is not None:
+                resolved_selected_parcel_id = (
+                    normalized_selected_parcel_id
+                    or self._extract_parcel_id_from_payload(selected_parcel_geometry)
+                )
+                anchor.parcel_polygon = selected_parcel_polygon
+                anchor.parcel_id = resolved_selected_parcel_id or anchor.parcel_id
+                anchor.parcel_lookup_method = "user_confirmed_parcel"
+                anchor.parcel_lookup_distance_m = 0.0
+                anchor.parcel_source_name = anchor.parcel_source_name or "user_selected_parcel"
+                anchor.parcel_properties = {
+                    **dict(anchor.parcel_properties or {}),
+                    **selected_parcel_props,
+                }
+                if anchor.parcel_id and "parcel_id" not in anchor.parcel_properties:
+                    anchor.parcel_properties["parcel_id"] = anchor.parcel_id
+                if mapping is not None:
+                    anchor.parcel_geometry_geojson = {
+                        "type": "Feature",
+                        "properties": {
+                            "source": "user_selected_parcel",
+                            "parcel_id": anchor.parcel_id,
+                        },
+                        "geometry": mapping(selected_parcel_polygon),
+                    }
+                anchor.parcel_resolution = {
+                    "status": "matched",
+                    "confidence": 98.0,
+                    "source": "user_selected_parcel",
+                    "geometry_used": "parcel_polygon",
+                    "overlap_score": 100.0,
+                    "candidates_considered": 1,
+                    "lookup_method": "user_confirmed_parcel",
+                    "lookup_distance_m": 0.0,
+                }
+                anchor.parcel_bounding_approximation_geojson = None
+                anchor.diagnostics.append(
+                    "Parcel geometry was confirmed by the homeowner and used for property linkage."
+                )
+                assumptions.append(
+                    "Using homeowner-confirmed parcel geometry for parcel matching and ring clipping."
+                )
+        elif normalized_selected_parcel_id:
+            if anchor.parcel_id and str(anchor.parcel_id).strip() == normalized_selected_parcel_id:
+                anchor.parcel_lookup_method = "user_confirmed_parcel_id"
+                parcel_resolution_summary = dict(anchor.parcel_resolution or {})
+                parcel_resolution_summary["lookup_method"] = "user_confirmed_parcel_id"
+                try:
+                    existing_conf = float(parcel_resolution_summary.get("confidence") or 0.0)
+                except (TypeError, ValueError):
+                    existing_conf = 0.0
+                parcel_resolution_summary["confidence"] = max(existing_conf, 94.0)
+                anchor.parcel_resolution = parcel_resolution_summary
+                anchor.diagnostics.append("Parcel ID was confirmed by the homeowner.")
+            else:
+                assumptions.append(
+                    "Provided parcel confirmation did not match the resolved parcel candidate; retaining automatic parcel linkage."
+                )
         property_level_context.update(anchor.to_context())
         assumptions.extend(anchor.diagnostics[:2])
         assumptions.extend(anchor.alignment_notes[:2])
@@ -3446,6 +3572,19 @@ class WildfireDataClient:
                     else (
                         {"latitude": user_selected_point_coords[0], "longitude": user_selected_point_coords[1]}
                         if user_selected_point_coords is not None
+                        else None
+                    )
+                ),
+                "selected_parcel_id": (
+                    normalized_selected_parcel_id
+                    or anchor.parcel_id
+                ),
+                "selected_parcel_geometry": (
+                    selected_parcel_geometry
+                    if isinstance(selected_parcel_geometry, dict)
+                    else (
+                        anchor.parcel_geometry_geojson
+                        if isinstance(anchor.parcel_geometry_geojson, dict)
                         else None
                     )
                 ),
