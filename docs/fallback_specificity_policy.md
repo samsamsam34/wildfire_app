@@ -59,3 +59,11 @@ Prepared-region readiness tiers:
 - `property_specific_ready`: enough prepared evidence for property-level behavior (still subject to per-property coverage checks).
 - `address_level_only`: prepared data supports address-level estimates but not full property-specific confidence.
 - `limited_regional_ready`: prepared data should be treated as regional context only; stricter confidence caps apply.
+
+Prepared-region onboarding readiness artifact (`manifest.catalog.property_specific_readiness`) also includes:
+- `parcel_ready`
+- `footprint_ready`
+- `parcel_footprint_linkage_quality`
+- `naip_ready`
+- `structure_enrichment_ready`
+- `overall_readiness` (`property_specific` | `address_level` | `limited_regional`)

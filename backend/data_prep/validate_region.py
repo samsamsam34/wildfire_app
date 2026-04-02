@@ -52,6 +52,7 @@ VECTOR_KEYS = {
     "parcel_polygons_override",
     "parcel_address_points",
 }
+ARTIFACT_JSON_KEYS = {"naip_structure_features"}
 OPTIONAL_REGION_LAYER_KEYS = {
     "whp",
     "mtbs_severity",
@@ -64,6 +65,7 @@ OPTIONAL_REGION_LAYER_KEYS = {
     "parcel_polygons_override",
     "parcel_address_points",
     "naip_imagery",
+    "naip_structure_features",
 }
 DEFAULT_OPTIONAL_LAYER_KEYS = (
     "whp",
@@ -79,6 +81,7 @@ ENRICHMENT_LAYER_KEYS = (
     "parcel_polygons_override",
     "parcel_address_points",
     "naip_imagery",
+    "naip_structure_features",
 )
 REQUIRED_CORE_LAYER_KEYS = tuple(REQUIRED_CORE_RASTER_LAYERS) + tuple(REQUIRED_CORE_VECTOR_LAYERS)
 
@@ -177,6 +180,15 @@ def _validate_layer_openable_and_intersects(
     layer_path: Path,
     bounds: tuple[float, float, float, float],
 ) -> tuple[list[str], list[str]]:
+    if layer_key in ARTIFACT_JSON_KEYS:
+        try:
+            with open(layer_path, "r", encoding="utf-8") as f:
+                payload = json.load(f)
+            if not isinstance(payload, dict):
+                return [f"Artifact layer payload is not a JSON object: {layer_path}"], []
+            return [], []
+        except Exception as exc:
+            return [f"Artifact layer could not be read: {layer_path} ({exc})"], []
     if layer_key in VECTOR_KEYS:
         return _validate_vector_layer(layer_path, bounds)
     return _validate_raster_layer(layer_path, bounds)
@@ -221,7 +233,15 @@ def _run_sample_smoke_test(
         if not path.exists():
             errors.append(f"Sample smoke test missing file for layer '{layer_key}': {path}")
             continue
-        if layer_key in VECTOR_KEYS:
+        if layer_key in ARTIFACT_JSON_KEYS:
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    payload = json.load(f)
+                if not isinstance(payload, dict):
+                    errors.append(f"Sample smoke test artifact layer is not a JSON object: {layer_key}")
+            except Exception as exc:
+                errors.append(f"Sample smoke test could not read artifact layer '{layer_key}': {exc}")
+        elif layer_key in VECTOR_KEYS:
             try:
                 with open(path, "r", encoding="utf-8") as f:
                     payload = json.load(f)
@@ -296,12 +316,19 @@ def summarize_property_specific_readiness(
     optional_layers_present: list[str],
     enrichment_layers_present: list[str],
     missing_reason_by_layer: dict[str, str] | None = None,
+    configured_anchor_layers: list[str] | None = None,
+    configured_anchor_available: bool | None = None,
+    source_used_by_layer: dict[str, Any] | None = None,
+    catalog_public_record_fields: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     missing_reason_by_layer = missing_reason_by_layer or {}
+    source_used_by_layer = source_used_by_layer or {}
+    catalog_public_record_fields = catalog_public_record_fields or {}
     required_set = set(required_layers_present)
     optional_set = set(optional_layers_present)
     enrichment_set = set(enrichment_layers_present)
 
+    configured_anchor_layers = [str(v) for v in (configured_anchor_layers or []) if str(v).strip()]
     building_signal = "building_footprints" in required_set
     roads_signal = "roads" in optional_set
     hazard_signal = bool({"whp", "gridmet_dryness", "mtbs_severity"}.intersection(optional_set))
@@ -310,11 +337,42 @@ def summarize_property_specific_readiness(
         or ("naip_structure_features" in enrichment_set)
         or ("canopy" in required_set)
     )
-    anchor_signal = bool(
-        {"parcel_polygons", "parcel_address_points", "building_footprints_overture"}.intersection(
-            enrichment_set
+    if configured_anchor_layers:
+        anchor_signal = bool(configured_anchor_available)
+    else:
+        anchor_signal = bool(
+            {"parcel_polygons", "parcel_address_points", "building_footprints_overture"}.intersection(
+                enrichment_set
+            )
         )
+
+    parcel_ready = "parcel_polygons" in enrichment_set
+    footprint_ready = building_signal
+    naip_ready = "naip_structure_features" in enrichment_set
+    structure_enrichment_ready = bool(catalog_public_record_fields) or (
+        "parcel_address_points" in enrichment_set
     )
+
+    if parcel_ready and footprint_ready:
+        parcel_footprint_linkage_quality = "high"
+    elif footprint_ready and anchor_signal:
+        parcel_footprint_linkage_quality = "moderate"
+    elif footprint_ready or parcel_ready:
+        parcel_footprint_linkage_quality = "low"
+    else:
+        parcel_footprint_linkage_quality = "unavailable"
+
+    if (
+        parcel_ready
+        and footprint_ready
+        and naip_ready
+        and parcel_footprint_linkage_quality in {"high", "moderate"}
+    ):
+        overall_readiness = "property_specific"
+    elif footprint_ready and (parcel_ready or anchor_signal):
+        overall_readiness = "address_level"
+    else:
+        overall_readiness = "limited_regional"
 
     if building_signal and roads_signal and hazard_signal and vegetation_signal and anchor_signal:
         readiness = "property_specific_ready"
@@ -332,9 +390,25 @@ def summarize_property_specific_readiness(
         missing_supporting_layers.append("parcel_polygons|parcel_address_points|building_footprints_overture")
     if not vegetation_signal:
         missing_supporting_layers.append("naip_imagery|naip_structure_features|canopy")
+    if not parcel_ready:
+        missing_supporting_layers.append("parcel_polygons")
+    if not naip_ready:
+        missing_supporting_layers.append("naip_structure_features")
+    if not structure_enrichment_ready:
+        missing_supporting_layers.append("public_record_structure_enrichment")
+    if parcel_footprint_linkage_quality in {"low", "unavailable"}:
+        missing_supporting_layers.append("parcel_footprint_linkage_quality")
+    if configured_anchor_layers and not anchor_signal:
+        missing_supporting_layers.extend(configured_anchor_layers)
 
     return {
         "readiness": readiness,
+        "parcel_ready": parcel_ready,
+        "footprint_ready": footprint_ready,
+        "naip_ready": naip_ready,
+        "structure_enrichment_ready": structure_enrichment_ready,
+        "parcel_footprint_linkage_quality": parcel_footprint_linkage_quality,
+        "overall_readiness": overall_readiness,
         "signals": {
             "building_footprints": building_signal,
             "roads": roads_signal,
@@ -342,8 +416,10 @@ def summarize_property_specific_readiness(
             "near_structure_vegetation": vegetation_signal,
             "property_anchor_context": anchor_signal,
         },
+        "configured_anchor_layers": configured_anchor_layers,
         "missing_supporting_layers": sorted(set(missing_supporting_layers)),
         "missing_reason_by_layer": dict(missing_reason_by_layer),
+        "source_used_by_layer": dict(source_used_by_layer),
     }
 
 
@@ -387,6 +463,12 @@ def _validation_manifest_summary(
         optional_layers_present=optional_present,
         enrichment_layers_present=enrichment_present,
         missing_reason_by_layer=missing_reason_by_layer,
+        source_used_by_layer=source_used_by_layer,
+        catalog_public_record_fields=(
+            dict(catalog.get("public_record_fields"))
+            if isinstance(catalog.get("public_record_fields"), dict)
+            else {}
+        ),
     )
     return {
         "required_layers_present": required_present,
@@ -451,9 +533,17 @@ def validate_prepared_region(
     if not manifest:
         property_specific_readiness = {
             "readiness": "limited_regional_ready",
+            "parcel_ready": False,
+            "footprint_ready": False,
+            "naip_ready": False,
+            "structure_enrichment_ready": False,
+            "parcel_footprint_linkage_quality": "unavailable",
+            "overall_readiness": "limited_regional",
             "signals": {},
+            "configured_anchor_layers": [],
             "missing_supporting_layers": [],
             "missing_reason_by_layer": {},
+            "source_used_by_layer": {},
         }
         return {
             "region_id": region_id,

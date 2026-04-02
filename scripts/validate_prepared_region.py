@@ -47,6 +47,7 @@ def main() -> None:
                     "insufficient_data_behavior_only": result.get("scoring_readiness")
                     == "insufficient_data_behavior_only",
                 },
+                "property_specific_readiness": result.get("property_specific_readiness", {}),
                 "footprint_ring_support": result.get("footprint_ring_support"),
                 "blockers": result.get("blockers", []),
                 "warnings": result.get("warnings", []),

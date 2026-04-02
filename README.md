@@ -652,7 +652,15 @@ Developer checklist:
 2. Verify required-layer blockers and source registry values.
 3. Execute with `--validate`.
 4. Inspect `data/regions/<region_id>/manifest.json` (`catalog`, acquisition method, omissions, `property_specific_readiness`, validation summary).
+   - Region onboarding readiness is explicitly reported under `catalog.property_specific_readiness`:
+     - `parcel_ready`
+     - `footprint_ready`
+     - `parcel_footprint_linkage_quality`
+     - `naip_ready` (NAIP structure-feature artifact prepared)
+     - `structure_enrichment_ready` (public-record structure enrichment availability)
+     - `overall_readiness` (`property_specific` | `address_level` | `limited_regional`)
 5. If runtime still reports `region_not_ready`, run `POST /regions/coverage-check` for point-level coverage diagnostics.
+6. See `docs/region_onboarding_readiness.md` for readiness interpretation and operator runbook.
 
 Example source overrides (commonly needed before rerun):
 

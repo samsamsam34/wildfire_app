@@ -23,7 +23,7 @@ from backend.data_prep.catalog import (
     ingest_catalog_vector,
 )
 from backend.data_prep.prepare_region import parse_bbox
-from backend.data_prep.validate_region import validate_prepared_region
+from backend.data_prep.validate_region import summarize_property_specific_readiness, validate_prepared_region
 from backend.region_registry import load_region_manifest
 from scripts.catalog_coverage import (
     build_catalog_coverage_plan,
@@ -150,6 +150,7 @@ ENRICHMENT_LAYER_KEYS: tuple[str, ...] = (
     "parcel_polygons_override",
     "parcel_address_points",
     "naip_imagery",
+    "naip_structure_features",
 )
 ENV_REF_PATTERN = re.compile(r"^\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}$")
 
@@ -856,6 +857,9 @@ def _build_compact_summary(
         "validation_status": (validation_result or {}).get("validation_status"),
         "ready_for_runtime": (validation_result or {}).get("ready_for_runtime"),
         "property_specific_readiness": (validation_result or {}).get("property_specific_readiness", {}).get("readiness"),
+        "property_specific_overall_readiness": (
+            (validation_result or {}).get("property_specific_readiness", {}).get("overall_readiness")
+        ),
     }
 
 
@@ -1128,55 +1132,25 @@ def _property_specific_readiness(
     enrichment_layers_present: Sequence[str],
     layer_diagnostics: dict[str, dict[str, Any]],
 ) -> dict[str, Any]:
-    required_set = set(required_layers_present)
-    optional_set = set(optional_layers_present)
-    enrichment_set = set(enrichment_layers_present)
-
     configured_anchor_layers = [
         layer
         for layer in ("parcel_polygons", "parcel_address_points", "building_footprints_overture")
         if bool((layer_diagnostics.get(layer) or {}).get("config_valid"))
     ]
-    configured_anchor_available = bool(set(configured_anchor_layers).intersection(enrichment_set))
-    anchor_signal = configured_anchor_available or not configured_anchor_layers
-    hazard_signal = bool({"whp", "gridmet_dryness", "mtbs_severity"}.intersection(optional_set))
-    roads_signal = "roads" in optional_set
-    building_signal = "building_footprints" in required_set
-    vegetation_signal = (
-        ("naip_imagery" in enrichment_set)
-        or ("naip_structure_features" in enrichment_set)
-        or ("canopy" in required_set)
-    )
-
-    if building_signal and roads_signal and hazard_signal and vegetation_signal and anchor_signal:
-        readiness = "property_specific_ready"
-    elif building_signal and (roads_signal or anchor_signal):
-        readiness = "address_level_only"
-    else:
-        readiness = "limited_regional_ready"
-
-    missing_supporting_layers: list[str] = []
-    if not roads_signal:
-        missing_supporting_layers.append("roads")
-    if not hazard_signal:
-        missing_supporting_layers.append("whp|gridmet_dryness|mtbs_severity")
-    if not vegetation_signal:
-        missing_supporting_layers.append("naip_imagery|naip_structure_features|canopy")
-    if configured_anchor_layers and not configured_anchor_available:
-        missing_supporting_layers.extend(configured_anchor_layers)
-
-    return {
-        "readiness": readiness,
-        "signals": {
-            "building_footprints": building_signal,
-            "roads": roads_signal,
-            "hazard_context": hazard_signal,
-            "near_structure_vegetation": vegetation_signal,
-            "configured_anchor_context": anchor_signal,
-        },
-        "configured_anchor_layers": configured_anchor_layers,
-        "missing_supporting_layers": sorted(set(missing_supporting_layers)),
+    configured_anchor_available = bool(set(configured_anchor_layers).intersection(set(enrichment_layers_present)))
+    missing_reason_by_layer = {
+        str(layer): str((diag or {}).get("status_classification") or "missing")
+        for layer, diag in (layer_diagnostics or {}).items()
+        if str((diag or {}).get("status_classification") or "") not in {"", "present_after_acquisition", "present_from_existing_catalog"}
     }
+    return summarize_property_specific_readiness(
+        required_layers_present=[str(v) for v in required_layers_present],
+        optional_layers_present=[str(v) for v in optional_layers_present],
+        enrichment_layers_present=[str(v) for v in enrichment_layers_present],
+        missing_reason_by_layer=missing_reason_by_layer,
+        configured_anchor_layers=configured_anchor_layers,
+        configured_anchor_available=configured_anchor_available,
+    )
 
 
 def _source_used_by_layer(

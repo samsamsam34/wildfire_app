@@ -1168,6 +1168,15 @@ def test_successful_ingest_sets_non_none_coverage_status(monkeypatch, tmp_path):
     }
     assert "dem" in catalog_manifest["source_used_by_layer"]
     assert "property_specific_readiness" in catalog_manifest
+    readiness = catalog_manifest["property_specific_readiness"]
+    assert set(readiness.keys()) >= {
+        "parcel_ready",
+        "footprint_ready",
+        "naip_ready",
+        "structure_enrichment_ready",
+        "parcel_footprint_linkage_quality",
+        "overall_readiness",
+    }
 
 
 def test_cli_error_payload_includes_layer_execution_diagnostics():

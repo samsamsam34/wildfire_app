@@ -68,6 +68,15 @@ def test_validate_prepared_region_success(monkeypatch, tmp_path):
         "limited_regional_ready",
         "property_specific_ready",
     }
+    readiness = result["property_specific_readiness"]
+    assert set(readiness.keys()) >= {
+        "parcel_ready",
+        "footprint_ready",
+        "naip_ready",
+        "structure_enrichment_ready",
+        "parcel_footprint_linkage_quality",
+        "overall_readiness",
+    }
     assert "required_layers_present" in result
     assert "optional_layers_missing" in result
 
@@ -90,6 +99,10 @@ def test_validate_prepared_region_manifest_not_found(tmp_path):
     assert result["ready_for_runtime"] is False
     assert result["validation_status"] == "failed"
     assert any("Manifest not found" in blocker for blocker in result["blockers"])
+    readiness = result.get("property_specific_readiness") or {}
+    assert readiness.get("overall_readiness") == "limited_regional"
+    assert readiness.get("parcel_ready") is False
+    assert readiness.get("footprint_ready") is False
 
 
 def test_validate_prepared_region_sample_point_outside_fails(monkeypatch, tmp_path):
@@ -195,7 +208,74 @@ def test_validate_prepared_region_property_specific_readiness_improves_with_enri
         "address_level_only",
         "property_specific_ready",
     }
+    assert result["property_specific_readiness"]["parcel_ready"] is True
+    assert result["property_specific_readiness"]["footprint_ready"] is True
+    assert result["property_specific_readiness"]["overall_readiness"] in {
+        "address_level",
+        "property_specific",
+    }
     assert "roads" in result["optional_layers_present"]
+
+
+def test_validate_prepared_region_property_specific_readiness_reports_property_specific_components(
+    monkeypatch, tmp_path
+):
+    region_dir, manifest_path = _write_region_fixture(tmp_path)
+    for layer, filename in {
+        "roads": "roads.geojson",
+        "whp": "whp.tif",
+        "parcel_polygons": "parcel_polygons.geojson",
+        "parcel_address_points": "parcel_address_points.geojson",
+        "naip_structure_features": "naip_structure_features.json",
+    }.items():
+        path = region_dir / filename
+        if filename.endswith(".tif"):
+            path.write_bytes(b"fake-raster")
+        else:
+            path.write_text(
+                json.dumps(
+                    {
+                        "type": "FeatureCollection",
+                        "features": [
+                            {
+                                "type": "Feature",
+                                "properties": {"id": 1},
+                                "geometry": {
+                                    "type": "Polygon",
+                                    "coordinates": [[[-0.1, 0.1], [0.9, 0.1], [0.9, 0.9], [-0.1, 0.9], [-0.1, 0.1]]],
+                                },
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest.setdefault("files", {}).update(
+        {
+            "roads": "roads.geojson",
+            "whp": "whp.tif",
+            "parcel_polygons": "parcel_polygons.geojson",
+            "parcel_address_points": "parcel_address_points.geojson",
+            "naip_structure_features": "naip_structure_features.json",
+        }
+    )
+    manifest.setdefault("catalog", {})["public_record_fields"] = {"year_built": "construction_year"}
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    monkeypatch.setattr(
+        region_validator,
+        "_validate_layer_openable_and_intersects",
+        lambda layer_key, layer_path, bounds: ([], []),
+    )
+    result = validate_prepared_region(region_id="test_region", base_dir=str(tmp_path))
+    readiness = result["property_specific_readiness"]
+    assert readiness["parcel_ready"] is True
+    assert readiness["footprint_ready"] is True
+    assert readiness["naip_ready"] is True
+    assert readiness["structure_enrichment_ready"] is True
+    assert readiness["parcel_footprint_linkage_quality"] in {"high", "moderate"}
+    assert readiness["overall_readiness"] == "property_specific"
 
 
 def test_validate_prepared_region_includes_configured_optional_layers(monkeypatch, tmp_path):
