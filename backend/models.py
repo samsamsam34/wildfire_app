@@ -986,6 +986,7 @@ class AssessmentResult(BaseModel):
     defensible_space_limitations_summary: List[str] = Field(default_factory=list)
     near_structure_features: Dict[str, Any] = Field(default_factory=dict)
     directional_risk: Dict[str, Any] = Field(default_factory=dict)
+    structure_relative_slope: Dict[str, Any] = Field(default_factory=dict)
     top_risk_drivers: List[str]
     top_risk_drivers_detailed: List[HomeownerRiskDriver] = Field(default_factory=list)
     prioritized_mitigation_actions: List[HomeownerPrioritizedAction] = Field(default_factory=list)

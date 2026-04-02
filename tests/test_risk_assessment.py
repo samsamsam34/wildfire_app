@@ -189,6 +189,7 @@ def _assert_core_contract(body: dict) -> None:
         "top_near_structure_risk_drivers",
         "prioritized_vegetation_actions",
         "defensible_space_limitations_summary",
+        "structure_relative_slope",
         "top_risk_drivers",
         "top_risk_drivers_detailed",
         "prioritized_mitigation_actions",
@@ -347,8 +348,11 @@ def _assert_core_contract(body: dict) -> None:
     assert isinstance(body["assumptions_and_unknowns"], list)
     assert isinstance(body.get("near_structure_features"), dict)
     assert isinstance(body.get("directional_risk"), dict)
+    assert isinstance(body.get("structure_relative_slope"), dict)
     for key in ("veg_density_0_5", "veg_density_5_30", "canopy_overlap", "hardscape_ratio"):
         assert key in body["near_structure_features"]
+    for key in ("local_slope", "uphill_exposure", "downhill_buffer"):
+        assert key in body["structure_relative_slope"]
     assert body["use_restriction"] in {
         "shareable",
         "homeowner_review_recommended",

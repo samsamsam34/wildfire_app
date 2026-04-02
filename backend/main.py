@@ -1848,6 +1848,17 @@ def _normalize_property_level_context(raw_context: object) -> dict[str, Any]:
             "ring_metrics": None,
             "near_structure_features": {},
             "directional_risk": {},
+            "structure_relative_slope": {
+                "local_slope": None,
+                "slope_within_30_ft": None,
+                "uphill_gradient_deg": None,
+                "downhill_gradient_deg": None,
+                "uphill_exposure": None,
+                "downhill_buffer": None,
+                "precision_flag": "fallback_point_proxy",
+                "confidence_flag": "low",
+                "source": "unavailable",
+            },
         }
 
     normalized = dict(raw_context)
@@ -2142,6 +2153,23 @@ def _normalize_property_level_context(raw_context: object) -> dict[str, Any]:
         normalized["directional_risk"] = dict(directional_risk)
     else:
         normalized["directional_risk"] = {}
+    structure_relative_slope = normalized.get("structure_relative_slope")
+    default_precision_flag = "footprint_relative" if bool(normalized.get("footprint_used")) else "fallback_point_proxy"
+    default_confidence_flag = "high" if default_precision_flag == "footprint_relative" else "low"
+    if isinstance(structure_relative_slope, dict):
+        normalized_slope = dict(structure_relative_slope)
+    else:
+        normalized_slope = {}
+    normalized_slope.setdefault("local_slope", None)
+    normalized_slope.setdefault("slope_within_30_ft", None)
+    normalized_slope.setdefault("uphill_gradient_deg", None)
+    normalized_slope.setdefault("downhill_gradient_deg", None)
+    normalized_slope.setdefault("uphill_exposure", None)
+    normalized_slope.setdefault("downhill_buffer", None)
+    normalized_slope.setdefault("precision_flag", default_precision_flag)
+    normalized_slope.setdefault("confidence_flag", default_confidence_flag)
+    normalized_slope.setdefault("source", "unavailable")
+    normalized["structure_relative_slope"] = normalized_slope
     return normalized
 
 
@@ -6474,6 +6502,7 @@ def _run_assessment(
         defensible_space_limitations_summary=defensible_space_limitations_summary,
         near_structure_features=dict(property_level_context.get("near_structure_features") or {}),
         directional_risk=dict(property_level_context.get("directional_risk") or {}),
+        structure_relative_slope=dict(property_level_context.get("structure_relative_slope") or {}),
         top_risk_drivers=top_risk_drivers,
         top_risk_drivers_detailed=ranked_driver_details[:3],
         prioritized_mitigation_actions=prioritized_mitigation_actions,

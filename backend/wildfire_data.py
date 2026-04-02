@@ -1216,6 +1216,78 @@ class WildfireDataClient:
             "notes": notes,
         }
 
+    def _compute_structure_relative_slope(
+        self,
+        *,
+        slope_path: str,
+        origin_lat: float,
+        origin_lon: float,
+        vegetation_directional_sectors: dict[str, Any] | None,
+        geometry_precision_flag: str,
+    ) -> dict[str, Any]:
+        local_slope = self._sample_raster_point(slope_path, origin_lat, origin_lon) if slope_path else None
+        local_slope = round(float(local_slope), 2) if local_slope is not None else None
+
+        sector_slopes: list[float] = []
+        sectors = vegetation_directional_sectors if isinstance(vegetation_directional_sectors, dict) else {}
+        for payload in sectors.values():
+            if not isinstance(payload, dict):
+                continue
+            slope_deg = self._coerce_float(payload.get("slope_deg"))
+            if slope_deg is not None:
+                sector_slopes.append(float(slope_deg))
+
+        slope_samples_30 = (
+            self._sample_circle(
+                slope_path,
+                origin_lat,
+                origin_lon,
+                radius_m=30.0 * 0.3048,
+                step_m=10.0,
+            )
+            if slope_path
+            else []
+        )
+        if slope_samples_30:
+            slope_within_30_ft = round(sum(slope_samples_30) / len(slope_samples_30), 2)
+        elif sector_slopes:
+            slope_within_30_ft = round(sum(sector_slopes) / len(sector_slopes), 2)
+        else:
+            slope_within_30_ft = local_slope
+
+        slope_reference = local_slope if local_slope is not None else slope_within_30_ft
+        uphill_gradient_deg = None
+        downhill_gradient_deg = None
+        if slope_reference is not None and sector_slopes:
+            uphill_gradient_deg = round(max(0.0, max(sector_slopes) - float(slope_reference)), 2)
+            downhill_gradient_deg = round(max(0.0, float(slope_reference) - min(sector_slopes)), 2)
+
+        uphill_exposure = (
+            round(max(0.0, min(100.0, (float(uphill_gradient_deg) / 25.0) * 100.0)), 1)
+            if uphill_gradient_deg is not None
+            else None
+        )
+        downhill_buffer = (
+            round(max(0.0, min(100.0, (float(downhill_gradient_deg) / 25.0) * 100.0)), 1)
+            if downhill_gradient_deg is not None
+            else None
+        )
+        confidence_flag = "high" if geometry_precision_flag == "footprint_relative" else "moderate"
+        if slope_reference is None:
+            confidence_flag = "low"
+
+        return {
+            "local_slope": local_slope,
+            "slope_within_30_ft": slope_within_30_ft,
+            "uphill_gradient_deg": uphill_gradient_deg,
+            "downhill_gradient_deg": downhill_gradient_deg,
+            "uphill_exposure": uphill_exposure,
+            "downhill_buffer": downhill_buffer,
+            "precision_flag": geometry_precision_flag,
+            "confidence_flag": confidence_flag,
+            "source": "slope_raster" if slope_path else "unavailable",
+        }
+
     def _sample_annulus(
         self,
         path: str,
@@ -1704,6 +1776,7 @@ class WildfireDataClient:
                     "vegetation_directional_precision_score": 0.2,
                     "vegetation_directional_basis": "point_proxy_relative",
                     "directional_risk": {},
+                    "structure_relative_slope": {},
                     "neighboring_structure_metrics": None,
                 }, assumptions, sources
 
@@ -1829,6 +1902,13 @@ class WildfireDataClient:
                 slope_path=slope_path,
                 footprint=None,
             )
+            structure_relative_slope = self._compute_structure_relative_slope(
+                slope_path=slope_path,
+                origin_lat=fallback_query_lat,
+                origin_lon=fallback_query_lon,
+                vegetation_directional_sectors=structure_veg_features.get("vegetation_directional_sectors"),
+                geometry_precision_flag="fallback_point_proxy",
+            )
             neighbor_metrics = footprint_client.get_neighbor_structure_metrics(
                 lat=fallback_query_lat,
                 lon=fallback_query_lon,
@@ -1929,6 +2009,7 @@ class WildfireDataClient:
                 ),
                 "vegetation_directional_basis": structure_veg_features.get("vegetation_directional_basis"),
                 "directional_risk": structure_veg_features.get("directional_risk") or {},
+                "structure_relative_slope": structure_relative_slope,
                 "neighboring_structure_metrics": neighbor_metrics,
                 "building_age_proxy_year": proxy_year,
                 "building_age_material_proxy_risk": proxy_risk,
@@ -2015,6 +2096,15 @@ class WildfireDataClient:
             fuel_path=fuel_path,
             slope_path=slope_path,
             footprint=result.footprint,
+        )
+        slope_origin_lat = float(result.centroid[0]) if result.centroid else float(query_lat)
+        slope_origin_lon = float(result.centroid[1]) if result.centroid else float(query_lon)
+        structure_relative_slope = self._compute_structure_relative_slope(
+            slope_path=slope_path,
+            origin_lat=slope_origin_lat,
+            origin_lon=slope_origin_lon,
+            vegetation_directional_sectors=structure_veg_features.get("vegetation_directional_sectors"),
+            geometry_precision_flag="footprint_relative",
         )
 
         neighbor_metrics = footprint_client.get_neighbor_structure_metrics(
@@ -2185,6 +2275,7 @@ class WildfireDataClient:
             ),
             "vegetation_directional_basis": structure_veg_features.get("vegetation_directional_basis"),
             "directional_risk": structure_veg_features.get("directional_risk") or {},
+            "structure_relative_slope": structure_relative_slope,
             "neighboring_structure_metrics": neighbor_metrics,
             "building_age_proxy_year": proxy_year,
             "building_age_material_proxy_risk": proxy_risk,
@@ -2557,6 +2648,7 @@ class WildfireDataClient:
             "vegetation_directional_precision_score": 0.0,
             "vegetation_directional_basis": "point_proxy_relative",
             "directional_risk": {},
+            "structure_relative_slope": {},
             "hazard_context": {},
             "moisture_context": {},
             "historical_fire_context": {},

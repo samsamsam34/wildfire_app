@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+from backend.building_footprints import BuildingFootprintResult
 from backend.wildfire_data import WildfireDataClient
 
 
@@ -174,3 +175,89 @@ def test_naip_near_structure_features_differ_for_nearby_homes_with_different_pat
     assert dense_features["hardscape_ratio"] < clear_features["hardscape_ratio"]
     assert dense_features["confidence_flag"] in {"high", "moderate"}
     assert clear_features["confidence_flag"] in {"high", "moderate"}
+
+
+def test_structure_relative_slope_differs_for_nearby_homes_with_micro_topography(monkeypatch):
+    client = WildfireDataClient()
+
+    class StubFootprints:
+        def get_building_footprint(self, _lat, _lon, **_kwargs):
+            return BuildingFootprintResult(
+                found=False,
+                source="stub",
+                confidence=0.0,
+                assumptions=["no footprint match in fixture"],
+            )
+
+        def get_neighbor_structure_metrics(self, **_kwargs):
+            return None
+
+    client.footprints = StubFootprints()
+
+    def _point_proxy_ring_metrics(**_kwargs):
+        return {
+            "ring_0_5_ft": {"vegetation_density": 42.0},
+            "ring_5_30_ft": {"vegetation_density": 48.0},
+            "ring_30_100_ft": {"vegetation_density": 52.0},
+            "ring_100_300_ft": {"vegetation_density": 36.0},
+            "geometry_type": "point",
+            "precision_flag": "fallback_point_proxy",
+        }
+
+    def _structure_features(*, origin_lat: float, **_kwargs):
+        if origin_lat < 46.872315:
+            sector_slopes = {"north": 12.0, "east": 19.0, "south": 10.0, "west": 14.0}
+        else:
+            sector_slopes = {"north": 29.0, "east": 36.0, "south": 24.0, "west": 31.0}
+        return {
+            "near_structure_vegetation_0_5_pct": 44.0,
+            "near_structure_vegetation_5_30_pct": 47.0,
+            "vegetation_edge_directional_concentration_pct": 18.0,
+            "canopy_dense_fuel_asymmetry_pct": 10.0,
+            "nearest_continuous_vegetation_distance_ft": 22.0,
+            "vegetation_directional_sectors": {
+                direction: {"slope_deg": value}
+                for direction, value in sector_slopes.items()
+            },
+            "vegetation_directional_precision": "point_proxy",
+            "vegetation_directional_precision_score": 0.35,
+            "vegetation_directional_basis": "point_proxy_relative",
+            "directional_risk": {},
+        }
+
+    def _sample_raster_point(_path: str, lat: float, _lon: float):
+        return 11.0 if lat < 46.872315 else 27.0
+
+    def _sample_circle(_path: str, lat: float, _lon: float, **_kwargs):
+        base = 12.0 if lat < 46.872315 else 26.0
+        return [base, base + 2.0, base + 4.0]
+
+    monkeypatch.setattr(client, "_build_point_proxy_ring_metrics", _point_proxy_ring_metrics)
+    monkeypatch.setattr(client, "_compute_structure_aware_vegetation_features", _structure_features)
+    monkeypatch.setattr(client, "_sample_raster_point", _sample_raster_point)
+    monkeypatch.setattr(client, "_sample_circle", _sample_circle)
+
+    lower_home, _assumptions_a, _sources_a = client._compute_structure_ring_metrics(
+        46.872300,
+        -113.994100,
+        canopy_path="canopy.tif",
+        fuel_path="fuel.tif",
+        slope_path="slope.tif",
+    )
+    steeper_home, _assumptions_b, _sources_b = client._compute_structure_ring_metrics(
+        46.872330,
+        -113.994100,
+        canopy_path="canopy.tif",
+        fuel_path="fuel.tif",
+        slope_path="slope.tif",
+    )
+
+    slope_a = lower_home.get("structure_relative_slope") or {}
+    slope_b = steeper_home.get("structure_relative_slope") or {}
+
+    assert slope_a.get("precision_flag") == "fallback_point_proxy"
+    assert slope_b.get("precision_flag") == "fallback_point_proxy"
+    assert slope_a.get("local_slope") != slope_b.get("local_slope")
+    assert slope_a.get("slope_within_30_ft") != slope_b.get("slope_within_30_ft")
+    assert slope_a.get("uphill_exposure") != slope_b.get("uphill_exposure")
+    assert slope_a.get("downhill_buffer") != slope_b.get("downhill_buffer")
