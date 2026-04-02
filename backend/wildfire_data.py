@@ -1381,6 +1381,127 @@ class WildfireDataClient:
         return round(max(0.0, sqft), 1)
 
     @staticmethod
+    def _geometry_perimeter_ft(geom: Any | None) -> float | None:
+        if geom is None or getattr(geom, "is_empty", True):
+            return None
+        if not (Transformer and shapely_transform):
+            return None
+        try:
+            to_3857 = Transformer.from_crs("EPSG:4326", "EPSG:3857", always_xy=True).transform
+            geom_m = shapely_transform(to_3857, geom)
+            perimeter_m = float(max(0.0, geom_m.length))
+        except Exception:
+            return None
+        return round(max(0.0, perimeter_m / 0.3048), 1)
+
+    @staticmethod
+    def _shape_complexity_proxy(
+        *,
+        area_sqft: float | None,
+        perimeter_ft: float | None,
+    ) -> float | None:
+        if area_sqft is None or perimeter_ft is None:
+            return None
+        area_m2 = float(area_sqft) / 10.7639
+        perimeter_m = float(perimeter_ft) * 0.3048
+        if area_m2 <= 0.0 or perimeter_m <= 0.0:
+            return None
+        # Compactness ratio: 1.0 is circle-like, higher means more irregular/complex.
+        ratio = (perimeter_m * perimeter_m) / max(1e-6, 4.0 * math.pi * area_m2)
+        complexity = max(0.0, min(100.0, (ratio - 1.0) * 120.0))
+        return round(complexity, 1)
+
+    @staticmethod
+    def _density_context_tier(density_index: float | None) -> str:
+        if density_index is None:
+            return "unknown"
+        if density_index >= 70.0:
+            return "dense"
+        if density_index >= 40.0:
+            return "moderate"
+        return "sparse"
+
+    @staticmethod
+    def _age_proxy_era(proxy_year: float | None) -> str | None:
+        if proxy_year is None:
+            return None
+        if proxy_year < 1960.0:
+            return "pre_1960"
+        if proxy_year < 1980.0:
+            return "1960_1979"
+        if proxy_year < 2000.0:
+            return "1980_1999"
+        if proxy_year < 2015.0:
+            return "2000_2014"
+        return "2015_plus"
+
+    def _build_structure_attributes(
+        self,
+        *,
+        footprint: Any | None,
+        neighbor_metrics: dict[str, Any] | None,
+        proxy_year: float | None,
+    ) -> dict[str, Any]:
+        area_sqft = self._geometry_area_sqft(footprint)
+        perimeter_ft = self._geometry_perimeter_ft(footprint)
+        shape_complexity = self._shape_complexity_proxy(
+            area_sqft=area_sqft,
+            perimeter_ft=perimeter_ft,
+        )
+        nearby_100 = self._coerce_float((neighbor_metrics or {}).get("nearby_structure_count_100_ft"))
+        nearby_300 = self._coerce_float((neighbor_metrics or {}).get("nearby_structure_count_300_ft"))
+        nearest_ft = self._coerce_float((neighbor_metrics or {}).get("nearest_structure_distance_ft"))
+        density_index: float | None = None
+        if nearby_100 is not None or nearby_300 is not None or nearest_ft is not None:
+            c100 = max(0.0, nearby_100 or 0.0)
+            c300 = max(0.0, nearby_300 or 0.0)
+            density_component = min(
+                100.0,
+                ((min(c100, 8.0) / 8.0) * 70.0) + ((min(c300, 24.0) / 24.0) * 30.0),
+            )
+            proximity_component = None
+            if nearest_ft is not None:
+                proximity_component = max(0.0, min(100.0, 100.0 - ((nearest_ft / 300.0) * 100.0)))
+            if proximity_component is None:
+                density_index = round(density_component, 1)
+            else:
+                density_index = round((0.7 * density_component) + (0.3 * proximity_component), 1)
+        inferred_age_proxy = (
+            {
+                "proxy_year": round(float(proxy_year), 1),
+                "era_bucket": self._age_proxy_era(float(proxy_year)),
+            }
+            if proxy_year is not None
+            else None
+        )
+        provenance = {
+            "area": "observed" if area_sqft is not None else "unavailable",
+            "density_context": "inferred" if density_index is not None else "unavailable",
+            "estimated_age_proxy": "inferred" if inferred_age_proxy is not None else "unavailable",
+            "shape_complexity": "inferred" if shape_complexity is not None else "unavailable",
+        }
+        return {
+            "area": {
+                "sqft": area_sqft,
+                "source": "building_footprint_geometry" if area_sqft is not None else None,
+            },
+            "density_context": {
+                "index": density_index,
+                "tier": self._density_context_tier(density_index),
+                "nearby_structure_count_100_ft": nearby_100,
+                "nearby_structure_count_300_ft": nearby_300,
+                "nearest_structure_distance_ft": nearest_ft,
+                "source": "neighbor_structure_footprints" if density_index is not None else None,
+            },
+            "estimated_age_proxy": inferred_age_proxy,
+            "shape_complexity": {
+                "index": shape_complexity,
+                "source": "building_footprint_shape_proxy" if shape_complexity is not None else None,
+            },
+            "provenance": provenance,
+        }
+
+    @staticmethod
     def _estimated_overlap_area_sqft(
         *,
         ring_area_sqft: float | None,
@@ -1751,6 +1872,11 @@ class WildfireDataClient:
             except Exception as exc:  # pragma: no cover - defensive guard for malformed sources
                 assumptions.append(f"Building footprint lookup failed: {exc}")
                 assumptions.append("Building footprint analysis unavailable; using point-based vegetation context.")
+                structure_attributes = self._build_structure_attributes(
+                    footprint=None,
+                    neighbor_metrics=None,
+                    proxy_year=None,
+                )
                 return {
                     "footprint_used": False,
                     "footprint_found": False,
@@ -1819,6 +1945,7 @@ class WildfireDataClient:
                     "directional_risk": {},
                     "structure_relative_slope": {},
                     "neighboring_structure_metrics": None,
+                    "structure_attributes": structure_attributes,
                 }, assumptions, sources
 
         assumptions.extend(result.assumptions)
@@ -1958,6 +2085,11 @@ class WildfireDataClient:
                 radius_m=300.0 * 0.3048,
             )
             proxy_year, proxy_risk = _derive_age_material_proxy(neighbor_metrics)
+            structure_attributes = self._build_structure_attributes(
+                footprint=None,
+                neighbor_metrics=neighbor_metrics,
+                proxy_year=proxy_year,
+            )
             status = "not_found"
             assumptions_blob = " ".join(result.assumptions).lower()
             if "not configured" in assumptions_blob or "missing" in assumptions_blob:
@@ -2054,6 +2186,7 @@ class WildfireDataClient:
                 "neighboring_structure_metrics": neighbor_metrics,
                 "building_age_proxy_year": proxy_year,
                 "building_age_material_proxy_risk": proxy_risk,
+                "structure_attributes": structure_attributes,
             }, assumptions, sources
 
         sources.append("Building footprint source")
@@ -2156,6 +2289,11 @@ class WildfireDataClient:
             radius_m=300.0 * 0.3048,
         )
         proxy_year, proxy_risk = _derive_age_material_proxy(neighbor_metrics)
+        structure_attributes = self._build_structure_attributes(
+            footprint=result.footprint,
+            neighbor_metrics=neighbor_metrics,
+            proxy_year=proxy_year,
+        )
 
         if ring_metrics:
             sources.append("Structure ring vegetation summaries")
@@ -2320,6 +2458,7 @@ class WildfireDataClient:
             "neighboring_structure_metrics": neighbor_metrics,
             "building_age_proxy_year": proxy_year,
             "building_age_material_proxy_risk": proxy_risk,
+            "structure_attributes": structure_attributes,
             "footprint_centroid": {
                 "latitude": result.centroid[0] if result.centroid else None,
                 "longitude": result.centroid[1] if result.centroid else None,
@@ -2690,6 +2829,25 @@ class WildfireDataClient:
             "vegetation_directional_basis": "point_proxy_relative",
             "directional_risk": {},
             "structure_relative_slope": {},
+            "structure_attributes": {
+                "area": {"sqft": None, "source": None},
+                "density_context": {
+                    "index": None,
+                    "tier": "unknown",
+                    "nearby_structure_count_100_ft": None,
+                    "nearby_structure_count_300_ft": None,
+                    "nearest_structure_distance_ft": None,
+                    "source": None,
+                },
+                "estimated_age_proxy": None,
+                "shape_complexity": {"index": None, "source": None},
+                "provenance": {
+                    "area": "unavailable",
+                    "density_context": "unavailable",
+                    "estimated_age_proxy": "unavailable",
+                    "shape_complexity": "unavailable",
+                },
+            },
             "hazard_context": {},
             "moisture_context": {},
             "historical_fire_context": {},

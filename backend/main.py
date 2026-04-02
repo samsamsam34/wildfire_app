@@ -1915,6 +1915,25 @@ def _normalize_property_level_context(raw_context: object) -> dict[str, Any]:
                 "confidence_flag": "low",
                 "source": "unavailable",
             },
+            "structure_attributes": {
+                "area": {"sqft": None, "source": None},
+                "density_context": {
+                    "index": None,
+                    "tier": "unknown",
+                    "nearby_structure_count_100_ft": None,
+                    "nearby_structure_count_300_ft": None,
+                    "nearest_structure_distance_ft": None,
+                    "source": None,
+                },
+                "estimated_age_proxy": None,
+                "shape_complexity": {"index": None, "source": None},
+                "provenance": {
+                    "area": "unavailable",
+                    "density_context": "unavailable",
+                    "estimated_age_proxy": "unavailable",
+                    "shape_complexity": "unavailable",
+                },
+            },
         }
 
     normalized = dict(raw_context)
@@ -2366,6 +2385,110 @@ def _normalize_property_level_context(raw_context: object) -> dict[str, Any]:
     normalized_slope.setdefault("confidence_flag", default_confidence_flag)
     normalized_slope.setdefault("source", "unavailable")
     normalized["structure_relative_slope"] = normalized_slope
+    raw_structure_attributes = normalized.get("structure_attributes")
+    if isinstance(raw_structure_attributes, dict):
+        area_row = raw_structure_attributes.get("area")
+        density_row = raw_structure_attributes.get("density_context")
+        shape_row = raw_structure_attributes.get("shape_complexity")
+        provenance = raw_structure_attributes.get("provenance")
+        normalized["structure_attributes"] = {
+            "area": {
+                "sqft": _safe_float((area_row or {}).get("sqft")) if isinstance(area_row, dict) else None,
+                "source": (
+                    str((area_row or {}).get("source")).strip() if isinstance(area_row, dict) and str((area_row or {}).get("source") or "").strip() else None
+                ),
+            },
+            "density_context": {
+                "index": _safe_float((density_row or {}).get("index")) if isinstance(density_row, dict) else None,
+                "tier": (
+                    str((density_row or {}).get("tier") or "unknown").strip().lower()
+                    if isinstance(density_row, dict)
+                    else "unknown"
+                ),
+                "nearby_structure_count_100_ft": (
+                    _safe_float((density_row or {}).get("nearby_structure_count_100_ft"))
+                    if isinstance(density_row, dict)
+                    else None
+                ),
+                "nearby_structure_count_300_ft": (
+                    _safe_float((density_row or {}).get("nearby_structure_count_300_ft"))
+                    if isinstance(density_row, dict)
+                    else None
+                ),
+                "nearest_structure_distance_ft": (
+                    _safe_float((density_row or {}).get("nearest_structure_distance_ft"))
+                    if isinstance(density_row, dict)
+                    else None
+                ),
+                "source": (
+                    str((density_row or {}).get("source")).strip()
+                    if isinstance(density_row, dict) and str((density_row or {}).get("source") or "").strip()
+                    else None
+                ),
+            },
+            "estimated_age_proxy": (
+                {
+                    "proxy_year": _safe_float((raw_structure_attributes.get("estimated_age_proxy") or {}).get("proxy_year")),
+                    "era_bucket": (
+                        str((raw_structure_attributes.get("estimated_age_proxy") or {}).get("era_bucket"))
+                        if str((raw_structure_attributes.get("estimated_age_proxy") or {}).get("era_bucket") or "").strip()
+                        else None
+                    ),
+                }
+                if isinstance(raw_structure_attributes.get("estimated_age_proxy"), dict)
+                else None
+            ),
+            "shape_complexity": {
+                "index": _safe_float((shape_row or {}).get("index")) if isinstance(shape_row, dict) else None,
+                "source": (
+                    str((shape_row or {}).get("source")).strip()
+                    if isinstance(shape_row, dict) and str((shape_row or {}).get("source") or "").strip()
+                    else None
+                ),
+            },
+            "provenance": {
+                "area": (
+                    str((provenance or {}).get("area") or "unavailable")
+                    if isinstance(provenance, dict)
+                    else "unavailable"
+                ),
+                "density_context": (
+                    str((provenance or {}).get("density_context") or "unavailable")
+                    if isinstance(provenance, dict)
+                    else "unavailable"
+                ),
+                "estimated_age_proxy": (
+                    str((provenance or {}).get("estimated_age_proxy") or "unavailable")
+                    if isinstance(provenance, dict)
+                    else "unavailable"
+                ),
+                "shape_complexity": (
+                    str((provenance or {}).get("shape_complexity") or "unavailable")
+                    if isinstance(provenance, dict)
+                    else "unavailable"
+                ),
+            },
+        }
+    else:
+        normalized["structure_attributes"] = {
+            "area": {"sqft": None, "source": None},
+            "density_context": {
+                "index": None,
+                "tier": "unknown",
+                "nearby_structure_count_100_ft": None,
+                "nearby_structure_count_300_ft": None,
+                "nearest_structure_distance_ft": None,
+                "source": None,
+            },
+            "estimated_age_proxy": None,
+            "shape_complexity": {"index": None, "source": None},
+            "provenance": {
+                "area": "unavailable",
+                "density_context": "unavailable",
+                "estimated_age_proxy": "unavailable",
+                "shape_complexity": "unavailable",
+            },
+        }
     return normalized
 
 
@@ -6782,6 +6905,7 @@ def _run_assessment(
         near_structure_features=dict(property_level_context.get("near_structure_features") or {}),
         directional_risk=dict(property_level_context.get("directional_risk") or {}),
         structure_relative_slope=dict(property_level_context.get("structure_relative_slope") or {}),
+        structure_attributes=dict(property_level_context.get("structure_attributes") or {}),
         top_risk_drivers=top_risk_drivers,
         top_risk_drivers_detailed=ranked_driver_details[:3],
         prioritized_mitigation_actions=prioritized_mitigation_actions,

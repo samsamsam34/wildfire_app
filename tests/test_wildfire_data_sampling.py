@@ -2,8 +2,15 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from backend.building_footprints import BuildingFootprintResult
 from backend.wildfire_data import WildfireDataClient
+
+try:
+    from shapely.geometry import Polygon
+except Exception:  # pragma: no cover - geospatial deps may be unavailable in minimal test envs
+    Polygon = None
 
 
 def test_sample_layer_value_detailed_uses_nearby_sample_when_point_is_nodata(monkeypatch):
@@ -261,3 +268,185 @@ def test_structure_relative_slope_differs_for_nearby_homes_with_micro_topography
     assert slope_a.get("slope_within_30_ft") != slope_b.get("slope_within_30_ft")
     assert slope_a.get("uphill_exposure") != slope_b.get("uphill_exposure")
     assert slope_a.get("downhill_buffer") != slope_b.get("downhill_buffer")
+
+
+@pytest.mark.skipif(Polygon is None, reason="Structure attribute inference test requires shapely")
+def test_structure_attributes_differ_for_distinct_footprints(monkeypatch):
+    client = WildfireDataClient()
+    compact = Polygon(
+        [
+            (-113.994120, 46.872290),
+            (-113.994080, 46.872290),
+            (-113.994080, 46.872320),
+            (-113.994120, 46.872320),
+        ]
+    )
+    irregular = Polygon(
+        [
+            (-113.994210, 46.872300),
+            (-113.994120, 46.872300),
+            (-113.994120, 46.872330),
+            (-113.994170, 46.872330),
+            (-113.994170, 46.872360),
+            (-113.994210, 46.872360),
+        ]
+    )
+
+    class StubFootprints:
+        def get_building_footprint(self, lat, _lon, **_kwargs):
+            geom = compact if lat < 46.87233 else irregular
+            centroid = geom.centroid
+            return BuildingFootprintResult(
+                found=True,
+                footprint=geom,
+                centroid=(float(centroid.y), float(centroid.x)),
+                source="stub.geojson",
+                confidence=0.91,
+                match_status="matched",
+                match_method="point_in_footprint",
+                matched_structure_id=f"home-{1 if geom is compact else 2}",
+                match_distance_m=0.0,
+                candidate_count=1,
+                candidate_summaries=[],
+                assumptions=[],
+            )
+
+        def get_neighbor_structure_metrics(self, **_kwargs):
+            return {
+                "nearby_structure_count_100_ft": 2,
+                "nearby_structure_count_300_ft": 7,
+                "nearest_structure_distance_ft": 18.0,
+            }
+
+    client.footprints = StubFootprints()
+    monkeypatch.setattr(
+        client,
+        "_summarize_ring_canopy",
+        lambda *_args, **_kwargs: {"canopy_mean": 35.0, "canopy_max": 42.0, "vegetation_density": 38.0, "coverage_pct": 36.0},
+    )
+    monkeypatch.setattr(client, "_summarize_ring_fuel_presence", lambda *_args, **_kwargs: 34.0)
+    monkeypatch.setattr(
+        client,
+        "_compute_structure_aware_vegetation_features",
+        lambda **_kwargs: {
+            "near_structure_vegetation_0_5_pct": 40.0,
+            "near_structure_vegetation_5_30_pct": 44.0,
+            "vegetation_edge_directional_concentration_pct": 19.0,
+            "canopy_dense_fuel_asymmetry_pct": 11.0,
+            "nearest_continuous_vegetation_distance_ft": 20.0,
+            "vegetation_directional_sectors": {},
+            "vegetation_directional_precision": "footprint_relative",
+            "vegetation_directional_precision_score": 0.82,
+            "vegetation_directional_basis": "footprint_relative",
+            "directional_risk": {},
+        },
+    )
+    monkeypatch.setattr(
+        client,
+        "_compute_structure_relative_slope",
+        lambda **_kwargs: {
+            "local_slope": 14.0,
+            "uphill_exposure": 24.0,
+            "downhill_buffer": 76.0,
+            "precision_flag": "footprint_relative",
+        },
+    )
+
+    compact_ctx, _a, _b = client._compute_structure_ring_metrics(
+        46.872300,
+        -113.994100,
+        canopy_path="canopy.tif",
+        fuel_path="fuel.tif",
+        slope_path="slope.tif",
+    )
+    irregular_ctx, _c, _d = client._compute_structure_ring_metrics(
+        46.872360,
+        -113.994160,
+        canopy_path="canopy.tif",
+        fuel_path="fuel.tif",
+        slope_path="slope.tif",
+    )
+
+    compact_attrs = compact_ctx.get("structure_attributes") or {}
+    irregular_attrs = irregular_ctx.get("structure_attributes") or {}
+    assert compact_attrs.get("area", {}).get("sqft") != irregular_attrs.get("area", {}).get("sqft")
+    assert compact_attrs.get("shape_complexity", {}).get("index") != irregular_attrs.get("shape_complexity", {}).get("index")
+    assert compact_attrs.get("provenance", {}).get("area") == "observed"
+    assert irregular_attrs.get("provenance", {}).get("shape_complexity") == "inferred"
+
+
+def test_structure_attributes_fallback_when_footprint_missing(monkeypatch):
+    client = WildfireDataClient()
+
+    class StubFootprints:
+        def get_building_footprint(self, _lat, _lon, **_kwargs):
+            return BuildingFootprintResult(
+                found=False,
+                source="stub.geojson",
+                confidence=0.0,
+                match_status="none",
+                assumptions=["no footprint match in fixture"],
+            )
+
+        def get_neighbor_structure_metrics(self, **_kwargs):
+            return {
+                "nearby_structure_count_100_ft": 1,
+                "nearby_structure_count_300_ft": 5,
+                "nearest_structure_distance_ft": 42.0,
+            }
+
+    client.footprints = StubFootprints()
+    monkeypatch.setattr(
+        client,
+        "_build_point_proxy_ring_metrics",
+        lambda **_kwargs: {
+            "ring_0_5_ft": {"vegetation_density": 32.0},
+            "ring_5_30_ft": {"vegetation_density": 46.0},
+            "ring_30_100_ft": {"vegetation_density": 41.0},
+            "ring_100_300_ft": {"vegetation_density": 30.0},
+            "geometry_type": "point",
+            "precision_flag": "fallback_point_proxy",
+        },
+    )
+    monkeypatch.setattr(
+        client,
+        "_compute_structure_aware_vegetation_features",
+        lambda **_kwargs: {
+            "near_structure_vegetation_0_5_pct": 32.0,
+            "near_structure_vegetation_5_30_pct": 46.0,
+            "vegetation_edge_directional_concentration_pct": 14.0,
+            "canopy_dense_fuel_asymmetry_pct": 8.0,
+            "nearest_continuous_vegetation_distance_ft": 26.0,
+            "vegetation_directional_sectors": {},
+            "vegetation_directional_precision": "point_proxy",
+            "vegetation_directional_precision_score": 0.31,
+            "vegetation_directional_basis": "point_proxy_relative",
+            "directional_risk": {},
+        },
+    )
+    monkeypatch.setattr(
+        client,
+        "_compute_structure_relative_slope",
+        lambda **_kwargs: {
+            "local_slope": 9.0,
+            "precision_flag": "fallback_point_proxy",
+            "source": "sampled",
+        },
+    )
+
+    context, _assumptions, _sources = client._compute_structure_ring_metrics(
+        46.872300,
+        -113.994100,
+        canopy_path="canopy.tif",
+        fuel_path="fuel.tif",
+        slope_path="slope.tif",
+    )
+
+    attrs = context.get("structure_attributes") or {}
+    assert context.get("footprint_used") is False
+    assert attrs.get("area", {}).get("sqft") is None
+    assert attrs.get("shape_complexity", {}).get("index") is None
+    assert attrs.get("density_context", {}).get("index") is not None
+    assert attrs.get("estimated_age_proxy", {}).get("proxy_year") is not None
+    assert attrs.get("provenance", {}).get("area") == "unavailable"
+    assert attrs.get("provenance", {}).get("density_context") == "inferred"
