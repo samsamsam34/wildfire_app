@@ -2556,7 +2556,7 @@ def _build_geometry_resolution_summary(
     )
 
     ring_generation_mode = str(ctx.get("ring_generation_mode") or "").strip().lower()
-    if ring_generation_mode not in {"footprint_aware_rings", "point_annulus_fallback"}:
+    if ring_generation_mode not in {"footprint_aware_rings", "point_annulus_fallback", "point_annulus_parcel_clipped"}:
         ring_generation_mode = "footprint_aware_rings" if bool(ctx.get("footprint_used")) else "point_annulus_fallback"
 
     has_near_structure_values = any(
@@ -2590,6 +2590,39 @@ def _build_geometry_resolution_summary(
             elif coverage_status in {"provider_unavailable", "fetch_failed", "error"}:
                 naip_status = "provider_unavailable"
             break
+
+    property_linkage = ctx.get("property_linkage") if isinstance(ctx.get("property_linkage"), dict) else {}
+    footprint_outside_parcel = bool(property_linkage.get("footprint_outside_parcel"))
+    multiple_footprints_on_parcel = bool(property_linkage.get("multiple_footprints_on_parcel"))
+    geocode_to_anchor_distance_m = _safe_float(ctx.get("geocode_to_anchor_distance_m"))
+    structure_match_distance_m = _safe_float(ctx.get("structure_match_distance_m"))
+    source_conflict_flag = bool(ctx.get("source_conflict_flag"))
+
+    mismatch_reasons: list[str] = []
+    if geocode_to_anchor_distance_m is not None and geocode_to_anchor_distance_m >= 35.0:
+        mismatch_reasons.append(
+            f"Geocoded address point is {geocode_to_anchor_distance_m:.1f} m from the analyzed property anchor."
+        )
+    if (
+        footprint_match_status == "matched"
+        and structure_match_distance_m is not None
+        and structure_match_distance_m >= 30.0
+    ):
+        mismatch_reasons.append(
+            f"Matched footprint is {structure_match_distance_m:.1f} m from the selected anchor point."
+        )
+    if footprint_outside_parcel:
+        mismatch_reasons.append("Matched footprint does not align with the matched parcel boundary.")
+    if parcel_match_status == "multiple_candidates":
+        mismatch_reasons.append("Parcel resolution returned multiple plausible parcels.")
+    if parcel_match_status in {"not_found", "provider_unavailable"} and footprint_match_status == "matched":
+        mismatch_reasons.append("Footprint matched but parcel linkage is unresolved.")
+    if multiple_footprints_on_parcel and footprint_match_status in {"matched", "ambiguous"}:
+        mismatch_reasons.append("Multiple structures exist on the parcel and structure selection may be ambiguous.")
+    if source_conflict_flag:
+        mismatch_reasons.append("Anchor and geometry sources are materially misaligned.")
+    property_mismatch_flag = bool(mismatch_reasons)
+    mismatch_reason = mismatch_reasons[0] if mismatch_reasons else None
 
     geometry_limitations: list[str] = []
     if anchor_quality_score < 0.60:
@@ -2626,10 +2659,15 @@ def _build_geometry_resolution_summary(
             geometry_limitations.append(
                 "Building footprint was not matched."
             )
-    if ring_generation_mode == "point_annulus_fallback":
-        geometry_limitations.append(
-            "Near-structure rings were generated from point-based annulus fallback."
-        )
+    if ring_generation_mode in {"point_annulus_fallback", "point_annulus_parcel_clipped"}:
+        if ring_generation_mode == "point_annulus_parcel_clipped":
+            geometry_limitations.append(
+                "Near-structure rings were generated from point-based annulus sampling clipped to parcel boundaries."
+            )
+        else:
+            geometry_limitations.append(
+                "Near-structure rings were generated from point-based annulus fallback."
+            )
     if naip_status in {"missing", "provider_unavailable", "present_but_not_consumed"}:
         geometry_limitations.append(
             "NAIP-derived near-structure vegetation features were unavailable."
@@ -2638,9 +2676,13 @@ def _build_geometry_resolution_summary(
         geometry_limitations.append(
             "Near-structure vegetation features rely on proxy/fallback signals."
         )
-    if bool(ctx.get("source_conflict_flag")):
+    if source_conflict_flag:
         geometry_limitations.append(
             "Anchor and geometry sources were partially conflicting."
+        )
+    if property_mismatch_flag and mismatch_reason:
+        geometry_limitations.append(
+            f"Potential property mismatch detected: {mismatch_reason}"
         )
     geometry_limitations = list(dict.fromkeys(geometry_limitations))[:8]
 
@@ -2652,6 +2694,8 @@ def _build_geometry_resolution_summary(
         footprint_source=footprint_source,
         ring_generation_mode=ring_generation_mode,
         naip_structure_feature_status=naip_status,
+        property_mismatch_flag=property_mismatch_flag,
+        mismatch_reason=mismatch_reason,
         geometry_limitations=geometry_limitations,
     )
 
@@ -3085,6 +3129,8 @@ def _build_feature_coverage_preflight(
         fallback_dominance_ratio=fallback_dominance_ratio,
     )
     property_data_confidence = float(property_confidence_summary.get("score") or 0.0)
+    property_mismatch_flag = bool(property_level_context.get("property_mismatch_flag"))
+    mismatch_reason = str(property_level_context.get("mismatch_reason") or "").strip() or None
     major_environmental_missing_count = sum(
         1
         for available in [hazard_available, burn_prob_available, dryness_available]
@@ -3128,6 +3174,11 @@ def _build_feature_coverage_preflight(
         assessment_specificity_tier = "regional_estimate"
     elif property_data_confidence < 50.0 and assessment_specificity_tier == "property_specific":
         assessment_specificity_tier = "address_level"
+    if property_mismatch_flag:
+        if assessment_specificity_tier == "property_specific":
+            assessment_specificity_tier = "address_level"
+        else:
+            assessment_specificity_tier = "regional_estimate"
 
     limited_assessment_flag = (
         assessment_specificity_tier != "property_specific"
@@ -3140,6 +3191,7 @@ def _build_feature_coverage_preflight(
         or region_readiness_state != "property_specific_ready"
         or int(region_readiness.get("region_required_missing_count") or 0) > 0
         or property_data_confidence < 40.0
+        or property_mismatch_flag
     )
     specificity_warning = None
     if limited_assessment_flag:
@@ -3151,6 +3203,11 @@ def _build_feature_coverage_preflight(
             specificity_warning = (
                 "Prepared region data is not property-specific-ready for this location. "
                 "Assessment is intentionally downgraded to lower-specificity guidance."
+            )
+        if property_mismatch_flag:
+            specificity_warning = (
+                "Geometry inputs may refer to the wrong property; specificity is downgraded until location/building "
+                "alignment is corrected."
             )
 
     preflight = {
@@ -3181,6 +3238,8 @@ def _build_feature_coverage_preflight(
         "property_specificity_score": round(property_specificity_score, 1),
         "property_data_confidence": round(property_data_confidence, 1),
         "property_confidence_summary": dict(property_confidence_summary),
+        "property_mismatch_flag": property_mismatch_flag,
+        "mismatch_reason": mismatch_reason,
         "score_specificity_warning": specificity_warning,
     }
     preflight.update(region_readiness)
@@ -4572,6 +4631,7 @@ def _build_specificity_summary(
             trust_summary.get("neighborhood_differentiation_confidence")
         )
     local_differentiation_score = float(local_differentiation_score or 0.0)
+    property_mismatch_flag = bool(trust_summary.get("property_mismatch_flag"))
     resolved_property_confidence = (
         dict(property_confidence_summary)
         if isinstance(property_confidence_summary, dict)
@@ -4617,6 +4677,11 @@ def _build_specificity_summary(
         specificity_tier = "regional_estimate"
     elif property_data_confidence < 50.0 and specificity_tier == "property_specific":
         specificity_tier = "address_level"
+    if property_mismatch_flag:
+        if specificity_tier == "property_specific":
+            specificity_tier = "address_level"
+        else:
+            specificity_tier = "regional_estimate"
 
     nearby_home_guardrail = bool(trust_summary.get("nearby_home_comparison_safeguard_triggered"))
     comparison_allowed = bool(trust_summary.get("parcel_level_comparison_allowed"))
@@ -4634,6 +4699,8 @@ def _build_specificity_summary(
     if specificity_tier != "property_specific":
         comparison_allowed = False
     if nearby_home_guardrail:
+        comparison_allowed = False
+    if property_mismatch_flag:
         comparison_allowed = False
 
     confidence_level = str(trust_summary.get("confidence_level") or "").strip().lower()
@@ -4847,16 +4914,19 @@ def _build_homeowner_trust_summary(
     footprint_match_status = str(geometry_resolution.get("footprint_match_status") or "").strip().lower()
     parcel_match_status = str(geometry_resolution.get("parcel_match_status") or "").strip().lower()
     naip_status = str(geometry_resolution.get("naip_structure_feature_status") or "").strip().lower()
+    property_mismatch_flag = bool(geometry_resolution.get("property_mismatch_flag"))
+    mismatch_reason = str(geometry_resolution.get("mismatch_reason") or "").strip() or None
     try:
         anchor_quality_score = float(geometry_resolution.get("anchor_quality_score") or 0.0)
     except (TypeError, ValueError):
         anchor_quality_score = 0.0
     geometry_specificity_limited = bool(
-        ring_mode == "point_annulus_fallback"
+        ring_mode in {"point_annulus_fallback", "point_annulus_parcel_clipped"}
         or footprint_match_status in {"none", "ambiguous", "provider_unavailable", "error"}
         or parcel_match_status in {"not_found", "provider_unavailable"}
         or anchor_quality_score < 0.60
         or naip_status in {"missing", "provider_unavailable", "present_but_not_consumed", "fallback_or_proxy"}
+        or property_mismatch_flag
     )
     geometry_resolution_summary = None
     if geometry_specificity_limited:
@@ -4867,6 +4937,8 @@ def _build_homeowner_trust_summary(
             "footprint_match_status": footprint_match_status or "none",
             "ring_generation_mode": ring_mode or "point_annulus_fallback",
             "naip_structure_feature_status": naip_status or "missing",
+            "property_mismatch_flag": property_mismatch_flag,
+            "mismatch_reason": mismatch_reason,
         }
         uncertainty_drivers = list(
             dict.fromkeys(
@@ -4874,6 +4946,13 @@ def _build_homeowner_trust_summary(
                 + list(uncertainty_drivers)
             )
         )[:4]
+    if property_mismatch_flag:
+        mismatch_note = (
+            f"Potential property mismatch: {mismatch_reason}"
+            if mismatch_reason
+            else "Potential property mismatch was detected from geometry alignment checks."
+        )
+        uncertainty_drivers = list(dict.fromkeys([mismatch_note] + list(uncertainty_drivers)))[:4]
 
     resolved_property_confidence = (
         dict(property_confidence_summary)
@@ -4943,6 +5022,8 @@ def _build_homeowner_trust_summary(
             "level": property_confidence_level,
             "key_gaps": property_confidence_gaps,
         },
+        "property_mismatch_flag": property_mismatch_flag,
+        "mismatch_reason": mismatch_reason,
         "geometry_specificity_limited": geometry_specificity_limited,
         "geometry_resolution_summary": geometry_resolution_summary,
     }
@@ -6117,6 +6198,12 @@ def _run_assessment(
     )
     geometry_resolution = _build_geometry_resolution_summary(property_level_context)
     property_level_context["geometry_resolution"] = geometry_resolution.model_dump()
+    property_level_context["property_mismatch_flag"] = bool(geometry_resolution.property_mismatch_flag)
+    property_level_context["mismatch_reason"] = (
+        str(geometry_resolution.mismatch_reason).strip()
+        if geometry_resolution.mismatch_reason
+        else None
+    )
     if requested_property_anchor_point is not None:
         property_level_context["property_anchor_point"] = requested_property_anchor_point
     if requested_user_selected_point is not None:
@@ -7361,6 +7448,19 @@ def _run_assessment(
             str(property_level_context.get("ring_generation_mode"))
             if property_level_context.get("ring_generation_mode")
             else None
+        ),
+        property_mismatch_flag=bool(
+            geometry_resolution.property_mismatch_flag
+            if hasattr(geometry_resolution, "property_mismatch_flag")
+            else property_level_context.get("property_mismatch_flag")
+        ),
+        mismatch_reason=(
+            str(
+                geometry_resolution.mismatch_reason
+                if hasattr(geometry_resolution, "mismatch_reason")
+                else (property_level_context.get("mismatch_reason") or "")
+            ).strip()
+            or None
         ),
         snapped_structure_distance_m=(
             float(property_level_context.get("snapped_structure_distance_m"))

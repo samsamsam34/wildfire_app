@@ -379,6 +379,8 @@ def _assert_core_contract(body: dict) -> None:
         "footprint_source",
         "ring_generation_mode",
         "naip_structure_feature_status",
+        "property_mismatch_flag",
+        "mismatch_reason",
         "geometry_limitations",
     ]:
         assert key in geometry_resolution
@@ -397,7 +399,13 @@ def _assert_core_contract(body: dict) -> None:
         "error",
     }
     assert geometry_resolution["footprint_source"] is None or isinstance(geometry_resolution["footprint_source"], str)
-    assert geometry_resolution["ring_generation_mode"] in {"footprint_aware_rings", "point_annulus_fallback"}
+    assert geometry_resolution["ring_generation_mode"] in {
+        "footprint_aware_rings",
+        "point_annulus_fallback",
+        "point_annulus_parcel_clipped",
+    }
+    assert isinstance(geometry_resolution["property_mismatch_flag"], bool)
+    assert geometry_resolution["mismatch_reason"] is None or isinstance(geometry_resolution["mismatch_reason"], str)
     assert geometry_resolution["naip_structure_feature_status"] in {
         "observed",
         "fallback_or_proxy",
@@ -682,7 +690,11 @@ def test_assessment_passes_user_selected_point_override_to_context(monkeypatch, 
         "raw_geocode_point",
     }
     assert isinstance(plc.get("geometry_confidence"), (int, float))
-    assert plc.get("ring_generation_mode") in {"footprint_aware_rings", "point_annulus_fallback"}
+    assert plc.get("ring_generation_mode") in {
+        "footprint_aware_rings",
+        "point_annulus_fallback",
+        "point_annulus_parcel_clipped",
+    }
     assert body.get("geometry_source") == plc.get("geometry_source")
     assert body.get("ring_generation_mode") == plc.get("ring_generation_mode")
     assert plc.get("structure_selection_method")
@@ -811,6 +823,81 @@ def test_low_quality_anchor_geometry_resolution_is_explicitly_cautious(monkeypat
     assert trust_summary.get("geometry_specificity_limited") is True
     condensed = trust_summary.get("geometry_resolution_summary") or {}
     assert condensed.get("ring_generation_mode") == "point_annulus_fallback"
+
+
+def test_misaligned_geometry_triggers_property_mismatch_flag_and_downgrade(monkeypatch, tmp_path):
+    context = _ctx(
+        58.0,
+        54.0,
+        44.0,
+        ring_metrics={
+            "ring_0_5_ft": {"vegetation_density": 36.0},
+            "ring_5_30_ft": {"vegetation_density": 42.0},
+            "ring_30_100_ft": {"vegetation_density": 48.0},
+        },
+    )
+    context.property_level_context.update(
+        {
+            "footprint_used": True,
+            "footprint_status": "used",
+            "structure_match_status": "matched",
+            "structure_match_method": "nearest_building_fallback",
+            "structure_match_distance_m": 41.0,
+            "ring_generation_mode": "footprint_aware_rings",
+            "geometry_basis": "footprint",
+            "geometry_source": "trusted_building_footprint",
+            "property_anchor_source": "authoritative_address_point",
+            "property_anchor_quality_score": 0.93,
+            "anchor_quality_score": 0.93,
+            "geocode_to_anchor_distance_m": 88.0,
+            "source_conflict_flag": True,
+            "parcel_id": "parcel-101",
+            "parcel_lookup_method": "contains_point",
+            "parcel_resolution": {"status": "matched", "confidence": 91.0},
+            "property_linkage": {
+                "geocode_confidence": 89.0,
+                "parcel_confidence": 91.0,
+                "footprint_confidence": 88.0,
+                "overall_property_confidence": 54.0,
+                "parcel_status": "matched",
+                "footprint_status": "matched",
+                "footprint_match_method": "nearest_building_fallback",
+                "multiple_footprints_on_parcel": False,
+                "footprint_outside_parcel": True,
+                "structure_candidate_count": 1,
+                "selection_notes": ["Matched footprint does not align cleanly with parcel linkage; review geometry alignment."],
+            },
+        }
+    )
+    _setup(monkeypatch, tmp_path, context)
+
+    assessed = _run(
+        _payload(
+            "Mismatch Trigger Ln",
+            {
+                "roof_type": "class a",
+                "vent_type": "ember-resistant",
+                "defensible_space_ft": 30,
+            },
+            confirmed=["roof_type", "vent_type", "defensible_space_ft"],
+        )
+    )
+
+    assert assessed.get("property_mismatch_flag") is True
+    assert isinstance(assessed.get("mismatch_reason"), str) and assessed.get("mismatch_reason")
+
+    resolution = assessed.get("geometry_resolution") or {}
+    assert resolution.get("property_mismatch_flag") is True
+    assert isinstance(resolution.get("mismatch_reason"), str) and resolution.get("mismatch_reason")
+    assert any("property mismatch" in str(row).lower() for row in (resolution.get("geometry_limitations") or []))
+
+    assert assessed.get("assessment_specificity_tier") in {"address_level", "regional_estimate", "insufficient_data"}
+    assert assessed.get("assessment_specificity_tier") != "property_specific"
+
+    improve = ((assessed.get("homeowner_summary") or {}).get("improve_your_result") or {})
+    suggestions = [str(row).lower() for row in (improve.get("suggestions") or [])]
+    assert any("move pin" in row for row in suggestions)
+    assert any("wrong property" in row or "mismatch" in row for row in suggestions)
 
 
 def test_near_structure_features_fallback_marks_lower_confidence_when_imagery_unavailable(monkeypatch, tmp_path):
@@ -6150,6 +6237,27 @@ def test_specificity_summary_is_influenced_by_local_differentiation_score():
     )
     assert medium_property_data.get("specificity_tier") == "address_level"
     assert medium_property_data.get("comparison_allowed") is False
+
+    mismatch_case = app_main._build_specificity_summary(
+        assessment_specificity_tier="property_specific",
+        assessment_mode="property_specific",
+        limited_assessment_flag=False,
+        confidence_summary={"assessment_type": "high confidence"},
+        trust_summary={
+            "differentiation_mode": "highly_local",
+            "local_differentiation_score": 92.0,
+            "nearby_home_comparison_safeguard_triggered": False,
+            "parcel_level_comparison_allowed": True,
+            "property_mismatch_flag": True,
+        },
+        property_confidence_summary={
+            "score": 82.0,
+            "level": "high",
+            "key_gaps": [],
+        },
+    )
+    assert mismatch_case.get("specificity_tier") in {"address_level", "regional_estimate"}
+    assert mismatch_case.get("comparison_allowed") is False
 
 
 def test_old_rows_without_provenance_defaults_are_readable(tmp_path):

@@ -930,6 +930,8 @@ class GeometryResolutionSummary(BaseModel):
     footprint_source: Optional[str] = None
     ring_generation_mode: str = "point_annulus_fallback"
     naip_structure_feature_status: str = "missing"
+    property_mismatch_flag: bool = False
+    mismatch_reason: Optional[str] = None
     geometry_limitations: List[str] = Field(default_factory=list)
 
 
@@ -1138,6 +1140,8 @@ class AssessmentResult(BaseModel):
     geometry_source: Optional[str] = None
     geometry_confidence: Optional[float] = None
     ring_generation_mode: Optional[str] = None
+    property_mismatch_flag: bool = False
+    mismatch_reason: Optional[str] = None
     snapped_structure_distance_m: Optional[float] = None
     selection_mode: Optional[SelectionMode] = None
     matched_structure_centroid: Optional[Dict[str, float]] = None

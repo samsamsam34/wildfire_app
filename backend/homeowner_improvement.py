@@ -345,16 +345,19 @@ def build_homeowner_improvement_options(result: AssessmentResult) -> HomeownerIm
         anchor_quality = 0.0
     naip_status = str(geometry_resolution.get("naip_structure_feature_status") or "").strip().lower()
     parcel_match_status = str(geometry_resolution.get("parcel_match_status") or "").strip().lower()
+    property_mismatch_flag = bool(geometry_resolution.get("property_mismatch_flag"))
+    mismatch_reason = str(geometry_resolution.get("mismatch_reason") or "").strip()
     source_conflict_flag = bool(getattr(result, "source_conflict_flag", False))
     footprint_missing = footprint_status in {"none", "ambiguous", "provider_unavailable", "error"}
     low_anchor_confidence = anchor_quality < 0.70
     parcel_mismatch_or_unresolved = parcel_match_status in {"not_found", "provider_unavailable"} or source_conflict_flag
     geometry_limited = bool(
-        ring_mode == "point_annulus_fallback"
+        ring_mode in {"point_annulus_fallback", "point_annulus_parcel_clipped"}
         or footprint_missing
         or low_anchor_confidence
         or naip_status in {"missing", "provider_unavailable", "present_but_not_consumed", "fallback_or_proxy"}
         or parcel_mismatch_or_unresolved
+        or property_mismatch_flag
     )
     geometry_issue_flags: list[str] = []
     if footprint_missing:
@@ -363,8 +366,10 @@ def build_homeowner_improvement_options(result: AssessmentResult) -> HomeownerIm
         geometry_issue_flags.append("low_anchor_confidence")
     if parcel_mismatch_or_unresolved:
         geometry_issue_flags.append("parcel_mismatch")
-    if ring_mode == "point_annulus_fallback":
+    if ring_mode in {"point_annulus_fallback", "point_annulus_parcel_clipped"}:
         geometry_issue_flags.append("point_fallback_rings")
+    if property_mismatch_flag:
+        geometry_issue_flags.append("property_mismatch")
 
     candidate_rows: list[dict[str, Any]] = []
     geometry_input_keys = {"map_point_correction", "select_building_polygon", "draw_structure_manually"}
@@ -383,12 +388,14 @@ def build_homeowner_improvement_options(result: AssessmentResult) -> HomeownerIm
         if field in {"roof_type", "vent_type", "window_type", "defensible_space_ft"} and field in missing_fields:
             score += 5.0
         if input_key in geometry_input_keys:
-            if ring_mode == "point_annulus_fallback":
+            if ring_mode in {"point_annulus_fallback", "point_annulus_parcel_clipped"}:
                 score += 15.0
             if anchor_quality < 0.50:
                 score += 8.0
             if footprint_status in {"none", "ambiguous"}:
                 score += 8.0
+            if property_mismatch_flag:
+                score += 12.0
             if input_key == "draw_structure_manually" and footprint_status not in {"none", "provider_unavailable", "error"}:
                 score -= 10.0
         candidate_rows.append(
@@ -423,6 +430,10 @@ def build_homeowner_improvement_options(result: AssessmentResult) -> HomeownerIm
         suggestions.append("Move pin to your home.")
         suggestions.append("Confirm building location.")
         suggestions.append("Select your building polygon or draw your home outline when map footprints are wrong.")
+    if property_mismatch_flag and mismatch_reason:
+        message = f"We may be analyzing the wrong property: {mismatch_reason}"
+        if message not in suggestions:
+            suggestions.insert(0, message)
     for row in prioritized_rows:
         suggestion = str(row.get("suggestion") or "").strip()
         if suggestion and suggestion not in suggestions:
