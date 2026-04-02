@@ -1512,6 +1512,137 @@ class WildfireDataClient:
         overlap = ring_area_sqft * (max(0.0, min(100.0, float(coverage_pct))) / 100.0)
         return round(max(0.0, overlap), 1)
 
+    def _clip_ring_to_parcel(
+        self,
+        *,
+        ring_geometry: Any | None,
+        parcel_polygon: Any | None,
+    ) -> Any | None:
+        if ring_geometry is None or parcel_polygon is None:
+            return ring_geometry
+        try:
+            if bool(getattr(ring_geometry, "is_empty", True)) or bool(getattr(parcel_polygon, "is_empty", True)):
+                return None
+            clipped = ring_geometry.intersection(parcel_polygon)
+            if clipped is None or bool(getattr(clipped, "is_empty", True)):
+                return None
+            return clipped
+        except Exception:
+            return ring_geometry
+
+    def _build_point_buffer_rings(
+        self,
+        *,
+        lat: float,
+        lon: float,
+    ) -> dict[str, Any]:
+        if not (Transformer and Point and shapely_transform):
+            return {}
+        try:
+            to_3857 = Transformer.from_crs("EPSG:4326", "EPSG:3857", always_xy=True).transform
+            to_wgs84 = Transformer.from_crs("EPSG:3857", "EPSG:4326", always_xy=True).transform
+            point_m = shapely_transform(to_3857, Point(float(lon), float(lat)))
+        except Exception:
+            return {}
+
+        b5_m = point_m.buffer(5.0 * 0.3048)
+        b30_m = point_m.buffer(30.0 * 0.3048)
+        b100_m = point_m.buffer(100.0 * 0.3048)
+        b300_m = point_m.buffer(300.0 * 0.3048)
+        rings_m = {
+            "ring_0_5_ft": b5_m,
+            "ring_5_30_ft": b30_m.difference(b5_m),
+            "ring_30_100_ft": b100_m.difference(b30_m),
+            "ring_100_300_ft": b300_m.difference(b100_m),
+        }
+        rings_wgs84: dict[str, Any] = {}
+        for ring_key, ring_geom in rings_m.items():
+            if ring_geom is None or bool(getattr(ring_geom, "is_empty", True)):
+                continue
+            try:
+                rings_wgs84[ring_key] = shapely_transform(to_wgs84, ring_geom)
+            except Exception:
+                continue
+        return rings_wgs84
+
+    def _compute_parcel_based_metrics(
+        self,
+        *,
+        parcel_polygon: Any | None,
+        ring_metrics: dict[str, Any] | None,
+        canopy_path: str,
+        fuel_path: str,
+    ) -> dict[str, Any] | None:
+        if parcel_polygon is None or bool(getattr(parcel_polygon, "is_empty", True)):
+            return None
+
+        parcel_canopy = self._summarize_ring_canopy(parcel_polygon, canopy_path=canopy_path)
+        parcel_fuel = self._summarize_ring_fuel_presence(parcel_polygon, fuel_path=fuel_path)
+
+        vegetation_within_parcel = None
+        if parcel_canopy is not None:
+            vegetation_within_parcel = self._coerce_float(parcel_canopy.get("vegetation_density"))
+        elif parcel_fuel is not None:
+            vegetation_within_parcel = self._coerce_float(parcel_fuel)
+
+        coverage_pct = self._coerce_float((parcel_canopy or {}).get("coverage_pct"))
+        cleared_area_ratio = (
+            round(max(0.0, min(100.0, 100.0 - float(coverage_pct))), 1)
+            if coverage_pct is not None
+            else (
+                round(max(0.0, min(100.0, 100.0 - float(vegetation_within_parcel))), 1)
+                if vegetation_within_parcel is not None
+                else None
+            )
+        )
+
+        edge_exposure = None
+        if Transformer and shapely_transform:
+            try:
+                to_3857 = Transformer.from_crs("EPSG:4326", "EPSG:3857", always_xy=True).transform
+                to_wgs84 = Transformer.from_crs("EPSG:3857", "EPSG:4326", always_xy=True).transform
+                parcel_m = shapely_transform(to_3857, parcel_polygon)
+                inner_m = parcel_m.buffer(-(20.0 * 0.3048))
+                edge_m = parcel_m.difference(inner_m) if inner_m is not None and not bool(getattr(inner_m, "is_empty", True)) else parcel_m
+                if edge_m is not None and not bool(getattr(edge_m, "is_empty", True)):
+                    edge_wgs84 = shapely_transform(to_wgs84, edge_m)
+                    edge_canopy = self._summarize_ring_canopy(edge_wgs84, canopy_path=canopy_path)
+                    edge_fuel = self._summarize_ring_fuel_presence(edge_wgs84, fuel_path=fuel_path)
+                    terms: list[tuple[float, float]] = []
+                    canopy_edge = self._coerce_float((edge_canopy or {}).get("vegetation_density"))
+                    if canopy_edge is not None:
+                        terms.append((0.7, float(canopy_edge)))
+                    if edge_fuel is not None:
+                        terms.append((0.3, float(edge_fuel)))
+                    if terms:
+                        edge_exposure = round(
+                            max(0.0, min(100.0, sum(w * v for w, v in terms) / max(1e-6, sum(w for w, _ in terms)))),
+                            1,
+                        )
+            except Exception:
+                edge_exposure = None
+        if edge_exposure is None:
+            rings = ring_metrics if isinstance(ring_metrics, dict) else {}
+            ring_outer = rings.get("ring_30_100_ft") or rings.get("zone_30_100_ft") or {}
+            ring_far = rings.get("ring_100_300_ft") or rings.get("zone_100_300_ft") or {}
+            outer_density = self._coerce_float((ring_outer or {}).get("vegetation_density"))
+            far_density = self._coerce_float((ring_far or {}).get("vegetation_density"))
+            if outer_density is not None and far_density is not None:
+                edge_exposure = round((0.7 * float(outer_density)) + (0.3 * float(far_density)), 1)
+            elif outer_density is not None:
+                edge_exposure = round(float(outer_density), 1)
+            elif far_density is not None:
+                edge_exposure = round(float(far_density), 1)
+
+        return {
+            "vegetation_within_parcel": (
+                round(float(vegetation_within_parcel), 1) if vegetation_within_parcel is not None else None
+            ),
+            "cleared_area_ratio": cleared_area_ratio,
+            "edge_exposure": edge_exposure,
+            "boundary_mode": "parcel_polygon",
+        }
+
     def _build_point_proxy_ring_metrics(
         self,
         *,
@@ -1519,6 +1650,7 @@ class WildfireDataClient:
         lon: float,
         canopy_path: str,
         fuel_path: str,
+        parcel_polygon: Any | None = None,
     ) -> dict[str, dict[str, float | None]]:
         zone_bounds_ft = {
             "ring_0_5_ft": (0.0, 5.0),
@@ -1533,36 +1665,53 @@ class WildfireDataClient:
             "ring_100_300_ft": "zone_100_300_ft",
         }
         metrics: dict[str, dict[str, float | None]] = {}
+        point_rings = (
+            self._build_point_buffer_rings(lat=lat, lon=lon)
+            if parcel_polygon is not None
+            else {}
+        )
         for ring_key, (inner_ft, outer_ft) in zone_bounds_ft.items():
-            inner_m = inner_ft * 0.3048
-            outer_m = outer_ft * 0.3048
-            canopy_vals = self._sample_annulus(
-                canopy_path,
-                lat,
-                lon,
-                inner_radius_m=inner_m,
-                outer_radius_m=outer_m,
+            ring_geom = point_rings.get(ring_key)
+            clipped_geom = (
+                self._clip_ring_to_parcel(ring_geometry=ring_geom, parcel_polygon=parcel_polygon)
+                if ring_geom is not None and parcel_polygon is not None
+                else None
             )
-            fuel_vals = self._sample_annulus(
-                fuel_path,
-                lat,
-                lon,
-                inner_radius_m=inner_m,
-                outer_radius_m=outer_m,
-            )
-            canopy_stats: dict[str, float] | None = None
-            if canopy_vals:
-                canopy_mean = float(sum(canopy_vals) / len(canopy_vals))
-                canopy_max = float(max(canopy_vals))
-                coverage_pct = float(sum(1 for v in canopy_vals if v >= 20.0) / len(canopy_vals) * 100.0)
-                canopy_stats = {
-                    "canopy_mean": round(canopy_mean, 1),
-                    "canopy_max": round(canopy_max, 1),
-                    "coverage_pct": round(coverage_pct, 1),
-                    "vegetation_density": round(float(self._to_index(canopy_mean, 0.0, 100.0)), 1),
-                }
+            if clipped_geom is not None:
+                canopy_stats = self._summarize_ring_canopy(clipped_geom, canopy_path=canopy_path)
+                fuel_presence = self._summarize_ring_fuel_presence(clipped_geom, fuel_path=fuel_path)
+                ring_area_sqft = self._geometry_area_sqft(clipped_geom)
+            else:
+                inner_m = inner_ft * 0.3048
+                outer_m = outer_ft * 0.3048
+                canopy_vals = self._sample_annulus(
+                    canopy_path,
+                    lat,
+                    lon,
+                    inner_radius_m=inner_m,
+                    outer_radius_m=outer_m,
+                )
+                fuel_vals = self._sample_annulus(
+                    fuel_path,
+                    lat,
+                    lon,
+                    inner_radius_m=inner_m,
+                    outer_radius_m=outer_m,
+                )
+                canopy_stats: dict[str, float] | None = None
+                if canopy_vals:
+                    canopy_mean = float(sum(canopy_vals) / len(canopy_vals))
+                    canopy_max = float(max(canopy_vals))
+                    coverage_pct = float(sum(1 for v in canopy_vals if v >= 20.0) / len(canopy_vals) * 100.0)
+                    canopy_stats = {
+                        "canopy_mean": round(canopy_mean, 1),
+                        "canopy_max": round(canopy_max, 1),
+                        "coverage_pct": round(coverage_pct, 1),
+                        "vegetation_density": round(float(self._to_index(canopy_mean, 0.0, 100.0)), 1),
+                    }
+                fuel_presence = self._fuel_presence_proxy_from_values(fuel_vals)
+                ring_area_sqft = round(self._annulus_area_sqft(inner_ft, outer_ft), 1)
 
-            fuel_presence = self._fuel_presence_proxy_from_values(fuel_vals)
             if canopy_stats is None and fuel_presence is None:
                 zone = {
                     "canopy_mean": None,
@@ -1585,7 +1734,6 @@ class WildfireDataClient:
                 vegetation_density = canopy_stats["vegetation_density"]
                 if fuel_presence is not None:
                     vegetation_density = round((vegetation_density + fuel_presence) / 2.0, 1)
-                ring_area_sqft = round(self._annulus_area_sqft(inner_ft, outer_ft), 1)
                 zone = {
                     "canopy_mean": canopy_stats["canopy_mean"],
                     "canopy_max": canopy_stats["canopy_max"],
@@ -1599,8 +1747,14 @@ class WildfireDataClient:
                     ),
                     "basis": "point_proxy",
                 }
+                if clipped_geom is not None:
+                    zone["sampling_boundary"] = "parcel_clipped"
             if "ring_area_sqft" not in zone:
-                ring_area_sqft = round(self._annulus_area_sqft(inner_ft, outer_ft), 1)
+                ring_area_sqft = (
+                    self._geometry_area_sqft(clipped_geom)
+                    if clipped_geom is not None
+                    else round(self._annulus_area_sqft(inner_ft, outer_ft), 1)
+                )
                 zone["ring_area_sqft"] = ring_area_sqft
                 zone["vegetated_overlap_area_sqft"] = self._estimated_overlap_area_sqft(
                     ring_area_sqft=ring_area_sqft,
@@ -1610,8 +1764,16 @@ class WildfireDataClient:
             metrics[zone_aliases[ring_key]] = dict(zone)
         metrics["_meta"] = {
             "geometry_type": "point",
-            "precision_flag": "fallback_point_proxy",
-            "ring_generation_mode": "point_annulus_fallback",
+            "precision_flag": (
+                "parcel_clipped_point_proxy"
+                if parcel_polygon is not None and point_rings
+                else "fallback_point_proxy"
+            ),
+            "ring_generation_mode": (
+                "point_annulus_parcel_clipped"
+                if parcel_polygon is not None and point_rings
+                else "point_annulus_fallback"
+            ),
             "ring_definition_ft": {
                 "ring_0_5_ft": [0.0, 5.0],
                 "ring_5_30_ft": [5.0, 30.0],
@@ -1619,7 +1781,11 @@ class WildfireDataClient:
             },
         }
         metrics["geometry_type"] = "point"
-        metrics["precision_flag"] = "fallback_point_proxy"
+        metrics["precision_flag"] = (
+            "parcel_clipped_point_proxy"
+            if parcel_polygon is not None and point_rings
+            else "fallback_point_proxy"
+        )
         return metrics
 
     @staticmethod
@@ -2044,6 +2210,13 @@ class WildfireDataClient:
                 lon=fallback_query_lon,
                 canopy_path=canopy_path,
                 fuel_path=fuel_path,
+                parcel_polygon=parcel_polygon,
+            )
+            parcel_based_metrics = self._compute_parcel_based_metrics(
+                parcel_polygon=parcel_polygon,
+                ring_metrics=point_proxy_metrics,
+                canopy_path=canopy_path,
+                fuel_path=fuel_path,
             )
             nearest_vegetation_distance_ft: float | None = None
             for ring_key, approx_ft in [
@@ -2187,6 +2360,7 @@ class WildfireDataClient:
                 "building_age_proxy_year": proxy_year,
                 "building_age_material_proxy_risk": proxy_risk,
                 "structure_attributes": structure_attributes,
+                "parcel_based_metrics": parcel_based_metrics,
             }, assumptions, sources
 
         sources.append("Building footprint source")
@@ -2214,8 +2388,25 @@ class WildfireDataClient:
                 ring_metrics[zone_aliases[ring_key]] = dict(metrics)
                 continue
 
-            canopy_stats = self._summarize_ring_canopy(ring_geom, canopy_path=canopy_path)
-            fuel_presence = self._summarize_ring_fuel_presence(ring_geom, fuel_path=fuel_path)
+            sampling_geom = self._clip_ring_to_parcel(
+                ring_geometry=ring_geom,
+                parcel_polygon=parcel_polygon,
+            )
+            if sampling_geom is None:
+                metrics = {
+                    "canopy_mean": None,
+                    "canopy_max": None,
+                    "vegetation_density": None,
+                    "coverage_pct": None,
+                    "fuel_presence_proxy": None,
+                    "sampling_boundary": "parcel_clipped",
+                }
+                ring_metrics[ring_key] = metrics
+                ring_metrics[zone_aliases[ring_key]] = dict(metrics)
+                continue
+
+            canopy_stats = self._summarize_ring_canopy(sampling_geom, canopy_path=canopy_path)
+            fuel_presence = self._summarize_ring_fuel_presence(sampling_geom, fuel_path=fuel_path)
 
             if canopy_stats is None:
                 metrics = {
@@ -2229,7 +2420,7 @@ class WildfireDataClient:
                 vegetation_density = canopy_stats["vegetation_density"]
                 if fuel_presence is not None:
                     vegetation_density = round((vegetation_density + fuel_presence) / 2.0, 1)
-                ring_area_sqft = self._geometry_area_sqft(ring_geom)
+                ring_area_sqft = self._geometry_area_sqft(sampling_geom)
                 metrics = {
                     "canopy_mean": canopy_stats["canopy_mean"],
                     "canopy_max": canopy_stats["canopy_max"],
@@ -2242,8 +2433,10 @@ class WildfireDataClient:
                         coverage_pct=canopy_stats["coverage_pct"],
                     ),
                 }
+            if parcel_polygon is not None:
+                metrics["sampling_boundary"] = "parcel_clipped"
             if "ring_area_sqft" not in metrics:
-                ring_area_sqft = self._geometry_area_sqft(ring_geom)
+                ring_area_sqft = self._geometry_area_sqft(sampling_geom)
                 metrics["ring_area_sqft"] = ring_area_sqft
                 metrics["vegetated_overlap_area_sqft"] = self._estimated_overlap_area_sqft(
                     ring_area_sqft=ring_area_sqft,
@@ -2251,6 +2444,13 @@ class WildfireDataClient:
                 )
             ring_metrics[ring_key] = metrics
             ring_metrics[zone_aliases[ring_key]] = dict(metrics)
+
+        parcel_based_metrics = self._compute_parcel_based_metrics(
+            parcel_polygon=parcel_polygon,
+            ring_metrics=ring_metrics,
+            canopy_path=canopy_path,
+            fuel_path=fuel_path,
+        )
 
         nearest_vegetation_distance_ft: float | None = None
         for ring_key, approx_ft in [
@@ -2459,6 +2659,7 @@ class WildfireDataClient:
             "building_age_proxy_year": proxy_year,
             "building_age_material_proxy_risk": proxy_risk,
             "structure_attributes": structure_attributes,
+            "parcel_based_metrics": parcel_based_metrics,
             "footprint_centroid": {
                 "latitude": result.centroid[0] if result.centroid else None,
                 "longitude": result.centroid[1] if result.centroid else None,

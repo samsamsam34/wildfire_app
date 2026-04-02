@@ -7165,6 +7165,7 @@ def _run_assessment(
         prioritized_vegetation_actions=prioritized_vegetation_actions,
         defensible_space_limitations_summary=defensible_space_limitations_summary,
         near_structure_features=dict(property_level_context.get("near_structure_features") or {}),
+        parcel_based_metrics=dict(property_level_context.get("parcel_based_metrics") or {}),
         directional_risk=dict(property_level_context.get("directional_risk") or {}),
         structure_relative_slope=dict(property_level_context.get("structure_relative_slope") or {}),
         structure_attributes=dict(property_level_context.get("structure_attributes") or {}),

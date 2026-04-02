@@ -1028,6 +1028,7 @@ class AssessmentResult(BaseModel):
     prioritized_vegetation_actions: List[NearStructureAction] = Field(default_factory=list)
     defensible_space_limitations_summary: List[str] = Field(default_factory=list)
     near_structure_features: Dict[str, Any] = Field(default_factory=dict)
+    parcel_based_metrics: Dict[str, Any] = Field(default_factory=dict)
     directional_risk: Dict[str, Any] = Field(default_factory=dict)
     structure_relative_slope: Dict[str, Any] = Field(default_factory=dict)
     structure_attributes: Dict[str, Any] = Field(default_factory=dict)
