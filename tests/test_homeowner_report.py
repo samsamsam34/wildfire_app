@@ -193,6 +193,19 @@ def test_homeowner_report_and_pdf_generate_for_complete_assessment(monkeypatch, 
     assert "proxy_feature_count" in trust_summary
     assert "defaulted_feature_count" in trust_summary
     assert "regional_feature_count" in trust_summary
+    property_confidence = trust_summary.get("property_confidence_summary") or {}
+    assert property_confidence.get("level") in {
+        "verified_property_specific",
+        "strong_property_specific",
+        "address_level",
+        "regional_estimate_with_anchor",
+        "insufficient_property_identification",
+        "high",
+        "medium",
+        "low",
+    }
+    assert isinstance(property_confidence.get("key_reasons"), list)
+    assert isinstance(property_confidence.get("user_action_recommended"), str)
 
 
 def test_homeowner_report_surfaces_mostly_regional_differentiation_mode(monkeypatch, tmp_path: Path):

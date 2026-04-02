@@ -1,6 +1,10 @@
 from __future__ import annotations
 
-from backend.main import _build_feature_coverage_preflight
+from backend.main import (
+    _build_feature_coverage_preflight,
+    _build_property_confidence_summary,
+    _property_data_confidence_level,
+)
 from backend.models import AddressRequest, LayerCoverageSummary, PropertyAttributes
 from backend.wildfire_data import WildfireContext
 
@@ -88,7 +92,9 @@ def test_property_confidence_summary_high_with_strong_property_data():
     )
     summary = preflight.get("property_confidence_summary") or {}
     assert float(preflight.get("property_data_confidence") or 0.0) >= 75.0
-    assert summary.get("level") == "high"
+    assert summary.get("level") in {"verified_property_specific", "strong_property_specific"}
+    assert isinstance(summary.get("user_action_recommended"), str)
+    assert isinstance(summary.get("key_reasons"), list)
 
 
 def test_property_confidence_summary_low_when_fallback_heavy():
@@ -127,5 +133,150 @@ def test_property_confidence_summary_low_when_fallback_heavy():
     summary = preflight.get("property_confidence_summary") or {}
     assert preflight.get("property_data_confidence") is not None
     assert float(preflight.get("property_data_confidence")) < 50.0
-    assert summary.get("level") == "low"
+    assert summary.get("level") in {"regional_estimate_with_anchor", "insufficient_property_identification"}
+    assert "move pin" in str(summary.get("user_action_recommended") or "").lower()
     assert str(preflight.get("assessment_specificity_tier")) in {"regional_estimate", "address_level"}
+
+
+def test_property_confidence_level_ladder_threshold_mapping():
+    assert _property_data_confidence_level(94.0) == "verified_property_specific"
+    assert _property_data_confidence_level(78.0) == "strong_property_specific"
+    assert _property_data_confidence_level(61.0) == "address_level"
+    assert _property_data_confidence_level(40.0) == "regional_estimate_with_anchor"
+    assert _property_data_confidence_level(18.0) == "insufficient_property_identification"
+
+
+def test_property_confidence_summary_supports_all_ladder_levels():
+    def _score_for(ctx: dict, fallback_fraction: float, fallback_ratio: float) -> dict:
+        return _build_property_confidence_summary(
+                payload=AddressRequest(
+                address="12345 Test Address Rd",
+                attributes=PropertyAttributes(
+                    roof_type="class a",
+                    vent_type="ember-resistant",
+                    defensible_space_ft=30.0,
+                    construction_year=1994,
+                ),
+                confirmed_fields=["roof_type", "vent_type", "defensible_space_ft"],
+                selected_structure_id=ctx.get("selected_structure_id"),
+            ),
+            property_level_context=ctx,
+            fallback_evidence_fraction=fallback_fraction,
+            fallback_dominance_ratio=fallback_ratio,
+        )
+
+    verified = _score_for(
+        {
+            "footprint_used": True,
+            "fallback_mode": "footprint",
+            "naip_feature_source": "prepared_region_naip",
+            "ring_metrics": {"ring_0_5_ft": {"vegetation_density": 48.0}, "ring_5_30_ft": {"vegetation_density": 52.0}},
+            "structure_attributes": {
+                "area": {"sqft": 2200.0},
+                "density_context": {"index": 66.0},
+                "estimated_age_proxy": {"proxy_year": 1998.0},
+                "shape_complexity": {"index": 30.0},
+                "year_built": 1996,
+                "building_area_sqft": 2250.0,
+                "land_use_class": "single_family_residential",
+                "roof_material_public_record": "class a",
+            },
+            "parcel_resolution": {"status": "matched", "confidence": 94.0},
+            "footprint_resolution": {"match_status": "matched", "confidence_score": 0.95},
+            "property_linkage": {"anchor_confidence": 93.0, "mismatch_flags": []},
+            "selected_structure_id": "home-1",
+        },
+        0.08,
+        0.10,
+    )
+    assert verified["level"] == "verified_property_specific"
+
+    strong = _score_for(
+        {
+            "footprint_used": True,
+            "fallback_mode": "footprint",
+            "naip_feature_source": "prepared_region_naip",
+            "ring_metrics": {"ring_0_5_ft": {"vegetation_density": 46.0}, "ring_5_30_ft": {"vegetation_density": 49.0}},
+            "structure_attributes": {
+                "area": {"sqft": 2000.0},
+                "density_context": {"index": 58.0},
+                "estimated_age_proxy": {"proxy_year": 1990.0},
+                "shape_complexity": {"index": 26.0},
+                "year_built": 1989,
+                "building_area_sqft": 2010.0,
+                "land_use_class": "single_family_residential",
+            },
+            "parcel_resolution": {"status": "matched", "confidence": 86.0},
+            "footprint_resolution": {"match_status": "matched", "confidence_score": 0.85},
+            "property_linkage": {"anchor_confidence": 84.0, "mismatch_flags": []},
+        },
+        0.16,
+        0.18,
+    )
+    assert strong["level"] in {"strong_property_specific", "verified_property_specific"}
+
+    address = _score_for(
+        {
+            "footprint_used": False,
+            "fallback_mode": "point_based",
+            "naip_feature_source": "regional_fallback",
+            "ring_metrics": {"ring_5_30_ft": {"vegetation_density": 42.0}},
+            "structure_attributes": {
+                "area": {"sqft": None},
+                "density_context": {"index": 44.0},
+                "estimated_age_proxy": {"proxy_year": 1985.0},
+                "shape_complexity": {"index": None},
+            },
+            "parcel_resolution": {"status": "matched", "confidence": 70.0},
+            "footprint_resolution": {"match_status": "ambiguous", "confidence_score": 0.45},
+            "property_linkage": {"anchor_confidence": 76.0, "mismatch_flags": ["multiple_footprints_on_parcel"]},
+        },
+        0.35,
+        0.40,
+    )
+    assert address["level"] in {"address_level", "regional_estimate_with_anchor"}
+
+    regional = _score_for(
+        {
+            "footprint_used": False,
+            "fallback_mode": "point_based",
+            "naip_feature_source": "point_proxy",
+            "ring_metrics": {},
+            "structure_attributes": {
+                "area": {"sqft": None},
+                "density_context": {"index": None},
+                "estimated_age_proxy": None,
+                "shape_complexity": {"index": None},
+            },
+            "parcel_resolution": {"status": "matched", "confidence": 58.0},
+            "footprint_resolution": {"match_status": "none", "confidence_score": 0.0},
+            "property_linkage": {"anchor_confidence": 68.0, "mismatch_flags": ["no_confident_structure_match"]},
+        },
+        0.55,
+        0.62,
+    )
+    assert regional["level"] in {"regional_estimate_with_anchor", "insufficient_property_identification"}
+
+    insufficient = _score_for(
+        {
+            "footprint_used": False,
+            "fallback_mode": "point_based",
+            "naip_feature_source": "point_proxy",
+            "ring_metrics": {},
+            "structure_attributes": {
+                "area": {"sqft": None},
+                "density_context": {"index": None},
+                "estimated_age_proxy": None,
+                "shape_complexity": {"index": None},
+            },
+            "parcel_resolution": {"status": "not_found", "confidence": 8.0},
+            "footprint_resolution": {"match_status": "none", "confidence_score": 0.0},
+            "property_linkage": {
+                "anchor_confidence": 28.0,
+                "mismatch_flags": ["no_confident_structure_match", "footprint_parcel_misalignment"],
+            },
+        },
+        0.85,
+        0.92,
+    )
+    assert insufficient["level"] == "insufficient_property_identification"

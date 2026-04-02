@@ -6211,12 +6211,14 @@ def test_specificity_summary_is_influenced_by_local_differentiation_score():
         },
         property_confidence_summary={
             "score": 24.0,
-            "level": "low",
-            "key_gaps": ["Building footprint match is missing or low-confidence."],
+            "level": "insufficient_property_identification",
+            "key_reasons": ["Building footprint match is missing or low-confidence."],
+            "user_action_recommended": "Move pin to your home and confirm the building footprint.",
         },
     )
     assert low_property_data.get("specificity_tier") == "regional_estimate"
     assert low_property_data.get("comparison_allowed") is False
+    assert "property identification confidence is low" in str(low_property_data.get("what_this_means") or "").lower()
 
     medium_property_data = app_main._build_specificity_summary(
         assessment_specificity_tier="property_specific",
@@ -6231,8 +6233,9 @@ def test_specificity_summary_is_influenced_by_local_differentiation_score():
         },
         property_confidence_summary={
             "score": 48.0,
-            "level": "medium",
-            "key_gaps": [],
+            "level": "address_level",
+            "key_reasons": [],
+            "user_action_recommended": "Confirm building location.",
         },
     )
     assert medium_property_data.get("specificity_tier") == "address_level"
@@ -6252,8 +6255,9 @@ def test_specificity_summary_is_influenced_by_local_differentiation_score():
         },
         property_confidence_summary={
             "score": 82.0,
-            "level": "high",
-            "key_gaps": [],
+            "level": "strong_property_specific",
+            "key_reasons": [],
+            "user_action_recommended": "",
         },
     )
     assert mismatch_case.get("specificity_tier") in {"address_level", "regional_estimate"}

@@ -393,6 +393,16 @@ def build_homeowner_improvement_options(result: AssessmentResult) -> HomeownerIm
     parcel_match_status = str(geometry_resolution.get("parcel_match_status") or "").strip().lower()
     property_mismatch_flag = bool(geometry_resolution.get("property_mismatch_flag"))
     mismatch_reason = str(geometry_resolution.get("mismatch_reason") or "").strip()
+    property_confidence_summary = (
+        result.property_confidence_summary.model_dump()
+        if hasattr(result.property_confidence_summary, "model_dump")
+        else (
+            dict(result.property_confidence_summary)
+            if isinstance(result.property_confidence_summary, dict)
+            else {}
+        )
+    )
+    property_confidence_level = str(property_confidence_summary.get("level") or "").strip().lower()
     source_conflict_flag = bool(getattr(result, "source_conflict_flag", False))
     footprint_missing = footprint_status in {"none", "ambiguous", "provider_unavailable", "error"}
     low_anchor_confidence = anchor_quality < 0.70
@@ -404,6 +414,7 @@ def build_homeowner_improvement_options(result: AssessmentResult) -> HomeownerIm
         or naip_status in {"missing", "provider_unavailable", "present_but_not_consumed", "fallback_or_proxy"}
         or parcel_mismatch_or_unresolved
         or property_mismatch_flag
+        or property_confidence_level in {"regional_estimate_with_anchor", "insufficient_property_identification", "low"}
     )
     geometry_issue_flags: list[str] = []
     if footprint_missing:
@@ -416,6 +427,8 @@ def build_homeowner_improvement_options(result: AssessmentResult) -> HomeownerIm
         geometry_issue_flags.append("point_fallback_rings")
     if property_mismatch_flag:
         geometry_issue_flags.append("property_mismatch")
+    if property_confidence_level in {"regional_estimate_with_anchor", "insufficient_property_identification", "low"}:
+        geometry_issue_flags.append("low_property_confidence")
     structure_attribute_gaps = _structure_attribute_gaps(
         facts=facts,
         strict_missing_fields=strict_missing_fields,
@@ -545,7 +558,11 @@ def summarize_assessment_for_improvement(result: AssessmentResult) -> dict[str, 
         "confidence_tier": result.confidence_tier,
         "property_data_confidence": result.property_data_confidence,
         "property_confidence_level": str(property_confidence_summary.get("level") or ""),
-        "property_confidence_key_gaps": list(property_confidence_summary.get("key_gaps") or [])[:4],
+        "property_confidence_key_gaps": list(
+            property_confidence_summary.get("key_reasons")
+            or property_confidence_summary.get("key_gaps")
+            or []
+        )[:4],
         "top_recommended_actions": list(result.top_recommended_actions or [])[:3],
         "top_risk_drivers": list(result.top_risk_drivers or [])[:3],
     }

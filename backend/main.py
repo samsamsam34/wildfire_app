@@ -3048,9 +3048,22 @@ def _region_readiness_penalty_summary(property_level_context: dict[str, Any]) ->
 
 
 def _property_data_confidence_level(score: float) -> str:
-    if score >= 70.0:
+    if score >= 88.0:
+        return "verified_property_specific"
+    if score >= 72.0:
+        return "strong_property_specific"
+    if score >= 55.0:
+        return "address_level"
+    if score >= 35.0:
+        return "regional_estimate_with_anchor"
+    return "insufficient_property_identification"
+
+
+def _property_confidence_band(level: str) -> str:
+    normalized = str(level or "").strip().lower()
+    if normalized in {"verified_property_specific", "strong_property_specific", "high"}:
         return "high"
-    if score >= 45.0:
+    if normalized in {"address_level", "medium"}:
         return "medium"
     return "low"
 
@@ -3077,9 +3090,15 @@ def _build_property_confidence_summary(
         if isinstance(property_level_context.get("structure_attributes"), dict)
         else {}
     )
+    property_linkage = (
+        property_level_context.get("property_linkage")
+        if isinstance(property_level_context.get("property_linkage"), dict)
+        else {}
+    )
     parcel_status = str(parcel_resolution.get("status") or "").strip().lower()
     footprint_status = str(footprint_resolution.get("match_status") or "").strip().lower()
     fallback_mode = str(property_level_context.get("fallback_mode") or "").strip().lower()
+    naip_feature_source = str(property_level_context.get("naip_feature_source") or "").strip().lower()
 
     try:
         raw_parcel_confidence = float(parcel_resolution.get("confidence") or 0.0)
@@ -3113,19 +3132,65 @@ def _build_property_confidence_summary(
         # Unknown footprint status is treated as neutral, not hard-failed.
         footprint_confidence = 58.0
 
+    anchor_confidence = _safe_float(property_linkage.get("anchor_confidence"))
+    if anchor_confidence is None:
+        anchor_confidence = _safe_float(property_level_context.get("property_anchor_quality_score"))
+    if anchor_confidence is None:
+        anchor_confidence = _safe_float(property_level_context.get("anchor_quality_score"))
+    if anchor_confidence is None:
+        geocode_precision = str(property_level_context.get("geocode_precision") or "").strip().lower()
+        anchor_confidence = {
+            "rooftop": 92.0,
+            "parcel_or_address_point": 86.0,
+            "parcel": 82.0,
+            "user_selected_point": 85.0,
+            "interpolated": 60.0,
+            "approximate": 44.0,
+            "unknown": 52.0,
+        }.get(geocode_precision, 55.0)
+    anchor_confidence = max(0.0, min(100.0, float(anchor_confidence)))
+
+    parcel_footprint_consistency = 100.0
+    mismatch_flags = [
+        str(flag).strip().lower()
+        for flag in list(property_linkage.get("mismatch_flags") or [])
+        if str(flag).strip()
+    ]
+    if bool(property_linkage.get("footprint_outside_parcel")) or "footprint_parcel_misalignment" in mismatch_flags:
+        parcel_footprint_consistency = min(parcel_footprint_consistency, 24.0)
+    if "multiple_footprints_on_parcel" in mismatch_flags:
+        parcel_footprint_consistency = min(parcel_footprint_consistency, 56.0)
+    if "parcel_ambiguous" in mismatch_flags:
+        parcel_footprint_consistency = min(parcel_footprint_consistency, 54.0)
+    if "no_confident_structure_match" in mismatch_flags:
+        parcel_footprint_consistency = min(parcel_footprint_consistency, 34.0)
+
     area_sqft = _safe_float(((structure_attributes.get("area") or {}).get("sqft")))
     density_index = _safe_float(((structure_attributes.get("density_context") or {}).get("index")))
     age_proxy_year = _safe_float(((structure_attributes.get("estimated_age_proxy") or {}).get("proxy_year")))
     shape_index = _safe_float(((structure_attributes.get("shape_complexity") or {}).get("index")))
+    year_built = _safe_float(structure_attributes.get("year_built"))
+    building_area_sqft = _safe_float(structure_attributes.get("building_area_sqft"))
+    land_use_class = str(structure_attributes.get("land_use_class") or "").strip()
+    roof_material_public_record = str(structure_attributes.get("roof_material_public_record") or "").strip()
     structure_available_count = sum(
         1
         for value in [area_sqft, density_index, age_proxy_year, shape_index]
         if value is not None
     )
-    structure_attributes_score = (float(structure_available_count) / 4.0) * 100.0
+    enriched_structure_count = sum(
+        1
+        for value in [year_built, building_area_sqft, land_use_class or None, roof_material_public_record or None]
+        if value is not None
+    )
+    structure_attributes_score = (float(structure_available_count) / 4.0) * 72.0 + (
+        float(enriched_structure_count) / 4.0
+    ) * 28.0
 
     user_inputs_score = 0.0
     user_inputs_provided = 0
+    geometry_user_input = False
+    structure_confirmation_present = False
     if payload is not None:
         attrs = payload.attributes if isinstance(payload.attributes, PropertyAttributes) else PropertyAttributes()
         provided = [
@@ -3141,6 +3206,10 @@ def _build_property_confidence_summary(
             payload.property_anchor_point is not None
             or payload.user_selected_point is not None
             or payload.selected_structure_geometry is not None
+            or payload.selected_structure_id is not None
+        )
+        structure_confirmation_present = bool(
+            payload.selected_structure_geometry is not None
             or payload.selected_structure_id is not None
         )
         user_inputs_score = ((float(user_inputs_provided) + (1.0 if geometry_user_input else 0.0)) / 7.0) * 100.0
@@ -3167,12 +3236,30 @@ def _build_property_confidence_summary(
     if combined_structure_score <= 0.0:
         combined_structure_score = 32.0 if fallback_mode == "point_based" else 48.0
 
-    score = (
-        0.22 * max(0.0, min(100.0, parcel_confidence))
-        + 0.28 * max(0.0, min(100.0, footprint_confidence))
-        + 0.25 * max(0.0, min(100.0, combined_structure_score))
-        + 0.25 * max(0.0, min(100.0, near_structure_evidence_score))
+    if naip_feature_source == "prepared_region_naip":
+        naip_structure_feature_score = 92.0
+    elif naip_feature_source in {"regional_fallback", "point_proxy", "layer_fallback"}:
+        naip_structure_feature_score = 50.0
+    elif near_structure_ring_count >= 2:
+        naip_structure_feature_score = 64.0
+    else:
+        naip_structure_feature_score = 28.0
+
+    homeowner_geometry_confirmation_score = 90.0 if structure_confirmation_present else (
+        74.0 if geometry_user_input else 45.0
     )
+
+    score = (
+        0.18 * anchor_confidence
+        + 0.20 * max(0.0, min(100.0, parcel_confidence))
+        + 0.24 * max(0.0, min(100.0, footprint_confidence))
+        + 0.16 * max(0.0, min(100.0, parcel_footprint_consistency))
+        + 0.10 * max(0.0, min(100.0, naip_structure_feature_score))
+        + 0.08 * max(0.0, min(100.0, combined_structure_score))
+        + 0.04 * max(0.0, min(100.0, homeowner_geometry_confirmation_score))
+    )
+    if near_structure_evidence_score < 40.0:
+        score -= 4.0
     if fallback_mode == "point_based" and near_structure_ring_count == 0:
         score -= 8.0
     if fallback_evidence_fraction >= 0.65 or fallback_dominance_ratio >= 0.75:
@@ -3181,24 +3268,54 @@ def _build_property_confidence_summary(
         score = min(score, 55.0)
     if not bool(property_level_context.get("footprint_used")) and parcel_confidence < 45.0 and near_structure_ring_count == 0:
         score = min(score, 35.0)
+    if "footprint_parcel_misalignment" in mismatch_flags:
+        score = min(score, 40.0)
+    if "no_confident_structure_match" in mismatch_flags:
+        score = min(score, 32.0)
+    if anchor_confidence < 45.0:
+        score = min(score, 36.0)
 
-    key_gaps: list[str] = []
+    key_reasons: list[str] = []
     if parcel_status in {"not_found", "multiple_candidates"} or parcel_confidence < 60.0:
-        key_gaps.append("Parcel match is missing or low-confidence.")
+        key_reasons.append("Parcel match is missing or low-confidence.")
     if footprint_status in {"none", "ambiguous", "provider_unavailable", "error"} or footprint_confidence < 65.0:
-        key_gaps.append("Building footprint match is missing or low-confidence.")
+        key_reasons.append("Building footprint match is missing or low-confidence.")
+    if parcel_footprint_consistency < 60.0:
+        key_reasons.append("Parcel and footprint geometry are inconsistent or ambiguous.")
+    if anchor_confidence < 60.0:
+        key_reasons.append("Address/geocode anchor confidence is limited for this location.")
+    if naip_structure_feature_score < 60.0:
+        key_reasons.append("Near-structure imagery detail is limited or fallback-based.")
     if structure_available_count < 2:
-        key_gaps.append("Structure attributes are limited; more property-specific structure detail is needed.")
+        key_reasons.append("Structure attributes are limited; more property-specific structure detail is needed.")
     if payload is not None and user_inputs_provided < 2:
-        key_gaps.append("Few homeowner-provided structure details were supplied.")
+        key_reasons.append("Few homeowner-provided structure details were supplied.")
     if fallback_evidence_fraction >= 0.50 or fallback_dominance_ratio >= 0.60:
-        key_gaps.append("Fallback-heavy evidence reduces property-level confidence.")
+        key_reasons.append("Fallback-heavy evidence reduces property-level confidence.")
 
     score = round(max(0.0, min(100.0, score)), 1)
+    level = _property_data_confidence_level(score)
+    if level in {"insufficient_property_identification", "regional_estimate_with_anchor"}:
+        user_action_recommended = (
+            "Move pin to your home and confirm the building footprint before comparing nearby homes."
+        )
+    elif level == "address_level":
+        user_action_recommended = (
+            "Confirm building location and add key home details (roof, vents, defensible space) to improve property-specific precision."
+        )
+    elif level == "strong_property_specific":
+        user_action_recommended = (
+            "Optional: verify roof/vent details to further strengthen property-specific confidence."
+        )
+    else:
+        user_action_recommended = "No immediate action required for property identification confidence."
     return {
         "score": score,
-        "level": _property_data_confidence_level(score),
-        "key_gaps": key_gaps[:4],
+        "level": level,
+        "key_reasons": key_reasons[:5],
+        "user_action_recommended": user_action_recommended,
+        # Backward-compatible alias for existing consumers.
+        "key_gaps": key_reasons[:5],
     }
 
 
@@ -4841,8 +4958,7 @@ def _build_specificity_summary(
         if resolved_property_confidence.get("level")
         else _property_data_confidence_level(property_data_confidence)
     ).strip().lower()
-    if property_confidence_level not in {"high", "medium", "low"}:
-        property_confidence_level = _property_data_confidence_level(property_data_confidence)
+    property_confidence_band = _property_confidence_band(property_confidence_level)
 
     # Property-specificity output should degrade when local evidence is weak.
     if (
@@ -4878,7 +4994,7 @@ def _build_specificity_summary(
         and local_differentiation_score >= 60.0
         and not nearby_home_guardrail
         and property_data_confidence >= 55.0
-        and property_confidence_level != "low"
+        and property_confidence_band != "low"
     ):
         comparison_allowed = True
     if specificity_tier in {"regional_estimate", "insufficient_data"}:
@@ -4927,6 +5043,19 @@ def _build_specificity_summary(
         and "nearby homes may appear similar" not in what_this_means.lower()
     ):
         what_this_means = f"{what_this_means} {safeguard_message}"
+
+    if property_confidence_level in {"insufficient_property_identification", "low"}:
+        what_this_means = (
+            f"{what_this_means} Property identification confidence is low, so nearby-home comparisons are not supported."
+        ).strip()
+    elif property_confidence_level == "regional_estimate_with_anchor":
+        what_this_means = (
+            f"{what_this_means} The home anchor is usable, but building-level geometry is not yet strong enough for parcel-level comparison."
+        ).strip()
+    elif property_confidence_level == "address_level":
+        what_this_means = (
+            f"{what_this_means} Confirming building geometry can improve specificity."
+        ).strip()
 
     return {
         "specificity_tier": specificity_tier,
@@ -5163,13 +5292,19 @@ def _build_homeowner_trust_summary(
         if resolved_property_confidence.get("level")
         else _property_data_confidence_level(property_data_confidence)
     ).strip().lower()
-    if property_confidence_level not in {"high", "medium", "low"}:
-        property_confidence_level = _property_data_confidence_level(property_data_confidence)
-    property_confidence_gaps = [
+    property_confidence_band = _property_confidence_band(property_confidence_level)
+    property_confidence_reasons = [
         str(item).strip()
-        for item in list(resolved_property_confidence.get("key_gaps") or [])
+        for item in list(
+            resolved_property_confidence.get("key_reasons")
+            or resolved_property_confidence.get("key_gaps")
+            or []
+        )
         if str(item).strip()
     ][:4]
+    property_user_action_recommended = str(
+        resolved_property_confidence.get("user_action_recommended") or ""
+    ).strip()
 
     return {
         "confidence_level": confidence_level,
@@ -5201,13 +5336,16 @@ def _build_homeowner_trust_summary(
             and differentiation_mode != "mostly_regional"
             and local_differentiation_score >= 60.0
             and property_data_confidence >= 55.0
-            and property_confidence_level != "low"
+            and property_confidence_band != "low"
         ),
         "property_data_confidence": round(property_data_confidence, 1),
         "property_confidence_summary": {
             "score": round(property_data_confidence, 1),
             "level": property_confidence_level,
-            "key_gaps": property_confidence_gaps,
+            "key_reasons": property_confidence_reasons,
+            "user_action_recommended": property_user_action_recommended,
+            # Backward-compatible alias.
+            "key_gaps": property_confidence_reasons,
         },
         "property_mismatch_flag": property_mismatch_flag,
         "mismatch_reason": mismatch_reason,

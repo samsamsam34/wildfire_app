@@ -922,7 +922,20 @@ class SpecificitySummary(BaseModel):
 
 class PropertyConfidenceSummary(BaseModel):
     score: float = 0.0
-    level: Literal["high", "medium", "low"] = "low"
+    level: Literal[
+        "verified_property_specific",
+        "strong_property_specific",
+        "address_level",
+        "regional_estimate_with_anchor",
+        "insufficient_property_identification",
+        # Backward-compatible legacy levels
+        "high",
+        "medium",
+        "low",
+    ] = "insufficient_property_identification"
+    key_reasons: List[str] = Field(default_factory=list)
+    user_action_recommended: str = ""
+    # Backward-compatible alias retained for older payload consumers.
     key_gaps: List[str] = Field(default_factory=list)
 
 

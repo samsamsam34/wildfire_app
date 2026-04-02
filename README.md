@@ -492,6 +492,16 @@ Optional public-record structure enrichment:
   - `missing`
 - These enrichments are optional by region; missing public-record coverage does not block assessment.
 
+Property confidence (separate from wildfire model confidence):
+- Assessments now include a dedicated property-identification confidence ladder in `property_confidence_summary`:
+  - `verified_property_specific`
+  - `strong_property_specific`
+  - `address_level`
+  - `regional_estimate_with_anchor`
+  - `insufficient_property_identification`
+- This score measures how confidently the system identified the actual home geometry (anchor/parcel/footprint consistency, local feature availability, and user confirmation), not wildfire outcome confidence.
+- Low property-confidence levels automatically cap nearby-home comparison behavior and recommend geometry-correction actions.
+
 Offline prep/validation scripts:
 - Preferred (canonical): `scripts/prepare_region_from_catalog_or_sources.py` (plan/fill/build/validate in one command)
 - Validation: `scripts/validate_prepared_region.py`
