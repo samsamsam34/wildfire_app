@@ -11594,12 +11594,14 @@ def rerun_assessment_with_homeowner_inputs(
         not normalized_changes
         and not payload.confirmed_fields
         and mapped_defensible_space_ft is None
+        and payload.property_anchor_point is None
+        and payload.user_selected_point is None
     ):
         raise HTTPException(
             status_code=400,
             detail=(
                 "No property-detail updates were provided. Submit roof_type, vent_type, "
-                "defensible_space_ft, or defensible_space_condition."
+                "window_type, defensible_space_ft, defensible_space_condition, or a map-point correction."
             ),
         )
 
@@ -11618,9 +11620,13 @@ def rerun_assessment_with_homeowner_inputs(
         attributes=merged_attrs,
         confirmed_fields=merged_confirmed,
         structure_geometry_source=base_req.structure_geometry_source,
-        selection_mode=base_req.selection_mode,
-        property_anchor_point=base_req.property_anchor_point,
-        user_selected_point=base_req.user_selected_point,
+        selection_mode=(
+            "point"
+            if (payload.property_anchor_point is not None or payload.user_selected_point is not None)
+            else base_req.selection_mode
+        ),
+        property_anchor_point=payload.property_anchor_point or base_req.property_anchor_point,
+        user_selected_point=payload.user_selected_point or payload.property_anchor_point or base_req.user_selected_point,
         selected_structure_id=base_req.selected_structure_id,
         selected_structure_geometry=base_req.selected_structure_geometry,
         audience=payload.audience or base_req.audience,
@@ -11644,7 +11650,7 @@ def rerun_assessment_with_homeowner_inputs(
 
     before_options = build_homeowner_improvement_options(existing)
     after_options = build_homeowner_improvement_options(updated)
-    what_changed, change_notes = build_improvement_change_set(
+    what_changed, change_notes, what_changed_summary = build_improvement_change_set(
         existing,
         updated,
         changed_fields_hint=list(normalized_changes.keys()),
@@ -11656,6 +11662,41 @@ def rerun_assessment_with_homeowner_inputs(
         )
         change_notes.append(
             "Defensible space condition was converted to an approximate defensible-space distance for scoring."
+        )
+    if payload.property_anchor_point is not None or payload.user_selected_point is not None:
+        previous_anchor = (
+            base_req.user_selected_point
+            or base_req.property_anchor_point
+        )
+        incoming_anchor = payload.user_selected_point or payload.property_anchor_point
+        what_changed["map_point_correction"] = {
+            "before": (
+                previous_anchor.model_dump()
+                if hasattr(previous_anchor, "model_dump")
+                else (
+                    {
+                        "latitude": previous_anchor.latitude,
+                        "longitude": previous_anchor.longitude,
+                    }
+                    if previous_anchor is not None
+                    else None
+                )
+            ),
+            "after": (
+                incoming_anchor.model_dump()
+                if hasattr(incoming_anchor, "model_dump")
+                else (
+                    {
+                        "latitude": incoming_anchor.latitude,
+                        "longitude": incoming_anchor.longitude,
+                    }
+                    if incoming_anchor is not None
+                    else None
+                )
+            ),
+        }
+        change_notes.append(
+            "Home location pin was updated and the assessment anchor was re-run."
         )
 
     confidence_improved = float(updated.confidence_score or 0.0) > float(existing.confidence_score or 0.0)
@@ -11683,6 +11724,7 @@ def rerun_assessment_with_homeowner_inputs(
         before_summary=summarize_assessment_for_improvement(existing),
         after_summary=summarize_assessment_for_improvement(updated),
         what_changed=what_changed,
+        what_changed_summary=what_changed_summary,
         confidence_improved=confidence_improved,
         recommendations_adjusted=recommendations_adjusted,
         improve_your_result_before=before_options,

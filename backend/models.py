@@ -140,6 +140,8 @@ class HomeownerImprovementRunRequest(BaseModel):
     defensible_space_condition: Optional[
         Literal["poor", "limited", "moderate", "good", "excellent"]
     ] = None
+    property_anchor_point: Optional[Coordinates] = None
+    user_selected_point: Optional[Coordinates] = None
     confirmed_fields: List[str] = Field(default_factory=list)
     audience: Audience = "homeowner"
     ruleset_id: Optional[str] = None
@@ -735,7 +737,7 @@ class HomeownerFollowUpInput(BaseModel):
     assessment_field: str
     label: str
     prompt: str
-    input_type: Literal["select", "number"] = "select"
+    input_type: Literal["select", "number", "map_point"] = "select"
     options: List[str] = Field(default_factory=list)
     unit: Optional[str] = None
 
@@ -743,6 +745,9 @@ class HomeownerFollowUpInput(BaseModel):
 class HomeownerImprovementOptions(BaseModel):
     assessment_id: str
     missing_key_inputs: List[str] = Field(default_factory=list)
+    prioritized_missing_key_inputs: List[str] = Field(default_factory=list)
+    highest_value_next_question: Optional[HomeownerFollowUpInput] = None
+    remaining_optional_input_count: int = 0
     improve_your_result_suggestions: List[str] = Field(default_factory=list)
     optional_follow_up_inputs: List[HomeownerFollowUpInput] = Field(default_factory=list)
 
@@ -753,6 +758,7 @@ class HomeownerImprovementRunResponse(BaseModel):
     before_summary: Dict[str, Any] = Field(default_factory=dict)
     after_summary: Dict[str, Any] = Field(default_factory=dict)
     what_changed: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
+    what_changed_summary: Dict[str, Any] = Field(default_factory=dict)
     confidence_improved: bool = False
     recommendations_adjusted: bool = False
     improve_your_result_before: HomeownerImprovementOptions

@@ -12,6 +12,16 @@ from backend.models import (
 
 _IMPROVEMENT_INPUT_SPECS: tuple[dict[str, Any], ...] = (
     {
+        "input_key": "map_point_correction",
+        "assessment_field": "user_selected_point",
+        "label": "Pin home location",
+        "prompt": "Adjust the map pin to the exact home footprint for better property-specific detail.",
+        "input_type": "map_point",
+        "options": [],
+        "suggestion": "Correcting the home location pin can materially improve structure-level specificity.",
+        "base_lift": 100,
+    },
+    {
         "input_key": "roof_type",
         "assessment_field": "roof_type",
         "label": "Roof type",
@@ -25,6 +35,7 @@ _IMPROVEMENT_INPUT_SPECS: tuple[dict[str, Any], ...] = (
             "wood/combustible",
         ],
         "suggestion": "Add your roof type to tighten structure ignition estimates.",
+        "base_lift": 95,
     },
     {
         "input_key": "vent_type",
@@ -39,6 +50,22 @@ _IMPROVEMENT_INPUT_SPECS: tuple[dict[str, Any], ...] = (
             "unknown",
         ],
         "suggestion": "Add vent protection details to improve ember intrusion estimates.",
+        "base_lift": 90,
+    },
+    {
+        "input_key": "window_type",
+        "assessment_field": "window_type",
+        "label": "Window type",
+        "prompt": "What best describes your windows?",
+        "input_type": "select",
+        "options": [
+            "dual-pane tempered",
+            "dual-pane standard",
+            "single-pane",
+            "unknown",
+        ],
+        "suggestion": "Adding window type can improve structure-vulnerability detail.",
+        "base_lift": 74,
     },
     {
         "input_key": "defensible_space_condition",
@@ -48,6 +75,7 @@ _IMPROVEMENT_INPUT_SPECS: tuple[dict[str, Any], ...] = (
         "input_type": "number",
         "unit": "feet",
         "suggestion": "Add defensible space condition to improve near-structure ignition estimates.",
+        "base_lift": 88,
     },
 )
 
@@ -241,7 +269,14 @@ def build_improve_your_result_block(result: AssessmentResult) -> dict[str, Any]:
 
     return {
         "missing_key_inputs": list(options.missing_key_inputs or []),
-        "suggestions": suggestions[:10],
+        "prioritized_missing_key_inputs": list(options.prioritized_missing_key_inputs or []),
+        "highest_value_next_question": (
+            options.highest_value_next_question.model_dump()
+            if options.highest_value_next_question
+            else None
+        ),
+        "remaining_optional_input_count": int(options.remaining_optional_input_count or 0),
+        "suggestions": suggestions[:6],
         "optional_follow_up_inputs": [row.model_dump() for row in list(options.optional_follow_up_inputs or [])],
         "diagnostic_sources": diagnostic_sources,
     }
@@ -263,27 +298,83 @@ def build_homeowner_improvement_options(result: AssessmentResult) -> HomeownerIm
         if token:
             strict_missing_fields.add(token)
 
-    missing_key_inputs: list[str] = []
-    suggestions: list[str] = []
-    follow_ups: list[HomeownerFollowUpInput] = []
+    geometry_resolution = (
+        result.geometry_resolution.model_dump()
+        if hasattr(result.geometry_resolution, "model_dump")
+        else (
+            dict(result.geometry_resolution)
+            if isinstance(result.geometry_resolution, dict)
+            else {}
+        )
+    )
+    ring_mode = str(geometry_resolution.get("ring_generation_mode") or "").strip().lower()
+    footprint_status = str(geometry_resolution.get("footprint_match_status") or "").strip().lower()
+    try:
+        anchor_quality = float(geometry_resolution.get("anchor_quality_score") or 0.0)
+    except (TypeError, ValueError):
+        anchor_quality = 0.0
+    naip_status = str(geometry_resolution.get("naip_structure_feature_status") or "").strip().lower()
+    geometry_limited = bool(
+        ring_mode == "point_annulus_fallback"
+        or footprint_status in {"none", "ambiguous", "provider_unavailable", "error"}
+        or anchor_quality < 0.70
+        or naip_status in {"missing", "provider_unavailable", "present_but_not_consumed", "fallback_or_proxy"}
+    )
+
+    candidate_rows: list[dict[str, Any]] = []
     for spec in _IMPROVEMENT_INPUT_SPECS:
         field = str(spec["assessment_field"])
-        is_missing = field in strict_missing_fields or _is_missing_value(facts.get(field))
+        input_key = str(spec["input_key"])
+        if input_key == "map_point_correction":
+            is_missing = geometry_limited
+        else:
+            is_missing = field in strict_missing_fields or _is_missing_value(facts.get(field))
         if not is_missing:
             continue
-        missing_key_inputs.append(str(spec["input_key"]))
-        suggestions.append(str(spec["suggestion"]))
-        follow_ups.append(
-            HomeownerFollowUpInput(
-                input_key=str(spec["input_key"]),
-                assessment_field=field,
-                label=str(spec["label"]),
-                prompt=str(spec["prompt"]),
-                input_type=str(spec["input_type"]),  # type: ignore[arg-type]
-                options=[str(item) for item in (spec.get("options") or [])],
-                unit=(str(spec["unit"]) if spec.get("unit") else None),
-            )
+        score = float(spec.get("base_lift") or 50)
+        if field in strict_missing_fields:
+            score += 10.0
+        if field in {"roof_type", "vent_type", "window_type", "defensible_space_ft"} and field in missing_fields:
+            score += 5.0
+        if input_key == "map_point_correction":
+            if ring_mode == "point_annulus_fallback":
+                score += 15.0
+            if anchor_quality < 0.50:
+                score += 8.0
+            if footprint_status in {"none", "ambiguous"}:
+                score += 8.0
+        candidate_rows.append(
+            {
+                "input_key": input_key,
+                "lift_score": round(score, 2),
+                "suggestion": str(spec["suggestion"]),
+                "follow_up": HomeownerFollowUpInput(
+                    input_key=input_key,
+                    assessment_field=field,
+                    label=str(spec["label"]),
+                    prompt=str(spec["prompt"]),
+                    input_type=str(spec["input_type"]),  # type: ignore[arg-type]
+                    options=[str(item) for item in (spec.get("options") or [])],
+                    unit=(str(spec["unit"]) if spec.get("unit") else None),
+                ),
+            }
         )
+    candidate_rows.sort(key=lambda row: (-float(row.get("lift_score") or 0.0), str(row.get("input_key") or "")))
+
+    missing_key_inputs = [str(row.get("input_key") or "") for row in candidate_rows if str(row.get("input_key") or "")]
+    prioritized_rows = candidate_rows[:3]
+    prioritized_missing_key_inputs = [
+        str(row.get("input_key") or "")
+        for row in prioritized_rows
+        if str(row.get("input_key") or "")
+    ]
+    follow_ups = [row["follow_up"] for row in prioritized_rows if isinstance(row.get("follow_up"), HomeownerFollowUpInput)]
+
+    suggestions: list[str] = []
+    for row in prioritized_rows:
+        suggestion = str(row.get("suggestion") or "").strip()
+        if suggestion and suggestion not in suggestions:
+            suggestions.append(suggestion)
 
     if not suggestions:
         suggestions.append(
@@ -296,7 +387,10 @@ def build_homeowner_improvement_options(result: AssessmentResult) -> HomeownerIm
     return HomeownerImprovementOptions(
         assessment_id=result.assessment_id,
         missing_key_inputs=missing_key_inputs,
-        improve_your_result_suggestions=suggestions[:10],
+        prioritized_missing_key_inputs=prioritized_missing_key_inputs,
+        highest_value_next_question=(follow_ups[0] if follow_ups else None),
+        remaining_optional_input_count=max(0, len(candidate_rows) - len(follow_ups)),
+        improve_your_result_suggestions=suggestions[:6],
         optional_follow_up_inputs=follow_ups,
     )
 
@@ -319,7 +413,7 @@ def build_improvement_change_set(
     after: AssessmentResult,
     *,
     changed_fields_hint: Iterable[str] | None = None,
-) -> tuple[dict[str, dict[str, Any]], list[str]]:
+) -> tuple[dict[str, dict[str, Any]], list[str], dict[str, Any]]:
     tracked_facts = set(changed_fields_hint or [])
     if not tracked_facts:
         tracked_facts = {
@@ -363,4 +457,67 @@ def build_improvement_change_set(
         changed["top_recommended_actions"] = {"before": before_actions, "after": after_actions}
         notes.append("Top recommendations changed based on the updated inputs.")
 
-    return changed, notes
+    before_specificity = (
+        before.specificity_summary.model_dump()
+        if hasattr(before.specificity_summary, "model_dump")
+        else (dict(before.specificity_summary) if isinstance(before.specificity_summary, dict) else {})
+    )
+    after_specificity = (
+        after.specificity_summary.model_dump()
+        if hasattr(after.specificity_summary, "model_dump")
+        else (dict(after.specificity_summary) if isinstance(after.specificity_summary, dict) else {})
+    )
+    before_tier = str(before_specificity.get("specificity_tier") or "regional_estimate")
+    after_tier = str(after_specificity.get("specificity_tier") or "regional_estimate")
+
+    def _delta_direction(before_value: float | None, after_value: float | None) -> str:
+        if before_value is None or after_value is None:
+            return "unknown"
+        if float(after_value) > float(before_value):
+            return "up"
+        if float(after_value) < float(before_value):
+            return "down"
+        return "unchanged"
+
+    before_conf = (
+        ((before.homeowner_summary or {}).get("trust_summary") or {})
+        if isinstance(before.homeowner_summary, dict)
+        else {}
+    )
+    after_conf = (
+        ((after.homeowner_summary or {}).get("trust_summary") or {})
+        if isinstance(after.homeowner_summary, dict)
+        else {}
+    )
+    summary = {
+        "score_direction": {
+            "metric": "wildfire_risk_score",
+            "direction": _delta_direction(before.wildfire_risk_score, after.wildfire_risk_score),
+            "before": before.wildfire_risk_score,
+            "after": after.wildfire_risk_score,
+        },
+        "specificity_change": {
+            "before_tier": before_tier,
+            "after_tier": after_tier,
+            "changed": before_tier != after_tier,
+            "comparison_allowed_before": bool(before_specificity.get("comparison_allowed")),
+            "comparison_allowed_after": bool(after_specificity.get("comparison_allowed")),
+        },
+        "confidence_change": {
+            "score_direction": _delta_direction(before.confidence_score, after.confidence_score),
+            "before_score": before.confidence_score,
+            "after_score": after.confidence_score,
+            "before_level": str(before_conf.get("confidence_level") or ""),
+            "after_level": str(after_conf.get("confidence_level") or ""),
+        },
+        "recommendation_changes": {
+            "changed": before_actions != after_actions,
+            "before_top_actions": before_actions,
+            "after_top_actions": after_actions,
+        },
+    }
+    changed["score_direction"] = summary["score_direction"]
+    changed["specificity_change"] = summary["specificity_change"]
+    changed["confidence_change"] = summary["confidence_change"]
+    changed["recommendation_changes"] = summary["recommendation_changes"]
+    return changed, notes, summary
