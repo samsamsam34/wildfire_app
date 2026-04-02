@@ -46,8 +46,10 @@ VECTOR_KEYS = {
     "building_footprints",
     "roads",
     "fema_structures",
+    "building_footprints_microsoft",
     "building_footprints_overture",
     "parcel_polygons",
+    "parcel_polygons_override",
     "parcel_address_points",
 }
 OPTIONAL_REGION_LAYER_KEYS = {
@@ -56,8 +58,10 @@ OPTIONAL_REGION_LAYER_KEYS = {
     "gridmet_dryness",
     "roads",
     "fema_structures",
+    "building_footprints_microsoft",
     "building_footprints_overture",
     "parcel_polygons",
+    "parcel_polygons_override",
     "parcel_address_points",
     "naip_imagery",
 }
@@ -69,7 +73,10 @@ DEFAULT_OPTIONAL_LAYER_KEYS = (
 )
 ENRICHMENT_LAYER_KEYS = (
     "building_footprints_overture",
+    "building_footprints_microsoft",
+    "fema_structures",
     "parcel_polygons",
+    "parcel_polygons_override",
     "parcel_address_points",
     "naip_imagery",
 )

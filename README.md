@@ -308,8 +308,9 @@ Common runtime settings:
   - `WF_LAYER_PARCELS_GEOJSON`
   - `WF_LAYER_PARCEL_ADDRESS_POINTS_GEOJSON`
   - `WF_LAYER_PARCEL_POLYGONS_GEOJSON`
-- Building-source selection:
-  - `WF_BUILDING_SOURCE_PRIORITY` (default: `building_footprints_overture,building_footprints_microsoft,building_footprints,fema_structures`)
+- Geometry source selection:
+  - `WF_GEOMETRY_SOURCE_REGISTRY_PATH` (optional override path; default `config/geometry_source_registry.json`)
+  - `WF_BUILDING_SOURCE_PRIORITY` (legacy fallback order when region manifest source order is unavailable)
   - `WF_OVERTURE_BUILDINGS_VERSION` (optional version tag shown in debug metadata)
   - `WF_POINT_SELECTION_USE_PARCEL_CONTEXT` (default `true`; when true, point-selected structure matching uses parcel association if available)
   - `WF_NAIP_FEATURE_MATCH_MAX_DISTANCE_M` (default `45`; max nearest-centroid NAIP feature fallback distance)
@@ -446,6 +447,11 @@ data/regions/<region_id>/
   building_footprints.geojson
   # optional primary building source
   building_footprints_overture.geojson
+  # optional backup footprint sources
+  building_footprints_microsoft.geojson
+  fema_structures.geojson
+  # optional region-specific parcel override
+  parcel_polygons_override.geojson
   # optional enrichment layers
   whp.tif
   mtbs_severity.tif
@@ -454,17 +460,21 @@ data/regions/<region_id>/
   manifest.json
 ```
 
-Building footprint source workflow:
-- Preferred runtime matching order defaults to:
-  1. `building_footprints_overture`
-  2. `building_footprints`
-  3. `fema_structures` (fallback)
-- Region manifests now include `building_sources` so runtime can keep region-specific source priority.
+Geometry source registry workflow:
+- Prepared-region manifests now include `geometry_source_manifest` with explicit:
+  - `parcel_sources`
+  - `footprint_sources`
+  - `default_source_order`
+  - `source_versions`
+  - `known_limitations`
+- Runtime geometry resolution reads region-specific source precedence from this manifest instead of ad hoc fallback.
+- `building_sources` and `parcel_sources` remain in manifest for backward compatibility and quick inspection.
 - Structure-match diagnostics include:
   - `structure_match_method` (`parcel_intersection` or `nearest_building_fallback`)
   - `matched_structure_id`
   - `building_source`, `building_source_version`, `building_source_confidence`
   - `structure_match_distance_m` (used to flag potential alignment issues)
+- Full registry reference: [`docs/geometry_source_registry.md`](docs/geometry_source_registry.md)
 
 Offline prep/validation scripts:
 - Preferred (canonical): `scripts/prepare_region_from_catalog_or_sources.py` (plan/fill/build/validate in one command)

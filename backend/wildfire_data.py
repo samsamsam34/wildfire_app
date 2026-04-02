@@ -565,6 +565,8 @@ class WildfireDataClient:
             "region_display_name": None,
             "manifest_path": None,
             "building_sources": [],
+            "parcel_sources": [],
+            "geometry_source_manifest": {},
             "property_specific_readiness": "limited_regional_ready",
             "validation_summary": {},
             "required_layers_missing": [],
@@ -594,6 +596,8 @@ class WildfireDataClient:
                     "region_display_name": region_manifest.get("display_name"),
                     "manifest_path": region_manifest.get("_manifest_path"),
                     "building_sources": [],
+                    "parcel_sources": [],
+                    "geometry_source_manifest": {},
                     "property_specific_readiness": catalog_runtime_summary["property_specific_readiness"],
                     "validation_summary": catalog_runtime_summary["validation_summary"],
                     "required_layers_missing": catalog_runtime_summary["required_layers_missing"],
@@ -621,6 +625,7 @@ class WildfireDataClient:
                     "fema_structures": ("fema_structures",),
                     "address_points": ("address_points", "parcel_address_points"),
                     "parcels": ("parcel_polygons", "parcels"),
+                    "parcels_override": ("parcel_polygons_override", "parcel_overrides"),
                     "roads": ("roads", "osm_roads", "road_network"),
                     "naip_imagery": ("naip_imagery", "naip_rgb", "naip"),
                     "naip_structure_features": ("naip_structure_features",),
@@ -633,11 +638,34 @@ class WildfireDataClient:
                             break
                     if resolved:
                         runtime_paths[runtime_key] = resolved
-                configured_building_sources = region_manifest.get("building_sources")
-                if isinstance(configured_building_sources, list):
-                    region_context["building_sources"] = [str(v) for v in configured_building_sources if str(v).strip()]
+                geometry_source_manifest = (
+                    dict(region_manifest.get("geometry_source_manifest"))
+                    if isinstance(region_manifest.get("geometry_source_manifest"), dict)
+                    else {}
+                )
+                region_context["geometry_source_manifest"] = geometry_source_manifest
+                default_source_order = (
+                    dict(geometry_source_manifest.get("default_source_order"))
+                    if isinstance(geometry_source_manifest.get("default_source_order"), dict)
+                    else {}
+                )
+                configured_building_sources = default_source_order.get("footprint_sources")
+                if isinstance(configured_building_sources, list) and configured_building_sources:
+                    region_context["building_sources"] = [
+                        str(v) for v in configured_building_sources if str(v).strip()
+                    ]
+                elif isinstance(region_manifest.get("building_sources"), list):
+                    region_context["building_sources"] = [
+                        str(v) for v in list(region_manifest.get("building_sources") or [])
+                        if str(v).strip()
+                    ]
                 else:
                     region_context["building_sources"] = []
+                configured_parcel_sources = default_source_order.get("parcel_sources")
+                if isinstance(configured_parcel_sources, list):
+                    region_context["parcel_sources"] = [
+                        str(v) for v in configured_parcel_sources if str(v).strip()
+                    ]
                 return runtime_paths, region_context, assumptions, sources
 
             region_context = {
@@ -646,6 +674,8 @@ class WildfireDataClient:
                 "region_display_name": region_manifest.get("display_name"),
                 "manifest_path": region_manifest.get("_manifest_path"),
                 "building_sources": [],
+                "parcel_sources": [],
+                "geometry_source_manifest": {},
                 "property_specific_readiness": "limited_regional_ready",
                 "validation_summary": {},
                 "required_layers_missing": [],
@@ -665,6 +695,8 @@ class WildfireDataClient:
                     "region_display_name": None,
                     "manifest_path": None,
                     "building_sources": [],
+                    "parcel_sources": [],
+                    "geometry_source_manifest": {},
                     "property_specific_readiness": "limited_regional_ready",
                     "validation_summary": {},
                     "required_layers_missing": [],
@@ -686,6 +718,8 @@ class WildfireDataClient:
                 "region_display_name": None,
                 "manifest_path": None,
                 "building_sources": [],
+                "parcel_sources": [],
+                "geometry_source_manifest": {},
                 "property_specific_readiness": "limited_regional_ready",
                 "validation_summary": {},
                 "required_layers_missing": [],
@@ -702,19 +736,33 @@ class WildfireDataClient:
         runtime_paths: dict[str, str],
         region_context: dict[str, Any],
     ) -> list[str]:
-        env_priority = str(
-            os.getenv(
-                "WF_BUILDING_SOURCE_PRIORITY",
-                "building_footprints_overture,building_footprints_microsoft,building_footprints,fema_structures",
-            )
-        ).strip()
-        tokens = [token.strip().lower() for token in env_priority.split(",") if token.strip()]
-
-        configured = region_context.get("building_sources")
-        if isinstance(configured, list) and configured:
-            normalized = [str(v).strip().lower() for v in configured if str(v).strip()]
-            if normalized:
-                tokens = normalized
+        geometry_manifest = (
+            dict(region_context.get("geometry_source_manifest"))
+            if isinstance(region_context.get("geometry_source_manifest"), dict)
+            else {}
+        )
+        default_source_order = (
+            dict(geometry_manifest.get("default_source_order"))
+            if isinstance(geometry_manifest.get("default_source_order"), dict)
+            else {}
+        )
+        tokens = [
+            str(token).strip().lower()
+            for token in list(default_source_order.get("footprint_sources") or [])
+            if str(token).strip()
+        ]
+        if not tokens:
+            configured = region_context.get("building_sources")
+            if isinstance(configured, list) and configured:
+                tokens = [str(v).strip().lower() for v in configured if str(v).strip()]
+        if not tokens:
+            env_priority = str(
+                os.getenv(
+                    "WF_BUILDING_SOURCE_PRIORITY",
+                    "building_footprints_overture,building_footprints_microsoft,building_footprints,fema_structures",
+                )
+            ).strip()
+            tokens = [token.strip().lower() for token in env_priority.split(",") if token.strip()]
 
         runtime_key_map = {
             "building_footprints_overture": "footprints_overture",
@@ -744,6 +792,7 @@ class WildfireDataClient:
     def _resolve_parcel_source_paths(
         self,
         runtime_paths: dict[str, str],
+        region_context: dict[str, Any] | None = None,
     ) -> list[str]:
         ordered: list[str] = []
 
@@ -752,7 +801,38 @@ class WildfireDataClient:
             if normalized and normalized not in ordered:
                 ordered.append(normalized)
 
-        _add(runtime_paths.get("parcels"))
+        geometry_manifest = (
+            dict((region_context or {}).get("geometry_source_manifest"))
+            if isinstance((region_context or {}).get("geometry_source_manifest"), dict)
+            else {}
+        )
+        default_source_order = (
+            dict(geometry_manifest.get("default_source_order"))
+            if isinstance(geometry_manifest.get("default_source_order"), dict)
+            else {}
+        )
+        configured_parcel_sources = [
+            str(token).strip().lower()
+            for token in list(default_source_order.get("parcel_sources") or [])
+            if str(token).strip()
+        ]
+
+        runtime_key_map = {
+            "parcel_polygons": "parcels",
+            "parcels": "parcels",
+            "parcel_polygons_override": "parcels_override",
+            "parcel_overrides": "parcels_override",
+            "nearest_parcel_fallback": "",
+        }
+
+        if configured_parcel_sources:
+            for token in configured_parcel_sources:
+                runtime_key = runtime_key_map.get(token, token)
+                if runtime_key:
+                    _add(runtime_paths.get(runtime_key))
+        else:
+            _add(runtime_paths.get("parcels"))
+            _add(runtime_paths.get("parcels_override"))
 
         extra_env_tokens = [
             token.strip()
@@ -3144,7 +3224,7 @@ class WildfireDataClient:
         anchor_resolver = PropertyAnchorResolver(
             address_points_path=runtime_paths.get("address_points"),
             parcels_path=runtime_paths.get("parcels"),
-            parcels_paths=self._resolve_parcel_source_paths(runtime_paths),
+            parcels_paths=self._resolve_parcel_source_paths(runtime_paths, region_context=region_context),
         )
         explicit_anchor_override: tuple[float, float] | None = None
         explicit_anchor_source: str | None = None

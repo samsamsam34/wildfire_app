@@ -70,6 +70,32 @@
       "expected_output_format": "geojson",
       "notes": "Preferred Overture Maps building source. Supports local GeoJSON path or a bbox-capable feature service endpoint."
     },
+    "building_footprints_microsoft": {
+      "provider_type": "arcgis_feature_service",
+      "source_path": "${WF_DEFAULT_MICROSOFT_BUILDINGS_PATH:-}",
+      "source_endpoint": "${WF_DEFAULT_MICROSOFT_BUILDINGS_ENDPOINT:-}",
+      "source_url": "${WF_DEFAULT_MICROSOFT_BUILDINGS_URL:-}",
+      "supports_bbox_export": true,
+      "allow_full_download_fallback": true,
+      "query_format": "json",
+      "supports_geojson_direct": false,
+      "require_return_geometry": true,
+      "expected_output_format": "geojson",
+      "notes": "Optional Microsoft building footprints backup source."
+    },
+    "fema_structures": {
+      "provider_type": "arcgis_feature_service",
+      "source_path": "${WF_DEFAULT_FEMA_STRUCTURES_PATH:-}",
+      "source_endpoint": "${WF_DEFAULT_FEMA_STRUCTURES_ENDPOINT:-}",
+      "source_url": "${WF_DEFAULT_FEMA_STRUCTURES_URL:-}",
+      "supports_bbox_export": true,
+      "allow_full_download_fallback": true,
+      "query_format": "json",
+      "supports_geojson_direct": false,
+      "require_return_geometry": true,
+      "expected_output_format": "geojson",
+      "notes": "Optional FEMA/equivalent backup structure footprints source."
+    },
     "parcel_polygons": {
       "provider_type": "arcgis_feature_service",
       "source_path": "${WF_DEFAULT_PARCEL_POLYGONS_PATH:-}",
@@ -82,6 +108,19 @@
       "require_return_geometry": true,
       "expected_output_format": "geojson",
       "notes": "Optional parcel boundaries. Supports local GeoJSON path or a bbox-capable feature service endpoint."
+    },
+    "parcel_polygons_override": {
+      "provider_type": "arcgis_feature_service",
+      "source_path": "${WF_DEFAULT_PARCEL_POLYGONS_OVERRIDE_PATH:-}",
+      "source_endpoint": "${WF_DEFAULT_PARCEL_POLYGONS_OVERRIDE_ENDPOINT:-}",
+      "source_url": "${WF_DEFAULT_PARCEL_POLYGONS_OVERRIDE_URL:-}",
+      "supports_bbox_export": true,
+      "allow_full_download_fallback": true,
+      "query_format": "json",
+      "supports_geojson_direct": false,
+      "require_return_geometry": true,
+      "expected_output_format": "geojson",
+      "notes": "Optional region-specific parcel override polygons with higher parcel precedence."
     },
     "parcel_address_points": {
       "provider_type": "arcgis_feature_service",

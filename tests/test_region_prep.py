@@ -198,6 +198,76 @@ def test_prepare_region_local_mode_derives_slope(tmp_path):
     assert manifest["slope_derived"] is True
 
 
+def test_prepare_region_manifest_includes_geometry_source_manifest_with_region_override(tmp_path):
+    sources = _sources(tmp_path, include_slope=True)
+    parcel_path = tmp_path / "parcel_polygons.geojson"
+    parcel_override_path = tmp_path / "parcel_polygons_override.geojson"
+    _write_geojson(parcel_path)
+    _write_geojson(parcel_override_path)
+    sources["parcel_polygons"] = str(parcel_path)
+    sources["parcel_polygons_override"] = str(parcel_override_path)
+
+    source_config = {
+        "geometry_source_registry": {
+            "version": 9,
+            "defaults": {
+                "source_order": {
+                    "parcel_sources": ["parcel_polygons", "nearest_parcel_fallback"],
+                    "footprint_sources": ["building_footprints", "fema_structures"],
+                },
+                "source_definitions": {
+                    "parcel_sources": {
+                        "parcel_polygons": {"layer_keys": ["parcel_polygons"]},
+                        "nearest_parcel_fallback": {
+                            "layer_keys": [],
+                            "fallback_only": True,
+                            "explicit_downgrade": True,
+                        },
+                    },
+                    "footprint_sources": {
+                        "building_footprints": {"layer_keys": ["building_footprints"]},
+                        "fema_structures": {"layer_keys": ["fema_structures"]},
+                    },
+                },
+            },
+            "regions": {
+                "geometry_override_region": {
+                    "source_order": {
+                        "parcel_sources": [
+                            "parcel_polygons_override",
+                            "parcel_polygons",
+                            "nearest_parcel_fallback",
+                        ]
+                    },
+                    "source_definitions": {
+                        "parcel_sources": {
+                            "parcel_polygons_override": {"layer_keys": ["parcel_polygons_override"]}
+                        }
+                    },
+                }
+            },
+        }
+    }
+
+    manifest = prepare_region_layers(
+        region_id="geometry_override_region",
+        display_name="Geometry Override Region",
+        bounds={"min_lon": 0.0, "min_lat": 0.0, "max_lon": 1.0, "max_lat": 1.0},
+        layer_sources=sources,
+        region_data_dir=tmp_path / "regions",
+        source_config=source_config,
+        auto_discover=False,
+    )
+
+    geometry_manifest = manifest.get("geometry_source_manifest") or {}
+    assert geometry_manifest.get("version") == 9
+    assert geometry_manifest.get("region_id") == "geometry_override_region"
+    source_order = (geometry_manifest.get("default_source_order") or {}).get("parcel_sources") or []
+    assert source_order[:2] == ["parcel_polygons_override", "parcel_polygons"]
+    assert manifest.get("parcel_sources")[:2] == ["parcel_polygons_override", "parcel_polygons"]
+    assert "building_footprints" in list(manifest.get("building_sources") or [])
+
+
 def test_prepare_region_clips_rasters_to_bbox(tmp_path):
     src = _sources(tmp_path, include_slope=True)
     with rasterio.open(src["dem"]) as ds:

@@ -1,0 +1,122 @@
+{
+  "version": 1,
+  "defaults": {
+    "source_order": {
+      "parcel_sources": [
+        "parcel_polygons",
+        "parcel_polygons_override",
+        "nearest_parcel_fallback"
+      ],
+      "footprint_sources": [
+        "building_footprints",
+        "building_footprints_overture",
+        "building_footprints_microsoft",
+        "fema_structures"
+      ]
+    },
+    "source_definitions": {
+      "parcel_sources": {
+        "parcel_polygons": {
+          "display_name": "Prepared/local parcel polygons",
+          "layer_keys": [
+            "parcel_polygons",
+            "parcels"
+          ]
+        },
+        "parcel_polygons_override": {
+          "display_name": "Region-specific parcel override",
+          "layer_keys": [
+            "parcel_polygons_override",
+            "parcel_overrides"
+          ]
+        },
+        "nearest_parcel_fallback": {
+          "display_name": "Nearest-parcel fallback",
+          "layer_keys": [],
+          "fallback_only": true,
+          "explicit_downgrade": true
+        }
+      },
+      "footprint_sources": {
+        "building_footprints": {
+          "display_name": "Prepared/local building footprints",
+          "layer_keys": [
+            "building_footprints",
+            "footprints"
+          ]
+        },
+        "building_footprints_overture": {
+          "display_name": "Overture building footprints",
+          "layer_keys": [
+            "building_footprints_overture",
+            "overture_buildings",
+            "footprints_overture"
+          ]
+        },
+        "building_footprints_microsoft": {
+          "display_name": "Microsoft building footprints",
+          "layer_keys": [
+            "building_footprints_microsoft",
+            "microsoft_buildings",
+            "footprints_microsoft"
+          ]
+        },
+        "fema_structures": {
+          "display_name": "FEMA or equivalent backup structures",
+          "layer_keys": [
+            "fema_structures",
+            "osm_buildings"
+          ]
+        }
+      }
+    },
+    "schema_normalization_rules": {
+      "parcel_sources": {
+        "parcel_id_fields": [
+          "parcel_id",
+          "PARCEL_ID",
+          "parcelid",
+          "APN"
+        ],
+        "geometry_type": "Polygon|MultiPolygon"
+      },
+      "footprint_sources": {
+        "structure_id_fields": [
+          "structure_id",
+          "building_id",
+          "id",
+          "OBJECTID"
+        ],
+        "geometry_type": "Polygon|MultiPolygon"
+      }
+    },
+    "confidence_weights": {
+      "parcel_sources": {
+        "parcel_polygons": 0.92,
+        "parcel_polygons_override": 0.94,
+        "nearest_parcel_fallback": 0.28
+      },
+      "footprint_sources": {
+        "building_footprints": 0.88,
+        "building_footprints_overture": 0.86,
+        "building_footprints_microsoft": 0.8,
+        "fema_structures": 0.62
+      }
+    },
+    "known_limitations": [
+      "Geometry source precedence drives anchoring confidence only; it does not change wildfire scoring logic.",
+      "Nearest-parcel fallback is allowed only with explicit confidence downgrade and cautionary diagnostics."
+    ]
+  },
+  "regions": {
+    "winthrop_wa_2024": {
+      "source_order": {
+        "parcel_sources": [
+          "parcel_polygons_override",
+          "parcel_polygons",
+          "nearest_parcel_fallback"
+        ]
+      }
+    }
+  }
+}

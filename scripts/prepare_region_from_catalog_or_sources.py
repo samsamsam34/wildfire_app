@@ -89,12 +89,39 @@ LAYER_SOURCE_HINTS: dict[str, dict[str, Any]] = {
         ],
         "registry_keys": ["source_endpoint", "source_url", "source_path"],
     },
+    "building_footprints_microsoft": {
+        "layer_type": "vector",
+        "env_vars": [
+            "WF_DEFAULT_MICROSOFT_BUILDINGS_ENDPOINT",
+            "WF_DEFAULT_MICROSOFT_BUILDINGS_URL",
+            "WF_DEFAULT_MICROSOFT_BUILDINGS_PATH",
+        ],
+        "registry_keys": ["source_endpoint", "source_url", "source_path"],
+    },
+    "fema_structures": {
+        "layer_type": "vector",
+        "env_vars": [
+            "WF_DEFAULT_FEMA_STRUCTURES_ENDPOINT",
+            "WF_DEFAULT_FEMA_STRUCTURES_URL",
+            "WF_DEFAULT_FEMA_STRUCTURES_PATH",
+        ],
+        "registry_keys": ["source_endpoint", "source_url", "source_path"],
+    },
     "parcel_polygons": {
         "layer_type": "vector",
         "env_vars": [
             "WF_DEFAULT_PARCEL_POLYGONS_ENDPOINT",
             "WF_DEFAULT_PARCEL_POLYGONS_URL",
             "WF_DEFAULT_PARCEL_POLYGONS_PATH",
+        ],
+        "registry_keys": ["source_endpoint", "source_url", "source_path"],
+    },
+    "parcel_polygons_override": {
+        "layer_type": "vector",
+        "env_vars": [
+            "WF_DEFAULT_PARCEL_POLYGONS_OVERRIDE_ENDPOINT",
+            "WF_DEFAULT_PARCEL_POLYGONS_OVERRIDE_URL",
+            "WF_DEFAULT_PARCEL_POLYGONS_OVERRIDE_PATH",
         ],
         "registry_keys": ["source_endpoint", "source_url", "source_path"],
     },
@@ -117,7 +144,10 @@ DEFAULT_OPTIONAL_LAYER_KEYS: tuple[str, ...] = (
 )
 ENRICHMENT_LAYER_KEYS: tuple[str, ...] = (
     "building_footprints_overture",
+    "building_footprints_microsoft",
+    "fema_structures",
     "parcel_polygons",
+    "parcel_polygons_override",
     "parcel_address_points",
     "naip_imagery",
 )

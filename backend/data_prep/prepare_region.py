@@ -32,6 +32,10 @@ except Exception:  # pragma: no cover - optional dependency in constrained envs
     shape = None
 
 from backend.region_registry import DEFAULT_REGION_DATA_DIR, REQUIRED_REGION_FILES
+from backend.geometry_source_registry import (
+    build_region_geometry_source_manifest,
+    load_geometry_source_registry,
+)
 from backend.data_prep.sources import (
     LANDFIRE_HANDLER_VERSION,
     SourceAsset,
@@ -49,6 +53,8 @@ STANDARD_LAYER_FILENAMES = {
     "fire_perimeters": "fire_perimeters.geojson",
     "building_footprints": "building_footprints.geojson",
     "building_footprints_overture": "building_footprints_overture.geojson",
+    "building_footprints_microsoft": "building_footprints_microsoft.geojson",
+    "fema_structures": "fema_structures.geojson",
     "burn_probability": "burn_probability.tif",
     "wildfire_hazard": "wildfire_hazard.tif",
     "moisture": "moisture.tif",
@@ -59,6 +65,7 @@ STANDARD_LAYER_FILENAMES = {
     "naip_imagery": "naip_imagery.tif",
     "roads": "roads.geojson",
     "parcel_polygons": "parcel_polygons.geojson",
+    "parcel_polygons_override": "parcel_polygons_override.geojson",
     "parcel_address_points": "parcel_address_points.geojson",
 }
 
@@ -78,8 +85,11 @@ LAYER_TYPES = {
     "fire_perimeters": "vector",
     "building_footprints": "vector",
     "building_footprints_overture": "vector",
+    "building_footprints_microsoft": "vector",
+    "fema_structures": "vector",
     "roads": "vector",
     "parcel_polygons": "vector",
+    "parcel_polygons_override": "vector",
     "parcel_address_points": "vector",
 }
 
@@ -88,6 +98,8 @@ AUTOMATION_NOTES = {
     "fire_perimeters": "Supports local GeoJSON or URL source. Direct NIFC catalog sync is deferred.",
     "building_footprints": "Supports local GeoJSON or URL source. Direct Microsoft tile index sync is deferred.",
     "building_footprints_overture": "Supports local file, URL, or configured bbox service. Preferred high-coverage global building source when available.",
+    "building_footprints_microsoft": "Supports local file or URL source for Microsoft building footprint backups.",
+    "fema_structures": "Supports local file or URL source for FEMA/equivalent backup structure footprints.",
     "fuel": "Supports local/URL source prep. Full LANDFIRE discovery/download automation is deferred.",
     "canopy": "Supports local/URL source prep. Full LANDFIRE discovery/download automation is deferred.",
     "roads": "Supports local file or URL source. Automated regional road extraction is optional.",
@@ -96,6 +108,7 @@ AUTOMATION_NOTES = {
     "gridmet_dryness": "Supports local file or URL source. gridMET dryness is optional enrichment.",
     "naip_imagery": "Supports local file or URL source. NAIP imagery supports near-structure vegetation feature derivation.",
     "parcel_polygons": "Supports local file or URL source. Parcel polygons improve structure matching confidence.",
+    "parcel_polygons_override": "Supports local file or URL source. Region-specific parcel override layer with highest parcel precedence when configured.",
     "parcel_address_points": "Supports local file or URL source. Address/parcel points improve property anchors.",
 }
 
@@ -105,12 +118,15 @@ OPTIONAL_LAYER_KEYS = (
     "moisture",
     "aspect",
     "building_footprints_overture",
+    "building_footprints_microsoft",
+    "fema_structures",
     "roads",
     "whp",
     "mtbs_severity",
     "gridmet_dryness",
     "naip_imagery",
     "parcel_polygons",
+    "parcel_polygons_override",
     "parcel_address_points",
 )
 BASE_REQUIRED_KEYS = ("dem", "fuel", "canopy", "fire_perimeters", "building_footprints")
@@ -782,6 +798,15 @@ def _normalize_source_config(source_config: dict[str, Any] | None) -> dict[str, 
     if isinstance(source_config.get("layers"), dict):
         return source_config["layers"]
     return source_config
+
+
+def _normalize_geometry_source_registry_config(
+    source_config: dict[str, Any] | None,
+) -> dict[str, Any]:
+    if not isinstance(source_config, dict):
+        return {}
+    registry = source_config.get("geometry_source_registry")
+    return dict(registry) if isinstance(registry, dict) else {}
 
 
 def _apply_source_config_acquisition(
@@ -1608,6 +1633,39 @@ def prepare_region_layers(
             "Partial preparation completed. Missing/failed layers are listed in failed_layers and errors."
         )
 
+    geometry_registry_cfg = _normalize_geometry_source_registry_config(source_config)
+    if geometry_registry_cfg:
+        effective_geometry_registry = geometry_registry_cfg
+    else:
+        effective_geometry_registry = load_geometry_source_registry()
+    geometry_source_manifest = build_region_geometry_source_manifest(
+        region_id=region_id,
+        files=files,
+        layers_meta=layers_meta,
+        registry=effective_geometry_registry,
+    )
+    default_source_order = (
+        geometry_source_manifest.get("default_source_order")
+        if isinstance(geometry_source_manifest.get("default_source_order"), dict)
+        else {}
+    )
+    building_sources = [
+        str(source_id)
+        for source_id in list(default_source_order.get("footprint_sources") or [])
+        if any(
+            str(entry.get("source_id") or "") == str(source_id)
+            and bool(entry.get("available"))
+            and not bool(entry.get("fallback_only"))
+            for entry in list(geometry_source_manifest.get("footprint_sources") or [])
+            if isinstance(entry, dict)
+        )
+    ]
+    parcel_sources = [
+        str(source_id)
+        for source_id in list(default_source_order.get("parcel_sources") or [])
+        if str(source_id).strip()
+    ]
+
     manifest = {
         "region_id": region_id,
         "display_name": display_name,
@@ -1622,15 +1680,9 @@ def prepare_region_layers(
             "max_lat": float(bounds["max_lat"]),
         },
         "files": files,
-        "building_sources": [
-            source
-            for source in (
-                "building_footprints_overture",
-                "building_footprints",
-                "fema_structures",
-            )
-            if source in files
-        ],
+        "building_sources": building_sources,
+        "parcel_sources": parcel_sources,
+        "geometry_source_manifest": geometry_source_manifest,
         "layers": layers_meta,
         "prepared_layers": prepared_layers,
         "attempted_layers": attempted_layers,
@@ -1655,6 +1707,8 @@ def prepare_region_layers(
             "skip_optional_layers": bool(skip_optional_layers),
             "target_resolution": float(target_resolution) if target_resolution is not None else None,
             "source_config_used": bool(source_config),
+            "geometry_source_registry_used": bool(effective_geometry_registry),
+            "geometry_source_registry_override": bool(geometry_registry_cfg),
             "cache_dir": str(cache_root),
             "landfire_only": bool(landfire_only),
             "raster_compression": raster_compression,
