@@ -126,6 +126,7 @@ def test_diagnostics_included_when_flag_enabled(monkeypatch, tmp_path: Path) -> 
     assert "proxy_feature_count" in diagnostics
     assert "defaulted_feature_count" in diagnostics
     assert "regional_feature_count" in diagnostics
+    assert "local_differentiation_score" in diagnostics
     assert "neighborhood_differentiation_confidence" in diagnostics
     assert "vegetation_signal" in diagnostics
     assert "inferred_fields" in diagnostics["confidence"]
@@ -187,13 +188,14 @@ def test_report_endpoint_supports_opt_in_diagnostics(monkeypatch, tmp_path: Path
     assert "assumption_sensitive" in body["diagnostics"]["stability"]
 
 
-def test_differentiation_mode_property_specific_with_full_geometry(monkeypatch, tmp_path: Path) -> None:
+def test_differentiation_mode_highly_local_with_full_geometry(monkeypatch, tmp_path: Path) -> None:
     _setup(monkeypatch, tmp_path)
     clear_trust_reference_cache()
     response = client.post("/risk/assess?include_diagnostics=true", json=_payload())
     assert response.status_code == 200
     diagnostics = response.json()["diagnostics"]
-    assert diagnostics["differentiation_mode"] == "property_specific"
+    assert diagnostics["differentiation_mode"] == "highly_local"
+    assert float(diagnostics["local_differentiation_score"] or 0.0) >= 70.0
     assert float(diagnostics["neighborhood_differentiation_confidence"] or 0.0) >= 70.0
     assert int(diagnostics["property_specific_feature_count"] or 0) >= 4
 

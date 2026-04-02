@@ -528,7 +528,11 @@ def build_trust_diagnostics(
             + "."
         )
     differentiation_mode = str(differentiation.get("differentiation_mode") or "")
-    differentiation_confidence = float(differentiation.get("neighborhood_differentiation_confidence") or 0.0)
+    differentiation_confidence = float(
+        differentiation.get("local_differentiation_score")
+        or differentiation.get("neighborhood_differentiation_confidence")
+        or 0.0
+    )
     if should_trigger_nearby_home_comparison_safeguard(differentiation_mode, differentiation_confidence):
         explanations.append("This estimate is not precise enough to compare adjacent homes.")
     elif differentiation_mode == "mostly_regional":
@@ -548,6 +552,11 @@ def build_trust_diagnostics(
         proxy_feature_count=int(differentiation.get("proxy_feature_count") or 0),
         defaulted_feature_count=int(differentiation.get("defaulted_feature_count") or 0),
         regional_feature_count=int(differentiation.get("regional_feature_count") or 0),
+        local_differentiation_score=float(
+            differentiation.get("local_differentiation_score")
+            or differentiation.get("neighborhood_differentiation_confidence")
+            or 0.0
+        ),
         neighborhood_differentiation_confidence=float(
             differentiation.get("neighborhood_differentiation_confidence") or 0.0
         ),

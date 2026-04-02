@@ -104,6 +104,11 @@ def build_differentiation_snapshot(
         or isinstance(property_level_context.get("parcel_geometry"), dict)
     )
     near_structure_available = bool(coverage.get("near_structure_vegetation_available"))
+    naip_feature_available = bool(
+        str(property_level_context.get("naip_feature_source") or "").strip().lower()
+        == "prepared_region_naip"
+        or bool(property_level_context.get("naip_feature_artifact_path"))
+    )
     hazard_available = bool(coverage.get("hazard_severity_available"))
     burn_available = bool(coverage.get("burn_probability_available"))
 
@@ -169,15 +174,22 @@ def build_differentiation_snapshot(
     defaulted_feature_count = len(defaulted_fields)
     regional_feature_count = len(regional_fields)
 
-    score = 55.0
-    score += min(26.0, property_specific_feature_count * 4.5)
-    score += min(12.0, regional_feature_count * 1.8)
-    score -= min(24.0, proxy_feature_count * 3.0)
-    score -= min(28.0, defaulted_feature_count * 3.5)
-    score -= min(26.0, _to_float(fallback_weight_fraction) * 32.0)
+    local_signal_ratio = (
+        property_specific_feature_count
+        / max(1.0, float(property_specific_feature_count + regional_feature_count))
+    )
+    score = 20.0
+    score += 30.0 if footprint_available else 0.0
+    score += 15.0 if parcel_available else 0.0
+    score += 15.0 if naip_feature_available else 0.0
+    score += 8.0 if near_structure_available else 0.0
+    score += 6.0 if (hazard_available and burn_available) else 0.0
+    score += max(0.0, min(20.0, local_signal_ratio * 20.0))
+    score += min(10.0, property_specific_feature_count * 1.5)
 
-    score += 10.0 if footprint_available else -18.0
-    score += 8.0 if parcel_available else -10.0
+    score -= min(12.0, proxy_feature_count * 1.8)
+    score -= min(14.0, defaulted_feature_count * 1.6)
+    score -= min(30.0, _to_float(fallback_weight_fraction) * 38.0)
 
     if point_sampling:
         score -= 16.0
@@ -189,6 +201,22 @@ def build_differentiation_snapshot(
         score -= 14.0
     elif structure_default_count >= 1:
         score -= 7.0
+
+    if (
+        footprint_available
+        and (parcel_available or naip_feature_available)
+        and not point_sampling
+        and not hazard_or_burn_proxied
+        and property_specific_feature_count >= 3
+    ):
+        score = max(score, 72.0)
+    elif (
+        footprint_available
+        and not point_sampling
+        and near_structure_available
+        and property_specific_feature_count >= 2
+    ):
+        score = max(score, 65.0)
 
     if (not footprint_available) and (not parcel_available):
         score = min(score, 35.0)
@@ -205,7 +233,7 @@ def build_differentiation_snapshot(
         and (footprint_available or parcel_available)
         and not point_sampling
     ):
-        mode = "property_specific"
+        mode = "highly_local"
     elif differentiation_confidence >= 40.0:
         mode = "mixed"
     else:
@@ -221,12 +249,14 @@ def build_differentiation_snapshot(
         notes.append("Parcel geometry is missing; parcel-level differentiation is reduced.")
     if point_sampling:
         notes.append("Near-structure vegetation is being sampled from a point proxy rather than full structure geometry.")
+    if not naip_feature_available:
+        notes.append("NAIP near-structure imagery features are unavailable; local differentiation relies on fallback vegetation context.")
     if hazard_or_burn_proxied:
         notes.append("Hazard and/or burn context relies on proxy/partial regional layers.")
     if structure_default_count >= 1:
         notes.append("Structure vulnerability still depends on defaulted or inferred home attributes.")
 
-    if mode == "property_specific":
+    if mode == "highly_local":
         notes.append("This assessment is primarily driven by property-level observed inputs.")
     elif mode == "mixed":
         notes.append("This assessment blends property-level and regional/proxy inputs.")
@@ -239,6 +269,11 @@ def build_differentiation_snapshot(
         "proxy_feature_count": proxy_feature_count,
         "defaulted_feature_count": defaulted_feature_count,
         "regional_feature_count": regional_feature_count,
+        "local_vs_regional_feature_ratio": round(max(0.0, min(1.0, local_signal_ratio)), 3),
+        "local_differentiation_score": differentiation_confidence,
         "neighborhood_differentiation_confidence": differentiation_confidence,
+        "legacy_differentiation_mode": (
+            "property_specific" if mode == "highly_local" else mode
+        ),
         "notes": notes[:8],
     }

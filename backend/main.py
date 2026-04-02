@@ -4034,9 +4034,43 @@ def _build_specificity_summary(
     else:
         specificity_tier = "regional_estimate"
 
+    differentiation_mode = str(
+        trust_summary.get("differentiation_mode") or "mostly_regional"
+    ).strip().lower()
+    local_differentiation_score = _safe_float(
+        trust_summary.get("local_differentiation_score")
+    )
+    if local_differentiation_score is None:
+        local_differentiation_score = _safe_float(
+            trust_summary.get("neighborhood_differentiation_confidence")
+        )
+    local_differentiation_score = float(local_differentiation_score or 0.0)
+
+    # Property-specificity output should degrade when local evidence is weak.
+    if (
+        specificity_tier == "property_specific"
+        and differentiation_mode == "mostly_regional"
+    ):
+        specificity_tier = "regional_estimate"
+    elif (
+        specificity_tier == "property_specific"
+        and local_differentiation_score < 65.0
+    ):
+        specificity_tier = "address_level"
+    if (
+        specificity_tier == "property_specific"
+        and local_differentiation_score < 35.0
+    ):
+        specificity_tier = "regional_estimate"
+
     nearby_home_guardrail = bool(trust_summary.get("nearby_home_comparison_safeguard_triggered"))
     comparison_allowed = bool(trust_summary.get("parcel_level_comparison_allowed"))
-    if specificity_tier == "property_specific" and not nearby_home_guardrail:
+    if (
+        specificity_tier == "property_specific"
+        and differentiation_mode != "mostly_regional"
+        and local_differentiation_score >= 60.0
+        and not nearby_home_guardrail
+    ):
         comparison_allowed = True
     if specificity_tier in {"regional_estimate", "insufficient_data"}:
         comparison_allowed = False
@@ -4193,9 +4227,12 @@ def _build_homeowner_trust_summary(
     differentiation_mode = str(
         differentiation_snapshot.get("differentiation_mode") or "mostly_regional"
     )
-    differentiation_confidence = float(
-        differentiation_snapshot.get("neighborhood_differentiation_confidence") or 0.0
+    local_differentiation_score = float(
+        differentiation_snapshot.get("local_differentiation_score")
+        or differentiation_snapshot.get("neighborhood_differentiation_confidence")
+        or 0.0
     )
+    differentiation_confidence = local_differentiation_score
     differentiation_notes = [
         str(item).strip()
         for item in list(differentiation_snapshot.get("notes") or [])
@@ -4286,6 +4323,7 @@ def _build_homeowner_trust_summary(
         "missing_inputs": missing_field_labels,
         "coverage_gaps": coverage_gaps[:4],
         "differentiation_mode": differentiation_mode,
+        "local_differentiation_score": round(local_differentiation_score, 1),
         "neighborhood_differentiation_confidence": round(differentiation_confidence, 1),
         "property_specific_feature_count": int(
             differentiation_snapshot.get("property_specific_feature_count") or 0
@@ -4302,7 +4340,11 @@ def _build_homeowner_trust_summary(
         "low_differentiation_explanation": low_differentiation_explanation,
         "nearby_home_comparison_safeguard_triggered": nearby_home_comparison_safeguard_triggered,
         "nearby_home_comparison_safeguard_message": nearby_home_comparison_safeguard_message,
-        "parcel_level_comparison_allowed": not nearby_home_comparison_safeguard_triggered,
+        "parcel_level_comparison_allowed": (
+            not nearby_home_comparison_safeguard_triggered
+            and differentiation_mode != "mostly_regional"
+            and local_differentiation_score >= 60.0
+        ),
         "geometry_specificity_limited": geometry_specificity_limited,
         "geometry_resolution_summary": geometry_resolution_summary,
     }

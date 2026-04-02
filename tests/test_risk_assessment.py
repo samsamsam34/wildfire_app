@@ -6071,12 +6071,45 @@ def test_homeowner_trust_summary_maps_internal_tiers_to_user_friendly_labels():
             "geometry_basis": "footprint",
         },
         differentiation_snapshot={
-            "differentiation_mode": "property_specific",
+            "differentiation_mode": "highly_local",
+            "local_differentiation_score": 82.0,
             "neighborhood_differentiation_confidence": 82.0,
             "notes": [],
         },
     )
     assert property_specific.get("low_differentiation_explanation") is None
+
+
+def test_specificity_summary_is_influenced_by_local_differentiation_score():
+    low_local = app_main._build_specificity_summary(
+        assessment_specificity_tier="property_specific",
+        assessment_mode="property_specific",
+        limited_assessment_flag=False,
+        confidence_summary={"assessment_type": "moderate confidence"},
+        trust_summary={
+            "differentiation_mode": "mostly_regional",
+            "local_differentiation_score": 24.0,
+            "nearby_home_comparison_safeguard_triggered": True,
+            "parcel_level_comparison_allowed": False,
+        },
+    )
+    assert low_local.get("specificity_tier") == "regional_estimate"
+    assert low_local.get("comparison_allowed") is False
+
+    high_local = app_main._build_specificity_summary(
+        assessment_specificity_tier="property_specific",
+        assessment_mode="property_specific",
+        limited_assessment_flag=False,
+        confidence_summary={"assessment_type": "high confidence"},
+        trust_summary={
+            "differentiation_mode": "highly_local",
+            "local_differentiation_score": 84.0,
+            "nearby_home_comparison_safeguard_triggered": False,
+            "parcel_level_comparison_allowed": True,
+        },
+    )
+    assert high_local.get("specificity_tier") == "property_specific"
+    assert high_local.get("comparison_allowed") is True
 
 
 def test_old_rows_without_provenance_defaults_are_readable(tmp_path):

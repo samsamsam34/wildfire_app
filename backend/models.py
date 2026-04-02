@@ -862,11 +862,17 @@ class TrustDiagnostics(BaseModel):
     distribution_context: TrustDiagnosticsDistributionContext = Field(
         default_factory=TrustDiagnosticsDistributionContext
     )
-    differentiation_mode: Literal["property_specific", "mixed", "mostly_regional"] = "mostly_regional"
+    differentiation_mode: Literal[
+        "highly_local",
+        "property_specific",
+        "mixed",
+        "mostly_regional",
+    ] = "mostly_regional"
     property_specific_feature_count: int = 0
     proxy_feature_count: int = 0
     defaulted_feature_count: int = 0
     regional_feature_count: int = 0
+    local_differentiation_score: float = 0.0
     neighborhood_differentiation_confidence: float = 0.0
     differentiation_notes: List[str] = Field(default_factory=list)
     vegetation_signal: TrustDiagnosticsVegetationSignal = Field(
