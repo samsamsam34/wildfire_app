@@ -1220,6 +1220,29 @@ class WildfireDataClient:
         return None
 
     @staticmethod
+    def _normalize_source_path(path: str | None) -> str:
+        if not path:
+            return ""
+        try:
+            return str(Path(str(path)).expanduser().resolve())
+        except Exception:
+            return str(path)
+
+    @staticmethod
+    def _infer_footprint_source_label(source_path: str | None) -> str | None:
+        raw = str(source_path or "").strip()
+        if not raw:
+            return None
+        lower = raw.lower()
+        if "microsoft" in lower:
+            return "microsoft_building_footprints"
+        if "overture" in lower or "osm" in lower:
+            return "openstreetmap_buildings"
+        if "fema" in lower and "structure" in lower:
+            return "openstreetmap_buildings"
+        return "regional_dataset"
+
+    @staticmethod
     def _coerce_selected_structure_geometry(
         raw_geometry: dict[str, Any] | None,
     ) -> tuple[Any | None, str | None]:
@@ -1263,6 +1286,7 @@ class WildfireDataClient:
         canopy_path: str,
         fuel_path: str,
         footprint_priority_paths: list[str] | None = None,
+        footprint_source_labels: dict[str, str] | None = None,
         footprint_path: str | None = None,
         fallback_footprint_path: str | None = None,
         parcel_polygon: Any | None = None,
@@ -1287,6 +1311,25 @@ class WildfireDataClient:
             source_paths = [p for p in [footprint_path, fallback_footprint_path] if p]
         if source_paths:
             footprint_client = BuildingFootprintClient(path=source_paths[0], extra_paths=source_paths[1:])
+        source_label_map: dict[str, str] = {}
+        if isinstance(footprint_source_labels, dict):
+            for path_key, label in footprint_source_labels.items():
+                normalized_path = self._normalize_source_path(path_key)
+                normalized_label = str(label).strip().lower()
+                if normalized_path and normalized_label and normalized_path not in source_label_map:
+                    source_label_map[normalized_path] = normalized_label
+
+        def _selected_source_label(source_path: str | None) -> str | None:
+            normalized = self._normalize_source_path(source_path)
+            if normalized and normalized in source_label_map:
+                return source_label_map[normalized]
+            return self._infer_footprint_source_label(source_path)
+
+        source_labels_considered: list[str] = []
+        for source_path in source_paths:
+            label = _selected_source_label(source_path)
+            if label and label not in source_labels_considered:
+                source_labels_considered.append(label)
 
         normalized_geometry_source = str(structure_geometry_source or "auto_detected").strip().lower()
         if normalized_geometry_source not in {"auto_detected", "user_selected", "user_modified"}:
@@ -1451,6 +1494,16 @@ class WildfireDataClient:
                     "geometry_source": "raw_geocode_point",
                     "geometry_confidence": 0.0,
                     "ring_generation_mode": "point_annulus_fallback",
+                    "footprint_resolution": {
+                        "selected_source": None,
+                        "confidence_score": 0.0,
+                        "candidates_considered": 0,
+                        "fallback_used": True,
+                        "match_status": "error",
+                        "match_method": None,
+                        "match_distance_m": None,
+                        "sources_considered": source_labels_considered,
+                    },
                     "ring_metrics": None,
                     "nearest_vegetation_distance_ft": None,
                     "near_structure_vegetation_0_5_pct": None,
@@ -1618,6 +1671,20 @@ class WildfireDataClient:
                 structure_selection_method = "ambiguous_candidates_fallback"
             if fallback_selection_method:
                 structure_selection_method = fallback_selection_method
+            footprint_resolution = {
+                "selected_source": None,
+                "confidence_score": max(0.0, min(1.0, float(match_confidence or 0.0))),
+                "candidates_considered": int(max(candidate_count, len(candidate_summaries))),
+                "fallback_used": True,
+                "match_status": str(match_status or "none"),
+                "match_method": str(match_method) if match_method else None,
+                "match_distance_m": (
+                    float(match_distance)
+                    if match_distance is not None
+                    else None
+                ),
+                "sources_considered": source_labels_considered,
+            }
             return {
                 "footprint_used": False,
                 "footprint_found": False,
@@ -1651,6 +1718,7 @@ class WildfireDataClient:
                 "geometry_source": fallback_geometry_source,
                 "geometry_confidence": structure_geometry_confidence,
                 "ring_generation_mode": "point_annulus_fallback",
+                "footprint_resolution": footprint_resolution,
                 "ring_metrics": point_proxy_metrics if point_proxy_metrics else None,
                 "nearest_vegetation_distance_ft": nearest_vegetation_distance_ft,
                 "near_structure_vegetation_0_5_pct": structure_veg_features.get("near_structure_vegetation_0_5_pct"),
@@ -1812,6 +1880,20 @@ class WildfireDataClient:
             else "property_anchor_point"
         )
 
+        selected_source_label = _selected_source_label(result.source)
+        if selected_source_label is None and source_labels_considered:
+            selected_source_label = source_labels_considered[0]
+        footprint_resolution = {
+            "selected_source": selected_source_label,
+            "confidence_score": max(0.0, min(1.0, float(structure_match_confidence or 0.0))),
+            "candidates_considered": int(max(candidate_count, len(candidate_summaries), 1)),
+            "fallback_used": False,
+            "match_status": str(match_status or "matched"),
+            "match_method": str(match_method) if match_method else None,
+            "match_distance_m": (float(match_distance) if match_distance is not None else None),
+            "sources_considered": source_labels_considered,
+        }
+
         return {
             "footprint_used": bool(ring_metrics),
             "footprint_found": result.found,
@@ -1855,6 +1937,7 @@ class WildfireDataClient:
             "geometry_source": geometry_source,
             "geometry_confidence": geometry_confidence,
             "ring_generation_mode": "footprint_aware_rings",
+            "footprint_resolution": footprint_resolution,
             "ring_metrics": ring_metrics,
             "nearest_vegetation_distance_ft": nearest_vegetation_distance_ft,
             "near_structure_vegetation_0_5_pct": structure_veg_features.get("near_structure_vegetation_0_5_pct"),
@@ -2410,6 +2493,19 @@ class WildfireDataClient:
         )
 
         building_source_paths = self._resolve_building_source_paths(runtime_paths, region_context)
+        footprint_source_labels: dict[str, str] = {}
+        for runtime_key, label in (
+            ("footprints_microsoft", "microsoft_building_footprints"),
+            ("footprints_overture", "openstreetmap_buildings"),
+            ("fema_structures", "openstreetmap_buildings"),
+            ("footprints", "regional_dataset"),
+        ):
+            candidate_path = str(runtime_paths.get(runtime_key) or "").strip()
+            if not candidate_path:
+                continue
+            normalized_path = self._normalize_source_path(candidate_path)
+            if normalized_path and normalized_path not in footprint_source_labels:
+                footprint_source_labels[normalized_path] = label
         structure_query_lat = float(anchor.anchor_latitude)
         structure_query_lon = float(anchor.anchor_longitude)
         parcel_for_matching = anchor.parcel_polygon
@@ -2438,6 +2534,7 @@ class WildfireDataClient:
             canopy_path=runtime_paths.get("canopy", ""),
             fuel_path=runtime_paths.get("fuel", ""),
             footprint_priority_paths=building_source_paths,
+            footprint_source_labels=footprint_source_labels,
             footprint_path=runtime_paths.get("footprints"),
             fallback_footprint_path=runtime_paths.get("fema_structures"),
             parcel_polygon=parcel_for_matching,
@@ -2630,9 +2727,14 @@ class WildfireDataClient:
             if property_level_context.get("property_anchor_quality_score") is not None
             else 0.0
         )
-        property_level_context["footprint_source_name"] = str(
-            os.getenv("WF_FOOTPRINT_SOURCE_NAME", "") or Path(str(ring_context.get("footprint_source") or "")).stem
-        ) or None
+        selected_source_name = str(
+            (ring_context.get("footprint_resolution") or {}).get("selected_source") or ""
+        ).strip()
+        if not selected_source_name:
+            selected_source_name = str(
+                os.getenv("WF_FOOTPRINT_SOURCE_NAME", "") or Path(str(ring_context.get("footprint_source") or "")).stem
+            ).strip()
+        property_level_context["footprint_source_name"] = selected_source_name or None
         property_level_context["footprint_source_vintage"] = str(
             os.getenv("WF_FOOTPRINT_SOURCE_VINTAGE", "")
         ) or None

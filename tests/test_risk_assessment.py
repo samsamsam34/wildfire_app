@@ -398,6 +398,21 @@ def _assert_core_contract(body: dict) -> None:
         "provider_unavailable",
     }
     assert isinstance(geometry_resolution["geometry_limitations"], list)
+    footprint_resolution = body.get("footprint_resolution")
+    assert isinstance(footprint_resolution, dict)
+    for key in [
+        "selected_source",
+        "confidence_score",
+        "candidates_considered",
+        "fallback_used",
+    ]:
+        assert key in footprint_resolution
+    assert footprint_resolution["selected_source"] is None or isinstance(
+        footprint_resolution["selected_source"], str
+    )
+    assert 0.0 <= float(footprint_resolution["confidence_score"]) <= 1.0
+    assert int(footprint_resolution["candidates_considered"]) >= 0
+    assert isinstance(footprint_resolution["fallback_used"], bool)
     for layer in ["burn_probability", "hazard", "slope", "fuel", "canopy", "fire_history"]:
         assert layer in body["environmental_layer_status"]
     assert isinstance(body["input_source_metadata"], dict)
@@ -778,6 +793,9 @@ def test_low_quality_anchor_geometry_resolution_is_explicitly_cautious(monkeypat
     assert resolution["ring_generation_mode"] == "point_annulus_fallback"
     assert assessed["ring_generation_mode"] == "point_annulus_fallback"
     assert assessed["final_structure_geometry_source"] == "raw_geocode_point"
+    assert assessed["footprint_resolution"]["fallback_used"] is True
+    assert assessed["footprint_resolution"]["selected_source"] is None
+    assert assessed["assessment_specificity_tier"] in {"address_level", "regional_estimate", "insufficient_data"}
     trust_summary = ((assessed.get("homeowner_summary") or {}).get("trust_summary") or {})
     assert trust_summary.get("geometry_specificity_limited") is True
     condensed = trust_summary.get("geometry_resolution_summary") or {}
@@ -1012,6 +1030,10 @@ def test_wildfire_data_builds_point_proxy_ring_metrics_when_footprint_unavailabl
     assert ring_context["footprint_used"] is False
     assert ring_context["fallback_mode"] == "point_based"
     assert ring_context["ring_generation_mode"] == "point_annulus_fallback"
+    assert ring_context["footprint_resolution"]["selected_source"] is None
+    assert ring_context["footprint_resolution"]["fallback_used"] is True
+    assert ring_context["footprint_resolution"]["match_status"] in {"none", "ambiguous"}
+    assert ring_context["footprint_resolution"]["candidates_considered"] >= 0
     assert ring_context["geometry_source"] in {
         "raw_geocode_point",
         "parcel_geometry_inferred_home_location",
@@ -3756,6 +3778,72 @@ def test_building_footprint_lookup_success(tmp_path):
     assert result.footprint is not None
     assert result.centroid is not None
     assert result.confidence >= 0.9
+
+
+def test_building_footprint_lookup_multisource_prefers_plausible_candidate(tmp_path):
+    _require_shapely()
+    large_source = tmp_path / "regional_large.geojson"
+    small_source = tmp_path / "microsoft_small.geojson"
+    large_source.write_text(
+        json.dumps(
+            {
+                "type": "FeatureCollection",
+                "features": [
+                    {
+                        "type": "Feature",
+                        "properties": {"id": "large"},
+                        "geometry": {
+                            "type": "Polygon",
+                            "coordinates": [
+                                [
+                                    [-105.00030, 40.00030],
+                                    [-104.99970, 40.00030],
+                                    [-104.99970, 39.99970],
+                                    [-105.00030, 39.99970],
+                                    [-105.00030, 40.00030],
+                                ]
+                            ],
+                        },
+                    }
+                ],
+            }
+        )
+    )
+    small_source.write_text(
+        json.dumps(
+            {
+                "type": "FeatureCollection",
+                "features": [
+                    {
+                        "type": "Feature",
+                        "properties": {"id": "small"},
+                        "geometry": {
+                            "type": "Polygon",
+                            "coordinates": [
+                                [
+                                    [-105.000063, 40.000063],
+                                    [-104.999937, 40.000063],
+                                    [-104.999937, 39.999937],
+                                    [-105.000063, 39.999937],
+                                    [-105.000063, 40.000063],
+                                ]
+                            ],
+                        },
+                    }
+                ],
+            }
+        )
+    )
+
+    client = BuildingFootprintClient(path=str(large_source), extra_paths=[str(small_source)])
+    result = client.get_building_footprint(lat=40.0, lon=-105.0)
+
+    assert result.found is True
+    assert result.match_status == "matched"
+    assert result.source == str(small_source)
+    assert result.candidate_count == 2
+    assert len(result.candidate_summaries) >= 2
+    assert result.candidate_summaries[0]["source"] == str(small_source)
 
 
 def test_building_footprint_lookup_no_source_fallback(tmp_path):

@@ -916,6 +916,16 @@ class GeometryResolutionSummary(BaseModel):
     geometry_limitations: List[str] = Field(default_factory=list)
 
 
+class FootprintResolutionSummary(BaseModel):
+    selected_source: Optional[str] = None
+    confidence_score: float = 0.0
+    candidates_considered: int = 0
+    fallback_used: bool = True
+    match_status: str = "none"
+    match_method: Optional[str] = None
+    match_distance_m: Optional[float] = None
+
+
 class AssessmentResult(BaseModel):
     assessment_id: str
     address: str
@@ -1010,6 +1020,7 @@ class AssessmentResult(BaseModel):
     assessment_specificity_tier: AssessmentSpecificityTier = "regional_estimate"
     specificity_summary: SpecificitySummary = Field(default_factory=SpecificitySummary)
     geometry_resolution: GeometryResolutionSummary = Field(default_factory=GeometryResolutionSummary)
+    footprint_resolution: FootprintResolutionSummary = Field(default_factory=FootprintResolutionSummary)
     assessment_output_state: AssessmentOutputState = "insufficient_data"
     assessment_mode: AssessmentMode = "insufficient_data"
     scoring_status: str = "insufficient_data_to_score"

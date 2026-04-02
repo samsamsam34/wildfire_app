@@ -1804,6 +1804,15 @@ def _normalize_property_level_context(raw_context: object) -> dict[str, Any]:
             "structure_match_distance_m": None,
             "candidate_structure_count": 0,
             "structure_match_candidates": [],
+            "footprint_resolution": {
+                "selected_source": None,
+                "confidence_score": 0.0,
+                "candidates_considered": 0,
+                "fallback_used": True,
+                "match_status": "none",
+                "match_method": None,
+                "match_distance_m": None,
+            },
             "structure_geometry_source": "auto_detected",
             "selection_mode": "polygon",
             "property_anchor_point": None,
@@ -1865,6 +1874,65 @@ def _normalize_property_level_context(raw_context: object) -> dict[str, Any]:
     normalized.setdefault("candidate_structure_count", 1 if footprint_used else 0)
     candidates = normalized.get("structure_match_candidates")
     normalized["structure_match_candidates"] = candidates if isinstance(candidates, list) else []
+    raw_footprint_resolution = normalized.get("footprint_resolution")
+    if isinstance(raw_footprint_resolution, dict):
+        selected_source = str(raw_footprint_resolution.get("selected_source") or "").strip() or None
+        try:
+            confidence_score = float(raw_footprint_resolution.get("confidence_score") or 0.0)
+        except (TypeError, ValueError):
+            confidence_score = 0.0
+        try:
+            candidates_considered = int(raw_footprint_resolution.get("candidates_considered") or 0)
+        except (TypeError, ValueError):
+            candidates_considered = 0
+        fallback_used = bool(raw_footprint_resolution.get("fallback_used"))
+        match_status = str(raw_footprint_resolution.get("match_status") or "").strip().lower() or "none"
+        match_method = str(raw_footprint_resolution.get("match_method") or "").strip() or None
+        try:
+            match_distance_m = (
+                float(raw_footprint_resolution.get("match_distance_m"))
+                if raw_footprint_resolution.get("match_distance_m") is not None
+                else None
+            )
+        except (TypeError, ValueError):
+            match_distance_m = None
+        sources_considered = raw_footprint_resolution.get("sources_considered")
+        if isinstance(sources_considered, list):
+            normalized_sources_considered = [str(v).strip() for v in sources_considered if str(v).strip()]
+        else:
+            normalized_sources_considered = []
+    else:
+        selected_source = str(normalized.get("footprint_source_name") or normalized.get("building_source") or "").strip() or None
+        try:
+            confidence_score = float(normalized.get("structure_match_confidence") or 0.0)
+        except (TypeError, ValueError):
+            confidence_score = 0.0
+        try:
+            candidates_considered = int(normalized.get("candidate_structure_count") or 0)
+        except (TypeError, ValueError):
+            candidates_considered = 0
+        fallback_used = not footprint_used
+        match_status = str(normalized.get("structure_match_status") or "none").strip().lower() or "none"
+        match_method = str(normalized.get("structure_match_method") or "").strip() or None
+        try:
+            match_distance_m = (
+                float(normalized.get("structure_match_distance_m"))
+                if normalized.get("structure_match_distance_m") is not None
+                else None
+            )
+        except (TypeError, ValueError):
+            match_distance_m = None
+        normalized_sources_considered = []
+    normalized["footprint_resolution"] = {
+        "selected_source": selected_source,
+        "confidence_score": round(max(0.0, min(1.0, float(confidence_score))), 3),
+        "candidates_considered": max(0, int(candidates_considered)),
+        "fallback_used": bool(fallback_used),
+        "match_status": match_status,
+        "match_method": match_method,
+        "match_distance_m": match_distance_m,
+        "sources_considered": normalized_sources_considered,
+    }
     geometry_source = str(normalized.get("structure_geometry_source") or "").strip().lower()
     if geometry_source not in {"auto_detected", "user_selected", "user_modified"}:
         geometry_source = "auto_detected"
@@ -6371,6 +6439,7 @@ def _run_assessment(
         assessment_specificity_tier=str(coverage_preflight.get("assessment_specificity_tier") or "regional_estimate"),
         specificity_summary=dict(specificity_summary),
         geometry_resolution=geometry_resolution,
+        footprint_resolution=dict(property_level_context.get("footprint_resolution") or {}),
         assessment_output_state=str(assessment_output_state or "insufficient_data"),
         assessment_mode=homeowner_assessment_mode,
         scoring_status=scoring_status,
@@ -6620,6 +6689,7 @@ def _run_assessment(
         "environmental_data_completeness": environmental_data_completeness,
         "property_level_context": property_level_context,
         "geometry_resolution": result.geometry_resolution.model_dump(),
+        "footprint_resolution": result.footprint_resolution.model_dump(),
         "submodel_scores": {
             name: {
                 "score": sm.score,
