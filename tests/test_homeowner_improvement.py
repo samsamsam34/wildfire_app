@@ -92,24 +92,20 @@ def test_homeowner_improvement_options_detect_missing_key_inputs(monkeypatch, tm
     missing = set(body.get("missing_key_inputs") or [])
     assert {"roof_type", "vent_type", "defensible_space_condition"} <= missing
     prioritized = list(body.get("prioritized_missing_key_inputs") or [])
-    assert 1 <= len(prioritized) <= 3
+    assert len(prioritized) == 1
     assert set(prioritized).issubset(missing)
     assert isinstance(body.get("remaining_optional_input_count"), int)
     next_q = body.get("highest_value_next_question") or {}
     assert isinstance(next_q, dict)
     assert str(next_q.get("input_key") or "") in set(prioritized)
-    prompts = [row.get("prompt") for row in (body.get("optional_follow_up_inputs") or [])]
-    assert any("roof" in str(prompt).lower() for prompt in prompts)
-    assert any(
-        ("vent" in str(prompt).lower())
-        or ("building polygon" in str(prompt).lower())
-        or ("draw your building outline" in str(prompt).lower())
-        for prompt in prompts
-    )
-    assert any(
-        ("non-combustible" in str(prompt).lower()) or ("map pin" in str(prompt).lower())
-        for prompt in prompts
-    )
+    follow_up_inputs = list(body.get("optional_follow_up_inputs") or [])
+    assert len(follow_up_inputs) == 1
+    assert str((follow_up_inputs[0] or {}).get("input_key") or "") == str(next_q.get("input_key") or "")
+    prompt = str((follow_up_inputs[0] or {}).get("prompt") or "").lower()
+    assert "roof" in prompt or "vent" in prompt or "map pin" in prompt or "building" in prompt
+    assert isinstance(body.get("geometry_uncertainty"), dict)
+    structure_gaps = set(body.get("structure_attribute_gaps") or [])
+    assert {"roof_type", "vent_type", "defensible_space_ft"} <= structure_gaps
     joined_suggestions = " ".join(str(item).lower() for item in (body.get("improve_your_result_suggestions") or []))
     assert "roof type" in joined_suggestions or "vent" in joined_suggestions
 
@@ -137,12 +133,22 @@ def test_homeowner_improvement_rerun_increases_confidence_and_updates_guidance(m
     assert body["confidence_improved"] is True
     assert body["recommendations_adjusted"] is True
     assert float(body["after_summary"]["confidence_score"]) > float(body["before_summary"]["confidence_score"])
+    assert isinstance(body["before_summary"].get("property_data_confidence"), (float, int))
+    assert isinstance(body["after_summary"].get("property_data_confidence"), (float, int))
     assert "defensible_space_ft" in (body.get("what_changed") or {})
     concise = body.get("what_changed_summary") or {}
     assert isinstance(concise.get("score_direction"), dict)
     assert isinstance(concise.get("specificity_change"), dict)
     assert isinstance(concise.get("confidence_change"), dict)
     assert isinstance(concise.get("recommendation_changes"), dict)
+    why_it_matters = [str(row).lower() for row in (body.get("why_it_matters") or [])]
+    assert len(why_it_matters) >= 1
+    assert any(
+        ("confidence" in row)
+        or ("specificity" in row)
+        or ("recommendations" in row)
+        for row in why_it_matters
+    )
 
     before_missing = set((body.get("improve_your_result_before") or {}).get("missing_key_inputs") or [])
     after_missing = set((body.get("improve_your_result_after") or {}).get("missing_key_inputs") or [])
@@ -150,6 +156,18 @@ def test_homeowner_improvement_rerun_increases_confidence_and_updates_guidance(m
     assert "roof_type" not in after_missing
     assert "vent_type" in before_missing
     assert "vent_type" not in after_missing
+
+
+def test_assessment_improve_block_tracks_structure_and_geometry_gaps(monkeypatch, tmp_path: Path) -> None:
+    _setup(monkeypatch, tmp_path)
+    assessed = _assess("24 Improve Block Check, Missoula, MT 59802")
+    improve = ((assessed.get("homeowner_summary") or {}).get("improve_your_result") or {})
+    assert isinstance(improve, dict)
+    assert isinstance(improve.get("missing_property_fields") or [], list)
+    assert isinstance(improve.get("structure_attribute_gaps") or [], list)
+    assert isinstance(improve.get("geometry_uncertainty") or {}, dict)
+    assert isinstance((improve.get("diagnostic_sources") or {}).get("structure_attribute_gaps") or [], list)
+    assert isinstance((improve.get("diagnostic_sources") or {}).get("geometry_uncertainty") or {}, dict)
 
 
 def test_homeowner_map_point_correction_can_improve_specificity_and_trust(monkeypatch, tmp_path: Path) -> None:
@@ -238,12 +256,15 @@ def test_homeowner_map_point_correction_can_improve_specificity_and_trust(monkey
     assert response.status_code == 200
     body = response.json()
     assert body.get("confidence_improved") is True
+    assert float(body["after_summary"]["property_data_confidence"]) > float(body["before_summary"]["property_data_confidence"])
     assert body.get("what_changed", {}).get("map_point_correction") is not None
     concise = body.get("what_changed_summary") or {}
     assert (concise.get("specificity_change") or {}).get("changed") in {True, False}
     assert (concise.get("confidence_change") or {}).get("score_direction") in {"up", "down", "unchanged", "unknown"}
     assert isinstance(concise.get("differentiation_change"), dict)
     assert isinstance(concise.get("geometry_change"), dict)
+    why_it_matters = [str(row).lower() for row in (body.get("why_it_matters") or [])]
+    assert any("specificity" in row or "confidence" in row for row in why_it_matters)
 
     updated_report = client.get(f"/report/{body['updated_assessment_id']}")
     assert updated_report.status_code == 200

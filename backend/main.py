@@ -45,6 +45,7 @@ from backend.homeowner_advisor import (
     prioritize_mitigation_actions,
 )
 from backend.homeowner_improvement import (
+    build_improvement_why_it_matters,
     build_improve_your_result_block,
     build_homeowner_improvement_options,
     build_improvement_change_set,
@@ -12615,6 +12616,11 @@ def rerun_assessment_with_homeowner_inputs(
         updated,
         changed_fields_hint=list(normalized_changes.keys()),
     )
+    why_it_matters = build_improvement_why_it_matters(
+        existing,
+        updated,
+        what_changed_summary,
+    )
     if payload.defensible_space_condition and mapped_defensible_space_ft is not None:
         what_changed.setdefault(
             "defensible_space_condition_mapping",
@@ -12769,6 +12775,7 @@ def rerun_assessment_with_homeowner_inputs(
         after_summary=summarize_assessment_for_improvement(updated),
         what_changed=what_changed,
         what_changed_summary=what_changed_summary,
+        why_it_matters=why_it_matters,
         confidence_improved=confidence_improved,
         recommendations_adjusted=recommendations_adjusted,
         improve_your_result_before=before_options,

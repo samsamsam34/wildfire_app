@@ -107,6 +107,15 @@ _DEFENSIBLE_SPACE_CONDITION_TO_FT: dict[str, float] = {
     "excellent": 60.0,
 }
 
+_STRUCTURE_ATTRIBUTE_FIELDS: tuple[str, ...] = (
+    "roof_type",
+    "vent_type",
+    "window_type",
+    "defensible_space_ft",
+    "construction_year",
+    "siding_type",
+)
+
 
 def _safe_float(value: object) -> float | None:
     try:
@@ -264,6 +273,38 @@ def _build_diagnostic_gap_suggestions(result: AssessmentResult, missing_fields: 
     return suggestions[:10]
 
 
+def _structure_attribute_gaps(
+    *,
+    facts: dict[str, Any],
+    strict_missing_fields: set[str],
+    missing_fields: set[str],
+) -> list[str]:
+    gaps: list[str] = []
+    for field in _STRUCTURE_ATTRIBUTE_FIELDS:
+        if field in strict_missing_fields or field in missing_fields or _is_missing_value(facts.get(field)):
+            gaps.append(field)
+    return sorted(set(gaps))
+
+
+def _geometry_uncertainty_summary(
+    geometry_resolution: dict[str, Any],
+    geometry_issue_flags: list[str],
+) -> dict[str, Any]:
+    return {
+        "issue_flags": list(geometry_issue_flags),
+        "anchor_source": str(geometry_resolution.get("anchor_source") or ""),
+        "anchor_quality_score": _safe_float(geometry_resolution.get("anchor_quality_score")),
+        "parcel_match_status": str(geometry_resolution.get("parcel_match_status") or ""),
+        "footprint_match_status": str(geometry_resolution.get("footprint_match_status") or ""),
+        "ring_generation_mode": str(geometry_resolution.get("ring_generation_mode") or ""),
+        "naip_structure_feature_status": str(geometry_resolution.get("naip_structure_feature_status") or ""),
+        "property_mismatch_flag": bool(geometry_resolution.get("property_mismatch_flag")),
+        "mismatch_reason": (
+            str(geometry_resolution.get("mismatch_reason") or "").strip() or None
+        ),
+    }
+
+
 def build_improve_your_result_block(result: AssessmentResult) -> dict[str, Any]:
     options = build_homeowner_improvement_options(result)
     missing_fields = _collect_missing_input_fields(result)
@@ -289,6 +330,8 @@ def build_improve_your_result_block(result: AssessmentResult) -> dict[str, Any]:
                 if isinstance(row, dict) and str((row or {}).get("missing_input") or "").strip()
             }
         )[:12],
+        "structure_attribute_gaps": list(options.structure_attribute_gaps or []),
+        "geometry_uncertainty": dict(options.geometry_uncertainty or {}),
     }
 
     suggestions = list(options.improve_your_result_suggestions or [])
@@ -308,6 +351,9 @@ def build_improve_your_result_block(result: AssessmentResult) -> dict[str, Any]:
         "remaining_optional_input_count": int(options.remaining_optional_input_count or 0),
         "suggestions": suggestions[:6],
         "optional_follow_up_inputs": [row.model_dump() for row in list(options.optional_follow_up_inputs or [])],
+        "missing_property_fields": list(diagnostic_sources["structure_attribute_gaps"]),
+        "structure_attribute_gaps": list(diagnostic_sources["structure_attribute_gaps"]),
+        "geometry_uncertainty": dict(diagnostic_sources["geometry_uncertainty"]),
         "diagnostic_sources": diagnostic_sources,
     }
 
@@ -370,6 +416,15 @@ def build_homeowner_improvement_options(result: AssessmentResult) -> HomeownerIm
         geometry_issue_flags.append("point_fallback_rings")
     if property_mismatch_flag:
         geometry_issue_flags.append("property_mismatch")
+    structure_attribute_gaps = _structure_attribute_gaps(
+        facts=facts,
+        strict_missing_fields=strict_missing_fields,
+        missing_fields=missing_fields,
+    )
+    geometry_uncertainty = _geometry_uncertainty_summary(
+        geometry_resolution if isinstance(geometry_resolution, dict) else {},
+        geometry_issue_flags,
+    )
 
     candidate_rows: list[dict[str, Any]] = []
     geometry_input_keys = {"map_point_correction", "select_building_polygon", "draw_structure_manually"}
@@ -417,7 +472,7 @@ def build_homeowner_improvement_options(result: AssessmentResult) -> HomeownerIm
     candidate_rows.sort(key=lambda row: (-float(row.get("lift_score") or 0.0), str(row.get("input_key") or "")))
 
     missing_key_inputs = [str(row.get("input_key") or "") for row in candidate_rows if str(row.get("input_key") or "")]
-    prioritized_rows = candidate_rows[:3]
+    prioritized_rows = candidate_rows[:1]
     prioritized_missing_key_inputs = [
         str(row.get("input_key") or "")
         for row in prioritized_rows
@@ -438,6 +493,15 @@ def build_homeowner_improvement_options(result: AssessmentResult) -> HomeownerIm
         suggestion = str(row.get("suggestion") or "").strip()
         if suggestion and suggestion not in suggestions:
             suggestions.append(suggestion)
+    if geometry_limited:
+        for row in candidate_rows:
+            input_key = str(row.get("input_key") or "")
+            if input_key in geometry_input_keys:
+                continue
+            suggestion = str(row.get("suggestion") or "").strip()
+            if suggestion and suggestion not in suggestions:
+                suggestions.append(suggestion)
+                break
 
     if not suggestions:
         suggestions.append(
@@ -454,12 +518,24 @@ def build_homeowner_improvement_options(result: AssessmentResult) -> HomeownerIm
         highest_value_next_question=(follow_ups[0] if follow_ups else None),
         remaining_optional_input_count=max(0, len(candidate_rows) - len(follow_ups)),
         geometry_issue_flags=geometry_issue_flags,
+        missing_property_fields=structure_attribute_gaps,
+        structure_attribute_gaps=structure_attribute_gaps,
+        geometry_uncertainty=geometry_uncertainty,
         improve_your_result_suggestions=suggestions[:6],
         optional_follow_up_inputs=follow_ups,
     )
 
 
 def summarize_assessment_for_improvement(result: AssessmentResult) -> dict[str, Any]:
+    property_confidence_summary = (
+        result.property_confidence_summary.model_dump()
+        if hasattr(result.property_confidence_summary, "model_dump")
+        else (
+            dict(result.property_confidence_summary)
+            if isinstance(result.property_confidence_summary, dict)
+            else {}
+        )
+    )
     return {
         "assessment_id": result.assessment_id,
         "wildfire_risk_score": result.wildfire_risk_score,
@@ -467,6 +543,9 @@ def summarize_assessment_for_improvement(result: AssessmentResult) -> dict[str, 
         "insurance_readiness_score": result.insurance_readiness_score,
         "confidence_score": result.confidence_score,
         "confidence_tier": result.confidence_tier,
+        "property_data_confidence": result.property_data_confidence,
+        "property_confidence_level": str(property_confidence_summary.get("level") or ""),
+        "property_confidence_key_gaps": list(property_confidence_summary.get("key_gaps") or [])[:4],
         "top_recommended_actions": list(result.top_recommended_actions or [])[:3],
         "top_risk_drivers": list(result.top_risk_drivers or [])[:3],
     }
@@ -624,3 +703,63 @@ def build_improvement_change_set(
     changed["confidence_change"] = summary["confidence_change"]
     changed["recommendation_changes"] = summary["recommendation_changes"]
     return changed, notes, summary
+
+
+def build_improvement_why_it_matters(
+    before: AssessmentResult,
+    after: AssessmentResult,
+    summary: dict[str, Any],
+) -> list[str]:
+    notes: list[str] = []
+    confidence_change = summary.get("confidence_change") if isinstance(summary, dict) else {}
+    if isinstance(confidence_change, dict):
+        direction = str(confidence_change.get("score_direction") or "")
+        if direction == "up":
+            notes.append(
+                "Confidence improved because the update reduced missing or inferred property details."
+            )
+        elif direction == "down":
+            notes.append(
+                "Confidence decreased because the updated inputs introduced more uncertainty."
+            )
+    specificity_change = summary.get("specificity_change") if isinstance(summary, dict) else {}
+    if isinstance(specificity_change, dict) and bool(specificity_change.get("changed")):
+        after_tier = str(specificity_change.get("after_tier") or "")
+        if after_tier == "property_specific":
+            notes.append(
+                "Specificity improved to property-specific, so nearby-home differentiation is more reliable."
+            )
+        elif after_tier == "address_level":
+            notes.append(
+                "Specificity improved to address-level, reducing reliance on broad regional assumptions."
+            )
+    recommendation_changes = summary.get("recommendation_changes") if isinstance(summary, dict) else {}
+    if isinstance(recommendation_changes, dict) and bool(recommendation_changes.get("changed")):
+        notes.append(
+            "Recommendations updated because the model now has better property evidence to rank actions."
+        )
+
+    before_prop_conf = float(before.property_data_confidence or 0.0)
+    after_prop_conf = float(after.property_data_confidence or 0.0)
+    if after_prop_conf > before_prop_conf and not any("Confidence improved" in n for n in notes):
+        notes.append(
+            "Property data confidence improved, which makes this assessment more property-specific."
+        )
+
+    score_direction = summary.get("score_direction") if isinstance(summary, dict) else {}
+    if isinstance(score_direction, dict):
+        direction = str(score_direction.get("direction") or "")
+        if direction == "up":
+            notes.append(
+                "Risk increased after updates, indicating the newly provided details reveal higher exposure."
+            )
+        elif direction == "down":
+            notes.append(
+                "Risk decreased after updates, indicating the newly provided details support lower exposure."
+            )
+
+    if not notes:
+        notes.append(
+            "The update keeps results aligned with current evidence and clarifies how missing details affect this estimate."
+        )
+    return list(dict.fromkeys(notes))[:4]

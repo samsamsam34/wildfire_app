@@ -753,6 +753,9 @@ class HomeownerImprovementOptions(BaseModel):
     highest_value_next_question: Optional[HomeownerFollowUpInput] = None
     remaining_optional_input_count: int = 0
     geometry_issue_flags: List[str] = Field(default_factory=list)
+    missing_property_fields: List[str] = Field(default_factory=list)
+    structure_attribute_gaps: List[str] = Field(default_factory=list)
+    geometry_uncertainty: Dict[str, Any] = Field(default_factory=dict)
     improve_your_result_suggestions: List[str] = Field(default_factory=list)
     optional_follow_up_inputs: List[HomeownerFollowUpInput] = Field(default_factory=list)
 
@@ -764,6 +767,7 @@ class HomeownerImprovementRunResponse(BaseModel):
     after_summary: Dict[str, Any] = Field(default_factory=dict)
     what_changed: Dict[str, Any] = Field(default_factory=dict)
     what_changed_summary: Dict[str, Any] = Field(default_factory=dict)
+    why_it_matters: List[str] = Field(default_factory=list)
     confidence_improved: bool = False
     recommendations_adjusted: bool = False
     improve_your_result_before: HomeownerImprovementOptions
