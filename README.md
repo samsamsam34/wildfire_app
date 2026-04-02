@@ -714,6 +714,32 @@ These summarize:
 - false similarity cases (collapsed without low-specificity warning)
 - abstention success rate when data is weak
 
+Internal property-specificity scorecard (latest vs previous baseline):
+
+```bash
+python scripts/build_property_specificity_scorecard.py
+```
+
+This writes:
+- `benchmark/property_specificity_scorecard/<run_id>/property_specificity_scorecard.json`
+- `benchmark/property_specificity_scorecard/<run_id>/summary.md`
+
+Scorecard metrics include:
+- percent `property_specific`, `address_level`, `regional_estimate`
+- percent with footprint match
+- percent with NAIP structure features (from multi-region runtime artifacts)
+- percent passing nearby-home differentiation assertions
+
+To pin current/baseline artifacts explicitly:
+
+```bash
+python scripts/build_property_specificity_scorecard.py \
+  --benchmark-artifact benchmark/results/benchmark_run_YYYYMMDDTHHMMSSZ.json \
+  --baseline-benchmark-artifact benchmark/results/benchmark_run_YYYYMMDDTHHMMSSZ.json \
+  --multi-region-artifact benchmark/multi_region_runtime/multi_region_regression_YYYYMMDDTHHMMSSZ.json \
+  --baseline-multi-region-artifact benchmark/multi_region_runtime/multi_region_regression_YYYYMMDDTHHMMSSZ.json
+```
+
 Use `POST /risk/debug?include_benchmark_hints=true` or `GET /report/{assessment_id}/export?include_benchmark_hints=true` to include lightweight benchmark resemblance and sanity-check hints in diagnostics/export output.
 
 ## No-Ground-Truth Evaluation
