@@ -954,6 +954,7 @@ class WildfireDataClient:
         origin_lon: float,
         canopy_path: str,
         fuel_path: str,
+        slope_path: str = "",
         footprint: Any | None,
     ) -> dict[str, Any]:
         directions: list[tuple[str, float]] = [
@@ -1001,14 +1002,44 @@ class WildfireDataClient:
                 lat=zone1_lat,
                 lon=zone1_lon,
             )
+            slope_deg = self._sample_raster_point(slope_path, zone1_lat, zone1_lon) if slope_path else None
+            slope_index = (
+                round(float(self._to_index(float(slope_deg), 0.0, 60.0)), 1)
+                if slope_deg is not None
+                else None
+            )
+            uphill_fuel_concentration = None
+            if zone1_index is not None and slope_index is not None:
+                uphill_fuel_concentration = round(
+                    max(0.0, min(100.0, (0.70 * float(zone1_index)) + (0.30 * float(slope_index)))),
+                    1,
+                )
             if close_index is not None:
                 near_0_5_values.append(float(close_index))
             if zone1_index is not None:
                 near_5_30_values.append(float(zone1_index))
+            risk_terms: list[tuple[float, float]] = []
+            if close_index is not None:
+                risk_terms.append((0.45, float(close_index)))
+            if zone1_index is not None:
+                risk_terms.append((0.30, float(zone1_index)))
+            if slope_index is not None:
+                risk_terms.append((0.10, float(slope_index)))
+            if uphill_fuel_concentration is not None:
+                risk_terms.append((0.15, float(uphill_fuel_concentration)))
+            sector_risk_score = None
+            if risk_terms:
+                numerator = sum(weight * value for weight, value in risk_terms)
+                denominator = sum(weight for weight, _ in risk_terms) or 1.0
+                sector_risk_score = round(max(0.0, min(100.0, numerator / denominator)), 1)
             sector_samples[direction_name] = {
                 "edge_offset_m": round(float(edge_offset_m), 2),
                 "veg_0_5_index": round(float(close_index), 1) if close_index is not None else None,
                 "veg_5_30_index": round(float(zone1_index), 1) if zone1_index is not None else None,
+                "slope_deg": round(float(slope_deg), 1) if slope_deg is not None else None,
+                "slope_index": slope_index,
+                "uphill_fuel_concentration": uphill_fuel_concentration,
+                "sector_risk_score": sector_risk_score,
             }
 
             streak = 0
@@ -1064,6 +1095,17 @@ class WildfireDataClient:
             if continuous_candidates_ft
             else None
         )
+        sector_scores = {
+            str(direction): float(payload.get("sector_risk_score"))
+            for direction, payload in sector_samples.items()
+            if isinstance(payload, dict) and payload.get("sector_risk_score") is not None
+        }
+        max_risk_direction = None
+        if sector_scores:
+            max_risk_direction = max(
+                sorted(sector_scores.keys()),
+                key=lambda direction: float(sector_scores.get(direction) or 0.0),
+            )
 
         return {
             "near_structure_vegetation_0_5_pct": near_0_5_pct,
@@ -1087,6 +1129,20 @@ class WildfireDataClient:
                 if has_footprint
                 else "point_proxy_relative"
             ),
+            "directional_risk": {
+                "max_risk_direction": max_risk_direction,
+                "sector_scores": sector_scores,
+                "basis": (
+                    "footprint_boundary"
+                    if has_footprint
+                    else "point_proxy"
+                ),
+                "precision_flag": (
+                    "footprint_relative"
+                    if has_footprint
+                    else "fallback_point_proxy"
+                ),
+            },
         }
 
     def _build_near_structure_feature_block(
@@ -1416,6 +1472,7 @@ class WildfireDataClient:
         *,
         canopy_path: str,
         fuel_path: str,
+        slope_path: str = "",
         footprint_priority_paths: list[str] | None = None,
         footprint_source_labels: dict[str, str] | None = None,
         footprint_path: str | None = None,
@@ -1646,6 +1703,7 @@ class WildfireDataClient:
                     "vegetation_directional_precision": "point_proxy",
                     "vegetation_directional_precision_score": 0.2,
                     "vegetation_directional_basis": "point_proxy_relative",
+                    "directional_risk": {},
                     "neighboring_structure_metrics": None,
                 }, assumptions, sources
 
@@ -1768,6 +1826,7 @@ class WildfireDataClient:
                 origin_lon=fallback_query_lon,
                 canopy_path=canopy_path,
                 fuel_path=fuel_path,
+                slope_path=slope_path,
                 footprint=None,
             )
             neighbor_metrics = footprint_client.get_neighbor_structure_metrics(
@@ -1869,6 +1928,7 @@ class WildfireDataClient:
                     "vegetation_directional_precision_score"
                 ),
                 "vegetation_directional_basis": structure_veg_features.get("vegetation_directional_basis"),
+                "directional_risk": structure_veg_features.get("directional_risk") or {},
                 "neighboring_structure_metrics": neighbor_metrics,
                 "building_age_proxy_year": proxy_year,
                 "building_age_material_proxy_risk": proxy_risk,
@@ -1953,6 +2013,7 @@ class WildfireDataClient:
             origin_lon=query_lon,
             canopy_path=canopy_path,
             fuel_path=fuel_path,
+            slope_path=slope_path,
             footprint=result.footprint,
         )
 
@@ -2123,6 +2184,7 @@ class WildfireDataClient:
                 "vegetation_directional_precision_score"
             ),
             "vegetation_directional_basis": structure_veg_features.get("vegetation_directional_basis"),
+            "directional_risk": structure_veg_features.get("directional_risk") or {},
             "neighboring_structure_metrics": neighbor_metrics,
             "building_age_proxy_year": proxy_year,
             "building_age_material_proxy_risk": proxy_risk,
@@ -2494,6 +2556,7 @@ class WildfireDataClient:
             "vegetation_directional_precision": "point_proxy",
             "vegetation_directional_precision_score": 0.0,
             "vegetation_directional_basis": "point_proxy_relative",
+            "directional_risk": {},
             "hazard_context": {},
             "moisture_context": {},
             "historical_fire_context": {},
@@ -2699,6 +2762,7 @@ class WildfireDataClient:
             structure_query_lon,
             canopy_path=runtime_paths.get("canopy", ""),
             fuel_path=runtime_paths.get("fuel", ""),
+            slope_path=runtime_paths.get("slope", ""),
             footprint_priority_paths=building_source_paths,
             footprint_source_labels=footprint_source_labels,
             footprint_path=runtime_paths.get("footprints"),

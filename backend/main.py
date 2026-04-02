@@ -1847,6 +1847,7 @@ def _normalize_property_level_context(raw_context: object) -> dict[str, Any]:
             "fallback_mode": "point_based",
             "ring_metrics": None,
             "near_structure_features": {},
+            "directional_risk": {},
         }
 
     normalized = dict(raw_context)
@@ -2136,6 +2137,11 @@ def _normalize_property_level_context(raw_context: object) -> dict[str, Any]:
             "confidence_flag": confidence_flag,
             "source": "naip_imagery" if imagery_available else "fallback_layers",
         }
+    directional_risk = normalized.get("directional_risk")
+    if isinstance(directional_risk, dict):
+        normalized["directional_risk"] = dict(directional_risk)
+    else:
+        normalized["directional_risk"] = {}
     return normalized
 
 
@@ -6467,6 +6473,7 @@ def _run_assessment(
         prioritized_vegetation_actions=prioritized_vegetation_actions,
         defensible_space_limitations_summary=defensible_space_limitations_summary,
         near_structure_features=dict(property_level_context.get("near_structure_features") or {}),
+        directional_risk=dict(property_level_context.get("directional_risk") or {}),
         top_risk_drivers=top_risk_drivers,
         top_risk_drivers_detailed=ranked_driver_details[:3],
         prioritized_mitigation_actions=prioritized_mitigation_actions,

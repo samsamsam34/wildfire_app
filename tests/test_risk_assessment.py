@@ -346,6 +346,7 @@ def _assert_core_contract(body: dict) -> None:
     assert isinstance(body["confidence_summary"], dict)
     assert isinstance(body["assumptions_and_unknowns"], list)
     assert isinstance(body.get("near_structure_features"), dict)
+    assert isinstance(body.get("directional_risk"), dict)
     for key in ("veg_density_0_5", "veg_density_5_30", "canopy_overlap", "hardscape_ratio"):
         assert key in body["near_structure_features"]
     assert body["use_restriction"] in {
@@ -4154,6 +4155,98 @@ def test_nearby_distinct_footprints_generate_distinct_ring_metrics(monkeypatch):
     assert b["ring_metrics"]["precision_flag"] == "footprint_relative"
     assert a["ring_metrics"]["ring_0_5_ft"]["vegetation_density"] != b["ring_metrics"]["ring_0_5_ft"]["vegetation_density"]
     assert a["ring_metrics"]["ring_0_5_ft"]["ring_area_sqft"] != b["ring_metrics"]["ring_0_5_ft"]["ring_area_sqft"]
+
+
+def test_asymmetric_vegetation_produces_directional_risk_differentiation(monkeypatch):
+    _require_shapely()
+    client = WildfireDataClient()
+    origin_lat, origin_lon = 40.0, -105.0
+    footprint = Polygon(
+        [
+            (-105.00008, 40.00006),
+            (-104.99992, 40.00006),
+            (-104.99992, 39.99994),
+            (-105.00008, 39.99994),
+            (-105.00008, 40.00006),
+        ]
+    )
+
+    monkeypatch.setattr(
+        client.footprints,
+        "get_building_footprint",
+        lambda _lat, _lon, **_kwargs: BuildingFootprintResult(
+            found=True,
+            footprint=footprint,
+            centroid=(origin_lat, origin_lon),
+            source="fixture",
+            confidence=0.94,
+            match_status="matched",
+            match_method="point_in_footprint",
+            matched_structure_id="home-1",
+            match_distance_m=0.0,
+            candidate_count=1,
+            candidate_summaries=[],
+            assumptions=[],
+        ),
+    )
+    monkeypatch.setattr(
+        client,
+        "_summarize_ring_canopy",
+        lambda _geom, canopy_path: {
+            "canopy_mean": 50.0,
+            "canopy_max": 70.0,
+            "coverage_pct": 45.0,
+            "vegetation_density": 50.0,
+        },
+    )
+    monkeypatch.setattr(client, "_summarize_ring_fuel_presence", lambda _geom, fuel_path: 42.0)
+
+    def _asymmetric_veg(*, canopy_path, fuel_path, lat, lon):
+        eps = 0.00001
+        if lon > origin_lon + eps:
+            return 92.0
+        if lon < origin_lon - eps:
+            return 24.0
+        if lat > origin_lat + eps:
+            return 48.0
+        if lat < origin_lat - eps:
+            return 34.0
+        return 50.0
+
+    def _asymmetric_slope(path: str, lat: float, lon: float):
+        if path != "slope.tif":
+            return None
+        eps = 0.00001
+        if lon > origin_lon + eps:
+            return 32.0
+        if lon < origin_lon - eps:
+            return 8.0
+        if lat > origin_lat + eps:
+            return 18.0
+        if lat < origin_lat - eps:
+            return 12.0
+        return 15.0
+
+    monkeypatch.setattr(client, "_sample_combined_vegetation_index", _asymmetric_veg)
+    monkeypatch.setattr(client, "_sample_raster_point", _asymmetric_slope)
+
+    context_blob, _assumptions, _sources = client._compute_structure_ring_metrics(
+        origin_lat,
+        origin_lon,
+        canopy_path="canopy.tif",
+        fuel_path="fuel.tif",
+        slope_path="slope.tif",
+    )
+
+    directional_risk = context_blob.get("directional_risk") or {}
+    sector_scores = directional_risk.get("sector_scores") or {}
+    sector_details = context_blob.get("vegetation_directional_sectors") or {}
+
+    assert directional_risk.get("max_risk_direction") == "east"
+    assert float(sector_scores.get("east") or 0.0) > float(sector_scores.get("west") or 0.0)
+    assert float(sector_scores.get("east") or 0.0) > float(sector_scores.get("south") or 0.0)
+    assert sector_details.get("east", {}).get("slope_deg") is not None
+    assert sector_details.get("east", {}).get("uphill_fuel_concentration") is not None
 
 
 def test_context_collect_fallback_when_footprint_unavailable(monkeypatch):
