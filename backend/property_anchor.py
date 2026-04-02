@@ -7,6 +7,8 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+from backend.parcel_resolution import ParcelResolutionClient, ParcelResolutionResult
+
 try:
     from pyproj import Transformer
     from shapely.geometry import Point, mapping, shape
@@ -51,6 +53,8 @@ class PropertyAnchorResolution:
     source_conflict_flag: bool = False
     diagnostics: list[str] = field(default_factory=list)
     alignment_notes: list[str] = field(default_factory=list)
+    parcel_resolution: dict[str, Any] = field(default_factory=dict)
+    parcel_bounding_approximation_geojson: dict[str, Any] | None = None
 
     def to_context(self) -> dict[str, Any]:
         return {
@@ -83,6 +87,8 @@ class PropertyAnchorResolution:
             "address_point_lookup_distance_m": self.address_point_lookup_distance_m,
             "source_conflict_flag": bool(self.source_conflict_flag),
             "alignment_notes": list(self.alignment_notes),
+            "parcel_resolution": dict(self.parcel_resolution or {}),
+            "parcel_bounding_approximation": self.parcel_bounding_approximation_geojson,
         }
 
 
@@ -92,10 +98,15 @@ class PropertyAnchorResolver:
         *,
         address_points_path: str | None = None,
         parcels_path: str | None = None,
+        parcels_paths: list[str] | None = None,
         source_priority: tuple[str, ...] | None = None,
     ) -> None:
         self.address_points_path = str(address_points_path or "").strip()
         self.parcels_path = str(parcels_path or "").strip()
+        self.parcels_paths = self._resolve_parcel_paths(
+            primary_path=self.parcels_path,
+            extra_paths=parcels_paths,
+        )
         self.max_address_point_distance_m = self._env_float(
             "WF_PROPERTY_ANCHOR_MAX_ADDRESS_POINT_DISTANCE_M",
             45.0,
@@ -107,6 +118,10 @@ class PropertyAnchorResolver:
             min_value=1.0,
         )
         self.source_priority = source_priority or self._resolve_source_priority()
+        self.parcel_resolver = ParcelResolutionClient(
+            parcel_paths=self.parcels_paths,
+            max_lookup_distance_m=self.max_parcel_lookup_distance_m,
+        )
 
     @staticmethod
     def _geo_ready() -> bool:
@@ -126,6 +141,21 @@ class PropertyAnchorResolver:
     @staticmethod
     def _file_exists(path: str) -> bool:
         return bool(path) and Path(path).exists()
+
+    @staticmethod
+    def _resolve_parcel_paths(*, primary_path: str, extra_paths: list[str] | None) -> list[str]:
+        ordered: list[str] = []
+        for candidate in [primary_path, *(extra_paths or [])]:
+            raw = str(candidate or "").strip()
+            if not raw:
+                continue
+            try:
+                normalized = str(Path(raw).expanduser().resolve())
+            except Exception:
+                normalized = raw
+            if normalized not in ordered:
+                ordered.append(normalized)
+        return ordered
 
     @staticmethod
     def _resolve_source_priority() -> tuple[str, ...]:
@@ -254,52 +284,46 @@ class PropertyAnchorResolver:
                 best_distance = distance_m
         return best_feature, best_distance
 
-    def _best_parcel_for_point(
+    @staticmethod
+    def _parcel_resolution_rank(result: ParcelResolutionResult) -> tuple[int, int, float]:
+        status_rank = {
+            "matched": 3,
+            "multiple_candidates": 2,
+            "not_found": 1,
+        }.get(str(result.status or "not_found"), 0)
+        method_rank = {
+            "contains_point": 3,
+            "nearest_within_tolerance": 2,
+            "multiple_candidates": 1,
+            "none": 0,
+        }.get(str(result.parcel_lookup_method or "none"), 0)
+        return (status_rank, method_rank, float(result.confidence or 0.0))
+
+    def _resolve_parcel_from_candidates(
         self,
         *,
-        anchor_point: Any,
+        candidate_points: list[Any],
         max_lookup_distance_m: float | None = None,
-    ) -> tuple[dict[str, Any] | None, Any | None, str | None, float | None]:
-        if not self._geo_ready() or not self._file_exists(self.parcels_path):
-            return None, None, None, None
-        threshold = float(max_lookup_distance_m if max_lookup_distance_m is not None else self.max_parcel_lookup_distance_m)
-        containing: list[tuple[dict[str, Any], Any]] = []
-        nearest_feature: dict[str, Any] | None = None
-        nearest_geom: Any | None = None
-        nearest_distance_m: float | None = None
-        for feature in self._load_geojson_features(self.parcels_path):
-            geom_raw = feature.get("geometry")
-            if not isinstance(geom_raw, dict):
-                continue
-            gtype = str(geom_raw.get("type") or "")
-            if gtype not in {"Polygon", "MultiPolygon"}:
-                continue
-            try:
-                geom = shape(geom_raw)
-            except Exception:
-                continue
-            if geom.is_empty:
-                continue
-            if geom.covers(anchor_point):
-                containing.append((feature, geom))
-                continue
-            distance_m = self._distance_m(anchor_point, geom)
-            if nearest_distance_m is None or distance_m < nearest_distance_m:
-                nearest_distance_m = distance_m
-                nearest_feature = feature
-                nearest_geom = geom
-        if not containing:
-            if (
-                nearest_feature is not None
-                and nearest_geom is not None
-                and nearest_distance_m is not None
-                and nearest_distance_m <= threshold
-            ):
-                return nearest_feature, nearest_geom, "nearest_within_tolerance", round(float(nearest_distance_m), 2)
-            return None, None, "none", None
-        containing.sort(key=lambda row: float(max(0.0, row[1].area)))
-        feature, geom = containing[0]
-        return feature, geom, "contains_point", 0.0
+    ) -> ParcelResolutionResult:
+        best: ParcelResolutionResult | None = None
+        for anchor_point in candidate_points:
+            current = self.parcel_resolver.resolve_for_point(
+                anchor_point=anchor_point,
+                max_lookup_distance_m=max_lookup_distance_m,
+            )
+            if best is None or self._parcel_resolution_rank(current) > self._parcel_resolution_rank(best):
+                best = current
+            if current.status == "matched" and str(current.parcel_lookup_method or "") == "contains_point":
+                break
+        return best or ParcelResolutionResult(
+            status="not_found",
+            confidence=0.0,
+            source=None,
+            geometry_used="none",
+            overlap_score=0.0,
+            parcel_lookup_method="none",
+            diagnostics=["Parcel resolution did not return a candidate."],
+        )
 
     @staticmethod
     def _anchor_source_from_geocode_precision(precision: str) -> str:
@@ -452,40 +476,20 @@ class PropertyAnchorResolver:
             if coords is not None:
                 address_point = Point(coords[1], coords[0])
 
-        parcel_feature = None
-        parcel_geom = None
-        parcel_lookup_method: str | None = None
-        parcel_lookup_distance_m: float | None = None
+        parcel_candidate_points: list[Any] = []
         if override_anchor is not None:
-            (
-                parcel_feature,
-                parcel_geom,
-                parcel_lookup_method,
-                parcel_lookup_distance_m,
-            ) = self._best_parcel_for_point(
-                anchor_point=requested_anchor_point,
-                max_lookup_distance_m=parcel_limit_m,
-            )
+            parcel_candidate_points.append(requested_anchor_point)
         elif address_point is not None:
-            (
-                parcel_feature,
-                parcel_geom,
-                parcel_lookup_method,
-                parcel_lookup_distance_m,
-            ) = self._best_parcel_for_point(
-                anchor_point=address_point,
-                max_lookup_distance_m=parcel_limit_m,
-            )
-        if parcel_feature is None or parcel_geom is None:
-            (
-                parcel_feature,
-                parcel_geom,
-                parcel_lookup_method,
-                parcel_lookup_distance_m,
-            ) = self._best_parcel_for_point(
-                anchor_point=geocode_point,
-                max_lookup_distance_m=parcel_limit_m,
-            )
+            parcel_candidate_points.append(address_point)
+        parcel_candidate_points.append(geocode_point)
+        parcel_resolution = self._resolve_parcel_from_candidates(
+            candidate_points=parcel_candidate_points,
+            max_lookup_distance_m=parcel_limit_m,
+        )
+        parcel_feature = parcel_resolution.parcel_feature
+        parcel_geom = parcel_resolution.parcel_polygon
+        parcel_lookup_method = parcel_resolution.parcel_lookup_method
+        parcel_lookup_distance_m = parcel_resolution.parcel_lookup_distance_m
 
         anchor_lat = float(geocoded_lat)
         anchor_lon = float(geocoded_lon)
@@ -519,7 +523,11 @@ class PropertyAnchorResolver:
         else:
             diagnostics.append("Property anchor uses geocode point fallback.")
 
-        if parcel_geom is not None:
+        if parcel_resolution.status == "multiple_candidates":
+            diagnostics.append(
+                "Parcel lookup found multiple plausible candidates; selected the best-ranked polygon with reduced confidence."
+            )
+        elif parcel_geom is not None:
             if parcel_lookup_method == "contains_point":
                 diagnostics.append("Parcel lookup matched a containing parcel polygon.")
             elif parcel_lookup_method == "nearest_within_tolerance":
@@ -528,6 +536,10 @@ class PropertyAnchorResolver:
                 )
         else:
             diagnostics.append("Parcel lookup did not find a parcel polygon for this property anchor.")
+        diagnostics.append(
+            "Parcel resolution status: "
+            f"{parcel_resolution.status} (confidence {float(parcel_resolution.confidence):.1f}/100)."
+        )
 
         anchor_point = Point(anchor_lon, anchor_lat)
         geocode_to_anchor_distance_m = self._distance_m(geocode_point, anchor_point)
@@ -558,8 +570,14 @@ class PropertyAnchorResolver:
         parcel_props = dict(parcel_feature.get("properties") or {}) if isinstance(parcel_feature, dict) else {}
         address_props = dict(address_feature.get("properties") or {}) if isinstance(address_feature, dict) else {}
 
-        parcel_source_name = self._extract_source_name(parcel_props, os.getenv("WF_PARCEL_SOURCE_NAME") or None)
-        parcel_source_vintage = self._extract_source_vintage(parcel_props, "WF_PARCEL_SOURCE_VINTAGE")
+        parcel_source_name = (
+            parcel_resolution.source_name
+            or self._extract_source_name(parcel_props, os.getenv("WF_PARCEL_SOURCE_NAME") or None)
+        )
+        parcel_source_vintage = parcel_resolution.source_vintage or self._extract_source_vintage(
+            parcel_props,
+            "WF_PARCEL_SOURCE_VINTAGE",
+        )
         address_source_name = self._extract_source_name(
             address_props,
             os.getenv("WF_ADDRESS_POINT_SOURCE_NAME") or None,
@@ -622,4 +640,6 @@ class PropertyAnchorResolver:
             source_conflict_flag=source_conflict_flag,
             diagnostics=diagnostics,
             alignment_notes=alignment_notes,
+            parcel_resolution=parcel_resolution.to_summary(),
+            parcel_bounding_approximation_geojson=parcel_resolution.approximation_geometry_geojson,
         )

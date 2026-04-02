@@ -933,6 +933,18 @@ class FootprintResolutionSummary(BaseModel):
     match_distance_m: Optional[float] = None
 
 
+class ParcelResolutionSummary(BaseModel):
+    status: str = "not_found"
+    confidence: float = 0.0
+    source: Optional[str] = None
+    geometry_used: str = "none"
+    overlap_score: float = 0.0
+    candidates_considered: int = 0
+    lookup_method: Optional[str] = None
+    lookup_distance_m: Optional[float] = None
+    bounding_geometry: Optional[Dict[str, Any]] = None
+
+
 class AssessmentResult(BaseModel):
     assessment_id: str
     address: str
@@ -1031,6 +1043,7 @@ class AssessmentResult(BaseModel):
     specificity_summary: SpecificitySummary = Field(default_factory=SpecificitySummary)
     geometry_resolution: GeometryResolutionSummary = Field(default_factory=GeometryResolutionSummary)
     footprint_resolution: FootprintResolutionSummary = Field(default_factory=FootprintResolutionSummary)
+    parcel_resolution: ParcelResolutionSummary = Field(default_factory=ParcelResolutionSummary)
     assessment_output_state: AssessmentOutputState = "insufficient_data"
     assessment_mode: AssessmentMode = "insufficient_data"
     scoring_status: str = "insufficient_data_to_score"

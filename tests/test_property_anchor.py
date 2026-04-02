@@ -178,3 +178,145 @@ def test_interpolated_geocode_allows_wider_address_point_tolerance(tmp_path: Pat
     assert interpolated.address_point_lookup_distance_m > resolver.max_address_point_distance_m
     assert interpolated.anchor_quality in {"medium", "high"}
     assert rooftop.anchor_source != "authoritative_address_point"
+
+
+@pytest.mark.skipif(not _geo_ready(), reason="Property anchor tests require shapely")
+def test_parcel_resolution_clean_match_reports_matched_status(tmp_path: Path) -> None:
+    parcels = _write_geojson(
+        tmp_path / "county_parcels.geojson",
+        [
+            {
+                "type": "Feature",
+                "properties": {
+                    "parcel_id": "county-001",
+                    "source_name": "County GIS Parcel Fabric",
+                    "source_type": "county_parcel_dataset",
+                    "source_vintage": "2025-08",
+                },
+                "geometry": {
+                    "type": "Polygon",
+                    "coordinates": [[
+                        [-113.9944, 46.8723],
+                        [-113.9938, 46.8723],
+                        [-113.9938, 46.8719],
+                        [-113.9944, 46.8719],
+                        [-113.9944, 46.8723],
+                    ]],
+                },
+            }
+        ],
+    )
+    resolver = PropertyAnchorResolver(parcels_path=parcels)
+    result = resolver.resolve(
+        geocoded_lat=46.87210,
+        geocoded_lon=-113.99410,
+        geocode_precision="rooftop",
+    )
+
+    parcel_resolution = result.parcel_resolution
+    assert parcel_resolution["status"] == "matched"
+    assert parcel_resolution["geometry_used"] == "parcel_polygon"
+    assert parcel_resolution["overlap_score"] == pytest.approx(100.0)
+    assert parcel_resolution["confidence"] >= 80.0
+    assert "county" in str(parcel_resolution.get("source") or "").lower()
+    assert result.parcel_geometry_geojson is not None
+
+
+@pytest.mark.skipif(not _geo_ready(), reason="Property anchor tests require shapely")
+def test_parcel_resolution_handles_multiple_candidates(tmp_path: Path) -> None:
+    parcels = _write_geojson(
+        tmp_path / "ambiguous_parcels.geojson",
+        [
+            {
+                "type": "Feature",
+                "properties": {
+                    "parcel_id": "amb-1",
+                    "source_name": "County Parcel Layer",
+                    "source_type": "county_parcel_dataset",
+                },
+                "geometry": {
+                    "type": "Polygon",
+                    "coordinates": [[
+                        [-113.9945, 46.8723],
+                        [-113.9939, 46.8723],
+                        [-113.9939, 46.8718],
+                        [-113.9945, 46.8718],
+                        [-113.9945, 46.8723],
+                    ]],
+                },
+            },
+            {
+                "type": "Feature",
+                "properties": {
+                    "parcel_id": "amb-2",
+                    "source_name": "County Parcel Layer",
+                    "source_type": "county_parcel_dataset",
+                },
+                "geometry": {
+                    "type": "Polygon",
+                    "coordinates": [[
+                        [-113.99448, 46.87228],
+                        [-113.99388, 46.87228],
+                        [-113.99388, 46.87178],
+                        [-113.99448, 46.87178],
+                        [-113.99448, 46.87228],
+                    ]],
+                },
+            },
+        ],
+    )
+    resolver = PropertyAnchorResolver(parcels_path=parcels)
+    result = resolver.resolve(
+        geocoded_lat=46.87205,
+        geocoded_lon=-113.99415,
+        geocode_precision="interpolated",
+    )
+
+    parcel_resolution = result.parcel_resolution
+    assert parcel_resolution["status"] == "multiple_candidates"
+    assert parcel_resolution["lookup_method"] == "multiple_candidates"
+    assert 35.0 <= float(parcel_resolution["confidence"]) <= 80.0
+    assert result.parcel_geometry_geojson is not None
+    assert result.parcel_lookup_method == "multiple_candidates"
+
+
+@pytest.mark.skipif(not _geo_ready(), reason="Property anchor tests require shapely")
+def test_parcel_resolution_not_found_uses_bounded_approximation(tmp_path: Path) -> None:
+    parcels = _write_geojson(
+        tmp_path / "far_parcels.geojson",
+        [
+            {
+                "type": "Feature",
+                "properties": {
+                    "parcel_id": "far-1",
+                    "source_name": "Open Parcel Dataset",
+                    "source_type": "open_parcel_dataset",
+                },
+                "geometry": {
+                    "type": "Polygon",
+                    "coordinates": [[
+                        [-114.1000, 46.9000],
+                        [-114.0990, 46.9000],
+                        [-114.0990, 46.8990],
+                        [-114.1000, 46.8990],
+                        [-114.1000, 46.9000],
+                    ]],
+                },
+            }
+        ],
+    )
+    resolver = PropertyAnchorResolver(parcels_path=parcels)
+    result = resolver.resolve(
+        geocoded_lat=46.8721,
+        geocoded_lon=-113.9941,
+        geocode_precision="rooftop",
+    )
+
+    parcel_resolution = result.parcel_resolution
+    assert parcel_resolution["status"] == "not_found"
+    assert parcel_resolution["geometry_used"] == "bounding_approximation"
+    assert parcel_resolution["lookup_method"] == "none"
+    assert 0.0 <= float(parcel_resolution["confidence"]) <= 30.0
+    assert isinstance(parcel_resolution.get("bounding_geometry"), dict)
+    assert result.parcel_geometry_geojson is None
+    assert isinstance(result.parcel_bounding_approximation_geojson, dict)

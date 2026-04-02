@@ -741,6 +741,47 @@ class WildfireDataClient:
                 ordered.append(candidate)
         return ordered
 
+    def _resolve_parcel_source_paths(
+        self,
+        runtime_paths: dict[str, str],
+    ) -> list[str]:
+        ordered: list[str] = []
+
+        def _add(candidate: str | None) -> None:
+            normalized = self._normalize_source_path(candidate)
+            if normalized and normalized not in ordered:
+                ordered.append(normalized)
+
+        _add(runtime_paths.get("parcels"))
+
+        extra_env_tokens = [
+            token.strip()
+            for token in str(os.getenv("WF_LAYER_PARCELS_EXTRA_GEOJSON", "")).split(",")
+            if token.strip()
+        ]
+        for token in extra_env_tokens:
+            _add(token)
+
+        for env_key in (
+            "WF_DEFAULT_COUNTY_PARCEL_PATH",
+            "WF_DEFAULT_OPEN_PARCEL_PATH",
+            "WF_DEFAULT_PARCEL_POLYGONS_PATH",
+        ):
+            _add(os.getenv(env_key, ""))
+
+        if not ordered:
+            repo_root = Path(__file__).resolve().parents[1]
+            catalog_dir = repo_root / "data" / "catalog" / "vectors" / "parcel_polygons"
+            regions_dir = repo_root / "data" / "regions"
+            if catalog_dir.exists():
+                for path in sorted(catalog_dir.glob("*.geojson")):
+                    _add(str(path))
+            if regions_dir.exists():
+                for path in sorted(regions_dir.glob("*/parcel_polygons.geojson")):
+                    _add(str(path))
+
+        return ordered
+
     @lru_cache(maxsize=16)
     def _open_raster(self, path: str):
         return rasterio.open(path)
@@ -2744,6 +2785,7 @@ class WildfireDataClient:
         anchor_resolver = PropertyAnchorResolver(
             address_points_path=runtime_paths.get("address_points"),
             parcels_path=runtime_paths.get("parcels"),
+            parcels_paths=self._resolve_parcel_source_paths(runtime_paths),
         )
         explicit_anchor_override: tuple[float, float] | None = None
         explicit_anchor_source: str | None = None

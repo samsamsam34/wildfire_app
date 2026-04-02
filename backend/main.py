@@ -1873,6 +1873,17 @@ def _normalize_property_level_context(raw_context: object) -> dict[str, Any]:
             "parcel_lookup_distance_m": None,
             "parcel_geometry": None,
             "parcel_address_point": None,
+            "parcel_resolution": {
+                "status": "not_found",
+                "confidence": 0.0,
+                "source": None,
+                "geometry_used": "none",
+                "overlap_score": 0.0,
+                "candidates_considered": 0,
+                "lookup_method": "none",
+                "lookup_distance_m": None,
+            },
+            "parcel_bounding_approximation": None,
             "alignment_notes": [],
             "source_conflict_flag": False,
             "fallback_mode": "point_based",
@@ -2092,6 +2103,86 @@ def _normalize_property_level_context(raw_context: object) -> dict[str, Any]:
     normalized.setdefault("parcel_lookup_distance_m", None)
     normalized.setdefault("parcel_geometry", None)
     normalized.setdefault("parcel_address_point", None)
+    raw_parcel_resolution = normalized.get("parcel_resolution")
+    if isinstance(raw_parcel_resolution, dict):
+        status = str(raw_parcel_resolution.get("status") or "").strip().lower() or "not_found"
+        if status not in {"matched", "multiple_candidates", "not_found"}:
+            status = "not_found"
+        try:
+            parcel_confidence = float(raw_parcel_resolution.get("confidence") or 0.0)
+        except (TypeError, ValueError):
+            parcel_confidence = 0.0
+        try:
+            overlap_score = float(raw_parcel_resolution.get("overlap_score") or 0.0)
+        except (TypeError, ValueError):
+            overlap_score = 0.0
+        source = str(raw_parcel_resolution.get("source") or "").strip() or None
+        geometry_used = str(raw_parcel_resolution.get("geometry_used") or "").strip().lower() or "none"
+        if geometry_used not in {"parcel_polygon", "bounding_approximation", "none"}:
+            geometry_used = "none"
+        try:
+            candidates_considered = int(raw_parcel_resolution.get("candidates_considered") or 0)
+        except (TypeError, ValueError):
+            candidates_considered = 0
+        lookup_method = str(raw_parcel_resolution.get("lookup_method") or "").strip().lower() or "none"
+        try:
+            lookup_distance_m = (
+                float(raw_parcel_resolution.get("lookup_distance_m"))
+                if raw_parcel_resolution.get("lookup_distance_m") is not None
+                else None
+            )
+        except (TypeError, ValueError):
+            lookup_distance_m = None
+        bounding_geometry = (
+            raw_parcel_resolution.get("bounding_geometry")
+            if isinstance(raw_parcel_resolution.get("bounding_geometry"), dict)
+            else None
+        )
+    else:
+        has_parcel_geom = isinstance(normalized.get("parcel_geometry"), dict)
+        parcel_lookup_method = str(normalized.get("parcel_lookup_method") or "").strip().lower()
+        status = "matched" if (normalized.get("parcel_id") or has_parcel_geom) else "not_found"
+        if parcel_lookup_method == "multiple_candidates":
+            status = "multiple_candidates"
+        parcel_confidence = 92.0 if status == "matched" else (62.0 if status == "multiple_candidates" else 0.0)
+        if parcel_lookup_method == "nearest_within_tolerance":
+            try:
+                lookup_distance = float(normalized.get("parcel_lookup_distance_m") or 0.0)
+            except (TypeError, ValueError):
+                lookup_distance = 0.0
+            parcel_confidence = max(35.0, min(90.0, 80.0 - (lookup_distance * 0.6)))
+        overlap_score = 100.0 if status in {"matched", "multiple_candidates"} else 0.0
+        source = str(normalized.get("parcel_source") or normalized.get("parcel_source_name") or "").strip() or None
+        geometry_used = "parcel_polygon" if status in {"matched", "multiple_candidates"} else "none"
+        candidates_considered = 1 if status in {"matched", "multiple_candidates"} else 0
+        lookup_method = parcel_lookup_method or ("contains_point" if status == "matched" else "none")
+        try:
+            lookup_distance_m = (
+                float(normalized.get("parcel_lookup_distance_m"))
+                if normalized.get("parcel_lookup_distance_m") is not None
+                else None
+            )
+        except (TypeError, ValueError):
+            lookup_distance_m = None
+        bounding_geometry = (
+            normalized.get("parcel_bounding_approximation")
+            if isinstance(normalized.get("parcel_bounding_approximation"), dict)
+            else None
+        )
+    normalized["parcel_resolution"] = {
+        "status": status,
+        "confidence": round(max(0.0, min(100.0, parcel_confidence)), 1),
+        "source": source,
+        "geometry_used": geometry_used,
+        "overlap_score": round(max(0.0, min(100.0, overlap_score)), 1),
+        "candidates_considered": max(0, int(candidates_considered)),
+        "lookup_method": lookup_method,
+        "lookup_distance_m": lookup_distance_m,
+        "bounding_geometry": bounding_geometry,
+    }
+    normalized["parcel_bounding_approximation"] = (
+        bounding_geometry if isinstance(bounding_geometry, dict) else None
+    )
     normalized.setdefault("matched_structure_id", None)
     notes = normalized.get("alignment_notes")
     normalized["alignment_notes"] = notes if isinstance(notes, list) else []
@@ -2227,19 +2318,29 @@ def _build_geometry_resolution_summary(
     anchor_quality_score = round(max(0.0, min(1.0, anchor_quality_score)), 3)
 
     parcel_match_status = "not_found"
-    parcel_lookup_method = str(ctx.get("parcel_lookup_method") or "").strip().lower()
-    if ctx.get("parcel_id"):
-        parcel_match_status = "matched"
-    elif isinstance(ctx.get("parcel_geometry"), dict):
-        parcel_match_status = "matched"
-    elif parcel_lookup_method in {"contains_point", "nearest_within_tolerance"}:
-        parcel_match_status = "matched"
-    elif parcel_lookup_method in {"provider_unavailable", "lookup_unavailable"}:
-        parcel_match_status = "provider_unavailable"
-    elif parcel_lookup_method:
-        parcel_match_status = "not_found"
-    elif ctx.get("parcel_source") or ctx.get("parcel_source_name"):
-        parcel_match_status = "not_found"
+    parcel_resolution = ctx.get("parcel_resolution")
+    if isinstance(parcel_resolution, dict):
+        status = str(parcel_resolution.get("status") or "").strip().lower()
+        if status in {"matched", "multiple_candidates", "not_found"}:
+            parcel_match_status = status
+        elif status in {"provider_unavailable", "lookup_unavailable"}:
+            parcel_match_status = "provider_unavailable"
+    if parcel_match_status == "not_found":
+        parcel_lookup_method = str(ctx.get("parcel_lookup_method") or "").strip().lower()
+        if ctx.get("parcel_id"):
+            parcel_match_status = "matched"
+        elif isinstance(ctx.get("parcel_geometry"), dict):
+            parcel_match_status = "matched"
+        elif parcel_lookup_method in {"contains_point", "nearest_within_tolerance"}:
+            parcel_match_status = "matched"
+        elif parcel_lookup_method in {"multiple_candidates"}:
+            parcel_match_status = "multiple_candidates"
+        elif parcel_lookup_method in {"provider_unavailable", "lookup_unavailable"}:
+            parcel_match_status = "provider_unavailable"
+        elif parcel_lookup_method:
+            parcel_match_status = "not_found"
+        elif ctx.get("parcel_source") or ctx.get("parcel_source_name"):
+            parcel_match_status = "not_found"
 
     footprint_match_status = str(ctx.get("structure_match_status") or "none").strip().lower()
     if not footprint_match_status:
@@ -2302,6 +2403,10 @@ def _build_geometry_resolution_summary(
         if parcel_match_status == "provider_unavailable":
             geometry_limitations.append(
                 "Parcel geometry provider was unavailable."
+            )
+        elif parcel_match_status == "multiple_candidates":
+            geometry_limitations.append(
+                "Parcel lookup returned multiple plausible candidates."
             )
         else:
             geometry_limitations.append(
@@ -6636,6 +6741,7 @@ def _run_assessment(
         specificity_summary=dict(specificity_summary),
         geometry_resolution=geometry_resolution,
         footprint_resolution=dict(property_level_context.get("footprint_resolution") or {}),
+        parcel_resolution=dict(property_level_context.get("parcel_resolution") or {}),
         assessment_output_state=str(assessment_output_state or "insufficient_data"),
         assessment_mode=homeowner_assessment_mode,
         scoring_status=scoring_status,
@@ -6886,6 +6992,7 @@ def _run_assessment(
         "property_level_context": property_level_context,
         "geometry_resolution": result.geometry_resolution.model_dump(),
         "footprint_resolution": result.footprint_resolution.model_dump(),
+        "parcel_resolution": result.parcel_resolution.model_dump(),
         "submodel_scores": {
             name: {
                 "score": sm.score,
