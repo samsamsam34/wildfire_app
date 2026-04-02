@@ -69,6 +69,14 @@ def _path_get(obj: dict[str, Any], path: str) -> Any:
     for segment in path.split("."):
         if isinstance(current, dict):
             current = current.get(segment)
+        elif isinstance(current, list):
+            try:
+                idx = int(segment)
+            except (TypeError, ValueError):
+                return None
+            if idx < 0 or idx >= len(current):
+                return None
+            current = current[idx]
         else:
             return None
     return current
@@ -826,6 +834,12 @@ def _scenario_snapshot(
         "assessment_blockers": list(result.assessment_blockers or []),
         "readiness_blockers": list(result.readiness_blockers or []),
         "top_risk_drivers": list(result.top_risk_drivers or []),
+        "top_recommended_actions": [str(v) for v in list(result.top_recommended_actions or []) if str(v).strip()],
+        "prioritized_mitigation_action_titles": [
+            str(getattr(v, "title", "") or (v.get("title") if isinstance(v, dict) else "")).strip()
+            for v in list(result.prioritized_mitigation_actions or [])
+            if str(getattr(v, "title", "") or (v.get("title") if isinstance(v, dict) else "")).strip()
+        ],
         "warnings": warnings,
         "coverage_summary": result.coverage_summary.model_dump(),
         "evidence_quality_summary": result.evidence_quality_summary.model_dump(),
@@ -850,6 +864,14 @@ def _scenario_snapshot(
         "footprint_used": bool((result.property_level_context or {}).get("footprint_used")),
         "differentiation": {
             "differentiation_mode": differentiation_mode,
+            "local_differentiation_score": round(
+                float(
+                    _safe_float(homeowner_trust_summary.get("local_differentiation_score"))
+                    or _safe_float(differentiation_source.get("local_differentiation_score"))
+                    or neighborhood_differentiation_confidence
+                ),
+                1,
+            ),
             "neighborhood_differentiation_confidence": round(float(neighborhood_differentiation_confidence), 1),
             "property_specific_feature_count": int(differentiation_source.get("property_specific_feature_count") or 0),
             "proxy_feature_count": int(differentiation_source.get("proxy_feature_count") or 0),

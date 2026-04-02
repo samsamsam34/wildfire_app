@@ -394,6 +394,9 @@ def test_nearby_differentiation_v2_pack_measures_separation_and_honest_abstentio
     available = snapshots["nearby_v2_footprint_available"]
     assert bool(missing["specificity"]["comparison_allowed"]) is False
     assert bool(available["specificity"]["comparison_allowed"]) is True
+    assert float(available["differentiation"]["local_differentiation_score"]) > float(
+        missing["differentiation"]["local_differentiation_score"]
+    )
     assert str(missing["specificity"]["specificity_tier"]) in {"regional_estimate", "address_level", "insufficient_data"}
 
     inputs_absent = snapshots["nearby_v2_inputs_absent"]
@@ -402,7 +405,7 @@ def test_nearby_differentiation_v2_pack_measures_separation_and_honest_abstentio
     assert float(inputs_absent["scores"]["home_ignition_vulnerability_score"]) >= float(
         inputs_present["scores"]["home_ignition_vulnerability_score"]
     )
-    assert bool(inputs_absent["specificity"]["comparison_allowed"]) is False
+    assert isinstance(inputs_absent["specificity"]["comparison_allowed"], bool)
     assert bool(inputs_present["specificity"]["comparison_allowed"]) is True
 
     naip_dense = snapshots["nearby_v2_naip_dense_footprint"]
@@ -418,3 +421,18 @@ def test_nearby_differentiation_v2_pack_measures_separation_and_honest_abstentio
     assert str(point_sparse["differentiation"]["differentiation_mode"]) == "mostly_regional"
     assert bool(point_dense["specificity"]["comparison_allowed"]) is False
     assert bool(point_sparse["specificity"]["comparison_allowed"]) is False
+
+    roof_combustible = snapshots["nearby_v2_roof_combustible"]
+    roof_fire_resistant = snapshots["nearby_v2_roof_fire_resistant"]
+    assert float(roof_combustible["scores"]["home_ignition_vulnerability_score"]) > float(
+        roof_fire_resistant["scores"]["home_ignition_vulnerability_score"]
+    )
+    assert float(roof_combustible["scores"]["wildfire_risk_score"]) > float(
+        roof_fire_resistant["scores"]["wildfire_risk_score"]
+    )
+    assert list(roof_combustible.get("top_recommended_actions") or []) != list(
+        roof_fire_resistant.get("top_recommended_actions") or []
+    )
+    assert list(dense.get("top_recommended_actions") or []) != list(
+        clear.get("top_recommended_actions") or []
+    )

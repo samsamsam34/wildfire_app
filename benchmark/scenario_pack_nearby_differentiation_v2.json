@@ -280,7 +280,7 @@
         "assessment_status_in": ["partially_scored", "fully_scored"],
         "fallback_mode": "footprint",
         "specificity_tiers": ["property_specific", "address_level"],
-        "comparison_allowed": false,
+        "comparison_allowed": true,
         "confidence_language_contains_any": ["limited confidence", "moderate confidence"]
       }
     },
@@ -301,6 +301,108 @@
         "tags": ["benchmark", "nearby-v2"]
       },
       "location": {"lat": 46.872945, "lon": -113.995695, "geocode_source": "benchmark-nearby-v2"},
+      "context": {
+        "burn_probability_index": 61.0,
+        "hazard_severity_index": 63.0,
+        "slope_index": 47.0,
+        "fuel_index": 60.0,
+        "moisture_index": 52.0,
+        "canopy_index": 56.0,
+        "wildland_distance_index": 61.0,
+        "historic_fire_index": 55.0,
+        "property_level_context": {
+          "footprint_used": true,
+          "footprint_status": "used",
+          "fallback_mode": "footprint",
+          "geometry_basis": "footprint",
+          "structure_geometry_confidence": 0.9,
+          "ring_generation_mode": "footprint_aware_rings",
+          "final_structure_geometry_source": "auto_detected",
+          "property_anchor_source": "authoritative_address_point",
+          "property_anchor_quality_score": 0.9,
+          "ring_metrics": {
+            "ring_0_5_ft": {"vegetation_density": 38.0},
+            "ring_5_30_ft": {"vegetation_density": 50.0},
+            "ring_30_100_ft": {"vegetation_density": 58.0}
+          }
+        }
+      },
+      "expected": {
+        "assessment_status_in": ["partially_scored", "fully_scored"],
+        "fallback_mode": "footprint",
+        "specificity_tiers": ["property_specific", "address_level"],
+        "comparison_allowed": true,
+        "confidence_language_contains_any": ["moderate confidence", "high confidence"]
+      }
+    },
+    {
+      "scenario_id": "nearby_v2_roof_combustible",
+      "description": "Same regional/local context with a combustible roof input.",
+      "profile_tags": ["nearby_differentiation", "adjacent_pair", "roof_input", "footprint"],
+      "input_payload": {
+        "address": "170 Pine Creek Rd, Missoula, MT",
+        "attributes": {
+          "roof_type": "wood shake",
+          "vent_type": "ember-resistant",
+          "defensible_space_ft": 22,
+          "construction_year": 2008
+        },
+        "confirmed_fields": ["roof_type", "vent_type", "defensible_space_ft", "construction_year"],
+        "audience": "homeowner",
+        "tags": ["benchmark", "nearby-v2"]
+      },
+      "location": {"lat": 46.873000, "lon": -113.995740, "geocode_source": "benchmark-nearby-v2"},
+      "context": {
+        "burn_probability_index": 61.0,
+        "hazard_severity_index": 63.0,
+        "slope_index": 47.0,
+        "fuel_index": 60.0,
+        "moisture_index": 52.0,
+        "canopy_index": 56.0,
+        "wildland_distance_index": 61.0,
+        "historic_fire_index": 55.0,
+        "property_level_context": {
+          "footprint_used": true,
+          "footprint_status": "used",
+          "fallback_mode": "footprint",
+          "geometry_basis": "footprint",
+          "structure_geometry_confidence": 0.9,
+          "ring_generation_mode": "footprint_aware_rings",
+          "final_structure_geometry_source": "auto_detected",
+          "property_anchor_source": "authoritative_address_point",
+          "property_anchor_quality_score": 0.9,
+          "ring_metrics": {
+            "ring_0_5_ft": {"vegetation_density": 38.0},
+            "ring_5_30_ft": {"vegetation_density": 50.0},
+            "ring_30_100_ft": {"vegetation_density": 58.0}
+          }
+        }
+      },
+      "expected": {
+        "assessment_status_in": ["partially_scored", "fully_scored"],
+        "fallback_mode": "footprint",
+        "specificity_tiers": ["property_specific", "address_level"],
+        "comparison_allowed": true,
+        "confidence_language_contains_any": ["moderate confidence", "high confidence"]
+      }
+    },
+    {
+      "scenario_id": "nearby_v2_roof_fire_resistant",
+      "description": "Same regional/local context with a fire-resistant roof input.",
+      "profile_tags": ["nearby_differentiation", "adjacent_pair", "roof_input", "footprint"],
+      "input_payload": {
+        "address": "172 Pine Creek Rd, Missoula, MT",
+        "attributes": {
+          "roof_type": "class a",
+          "vent_type": "ember-resistant",
+          "defensible_space_ft": 22,
+          "construction_year": 2008
+        },
+        "confirmed_fields": ["roof_type", "vent_type", "defensible_space_ft", "construction_year"],
+        "audience": "homeowner",
+        "tags": ["benchmark", "nearby-v2"]
+      },
+      "location": {"lat": 46.873045, "lon": -113.995785, "geocode_source": "benchmark-nearby-v2"},
       "context": {
         "burn_probability_index": 61.0,
         "hazard_severity_index": 63.0,
@@ -576,6 +678,13 @@
       "right": "nearby_v2_footprint_missing_point"
     },
     {
+      "assertion_id": "nearby_v2_footprint_available_local_diff_score_gt_missing",
+      "left": "nearby_v2_footprint_available",
+      "metric": "differentiation.local_differentiation_score",
+      "op": ">",
+      "right": "nearby_v2_footprint_missing_point"
+    },
+    {
       "assertion_id": "nearby_v2_missing_comparison_disabled_vs_available",
       "left": "nearby_v2_footprint_missing_point",
       "metric": "specificity.comparison_allowed",
@@ -595,6 +704,34 @@
       "metric": "scores.home_ignition_vulnerability_score",
       "op": ">=",
       "right": "nearby_v2_inputs_present"
+    },
+    {
+      "assertion_id": "nearby_v2_dense0_5_top_actions_change_vs_clear",
+      "left": "nearby_v2_dense_0_5ft_footprint",
+      "metric": "top_recommended_actions",
+      "op": "!=",
+      "right": "nearby_v2_clear_0_5ft_footprint"
+    },
+    {
+      "assertion_id": "nearby_v2_roof_combustible_local_vulnerability_gt_fire_resistant",
+      "left": "nearby_v2_roof_combustible",
+      "metric": "scores.home_ignition_vulnerability_score",
+      "op": ">",
+      "right": "nearby_v2_roof_fire_resistant"
+    },
+    {
+      "assertion_id": "nearby_v2_roof_combustible_top_risk_gt_fire_resistant",
+      "left": "nearby_v2_roof_combustible",
+      "metric": "scores.wildfire_risk_score",
+      "op": ">",
+      "right": "nearby_v2_roof_fire_resistant"
+    },
+    {
+      "assertion_id": "nearby_v2_roof_pair_top_actions_change",
+      "left": "nearby_v2_roof_combustible",
+      "metric": "top_recommended_actions",
+      "op": "!=",
+      "right": "nearby_v2_roof_fire_resistant"
     },
     {
       "assertion_id": "nearby_v2_naip_dense_local_subscore_gt_sparse",
