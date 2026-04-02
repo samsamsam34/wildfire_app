@@ -203,6 +203,21 @@ def test_homeowner_map_point_correction_can_improve_specificity_and_trust(monkey
     baseline_specificity = (baseline.get("specificity_summary") or {}).get("specificity_tier")
     baseline_trust = ((baseline.get("homeowner_summary") or {}).get("trust_summary") or {})
     assert baseline_trust.get("geometry_specificity_limited") is True
+    baseline_confidence_score = float(baseline.get("confidence_score") or 0.0)
+    baseline_diff_score = float(
+        baseline_trust.get("local_differentiation_score")
+        or baseline_trust.get("neighborhood_differentiation_confidence")
+        or 0.0
+    )
+
+    options_response = client.get(f"/risk/improve/{baseline['assessment_id']}")
+    assert options_response.status_code == 200
+    options = options_response.json()
+    option_flags = set(options.get("geometry_issue_flags") or [])
+    assert {"missing_footprint", "low_anchor_confidence", "parcel_mismatch"} <= option_flags
+    option_text = " ".join(str(row).lower() for row in (options.get("improve_your_result_suggestions") or []))
+    assert "move pin to your home" in option_text
+    assert "confirm building location" in option_text
 
     response = client.post(
         f"/risk/improve/{baseline['assessment_id']}",
@@ -215,16 +230,27 @@ def test_homeowner_map_point_correction_can_improve_specificity_and_trust(monkey
     )
     assert response.status_code == 200
     body = response.json()
+    assert body.get("confidence_improved") is True
     assert body.get("what_changed", {}).get("map_point_correction") is not None
     concise = body.get("what_changed_summary") or {}
     assert (concise.get("specificity_change") or {}).get("changed") in {True, False}
     assert (concise.get("confidence_change") or {}).get("score_direction") in {"up", "down", "unchanged", "unknown"}
+    assert isinstance(concise.get("differentiation_change"), dict)
+    assert isinstance(concise.get("geometry_change"), dict)
 
     updated_report = client.get(f"/report/{body['updated_assessment_id']}")
     assert updated_report.status_code == 200
     updated = updated_report.json()
     updated_specificity = (updated.get("specificity_summary") or {}).get("specificity_tier")
     updated_trust = ((updated.get("homeowner_summary") or {}).get("trust_summary") or {})
+    updated_confidence_score = float(updated.get("confidence_score") or 0.0)
+    updated_diff_score = float(
+        updated_trust.get("local_differentiation_score")
+        or updated_trust.get("neighborhood_differentiation_confidence")
+        or 0.0
+    )
     assert baseline_specificity in {"regional_estimate", "address_level", "insufficient_data", "property_specific"}
     assert updated_specificity in {"property_specific", "address_level"}
     assert updated_trust.get("geometry_specificity_limited") is False
+    assert updated_confidence_score > baseline_confidence_score
+    assert updated_diff_score > baseline_diff_score

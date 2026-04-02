@@ -748,6 +748,7 @@ class HomeownerImprovementOptions(BaseModel):
     prioritized_missing_key_inputs: List[str] = Field(default_factory=list)
     highest_value_next_question: Optional[HomeownerFollowUpInput] = None
     remaining_optional_input_count: int = 0
+    geometry_issue_flags: List[str] = Field(default_factory=list)
     improve_your_result_suggestions: List[str] = Field(default_factory=list)
     optional_follow_up_inputs: List[HomeownerFollowUpInput] = Field(default_factory=list)
 

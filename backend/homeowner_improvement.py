@@ -14,11 +14,11 @@ _IMPROVEMENT_INPUT_SPECS: tuple[dict[str, Any], ...] = (
     {
         "input_key": "map_point_correction",
         "assessment_field": "user_selected_point",
-        "label": "Pin home location",
-        "prompt": "Adjust the map pin to the exact home footprint for better property-specific detail.",
+        "label": "Move pin to your home",
+        "prompt": "Move map pin to your home and confirm building location for better property-specific detail.",
         "input_type": "map_point",
         "options": [],
-        "suggestion": "Correcting the home location pin can materially improve structure-level specificity.",
+        "suggestion": "Move pin to your home and confirm building location to improve structure-level specificity.",
         "base_lift": 100,
     },
     {
@@ -86,6 +86,15 @@ _DEFENSIBLE_SPACE_CONDITION_TO_FT: dict[str, float] = {
     "good": 40.0,
     "excellent": 60.0,
 }
+
+
+def _safe_float(value: object) -> float | None:
+    try:
+        if value is None:
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def defensible_space_ft_from_condition(condition: str | None) -> float | None:
@@ -270,6 +279,7 @@ def build_improve_your_result_block(result: AssessmentResult) -> dict[str, Any]:
     return {
         "missing_key_inputs": list(options.missing_key_inputs or []),
         "prioritized_missing_key_inputs": list(options.prioritized_missing_key_inputs or []),
+        "geometry_issue_flags": list(options.geometry_issue_flags or []),
         "highest_value_next_question": (
             options.highest_value_next_question.model_dump()
             if options.highest_value_next_question
@@ -314,12 +324,27 @@ def build_homeowner_improvement_options(result: AssessmentResult) -> HomeownerIm
     except (TypeError, ValueError):
         anchor_quality = 0.0
     naip_status = str(geometry_resolution.get("naip_structure_feature_status") or "").strip().lower()
+    parcel_match_status = str(geometry_resolution.get("parcel_match_status") or "").strip().lower()
+    source_conflict_flag = bool(getattr(result, "source_conflict_flag", False))
+    footprint_missing = footprint_status in {"none", "ambiguous", "provider_unavailable", "error"}
+    low_anchor_confidence = anchor_quality < 0.70
+    parcel_mismatch_or_unresolved = parcel_match_status in {"not_found", "provider_unavailable"} or source_conflict_flag
     geometry_limited = bool(
         ring_mode == "point_annulus_fallback"
-        or footprint_status in {"none", "ambiguous", "provider_unavailable", "error"}
-        or anchor_quality < 0.70
+        or footprint_missing
+        or low_anchor_confidence
         or naip_status in {"missing", "provider_unavailable", "present_but_not_consumed", "fallback_or_proxy"}
+        or parcel_mismatch_or_unresolved
     )
+    geometry_issue_flags: list[str] = []
+    if footprint_missing:
+        geometry_issue_flags.append("missing_footprint")
+    if low_anchor_confidence:
+        geometry_issue_flags.append("low_anchor_confidence")
+    if parcel_mismatch_or_unresolved:
+        geometry_issue_flags.append("parcel_mismatch")
+    if ring_mode == "point_annulus_fallback":
+        geometry_issue_flags.append("point_fallback_rings")
 
     candidate_rows: list[dict[str, Any]] = []
     for spec in _IMPROVEMENT_INPUT_SPECS:
@@ -371,6 +396,9 @@ def build_homeowner_improvement_options(result: AssessmentResult) -> HomeownerIm
     follow_ups = [row["follow_up"] for row in prioritized_rows if isinstance(row.get("follow_up"), HomeownerFollowUpInput)]
 
     suggestions: list[str] = []
+    if geometry_limited:
+        suggestions.append("Move pin to your home.")
+        suggestions.append("Confirm building location.")
     for row in prioritized_rows:
         suggestion = str(row.get("suggestion") or "").strip()
         if suggestion and suggestion not in suggestions:
@@ -390,6 +418,7 @@ def build_homeowner_improvement_options(result: AssessmentResult) -> HomeownerIm
         prioritized_missing_key_inputs=prioritized_missing_key_inputs,
         highest_value_next_question=(follow_ups[0] if follow_ups else None),
         remaining_optional_input_count=max(0, len(candidate_rows) - len(follow_ups)),
+        geometry_issue_flags=geometry_issue_flags,
         improve_your_result_suggestions=suggestions[:6],
         optional_follow_up_inputs=follow_ups,
     )
@@ -470,6 +499,14 @@ def build_improvement_change_set(
     before_tier = str(before_specificity.get("specificity_tier") or "regional_estimate")
     after_tier = str(after_specificity.get("specificity_tier") or "regional_estimate")
 
+    def _geometry_dict(result: AssessmentResult) -> dict[str, Any]:
+        raw = (
+            result.geometry_resolution.model_dump()
+            if hasattr(result.geometry_resolution, "model_dump")
+            else (dict(result.geometry_resolution) if isinstance(result.geometry_resolution, dict) else {})
+        )
+        return raw if isinstance(raw, dict) else {}
+
     def _delta_direction(before_value: float | None, after_value: float | None) -> str:
         if before_value is None or after_value is None:
             return "unknown"
@@ -489,6 +526,14 @@ def build_improvement_change_set(
         if isinstance(after.homeowner_summary, dict)
         else {}
     )
+    before_diff_score = _safe_float(
+        before_conf.get("local_differentiation_score")
+    ) or _safe_float(before_conf.get("neighborhood_differentiation_confidence"))
+    after_diff_score = _safe_float(
+        after_conf.get("local_differentiation_score")
+    ) or _safe_float(after_conf.get("neighborhood_differentiation_confidence"))
+    before_geom = _geometry_dict(before)
+    after_geom = _geometry_dict(after)
     summary = {
         "score_direction": {
             "metric": "wildfire_risk_score",
@@ -510,6 +555,27 @@ def build_improvement_change_set(
             "before_level": str(before_conf.get("confidence_level") or ""),
             "after_level": str(after_conf.get("confidence_level") or ""),
         },
+        "differentiation_change": {
+            "score_direction": _delta_direction(before_diff_score, after_diff_score),
+            "before_score": before_diff_score,
+            "after_score": after_diff_score,
+            "before_mode": str(before_conf.get("differentiation_mode") or ""),
+            "after_mode": str(after_conf.get("differentiation_mode") or ""),
+            "changed": (
+                (before_diff_score is not None and after_diff_score is not None and float(before_diff_score) != float(after_diff_score))
+                or str(before_conf.get("differentiation_mode") or "") != str(after_conf.get("differentiation_mode") or "")
+            ),
+        },
+        "geometry_change": {
+            "anchor_quality_direction": _delta_direction(
+                _safe_float(before_geom.get("anchor_quality_score")),
+                _safe_float(after_geom.get("anchor_quality_score")),
+            ),
+            "before_footprint_match_status": str(before_geom.get("footprint_match_status") or ""),
+            "after_footprint_match_status": str(after_geom.get("footprint_match_status") or ""),
+            "before_parcel_match_status": str(before_geom.get("parcel_match_status") or ""),
+            "after_parcel_match_status": str(after_geom.get("parcel_match_status") or ""),
+        },
         "recommendation_changes": {
             "changed": before_actions != after_actions,
             "before_top_actions": before_actions,
@@ -518,6 +584,8 @@ def build_improvement_change_set(
     }
     changed["score_direction"] = summary["score_direction"]
     changed["specificity_change"] = summary["specificity_change"]
+    changed["differentiation_change"] = summary["differentiation_change"]
+    changed["geometry_change"] = summary["geometry_change"]
     changed["confidence_change"] = summary["confidence_change"]
     changed["recommendation_changes"] = summary["recommendation_changes"]
     return changed, notes, summary
