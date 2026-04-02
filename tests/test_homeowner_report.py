@@ -238,6 +238,10 @@ def test_homeowner_report_surfaces_mostly_regional_differentiation_mode(monkeypa
     assert trust_summary.get("differentiation_mode") == "mostly_regional"
     assert float(trust_summary.get("neighborhood_differentiation_confidence") or 0.0) <= 40.0
     assert isinstance(trust_summary.get("differentiation_summary"), str)
+    assert trust_summary.get("geometry_specificity_limited") is True
+    geometry_summary = trust_summary.get("geometry_resolution_summary") or {}
+    assert geometry_summary.get("ring_generation_mode") == "point_annulus_fallback"
+    assert geometry_summary.get("footprint_match_status") in {"none", "ambiguous", "provider_unavailable", "error"}
     low_diff = trust_summary.get("low_differentiation_explanation") or {}
     assert low_diff.get("applies") is True
     assert isinstance(low_diff.get("why_nearby_properties_may_appear_similar"), str)

@@ -904,7 +904,10 @@ class GeometryResolutionSummary(BaseModel):
     anchor_quality_score: float = 0.0
     parcel_match_status: str = "not_found"
     footprint_match_status: str = "none"
+    footprint_source: Optional[str] = None
     ring_generation_mode: str = "point_annulus_fallback"
+    naip_structure_feature_status: str = "missing"
+    geometry_limitations: List[str] = Field(default_factory=list)
 
 
 class AssessmentResult(BaseModel):

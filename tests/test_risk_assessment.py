@@ -368,7 +368,10 @@ def _assert_core_contract(body: dict) -> None:
         "anchor_quality_score",
         "parcel_match_status",
         "footprint_match_status",
+        "footprint_source",
         "ring_generation_mode",
+        "naip_structure_feature_status",
+        "geometry_limitations",
     ]:
         assert key in geometry_resolution
     assert isinstance(geometry_resolution["anchor_source"], str)
@@ -385,7 +388,16 @@ def _assert_core_contract(body: dict) -> None:
         "provider_unavailable",
         "error",
     }
+    assert geometry_resolution["footprint_source"] is None or isinstance(geometry_resolution["footprint_source"], str)
     assert geometry_resolution["ring_generation_mode"] in {"footprint_aware_rings", "point_annulus_fallback"}
+    assert geometry_resolution["naip_structure_feature_status"] in {
+        "observed",
+        "fallback_or_proxy",
+        "missing",
+        "present_but_not_consumed",
+        "provider_unavailable",
+    }
+    assert isinstance(geometry_resolution["geometry_limitations"], list)
     for layer in ["burn_probability", "hazard", "slope", "fuel", "canopy", "fire_history"]:
         assert layer in body["environmental_layer_status"]
     assert isinstance(body["input_source_metadata"], dict)
@@ -688,6 +700,7 @@ def test_nearby_homes_with_distinct_footprints_surface_distinct_ring_metrics_and
                 "geometry_source": "trusted_building_footprint",
                 "geometry_confidence": 0.93,
                 "final_structure_geometry_source": "auto_detected",
+                "footprint_source_name": "microsoft_buildings",
                 "property_anchor_source": "authoritative_address_point",
                 "property_anchor_quality_score": 0.95,
                 "anchor_quality_score": 0.95,
@@ -712,6 +725,8 @@ def test_nearby_homes_with_distinct_footprints_surface_distinct_ring_metrics_and
     assert b["ring_generation_mode"] == "footprint_aware_rings"
     assert a["geometry_resolution"]["footprint_match_status"] == "matched"
     assert b["geometry_resolution"]["footprint_match_status"] == "matched"
+    assert a["geometry_resolution"]["footprint_source"] == "microsoft_buildings"
+    assert b["geometry_resolution"]["footprint_source"] == "microsoft_buildings"
     assert a["geometry_resolution"]["parcel_match_status"] == "matched"
     assert b["geometry_resolution"]["parcel_match_status"] == "matched"
     assert a["geometry_resolution"]["ring_generation_mode"] == "footprint_aware_rings"
@@ -758,9 +773,91 @@ def test_low_quality_anchor_geometry_resolution_is_explicitly_cautious(monkeypat
     assert resolution["anchor_quality_score"] == pytest.approx(0.34, abs=1e-6)
     assert resolution["parcel_match_status"] == "not_found"
     assert resolution["footprint_match_status"] == "none"
+    assert resolution["naip_structure_feature_status"] in {"missing", "present_but_not_consumed"}
+    assert any("point-based annulus fallback" in str(row).lower() for row in (resolution.get("geometry_limitations") or []))
     assert resolution["ring_generation_mode"] == "point_annulus_fallback"
     assert assessed["ring_generation_mode"] == "point_annulus_fallback"
     assert assessed["final_structure_geometry_source"] == "raw_geocode_point"
+    trust_summary = ((assessed.get("homeowner_summary") or {}).get("trust_summary") or {})
+    assert trust_summary.get("geometry_specificity_limited") is True
+    condensed = trust_summary.get("geometry_resolution_summary") or {}
+    assert condensed.get("ring_generation_mode") == "point_annulus_fallback"
+
+
+def test_parcel_only_geometry_resolution_surfaces_explicit_status(monkeypatch, tmp_path):
+    context = _ctx(
+        50.0,
+        52.0,
+        44.0,
+        ring_metrics={},
+    )
+    context.property_level_context.update(
+        {
+            "footprint_used": False,
+            "footprint_status": "not_found",
+            "fallback_mode": "point_based",
+            "structure_match_status": "none",
+            "ring_generation_mode": "point_annulus_fallback",
+            "geometry_basis": "parcel",
+            "geometry_source": "parcel_geometry_inferred_home_location",
+            "parcel_id": "parcel-only-42",
+            "parcel_lookup_method": "contains_point",
+            "parcel_source_name": "county_parcels",
+            "property_anchor_source": "authoritative_address_point",
+            "property_anchor_quality_score": 0.88,
+            "anchor_quality_score": 0.88,
+        }
+    )
+    _setup(monkeypatch, tmp_path, context)
+
+    assessed = _run(_payload("Parcel Only Resolution Ln", {"roof_type": "class a"}))
+    resolution = assessed["geometry_resolution"]
+    assert resolution["anchor_source"] == "authoritative_address_point"
+    assert resolution["parcel_match_status"] == "matched"
+    assert resolution["footprint_match_status"] == "none"
+    assert resolution["ring_generation_mode"] == "point_annulus_fallback"
+    assert any("building footprint was not matched" in str(row).lower() for row in (resolution.get("geometry_limitations") or []))
+
+
+def test_geometry_resolution_flags_missing_naip_structure_artifact(monkeypatch, tmp_path):
+    context = _ctx(
+        57.0,
+        59.0,
+        48.0,
+        ring_metrics={
+            "ring_0_5_ft": {"vegetation_density": 43.0},
+            "ring_5_30_ft": {"vegetation_density": 48.0},
+            "ring_30_100_ft": {"vegetation_density": 55.0},
+        },
+    )
+    context.property_level_context.update(
+        {
+            "footprint_used": True,
+            "footprint_status": "used",
+            "structure_match_status": "matched",
+            "ring_generation_mode": "footprint_aware_rings",
+            "footprint_source_name": "overture_buildings",
+            "property_anchor_source": "authoritative_address_point",
+            "property_anchor_quality_score": 0.92,
+            "anchor_quality_score": 0.92,
+            "near_structure_vegetation_0_5_pct": None,
+            "near_structure_vegetation_5_30_pct": None,
+            "canopy_adjacency_proxy_pct": None,
+            "vegetation_continuity_proxy_pct": None,
+            "nearest_high_fuel_patch_distance_ft": None,
+            "naip_feature_source": None,
+        }
+    )
+    _setup(monkeypatch, tmp_path, context)
+
+    assessed = _run(_payload("Missing NAIP Geometry Artifact Ln", {"roof_type": "class a"}))
+    resolution = assessed["geometry_resolution"]
+    assert resolution["footprint_match_status"] == "matched"
+    assert resolution["naip_structure_feature_status"] in {"missing", "present_but_not_consumed"}
+    assert any(
+        "naip-derived near-structure vegetation features were unavailable" in str(row).lower()
+        for row in (resolution.get("geometry_limitations") or [])
+    )
 
 
 def test_property_findings_from_ring_metrics_surface_in_assessment(monkeypatch, tmp_path):
@@ -3094,6 +3191,7 @@ def test_debug_endpoint_includes_evidence_ledger_and_summary(monkeypatch, tmp_pa
     assert "evidence_quality_summary" in payload
     assert "layer_coverage_audit" in payload
     assert "coverage_summary" in payload
+    assert isinstance(payload.get("geometry_resolution"), dict)
     assert payload["evidence_quality_summary"]["observed_factor_count"] >= 0
 
 
@@ -3140,10 +3238,12 @@ def test_layer_diagnostics_endpoint_returns_layer_audit(monkeypatch, tmp_path):
     assert "coordinates" in payload
     assert "region" in payload
     assert "structure_footprint" in payload
+    assert "geometry_resolution" in payload
     assert "layer_coverage_audit" in payload
     assert "coverage_summary" in payload
     assert isinstance(payload["layer_coverage_audit"], list)
     assert isinstance(payload["coverage_summary"], dict)
+    assert isinstance(payload["geometry_resolution"], dict)
     assert isinstance(payload["fallback_decisions"], dict)
     assert isinstance(payload["warnings"], list)
 

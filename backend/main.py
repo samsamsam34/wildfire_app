@@ -2051,16 +2051,110 @@ def _build_geometry_resolution_summary(
     if footprint_match_status not in {"matched", "none", "ambiguous", "provider_unavailable", "error"}:
         footprint_match_status = "matched" if bool(ctx.get("footprint_used")) else "none"
 
+    footprint_source = (
+        str(
+            ctx.get("footprint_source_name")
+            or ctx.get("building_source")
+            or ctx.get("footprint_source")
+            or ""
+        ).strip()
+        or None
+    )
+
     ring_generation_mode = str(ctx.get("ring_generation_mode") or "").strip().lower()
     if ring_generation_mode not in {"footprint_aware_rings", "point_annulus_fallback"}:
         ring_generation_mode = "footprint_aware_rings" if bool(ctx.get("footprint_used")) else "point_annulus_fallback"
+
+    has_near_structure_values = any(
+        ctx.get(key) is not None
+        for key in (
+            "near_structure_vegetation_0_5_pct",
+            "near_structure_vegetation_5_30_pct",
+            "canopy_adjacency_proxy_pct",
+            "vegetation_continuity_proxy_pct",
+            "nearest_high_fuel_patch_distance_ft",
+        )
+    )
+    naip_status = "missing"
+    naip_feature_source = str(ctx.get("naip_feature_source") or "").strip()
+    if has_near_structure_values and naip_feature_source:
+        naip_status = "observed"
+    elif has_near_structure_values:
+        naip_status = "fallback_or_proxy"
+    layer_rows = ctx.get("layer_coverage_audit")
+    if isinstance(layer_rows, list):
+        for row in layer_rows:
+            if not isinstance(row, dict):
+                continue
+            if str(row.get("layer_key") or "").strip().lower() != "naip_structure_features":
+                continue
+            coverage_status = str(row.get("coverage_status") or "").strip().lower()
+            if coverage_status in {"observed", "partial"} and naip_status != "observed":
+                naip_status = "fallback_or_proxy" if has_near_structure_values else "present_but_not_consumed"
+            elif coverage_status in {"missing", "not_configured", "not_covered"}:
+                naip_status = "missing"
+            elif coverage_status in {"provider_unavailable", "fetch_failed", "error"}:
+                naip_status = "provider_unavailable"
+            break
+
+    geometry_limitations: list[str] = []
+    if anchor_quality_score < 0.60:
+        geometry_limitations.append(
+            "Anchor quality is low; property location may be approximate."
+        )
+    if parcel_match_status != "matched":
+        if parcel_match_status == "provider_unavailable":
+            geometry_limitations.append(
+                "Parcel geometry provider was unavailable."
+            )
+        else:
+            geometry_limitations.append(
+                "Parcel geometry was not matched."
+            )
+    if footprint_match_status != "matched":
+        if footprint_match_status == "ambiguous":
+            geometry_limitations.append(
+                "Multiple nearby footprint candidates were similarly plausible."
+            )
+        elif footprint_match_status == "provider_unavailable":
+            geometry_limitations.append(
+                "Building-footprint provider was unavailable."
+            )
+        elif footprint_match_status == "error":
+            geometry_limitations.append(
+                "Building-footprint lookup returned an error."
+            )
+        else:
+            geometry_limitations.append(
+                "Building footprint was not matched."
+            )
+    if ring_generation_mode == "point_annulus_fallback":
+        geometry_limitations.append(
+            "Near-structure rings were generated from point-based annulus fallback."
+        )
+    if naip_status in {"missing", "provider_unavailable", "present_but_not_consumed"}:
+        geometry_limitations.append(
+            "NAIP-derived near-structure vegetation features were unavailable."
+        )
+    elif naip_status == "fallback_or_proxy":
+        geometry_limitations.append(
+            "Near-structure vegetation features rely on proxy/fallback signals."
+        )
+    if bool(ctx.get("source_conflict_flag")):
+        geometry_limitations.append(
+            "Anchor and geometry sources were partially conflicting."
+        )
+    geometry_limitations = list(dict.fromkeys(geometry_limitations))[:8]
 
     return GeometryResolutionSummary(
         anchor_source=anchor_source,
         anchor_quality_score=anchor_quality_score,
         parcel_match_status=parcel_match_status,
         footprint_match_status=footprint_match_status,
+        footprint_source=footprint_source,
         ring_generation_mode=ring_generation_mode,
+        naip_structure_feature_status=naip_status,
+        geometry_limitations=geometry_limitations,
     )
 
 
@@ -3852,6 +3946,7 @@ def _build_homeowner_trust_summary(
     missing_inputs: list[str],
     preflight: dict[str, Any],
     differentiation_snapshot: dict[str, Any] | None = None,
+    geometry_resolution: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     confidence_level = _to_homeowner_confidence_phrase(confidence_tier)
 
@@ -3985,6 +4080,38 @@ def _build_homeowner_trust_summary(
         fallback_decisions=fallback_decisions,
         nearby_home_comparison_safeguard_triggered=nearby_home_comparison_safeguard_triggered,
     )
+    geometry_resolution = geometry_resolution if isinstance(geometry_resolution, dict) else {}
+    ring_mode = str(geometry_resolution.get("ring_generation_mode") or "").strip().lower()
+    footprint_match_status = str(geometry_resolution.get("footprint_match_status") or "").strip().lower()
+    parcel_match_status = str(geometry_resolution.get("parcel_match_status") or "").strip().lower()
+    naip_status = str(geometry_resolution.get("naip_structure_feature_status") or "").strip().lower()
+    try:
+        anchor_quality_score = float(geometry_resolution.get("anchor_quality_score") or 0.0)
+    except (TypeError, ValueError):
+        anchor_quality_score = 0.0
+    geometry_specificity_limited = bool(
+        ring_mode == "point_annulus_fallback"
+        or footprint_match_status in {"none", "ambiguous", "provider_unavailable", "error"}
+        or parcel_match_status in {"not_found", "provider_unavailable"}
+        or anchor_quality_score < 0.60
+        or naip_status in {"missing", "provider_unavailable", "present_but_not_consumed", "fallback_or_proxy"}
+    )
+    geometry_resolution_summary = None
+    if geometry_specificity_limited:
+        geometry_resolution_summary = {
+            "anchor_source": str(geometry_resolution.get("anchor_source") or ""),
+            "anchor_quality_score": round(max(0.0, min(1.0, anchor_quality_score)), 3),
+            "parcel_match_status": parcel_match_status or "not_found",
+            "footprint_match_status": footprint_match_status or "none",
+            "ring_generation_mode": ring_mode or "point_annulus_fallback",
+            "naip_structure_feature_status": naip_status or "missing",
+        }
+        uncertainty_drivers = list(
+            dict.fromkeys(
+                ["Structure geometry detail is limited, so nearby-home comparisons are less precise."]
+                + list(uncertainty_drivers)
+            )
+        )[:4]
 
     return {
         "confidence_level": confidence_level,
@@ -4011,6 +4138,8 @@ def _build_homeowner_trust_summary(
         "nearby_home_comparison_safeguard_triggered": nearby_home_comparison_safeguard_triggered,
         "nearby_home_comparison_safeguard_message": nearby_home_comparison_safeguard_message,
         "parcel_level_comparison_allowed": not nearby_home_comparison_safeguard_triggered,
+        "geometry_specificity_limited": geometry_specificity_limited,
+        "geometry_resolution_summary": geometry_resolution_summary,
     }
 
 
@@ -5642,6 +5771,7 @@ def _run_assessment(
         missing_inputs=list(assumptions_block.missing_inputs or []),
         preflight=coverage_preflight,
         differentiation_snapshot=differentiation_snapshot,
+        geometry_resolution=geometry_resolution.model_dump(),
     )
     homeowner_assessment_mode = _to_homeowner_assessment_mode(assessment_output_state)
     specificity_summary = _build_specificity_summary(
@@ -5773,6 +5903,7 @@ def _run_assessment(
         "confidence_improvement_actions": confidence_improvement_actions,
         "differentiation_diagnostics": differentiation_snapshot,
         "specificity_summary": dict(specificity_summary),
+        "geometry_resolution": geometry_resolution.model_dump(),
         "nearby_home_comparison_safeguard_triggered": nearby_home_comparison_safeguard_triggered,
         "nearby_home_comparison_safeguard_message": (
             nearby_home_comparison_safeguard_message if nearby_home_comparison_safeguard_triggered else None
@@ -5814,6 +5945,7 @@ def _run_assessment(
             "structure_score_confidence": round(structure_score_confidence, 1),
         },
         "specificity_summary": dict(specificity_summary),
+        "geometry_resolution": geometry_resolution.model_dump(),
         "differentiation": differentiation_snapshot,
         "nearby_home_comparison_safeguard_triggered": nearby_home_comparison_safeguard_triggered,
         "nearby_home_comparison_safeguard_message": (
@@ -6487,6 +6619,7 @@ def _run_assessment(
         "environmental_layer_status": context.environmental_layer_status,
         "environmental_data_completeness": environmental_data_completeness,
         "property_level_context": property_level_context,
+        "geometry_resolution": result.geometry_resolution.model_dump(),
         "submodel_scores": {
             name: {
                 "score": sm.score,
@@ -11830,6 +11963,11 @@ def layer_diagnostics(payload: AddressRequest, ctx: ActorContext = Depends(get_a
             "fallback_mode": (debug_payload.get("property_level_context") or {}).get("fallback_mode"),
             "defensible_space_analysis": (debug_payload.get("property_level_context") or {}).get("defensible_space_analysis"),
         },
+        "geometry_resolution": (
+            debug_payload.get("geometry_resolution")
+            if isinstance(debug_payload.get("geometry_resolution"), dict)
+            else ((debug_payload.get("property_level_context") or {}).get("geometry_resolution") or {})
+        ),
         "top_near_structure_risk_drivers": debug_payload.get("top_near_structure_risk_drivers", []),
         "prioritized_vegetation_actions": debug_payload.get("prioritized_vegetation_actions", []),
         "defensible_space_limitations_summary": debug_payload.get("defensible_space_limitations_summary", []),
