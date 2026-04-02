@@ -246,20 +246,26 @@ def _simplify_homeowner_action(action_row: dict[str, object]) -> dict[str, objec
 def _build_first_screen_payload(
     *,
     specificity_summary: dict[str, Any],
+    overall_wildfire_risk: dict[str, object],
     headline_risk_summary: str,
     top_risk_drivers: list[str],
     ranked_actions: list[dict[str, object]],
     what_to_do_first: dict[str, object],
     limitations_notice: str,
 ) -> dict[str, object]:
+    limitation_line = " ".join(str(limitations_notice or "").replace("\n", " ").split()).strip()
+    if len(limitation_line) > 240:
+        limitation_line = limitation_line[:237].rstrip() + "..."
     top_actions = [_simplify_homeowner_action(row) for row in list(ranked_actions or [])[:3]]
     return {
+        "overall_wildfire_risk": dict(overall_wildfire_risk or {}),
         "specificity_summary": dict(specificity_summary),
-        "headline_risk_summary": str(headline_risk_summary or "").strip(),
         "top_risk_drivers": [str(row).strip() for row in list(top_risk_drivers or [])[:3] if str(row).strip()],
         "top_actions": top_actions,
         "what_to_do_first": _simplify_homeowner_action(dict(what_to_do_first or {})) if what_to_do_first else {},
-        "limitations_note": str(limitations_notice or "").strip(),
+        "limitations_note": limitation_line,
+        # Backward-compatible alias for existing consumers.
+        "headline_risk_summary": str(headline_risk_summary or "").strip(),
     }
 
 
@@ -930,12 +936,24 @@ def build_homeowner_report(
         result.overall_wildfire_risk if result.overall_wildfire_risk is not None else result.wildfire_risk_score,
         tone_level=tone_level,
     )
+    overall_risk_score = (
+        result.overall_wildfire_risk
+        if result.overall_wildfire_risk is not None
+        else result.wildfire_risk_score
+    )
+    overall_wildfire_risk = {
+        "label": "Overall wildfire risk",
+        "risk_band": _risk_band(overall_risk_score),
+        "score": overall_risk_score,
+        "headline": headline_risk_summary,
+    }
     limitations_notice = _with_low_specificity_limitation(
         _limitations_notice(result, combined_limitations),
         specificity_summary,
     )
     first_screen = _build_first_screen_payload(
         specificity_summary=specificity_summary,
+        overall_wildfire_risk=overall_wildfire_risk,
         headline_risk_summary=headline_risk_summary,
         top_risk_drivers=top_risk_drivers,
         ranked_actions=ranked_actions,
@@ -1135,6 +1153,12 @@ def export_homeowner_report(
     )
     first_screen = report.first_screen if isinstance(report.first_screen, dict) and report.first_screen else _build_first_screen_payload(
         specificity_summary=(_dump_value(report.specificity_summary) if report.specificity_summary else {}),
+        overall_wildfire_risk={
+            "label": "Overall wildfire risk",
+            "risk_band": _risk_band(_to_float((report.score_summary or {}).get("overall_wildfire_risk"))),
+            "score": _to_float((report.score_summary or {}).get("overall_wildfire_risk")),
+            "headline": str(report.headline_risk_summary or ""),
+        },
         headline_risk_summary=str(report.headline_risk_summary or ""),
         top_risk_drivers=list(report.top_risk_drivers or [])[:3],
         ranked_actions=ranked_actions[:3],
@@ -1215,12 +1239,36 @@ def _build_report_lines(report: HomeownerReport) -> list[str]:
     lines.extend(_wrap_text_line("Homeowner Snapshot"))
     fs_specificity = first_screen.get("specificity_summary") if isinstance(first_screen.get("specificity_summary"), dict) else specificity_summary
     fs_specificity = fs_specificity if isinstance(fs_specificity, dict) else {}
-    fs_headline = str(first_screen.get("headline_risk_summary") or report.headline_risk_summary or "").strip()
+    fs_overall = first_screen.get("overall_wildfire_risk") if isinstance(first_screen.get("overall_wildfire_risk"), dict) else {}
+    fs_overall = fs_overall if isinstance(fs_overall, dict) else {}
+    fs_headline = str(
+        fs_overall.get("headline")
+        or first_screen.get("headline_risk_summary")
+        or report.headline_risk_summary
+        or ""
+    ).strip()
+    fs_overall_band = str(
+        fs_overall.get("risk_band")
+        or (report.score_summary or {}).get("wildfire_risk_band")
+        or "unavailable"
+    ).strip()
+    fs_overall_score = _to_float(
+        fs_overall.get("score")
+        if fs_overall.get("score") is not None
+        else (report.score_summary or {}).get("overall_wildfire_risk")
+    )
     fs_drivers = first_screen.get("top_risk_drivers") if isinstance(first_screen.get("top_risk_drivers"), list) else list(report.top_risk_drivers or [])[:3]
     fs_actions = first_screen.get("top_actions") if isinstance(first_screen.get("top_actions"), list) else [dict(row) for row in list(report.ranked_actions or [])[:3]]
     fs_first_action = first_screen.get("what_to_do_first") if isinstance(first_screen.get("what_to_do_first"), dict) else dict(report.what_to_do_first or {})
     fs_limitations = str(first_screen.get("limitations_note") or report.limitations_notice or "").strip()
 
+    if fs_headline:
+        score_hint = (
+            f" (score={fs_overall_score:.1f}, band={fs_overall_band})"
+            if fs_overall_score is not None
+            else f" (band={fs_overall_band})"
+        )
+        lines.extend(_wrap_text_line(f"Overall Wildfire Risk: {fs_headline}{score_hint}", prefix="- "))
     if fs_specificity:
         lines.extend(
             _wrap_text_line(
@@ -1232,8 +1280,6 @@ def _build_report_lines(report: HomeownerReport) -> list[str]:
         what_means = str(fs_specificity.get("what_this_means") or "").strip()
         if what_means:
             lines.extend(_wrap_text_line(what_means, prefix="- "))
-    if fs_headline:
-        lines.extend(_wrap_text_line(fs_headline, prefix="- "))
     lines.extend(_wrap_text_line("Top Risk Drivers:", prefix="- "))
     for driver in list(fs_drivers or [])[:3]:
         lines.extend(_wrap_text_line(str(driver), prefix="  - "))
@@ -1258,6 +1304,7 @@ def _build_report_lines(report: HomeownerReport) -> list[str]:
         lines.extend(_wrap_text_line(f"Limitations: {fs_limitations}", prefix="- "))
     lines.append("")
 
+    lines.extend(_wrap_text_line("More Details (Optional)"))
     lines.extend(_wrap_text_line("Confidence"))
     lines.extend(_wrap_text_line(str(confidence.get("confidence_statement") or "Confidence summary unavailable."), prefix="- "))
     if specificity_summary:

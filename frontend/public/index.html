@@ -461,6 +461,10 @@
         <p class="muted">See the homeowner-focused summary and shareable report formats.</p>
         <p id="homeownerReportStatus" style="margin-top:0.55rem;">Run an assessment to load the homeowner report preview.</p>
         <ul id="homeownerReportHighlights"><li class="muted">No homeowner report preview yet.</li></ul>
+        <details id="homeownerReportMoreDetails" style="margin-top:0.6rem;">
+          <summary>More details</summary>
+          <ul id="homeownerReportSecondary"><li class="muted">No additional details yet.</li></ul>
+        </details>
         <div class="actions">
           <button id="openReportBtn" type="button" class="secondary">Open Printable Report</button>
           <button id="downloadPdfBtn" type="button" class="secondary">Download Homeowner PDF</button>
@@ -1470,11 +1474,19 @@
         latestHomeownerReport = null;
         const statusEl = document.getElementById("homeownerReportStatus");
         const highlightsEl = document.getElementById("homeownerReportHighlights");
+        const secondaryEl = document.getElementById("homeownerReportSecondary");
+        const moreDetailsEl = document.getElementById("homeownerReportMoreDetails");
         if (statusEl) {
           statusEl.textContent = reason || "Run an assessment to load the homeowner report preview.";
         }
         if (highlightsEl) {
           highlightsEl.innerHTML = "<li class='muted'>No homeowner report preview yet.</li>";
+        }
+        if (secondaryEl) {
+          secondaryEl.innerHTML = "<li class='muted'>No additional details yet.</li>";
+        }
+        if (moreDetailsEl) {
+          moreDetailsEl.open = false;
         }
         renderImproveSectionFromBlock(null);
       }
@@ -1482,39 +1494,84 @@
       function renderHomeownerReportPreview(report) {
         const statusEl = document.getElementById("homeownerReportStatus");
         const highlightsEl = document.getElementById("homeownerReportHighlights");
-        if (!statusEl || !highlightsEl) return;
+        const secondaryEl = document.getElementById("homeownerReportSecondary");
+        const moreDetailsEl = document.getElementById("homeownerReportMoreDetails");
+        if (!statusEl || !highlightsEl || !secondaryEl) return;
 
         if (!report || typeof report !== "object") {
           statusEl.textContent = "Homeowner report preview is not available for this assessment.";
           highlightsEl.innerHTML = "<li class='muted'>No homeowner report preview yet.</li>";
+          secondaryEl.innerHTML = "<li class='muted'>No additional details yet.</li>";
+          if (moreDetailsEl) moreDetailsEl.open = false;
           return;
         }
 
-        const headline = String(report?.headline_risk_summary || "").trim();
-        const whatFirst = String(report?.what_to_do_first?.action || report?.what_to_do_first?.title || "").trim();
-        const topActions = Array.isArray(report?.prioritized_actions) ? report.prioritized_actions : [];
+        const firstScreen = (report?.first_screen && typeof report.first_screen === "object") ? report.first_screen : {};
+        const overall = (firstScreen?.overall_wildfire_risk && typeof firstScreen.overall_wildfire_risk === "object")
+          ? firstScreen.overall_wildfire_risk
+          : {};
+        const specificity = (firstScreen?.specificity_summary && typeof firstScreen.specificity_summary === "object")
+          ? firstScreen.specificity_summary
+          : {};
+        const headline = String(overall?.headline || report?.headline_risk_summary || "").trim();
+        const riskBand = String(overall?.risk_band || report?.score_summary?.wildfire_risk_band || "").trim();
+        const whatFirst = String(firstScreen?.what_to_do_first?.action || report?.what_to_do_first?.action || report?.what_to_do_first?.title || "").trim();
+        const topActions = Array.isArray(firstScreen?.top_actions)
+          ? firstScreen.top_actions
+          : (Array.isArray(report?.prioritized_actions) ? report.prioritized_actions : []);
+        const topDrivers = Array.isArray(firstScreen?.top_risk_drivers)
+          ? firstScreen.top_risk_drivers
+          : (Array.isArray(report?.top_risk_drivers) ? report.top_risk_drivers : []);
+        const limitations = String(firstScreen?.limitations_note || report?.limitations_notice || "").trim();
         const confidence = report?.confidence_summary || report?.confidence_and_limitations || {};
         const trust = report?.trust_summary || report?.confidence_and_limitations?.trust_summary || {};
         const lowDiff = trust?.low_differentiation_explanation || null;
 
         statusEl.textContent = headline || "Homeowner report loaded.";
         const rows = [];
-        if (whatFirst) rows.push(`<li><strong>What to do first:</strong> ${whatFirst}</li>`);
-        if (topActions.length > 0) {
-          const firstAction = String(topActions[0]?.action || topActions[0]?.title || "").trim();
-          if (firstAction) rows.push(`<li><strong>Top action:</strong> ${firstAction}</li>`);
+        if (headline) {
+          rows.push(`<li><strong>Overall wildfire risk:</strong> ${headline}${riskBand ? ` (${riskBand})` : ""}</li>`);
         }
-        if (Array.isArray(confidence?.why_confidence_is_limited) && confidence.why_confidence_is_limited.length > 0) {
-          rows.push(`<li><strong>Confidence note:</strong> ${String(confidence.why_confidence_is_limited[0])}</li>`);
-        }
-        if (lowDiff && typeof lowDiff === "object") {
+        const specificityHeadline = String(specificity?.headline || "").trim();
+        const specificityMeaning = String(specificity?.what_this_means || "").trim();
+        if (specificityHeadline || specificityMeaning) {
           rows.push(
-            `<li><strong>Nearby-home comparison:</strong> ${String(lowDiff.why_nearby_properties_may_appear_similar || "Result is based mostly on shared neighborhood conditions.")}</li>`
+            `<li><strong>Specificity:</strong> ${specificityHeadline || "Estimate"}${specificityMeaning ? ` — ${specificityMeaning}` : ""}</li>`
           );
         }
+        if (topDrivers.length > 0) {
+          const text = topDrivers.slice(0, 3).map((item) => String(item)).filter(Boolean).join("; ");
+          if (text) rows.push(`<li><strong>Top 3 risk drivers:</strong> ${text}</li>`);
+        }
+        if (topActions.length > 0) {
+          const text = topActions
+            .slice(0, 3)
+            .map((item) => String(item?.action || item?.title || "").trim())
+            .filter(Boolean)
+            .join("; ");
+          if (text) rows.push(`<li><strong>Top 3 actions:</strong> ${text}</li>`);
+        }
+        if (whatFirst) rows.push(`<li><strong>What to do first:</strong> ${whatFirst}</li>`);
+        if (limitations) rows.push(`<li><strong>Limitations:</strong> ${limitations}</li>`);
         highlightsEl.innerHTML = rows.length > 0
           ? rows.join("")
           : "<li class='muted'>No homeowner report highlights available.</li>";
+
+        const secondaryRows = [];
+        if (Array.isArray(confidence?.why_confidence_is_limited) && confidence.why_confidence_is_limited.length > 0) {
+          secondaryRows.push(`<li><strong>Confidence note:</strong> ${String(confidence.why_confidence_is_limited[0])}</li>`);
+        }
+        if (lowDiff && typeof lowDiff === "object") {
+          secondaryRows.push(
+            `<li><strong>Nearby-home comparison:</strong> ${String(lowDiff.why_nearby_properties_may_appear_similar || "Result is based mostly on shared neighborhood conditions.")}</li>`
+          );
+        }
+        secondaryEl.innerHTML = secondaryRows.length > 0
+          ? secondaryRows.join("")
+          : "<li class='muted'>No additional details available.</li>";
+        if (moreDetailsEl) {
+          moreDetailsEl.open = false;
+        }
       }
 
       async function loadHomeownerReportPreview(assessmentId) {

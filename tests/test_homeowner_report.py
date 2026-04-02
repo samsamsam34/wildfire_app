@@ -157,13 +157,16 @@ def test_homeowner_report_and_pdf_generate_for_complete_assessment(monkeypatch, 
     assert isinstance(report["specificity_summary"]["comparison_allowed"], bool)
     first_screen = report.get("first_screen") or {}
     assert list(first_screen.keys()) == [
+        "overall_wildfire_risk",
         "specificity_summary",
-        "headline_risk_summary",
         "top_risk_drivers",
         "top_actions",
         "what_to_do_first",
         "limitations_note",
+        "headline_risk_summary",
     ]
+    assert isinstance(first_screen.get("overall_wildfire_risk"), dict)
+    assert str((first_screen.get("overall_wildfire_risk") or {}).get("headline") or "").strip()
     assert len(first_screen.get("top_risk_drivers") or []) <= 3
     assert len(first_screen.get("top_actions") or []) <= 3
     assert len(str(first_screen.get("limitations_note") or "")) <= 320
@@ -232,8 +235,11 @@ def test_homeowner_report_surfaces_mostly_regional_differentiation_mode(monkeypa
     assert specificity.get("comparison_allowed") is False
     assert "nearby homes may appear similar" in str(specificity.get("what_this_means") or "").lower()
     first_screen = report.get("first_screen") or {}
-    assert "nearby homes may appear similar" in str(first_screen.get("limitations_note") or "").lower()
+    overall = first_screen.get("overall_wildfire_risk") or {}
+    limitation_text = str(first_screen.get("limitations_note") or "").lower()
+    assert "estimated" in limitation_text or "missing" in limitation_text
     assert "may have" in str(first_screen.get("headline_risk_summary") or "").lower()
+    assert "may have" in str(overall.get("headline") or "").lower()
     trust_summary = (report.get("confidence_and_limitations") or {}).get("trust_summary") or {}
     assert trust_summary.get("differentiation_mode") == "mostly_regional"
     assert float(trust_summary.get("neighborhood_differentiation_confidence") or 0.0) <= 40.0
@@ -715,12 +721,13 @@ def test_export_homeowner_report_generates_clean_structured_output_across_confid
         assert isinstance(exported.get("trust_summary"), dict)
         assert isinstance(exported.get("improve_your_result"), dict)
         assert list((exported.get("first_screen") or {}).keys()) == [
+            "overall_wildfire_risk",
             "specificity_summary",
-            "headline_risk_summary",
             "top_risk_drivers",
             "top_actions",
             "what_to_do_first",
             "limitations_note",
+            "headline_risk_summary",
         ]
 
 
