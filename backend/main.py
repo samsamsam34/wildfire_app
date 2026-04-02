@@ -2816,11 +2816,167 @@ def _region_readiness_penalty_summary(property_level_context: dict[str, Any]) ->
     }
 
 
+def _property_data_confidence_level(score: float) -> str:
+    if score >= 70.0:
+        return "high"
+    if score >= 45.0:
+        return "medium"
+    return "low"
+
+
+def _build_property_confidence_summary(
+    *,
+    payload: AddressRequest | None,
+    property_level_context: dict[str, Any],
+    fallback_evidence_fraction: float,
+    fallback_dominance_ratio: float,
+) -> dict[str, Any]:
+    parcel_resolution = (
+        property_level_context.get("parcel_resolution")
+        if isinstance(property_level_context.get("parcel_resolution"), dict)
+        else {}
+    )
+    footprint_resolution = (
+        property_level_context.get("footprint_resolution")
+        if isinstance(property_level_context.get("footprint_resolution"), dict)
+        else {}
+    )
+    structure_attributes = (
+        property_level_context.get("structure_attributes")
+        if isinstance(property_level_context.get("structure_attributes"), dict)
+        else {}
+    )
+    parcel_status = str(parcel_resolution.get("status") or "").strip().lower()
+    footprint_status = str(footprint_resolution.get("match_status") or "").strip().lower()
+    fallback_mode = str(property_level_context.get("fallback_mode") or "").strip().lower()
+
+    try:
+        raw_parcel_confidence = float(parcel_resolution.get("confidence") or 0.0)
+    except (TypeError, ValueError):
+        raw_parcel_confidence = 0.0
+    if raw_parcel_confidence > 0.0:
+        parcel_confidence = raw_parcel_confidence
+    elif parcel_status == "matched" or property_level_context.get("parcel_id"):
+        parcel_confidence = 74.0
+    elif parcel_status == "multiple_candidates":
+        parcel_confidence = 46.0
+    elif parcel_status in {"not_found", "none"}:
+        parcel_confidence = 25.0
+    else:
+        # Unknown parcel status is treated as neutral, not hard-failed.
+        parcel_confidence = 60.0
+
+    try:
+        raw_footprint_confidence = float(footprint_resolution.get("confidence_score") or 0.0) * 100.0
+    except (TypeError, ValueError):
+        raw_footprint_confidence = 0.0
+    if raw_footprint_confidence > 0.0:
+        footprint_confidence = raw_footprint_confidence
+    elif footprint_status in {"matched", "selected", "trusted"} or bool(property_level_context.get("footprint_used")):
+        footprint_confidence = 82.0
+    elif footprint_status in {"none", "not_found", "ambiguous", "provider_unavailable", "error"}:
+        footprint_confidence = 24.0
+    elif fallback_mode == "point_based":
+        footprint_confidence = 36.0
+    else:
+        # Unknown footprint status is treated as neutral, not hard-failed.
+        footprint_confidence = 58.0
+
+    area_sqft = _safe_float(((structure_attributes.get("area") or {}).get("sqft")))
+    density_index = _safe_float(((structure_attributes.get("density_context") or {}).get("index")))
+    age_proxy_year = _safe_float(((structure_attributes.get("estimated_age_proxy") or {}).get("proxy_year")))
+    shape_index = _safe_float(((structure_attributes.get("shape_complexity") or {}).get("index")))
+    structure_available_count = sum(
+        1
+        for value in [area_sqft, density_index, age_proxy_year, shape_index]
+        if value is not None
+    )
+    structure_attributes_score = (float(structure_available_count) / 4.0) * 100.0
+
+    user_inputs_score = 0.0
+    user_inputs_provided = 0
+    if payload is not None:
+        attrs = payload.attributes if isinstance(payload.attributes, PropertyAttributes) else PropertyAttributes()
+        provided = [
+            attrs.roof_type,
+            attrs.vent_type,
+            attrs.window_type,
+            attrs.defensible_space_ft,
+            attrs.construction_year,
+            attrs.siding_type,
+        ]
+        user_inputs_provided = sum(1 for value in provided if value not in {None, ""})
+        geometry_user_input = bool(
+            payload.property_anchor_point is not None
+            or payload.user_selected_point is not None
+            or payload.selected_structure_geometry is not None
+            or payload.selected_structure_id is not None
+        )
+        user_inputs_score = ((float(user_inputs_provided) + (1.0 if geometry_user_input else 0.0)) / 7.0) * 100.0
+
+    rings = property_level_context.get("ring_metrics") if isinstance(property_level_context.get("ring_metrics"), dict) else {}
+    near_structure_ring_count = sum(
+        1
+        for key in ("ring_0_5_ft", "zone_0_5_ft", "ring_5_30_ft", "zone_5_30_ft", "ring_30_100_ft", "zone_30_100_ft")
+        if isinstance(rings.get(key), dict) and _safe_float((rings.get(key) or {}).get("vegetation_density")) is not None
+    )
+    if near_structure_ring_count >= 2:
+        near_structure_evidence_score = 90.0
+    elif near_structure_ring_count == 1:
+        near_structure_evidence_score = 72.0
+    elif fallback_mode == "point_based":
+        near_structure_evidence_score = 30.0
+    else:
+        near_structure_evidence_score = 55.0
+
+    combined_structure_score = min(
+        100.0,
+        0.45 * structure_attributes_score + 0.55 * user_inputs_score,
+    )
+    if combined_structure_score <= 0.0:
+        combined_structure_score = 32.0 if fallback_mode == "point_based" else 48.0
+
+    score = (
+        0.22 * max(0.0, min(100.0, parcel_confidence))
+        + 0.28 * max(0.0, min(100.0, footprint_confidence))
+        + 0.25 * max(0.0, min(100.0, combined_structure_score))
+        + 0.25 * max(0.0, min(100.0, near_structure_evidence_score))
+    )
+    if fallback_mode == "point_based" and near_structure_ring_count == 0:
+        score -= 8.0
+    if fallback_evidence_fraction >= 0.65 or fallback_dominance_ratio >= 0.75:
+        score = min(score, 42.0)
+    elif fallback_evidence_fraction >= 0.50 or fallback_dominance_ratio >= 0.60:
+        score = min(score, 55.0)
+    if not bool(property_level_context.get("footprint_used")) and parcel_confidence < 45.0 and near_structure_ring_count == 0:
+        score = min(score, 35.0)
+
+    key_gaps: list[str] = []
+    if parcel_status in {"not_found", "multiple_candidates"} or parcel_confidence < 60.0:
+        key_gaps.append("Parcel match is missing or low-confidence.")
+    if footprint_status in {"none", "ambiguous", "provider_unavailable", "error"} or footprint_confidence < 65.0:
+        key_gaps.append("Building footprint match is missing or low-confidence.")
+    if structure_available_count < 2:
+        key_gaps.append("Structure attributes are limited; more property-specific structure detail is needed.")
+    if payload is not None and user_inputs_provided < 2:
+        key_gaps.append("Few homeowner-provided structure details were supplied.")
+    if fallback_evidence_fraction >= 0.50 or fallback_dominance_ratio >= 0.60:
+        key_gaps.append("Fallback-heavy evidence reduces property-level confidence.")
+
+    score = round(max(0.0, min(100.0, score)), 1)
+    return {
+        "score": score,
+        "level": _property_data_confidence_level(score),
+        "key_gaps": key_gaps[:4],
+    }
+
+
 def _build_feature_coverage_preflight(
     *,
     context: WildfireContext,
     property_level_context: dict[str, Any],
     coverage_summary: LayerCoverageSummary,
+    payload: AddressRequest | None = None,
 ) -> dict[str, Any]:
     rings = property_level_context.get("ring_metrics") if isinstance(property_level_context, dict) else None
     rings = rings if isinstance(rings, dict) else {}
@@ -2922,6 +3078,13 @@ def _build_feature_coverage_preflight(
         if footprint_available
         else ("parcel" if parcel_polygon_available else "geocode_point")
     )
+    property_confidence_summary = _build_property_confidence_summary(
+        payload=payload,
+        property_level_context=property_level_context,
+        fallback_evidence_fraction=fallback_evidence_fraction,
+        fallback_dominance_ratio=fallback_dominance_ratio,
+    )
+    property_data_confidence = float(property_confidence_summary.get("score") or 0.0)
     major_environmental_missing_count = sum(
         1
         for available in [hazard_available, burn_prob_available, dryness_available]
@@ -2961,6 +3124,10 @@ def _build_feature_coverage_preflight(
         assessment_specificity_tier = "regional_estimate"
     if bundle_metrics_present and fallback_dominance_ratio >= 0.80:
         assessment_specificity_tier = "regional_estimate"
+    if property_data_confidence < 30.0:
+        assessment_specificity_tier = "regional_estimate"
+    elif property_data_confidence < 50.0 and assessment_specificity_tier == "property_specific":
+        assessment_specificity_tier = "address_level"
 
     limited_assessment_flag = (
         assessment_specificity_tier != "property_specific"
@@ -2972,6 +3139,7 @@ def _build_feature_coverage_preflight(
         or (bundle_metrics_present and regional_enrichment_consumption_score < 60.0)
         or region_readiness_state != "property_specific_ready"
         or int(region_readiness.get("region_required_missing_count") or 0) > 0
+        or property_data_confidence < 40.0
     )
     specificity_warning = None
     if limited_assessment_flag:
@@ -3011,6 +3179,8 @@ def _build_feature_coverage_preflight(
         "regional_context_coverage_score": round(environmental_layer_coverage_score, 1),
         "regional_enrichment_consumption_score": round(regional_enrichment_consumption_score, 1),
         "property_specificity_score": round(property_specificity_score, 1),
+        "property_data_confidence": round(property_data_confidence, 1),
+        "property_confidence_summary": dict(property_confidence_summary),
         "score_specificity_warning": specificity_warning,
     }
     preflight.update(region_readiness)
@@ -4379,6 +4549,7 @@ def _build_specificity_summary(
     limited_assessment_flag: bool,
     confidence_summary: dict[str, Any],
     trust_summary: dict[str, Any],
+    property_confidence_summary: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     tier = str(assessment_specificity_tier or "regional_estimate").strip().lower()
     mode = str(assessment_mode or "insufficient_data").strip().lower()
@@ -4401,6 +4572,30 @@ def _build_specificity_summary(
             trust_summary.get("neighborhood_differentiation_confidence")
         )
     local_differentiation_score = float(local_differentiation_score or 0.0)
+    resolved_property_confidence = (
+        dict(property_confidence_summary)
+        if isinstance(property_confidence_summary, dict)
+        else (
+            dict(trust_summary.get("property_confidence_summary"))
+            if isinstance(trust_summary.get("property_confidence_summary"), dict)
+            else {}
+        )
+    )
+    raw_property_confidence_score = (
+        _safe_float(resolved_property_confidence.get("score"))
+        if resolved_property_confidence
+        else _safe_float(trust_summary.get("property_data_confidence"))
+    )
+    if raw_property_confidence_score is None:
+        raw_property_confidence_score = 100.0
+    property_data_confidence = float(raw_property_confidence_score)
+    property_confidence_level = str(
+        resolved_property_confidence.get("level")
+        if resolved_property_confidence.get("level")
+        else _property_data_confidence_level(property_data_confidence)
+    ).strip().lower()
+    if property_confidence_level not in {"high", "medium", "low"}:
+        property_confidence_level = _property_data_confidence_level(property_data_confidence)
 
     # Property-specificity output should degrade when local evidence is weak.
     if (
@@ -4418,6 +4613,10 @@ def _build_specificity_summary(
         and local_differentiation_score < 35.0
     ):
         specificity_tier = "regional_estimate"
+    if property_data_confidence < 30.0:
+        specificity_tier = "regional_estimate"
+    elif property_data_confidence < 50.0 and specificity_tier == "property_specific":
+        specificity_tier = "address_level"
 
     nearby_home_guardrail = bool(trust_summary.get("nearby_home_comparison_safeguard_triggered"))
     comparison_allowed = bool(trust_summary.get("parcel_level_comparison_allowed"))
@@ -4426,9 +4625,13 @@ def _build_specificity_summary(
         and differentiation_mode != "mostly_regional"
         and local_differentiation_score >= 60.0
         and not nearby_home_guardrail
+        and property_data_confidence >= 55.0
+        and property_confidence_level != "low"
     ):
         comparison_allowed = True
     if specificity_tier in {"regional_estimate", "insufficient_data"}:
+        comparison_allowed = False
+    if specificity_tier != "property_specific":
         comparison_allowed = False
     if nearby_home_guardrail:
         comparison_allowed = False
@@ -4502,6 +4705,7 @@ def _build_homeowner_trust_summary(
     preflight: dict[str, Any],
     differentiation_snapshot: dict[str, Any] | None = None,
     geometry_resolution: dict[str, Any] | None = None,
+    property_confidence_summary: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     confidence_level = _to_homeowner_confidence_phrase(confidence_tier)
 
@@ -4671,6 +4875,36 @@ def _build_homeowner_trust_summary(
             )
         )[:4]
 
+    resolved_property_confidence = (
+        dict(property_confidence_summary)
+        if isinstance(property_confidence_summary, dict)
+        else (
+            dict(preflight.get("property_confidence_summary"))
+            if isinstance(preflight.get("property_confidence_summary"), dict)
+            else {}
+        )
+    )
+    raw_property_confidence_score = (
+        _safe_float(resolved_property_confidence.get("score"))
+        if resolved_property_confidence
+        else _safe_float(preflight.get("property_data_confidence"))
+    )
+    if raw_property_confidence_score is None:
+        raw_property_confidence_score = 70.0 if differentiation_mode != "mostly_regional" else 40.0
+    property_data_confidence = float(raw_property_confidence_score)
+    property_confidence_level = str(
+        resolved_property_confidence.get("level")
+        if resolved_property_confidence.get("level")
+        else _property_data_confidence_level(property_data_confidence)
+    ).strip().lower()
+    if property_confidence_level not in {"high", "medium", "low"}:
+        property_confidence_level = _property_data_confidence_level(property_data_confidence)
+    property_confidence_gaps = [
+        str(item).strip()
+        for item in list(resolved_property_confidence.get("key_gaps") or [])
+        if str(item).strip()
+    ][:4]
+
     return {
         "confidence_level": confidence_level,
         "summary": summary,
@@ -4700,7 +4934,15 @@ def _build_homeowner_trust_summary(
             not nearby_home_comparison_safeguard_triggered
             and differentiation_mode != "mostly_regional"
             and local_differentiation_score >= 60.0
+            and property_data_confidence >= 55.0
+            and property_confidence_level != "low"
         ),
+        "property_data_confidence": round(property_data_confidence, 1),
+        "property_confidence_summary": {
+            "score": round(property_data_confidence, 1),
+            "level": property_confidence_level,
+            "key_gaps": property_confidence_gaps,
+        },
         "geometry_specificity_limited": geometry_specificity_limited,
         "geometry_resolution_summary": geometry_resolution_summary,
     }
@@ -5992,6 +6234,7 @@ def _run_assessment(
         context=context,
         property_level_context=property_level_context,
         coverage_summary=coverage_summary,
+        payload=payload,
     )
     defensible_space_analysis = build_defensible_space_analysis(
         property_level_context=property_level_context,
@@ -6339,6 +6582,11 @@ def _run_assessment(
         preflight=coverage_preflight,
         differentiation_snapshot=differentiation_snapshot,
         geometry_resolution=geometry_resolution.model_dump(),
+        property_confidence_summary=(
+            dict(coverage_preflight.get("property_confidence_summary"))
+            if isinstance(coverage_preflight.get("property_confidence_summary"), dict)
+            else {}
+        ),
     )
     homeowner_assessment_mode = _to_homeowner_assessment_mode(assessment_output_state)
     specificity_summary = _build_specificity_summary(
@@ -6347,6 +6595,11 @@ def _run_assessment(
         limited_assessment_flag=bool(coverage_preflight.get("limited_assessment_flag")),
         confidence_summary=homeowner_confidence_summary,
         trust_summary=trust_summary,
+        property_confidence_summary=(
+            dict(coverage_preflight.get("property_confidence_summary"))
+            if isinstance(coverage_preflight.get("property_confidence_summary"), dict)
+            else {}
+        ),
     )
     force_low_specificity_safeguard = specificity_summary.get("specificity_tier") in {
         "regional_estimate",
@@ -6370,6 +6623,11 @@ def _run_assessment(
         limited_assessment_flag=bool(coverage_preflight.get("limited_assessment_flag")),
         confidence_summary=homeowner_confidence_summary,
         trust_summary=trust_summary,
+        property_confidence_summary=(
+            dict(coverage_preflight.get("property_confidence_summary"))
+            if isinstance(coverage_preflight.get("property_confidence_summary"), dict)
+            else {}
+        ),
     )
     if nearby_home_comparison_safeguard_triggered and assessment_status != "insufficient_data":
         # Suppress parcel-level differentiation claims when the evidence is
@@ -6469,6 +6727,8 @@ def _run_assessment(
         "recommended_data_improvements": recommended_data_improvements,
         "confidence_improvement_actions": confidence_improvement_actions,
         "differentiation_diagnostics": differentiation_snapshot,
+        "property_data_confidence": float(coverage_preflight.get("property_data_confidence") or 0.0),
+        "property_confidence_summary": dict(coverage_preflight.get("property_confidence_summary") or {}),
         "specificity_summary": dict(specificity_summary),
         "geometry_resolution": geometry_resolution.model_dump(),
         "nearby_home_comparison_safeguard_triggered": nearby_home_comparison_safeguard_triggered,
@@ -6512,6 +6772,8 @@ def _run_assessment(
             "structure_score_confidence": round(structure_score_confidence, 1),
         },
         "specificity_summary": dict(specificity_summary),
+        "property_data_confidence": float(coverage_preflight.get("property_data_confidence") or 0.0),
+        "property_confidence_summary": dict(coverage_preflight.get("property_confidence_summary") or {}),
         "geometry_resolution": geometry_resolution.model_dump(),
         "differentiation": differentiation_snapshot,
         "nearby_home_comparison_safeguard_triggered": nearby_home_comparison_safeguard_triggered,
@@ -6972,6 +7234,8 @@ def _run_assessment(
             coverage_preflight.get("regional_context_coverage_score") or risk.regional_context_coverage_score
         ),
         property_specificity_score=float(coverage_preflight.get("property_specificity_score") or risk.property_specificity_score),
+        property_data_confidence=float(coverage_preflight.get("property_data_confidence") or 0.0),
+        property_confidence_summary=dict(coverage_preflight.get("property_confidence_summary") or {}),
         score_specificity_warning=(
             str(coverage_preflight.get("score_specificity_warning"))
             if coverage_preflight.get("score_specificity_warning")

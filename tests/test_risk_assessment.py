@@ -6111,6 +6111,46 @@ def test_specificity_summary_is_influenced_by_local_differentiation_score():
     assert high_local.get("specificity_tier") == "property_specific"
     assert high_local.get("comparison_allowed") is True
 
+    low_property_data = app_main._build_specificity_summary(
+        assessment_specificity_tier="property_specific",
+        assessment_mode="property_specific",
+        limited_assessment_flag=False,
+        confidence_summary={"assessment_type": "high confidence"},
+        trust_summary={
+            "differentiation_mode": "highly_local",
+            "local_differentiation_score": 85.0,
+            "nearby_home_comparison_safeguard_triggered": False,
+            "parcel_level_comparison_allowed": True,
+        },
+        property_confidence_summary={
+            "score": 24.0,
+            "level": "low",
+            "key_gaps": ["Building footprint match is missing or low-confidence."],
+        },
+    )
+    assert low_property_data.get("specificity_tier") == "regional_estimate"
+    assert low_property_data.get("comparison_allowed") is False
+
+    medium_property_data = app_main._build_specificity_summary(
+        assessment_specificity_tier="property_specific",
+        assessment_mode="property_specific",
+        limited_assessment_flag=False,
+        confidence_summary={"assessment_type": "high confidence"},
+        trust_summary={
+            "differentiation_mode": "highly_local",
+            "local_differentiation_score": 80.0,
+            "nearby_home_comparison_safeguard_triggered": False,
+            "parcel_level_comparison_allowed": True,
+        },
+        property_confidence_summary={
+            "score": 48.0,
+            "level": "medium",
+            "key_gaps": [],
+        },
+    )
+    assert medium_property_data.get("specificity_tier") == "address_level"
+    assert medium_property_data.get("comparison_allowed") is False
+
 
 def test_old_rows_without_provenance_defaults_are_readable(tmp_path):
     store = AssessmentStore(str(tmp_path / "legacy_no_prov.db"))

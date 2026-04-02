@@ -916,6 +916,12 @@ class SpecificitySummary(BaseModel):
     comparison_allowed: bool = False
 
 
+class PropertyConfidenceSummary(BaseModel):
+    score: float = 0.0
+    level: Literal["high", "medium", "low"] = "low"
+    key_gaps: List[str] = Field(default_factory=list)
+
+
 class GeometryResolutionSummary(BaseModel):
     anchor_source: str = "geocoded_address_point"
     anchor_quality_score: float = 0.0
@@ -1089,6 +1095,8 @@ class AssessmentResult(BaseModel):
     geometry_quality_score: float = 0.0
     regional_context_coverage_score: float = 0.0
     property_specificity_score: float = 0.0
+    property_data_confidence: float = 0.0
+    property_confidence_summary: PropertyConfidenceSummary = Field(default_factory=PropertyConfidenceSummary)
     score_specificity_warning: Optional[str] = None
     data_quality_summary: Dict[str, str] = Field(default_factory=dict)
     assessment_limitations: List[Dict[str, str]] = Field(default_factory=list)
