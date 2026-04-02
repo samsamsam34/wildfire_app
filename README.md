@@ -55,7 +55,6 @@ Insurer/portfolio/internal diagnostics/calibration capabilities remain available
   - per-layer coverage audit (`layer_coverage_audit`) and coverage summary (`coverage_summary`) to explain data gaps vs sampling/config issues
   - factor-level score evidence ledger (`score_evidence_ledger`) with weight/contribution/evidence status per factor
   - evidence-quality summary (`evidence_quality_summary`) with observed/inferred/missing/fallback counts and confidence penalties
-  - optional calibrated damage-likelihood guidance when a public-outcome calibration artifact is configured
 - Includes a homeowner-facing assessment map panel in the frontend:
   - property point and building footprint (when available)
   - defensible-space rings (`0-5 ft`, `5-30 ft`, `30-100 ft`, `100-300 ft`)
@@ -102,6 +101,7 @@ Homeowner report and map views:
 Advanced/internal (secondary surfaces):
 - `POST /risk/assess?include_diagnostics=true` (opt-in trust metadata)
 - `POST /risk/assess?include_calibrated_outputs=true` (opt-in calibrated public-outcome metadata)
+- calibrated public-outcome metadata is optional/additive governance context; homeowner-facing guidance remains based on deterministic risk drivers, actions, specificity, and limitations
 - `POST /risk/debug`
 - `POST /risk/layer-diagnostics`
 - `GET /report/{assessment_id}?include_diagnostics=true`

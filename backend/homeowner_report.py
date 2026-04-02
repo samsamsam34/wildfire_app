@@ -1000,23 +1000,25 @@ def build_homeowner_report(
             "home_hardening_readiness": home_hardening_score,
             "home_hardening_readiness_band": _home_hardening_band(home_hardening_score),
             "home_hardening_readiness_score_available": home_hardening_available,
-            "calibrated_damage_likelihood": result.calibrated_damage_likelihood,
-            "empirical_damage_likelihood_proxy": result.empirical_damage_likelihood_proxy,
-            "empirical_loss_likelihood_proxy": result.empirical_loss_likelihood_proxy,
-            "calibration_applied": result.calibration_applied,
-            "calibration_status": result.calibration_status,
             "insurance_readiness_score": result.insurance_readiness_score,
             "insurance_readiness_band": _home_hardening_band(result.insurance_readiness_score),
             "insurance_readiness_score_available": result.insurance_readiness_score_available,
             "legacy_insurance_readiness_note": "Insurance-facing readiness is retained for compatibility and future-facing workflows.",
-            "public_outcome_calibration_note": (
-                "Optional/additive metadata only; deterministic risk drivers and actions are primary."
-                if optional_calibration is not None
-                else "No optional public-outcome calibration metadata is currently applied."
-            ),
             "confidence_score": result.confidence_score,
             "confidence_tier": result.confidence_tier,
             "use_restriction": result.use_restriction,
+            "public_outcome_calibration_note": (
+                "Optional/additive metadata only (secondary/internal); deterministic risk drivers, actions, specificity, "
+                "and limitations are the primary homeowner guidance."
+                if optional_calibration is not None
+                else "No optional public-outcome calibration metadata is currently applied."
+            ),
+            # Compatibility fields retained as secondary metadata; not used in homeowner first-screen guidance.
+            "calibration_applied": result.calibration_applied,
+            "calibration_status": result.calibration_status,
+            "calibrated_damage_likelihood": result.calibrated_damage_likelihood,
+            "empirical_damage_likelihood_proxy": result.empirical_damage_likelihood_proxy,
+            "empirical_loss_likelihood_proxy": result.empirical_loss_likelihood_proxy,
         },
         key_risk_drivers=key_risk_drivers,
         top_risk_drivers_detailed=(

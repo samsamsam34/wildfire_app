@@ -790,9 +790,25 @@ def test_homeowner_report_demotes_optional_calibration_metadata_in_consumer_view
     assert "calibrat" not in homeowner_text
 
     score_summary = report.get("score_summary") or {}
+    score_keys = list(score_summary.keys())
+    assert score_keys[:10] == [
+        "overall_wildfire_risk",
+        "wildfire_risk_score",
+        "wildfire_risk_band",
+        "wildfire_risk_score_available",
+        "home_hardening_readiness",
+        "home_hardening_readiness_band",
+        "home_hardening_readiness_score_available",
+        "insurance_readiness_score",
+        "insurance_readiness_band",
+        "insurance_readiness_score_available",
+    ]
+    assert score_keys.index("calibrated_damage_likelihood") > score_keys.index("use_restriction")
     assert score_summary.get("calibration_status") == "applied"
     assert score_summary.get("calibrated_damage_likelihood") == 0.41
-    assert "optional/additive" in str(score_summary.get("public_outcome_calibration_note") or "").lower()
+    score_note = str(score_summary.get("public_outcome_calibration_note") or "").lower()
+    assert "optional/additive" in score_note
+    assert "secondary/internal" in score_note
 
     metadata = report.get("metadata") or {}
     optional_calibration = metadata.get("optional_public_outcome_calibration") or {}
@@ -831,6 +847,20 @@ def test_export_homeowner_report_includes_optional_calibration_block_without_for
     assert "headline_risk_summary" in exported
     assert "top_risk_drivers" in exported
     assert "prioritized_actions" in exported
+    first_screen = exported.get("first_screen") or {}
+    first_screen_text = " ".join(
+        [
+            str((first_screen.get("overall_wildfire_risk") or {}).get("headline") or ""),
+            " ".join(str(x) for x in (first_screen.get("top_risk_drivers") or [])),
+            " ".join(str((x or {}).get("action") or "") for x in (first_screen.get("top_actions") or [])),
+            str(first_screen.get("limitations_note") or ""),
+        ]
+    ).lower()
+    assert "calibrat" not in first_screen_text
+
+    export_keys = list(exported.keys())
+    assert export_keys.index("optional_public_outcome_calibration") > export_keys.index("what_to_do_first")
+    assert export_keys.index("optional_public_outcome_calibration") > export_keys.index("limitations_notice")
     optional_calibration = exported.get("optional_public_outcome_calibration") or {}
     assert optional_calibration.get("available") is True
     assert optional_calibration.get("calibrated_public_outcome_probability") == 0.36
