@@ -22,6 +22,26 @@ _IMPROVEMENT_INPUT_SPECS: tuple[dict[str, Any], ...] = (
         "base_lift": 100,
     },
     {
+        "input_key": "select_building_polygon",
+        "assessment_field": "selected_structure_geometry",
+        "label": "Select your building",
+        "prompt": "Select your building polygon on the map to anchor defensible-space rings to the actual structure.",
+        "input_type": "map_polygon",
+        "options": [],
+        "suggestion": "Selecting your building polygon can materially improve property-specific differentiation.",
+        "base_lift": 98,
+    },
+    {
+        "input_key": "draw_structure_manually",
+        "assessment_field": "selected_structure_geometry",
+        "label": "Draw your building outline",
+        "prompt": "If map footprints are missing or wrong, draw your building outline manually.",
+        "input_type": "map_polygon",
+        "options": [],
+        "suggestion": "Drawing your structure manually can improve specificity when footprint data is unavailable.",
+        "base_lift": 92,
+    },
+    {
         "input_key": "roof_type",
         "assessment_field": "roof_type",
         "label": "Roof type",
@@ -347,10 +367,11 @@ def build_homeowner_improvement_options(result: AssessmentResult) -> HomeownerIm
         geometry_issue_flags.append("point_fallback_rings")
 
     candidate_rows: list[dict[str, Any]] = []
+    geometry_input_keys = {"map_point_correction", "select_building_polygon", "draw_structure_manually"}
     for spec in _IMPROVEMENT_INPUT_SPECS:
         field = str(spec["assessment_field"])
         input_key = str(spec["input_key"])
-        if input_key == "map_point_correction":
+        if input_key in geometry_input_keys:
             is_missing = geometry_limited
         else:
             is_missing = field in strict_missing_fields or _is_missing_value(facts.get(field))
@@ -361,13 +382,15 @@ def build_homeowner_improvement_options(result: AssessmentResult) -> HomeownerIm
             score += 10.0
         if field in {"roof_type", "vent_type", "window_type", "defensible_space_ft"} and field in missing_fields:
             score += 5.0
-        if input_key == "map_point_correction":
+        if input_key in geometry_input_keys:
             if ring_mode == "point_annulus_fallback":
                 score += 15.0
             if anchor_quality < 0.50:
                 score += 8.0
             if footprint_status in {"none", "ambiguous"}:
                 score += 8.0
+            if input_key == "draw_structure_manually" and footprint_status not in {"none", "provider_unavailable", "error"}:
+                score -= 10.0
         candidate_rows.append(
             {
                 "input_key": input_key,
@@ -399,6 +422,7 @@ def build_homeowner_improvement_options(result: AssessmentResult) -> HomeownerIm
     if geometry_limited:
         suggestions.append("Move pin to your home.")
         suggestions.append("Confirm building location.")
+        suggestions.append("Select your building polygon or draw your home outline when map footprints are wrong.")
     for row in prioritized_rows:
         suggestion = str(row.get("suggestion") or "").strip()
         if suggestion and suggestion not in suggestions:
@@ -442,7 +466,7 @@ def build_improvement_change_set(
     after: AssessmentResult,
     *,
     changed_fields_hint: Iterable[str] | None = None,
-) -> tuple[dict[str, dict[str, Any]], list[str], dict[str, Any]]:
+) -> tuple[dict[str, Any], list[str], dict[str, Any]]:
     tracked_facts = set(changed_fields_hint or [])
     if not tracked_facts:
         tracked_facts = {
@@ -457,7 +481,7 @@ def build_improvement_change_set(
     before_facts = before.property_facts if isinstance(before.property_facts, dict) else {}
     after_facts = after.property_facts if isinstance(after.property_facts, dict) else {}
 
-    changed: dict[str, dict[str, Any]] = {}
+    changed: dict[str, Any] = {}
     notes: list[str] = []
     for field in sorted(tracked_facts):
         if before_facts.get(field) == after_facts.get(field):

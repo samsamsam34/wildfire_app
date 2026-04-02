@@ -140,8 +140,12 @@ class HomeownerImprovementRunRequest(BaseModel):
     defensible_space_condition: Optional[
         Literal["poor", "limited", "moderate", "good", "excellent"]
     ] = None
+    structure_geometry_source: Optional[StructureGeometrySource] = None
+    selection_mode: Optional[SelectionMode] = None
     property_anchor_point: Optional[Coordinates] = None
     user_selected_point: Optional[Coordinates] = None
+    selected_structure_id: Optional[str] = None
+    selected_structure_geometry: Optional[Dict[str, Any]] = None
     confirmed_fields: List[str] = Field(default_factory=list)
     audience: Audience = "homeowner"
     ruleset_id: Optional[str] = None
@@ -737,7 +741,7 @@ class HomeownerFollowUpInput(BaseModel):
     assessment_field: str
     label: str
     prompt: str
-    input_type: Literal["select", "number", "map_point"] = "select"
+    input_type: Literal["select", "number", "map_point", "map_polygon"] = "select"
     options: List[str] = Field(default_factory=list)
     unit: Optional[str] = None
 
@@ -758,7 +762,7 @@ class HomeownerImprovementRunResponse(BaseModel):
     updated_assessment_id: str
     before_summary: Dict[str, Any] = Field(default_factory=dict)
     after_summary: Dict[str, Any] = Field(default_factory=dict)
-    what_changed: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
+    what_changed: Dict[str, Any] = Field(default_factory=dict)
     what_changed_summary: Dict[str, Any] = Field(default_factory=dict)
     confidence_improved: bool = False
     recommendations_adjusted: bool = False

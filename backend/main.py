@@ -12173,12 +12173,15 @@ def rerun_assessment_with_homeowner_inputs(
         and mapped_defensible_space_ft is None
         and payload.property_anchor_point is None
         and payload.user_selected_point is None
+        and payload.selected_structure_geometry is None
+        and payload.selected_structure_id is None
     ):
         raise HTTPException(
             status_code=400,
             detail=(
                 "No property-detail updates were provided. Submit roof_type, vent_type, "
-                "window_type, defensible_space_ft, defensible_space_condition, or a map-point correction."
+                "window_type, defensible_space_ft, defensible_space_condition, map-point correction, "
+                "or a selected/drawn building polygon."
             ),
         )
 
@@ -12196,16 +12199,31 @@ def rerun_assessment_with_homeowner_inputs(
         address=base_req.address,
         attributes=merged_attrs,
         confirmed_fields=merged_confirmed,
-        structure_geometry_source=base_req.structure_geometry_source,
+        structure_geometry_source=(
+            payload.structure_geometry_source
+            or (
+                "user_modified"
+                if isinstance(payload.selected_structure_geometry, dict)
+                else base_req.structure_geometry_source
+            )
+        ),
         selection_mode=(
+            payload.selection_mode
+            if payload.selection_mode in {"polygon", "point"}
+            else (
             "point"
             if (payload.property_anchor_point is not None or payload.user_selected_point is not None)
             else base_req.selection_mode
+            )
         ),
         property_anchor_point=payload.property_anchor_point or base_req.property_anchor_point,
         user_selected_point=payload.user_selected_point or payload.property_anchor_point or base_req.user_selected_point,
-        selected_structure_id=base_req.selected_structure_id,
-        selected_structure_geometry=base_req.selected_structure_geometry,
+        selected_structure_id=payload.selected_structure_id or base_req.selected_structure_id,
+        selected_structure_geometry=(
+            payload.selected_structure_geometry
+            if isinstance(payload.selected_structure_geometry, dict)
+            else base_req.selected_structure_geometry
+        ),
         audience=payload.audience or base_req.audience,
         tags=base_req.tags,
         organization_id=existing.organization_id,
@@ -12275,6 +12293,90 @@ def rerun_assessment_with_homeowner_inputs(
         change_notes.append(
             "Home location pin was updated and the assessment anchor was re-run."
         )
+    if payload.selected_structure_geometry is not None or payload.selected_structure_id is not None:
+        what_changed["structure_geometry_update"] = {
+            "before_structure_id": (
+                base_req.selected_structure_id
+                if base_req.selected_structure_id
+                else None
+            ),
+            "after_structure_id": (
+                payload.selected_structure_id
+                if payload.selected_structure_id
+                else (updated.matched_structure_id if updated.matched_structure_id else None)
+            ),
+            "geometry_provided": bool(isinstance(payload.selected_structure_geometry, dict)),
+        }
+        change_notes.append(
+            "Building geometry selection was updated and structure-relative rings were recomputed."
+        )
+
+    before_specificity = str((existing.specificity_summary or {}).specificity_tier) if hasattr(existing.specificity_summary, "specificity_tier") else str((existing.specificity_summary or {}).get("specificity_tier") if isinstance(existing.specificity_summary, dict) else "regional_estimate")
+    after_specificity = str((updated.specificity_summary or {}).specificity_tier) if hasattr(updated.specificity_summary, "specificity_tier") else str((updated.specificity_summary or {}).get("specificity_tier") if isinstance(updated.specificity_summary, dict) else "regional_estimate")
+    before_conf = float(existing.confidence_score or 0.0)
+    after_conf = float(updated.confidence_score or 0.0)
+    before_risk = float(existing.wildfire_risk_score or 0.0) if existing.wildfire_risk_score is not None else None
+    after_risk = float(updated.wildfire_risk_score or 0.0) if updated.wildfire_risk_score is not None else None
+
+    geometry_updated = bool(
+        payload.property_anchor_point is not None
+        or payload.user_selected_point is not None
+        or payload.selected_structure_geometry is not None
+        or payload.selected_structure_id is not None
+    )
+    score_change = {
+        "before": before_risk,
+        "after": after_risk,
+        "delta": (
+            round(float(after_risk) - float(before_risk), 2)
+            if before_risk is not None and after_risk is not None
+            else None
+        ),
+    }
+    specificity_change = {
+        "before": before_specificity,
+        "after": after_specificity,
+        "changed": before_specificity != after_specificity,
+    }
+    confidence_change = {
+        "before": round(before_conf, 2),
+        "after": round(after_conf, 2),
+        "delta": round(after_conf - before_conf, 2),
+    }
+    what_changed["geometry_updated"] = geometry_updated
+    what_changed["score_change"] = score_change
+    existing_specificity_change = (
+        what_changed.get("specificity_change")
+        if isinstance(what_changed.get("specificity_change"), dict)
+        else {}
+    )
+    what_changed["specificity_change"] = {**existing_specificity_change, **specificity_change}
+    existing_confidence_change = (
+        what_changed.get("confidence_change")
+        if isinstance(what_changed.get("confidence_change"), dict)
+        else {}
+    )
+    what_changed["confidence_change"] = {**existing_confidence_change, **confidence_change}
+    what_changed_summary["geometry_updated"] = geometry_updated
+    what_changed_summary["score_change"] = score_change
+    existing_summary_specificity_change = (
+        what_changed_summary.get("specificity_change")
+        if isinstance(what_changed_summary.get("specificity_change"), dict)
+        else {}
+    )
+    what_changed_summary["specificity_change"] = {
+        **existing_summary_specificity_change,
+        **specificity_change,
+    }
+    existing_summary_confidence_change = (
+        what_changed_summary.get("confidence_change")
+        if isinstance(what_changed_summary.get("confidence_change"), dict)
+        else {}
+    )
+    what_changed_summary["confidence_change"] = {
+        **existing_summary_confidence_change,
+        **confidence_change,
+    }
 
     confidence_improved = float(updated.confidence_score or 0.0) > float(existing.confidence_score or 0.0)
     recommendations_adjusted = (

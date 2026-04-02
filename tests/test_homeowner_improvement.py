@@ -100,7 +100,12 @@ def test_homeowner_improvement_options_detect_missing_key_inputs(monkeypatch, tm
     assert str(next_q.get("input_key") or "") in set(prioritized)
     prompts = [row.get("prompt") for row in (body.get("optional_follow_up_inputs") or [])]
     assert any("roof" in str(prompt).lower() for prompt in prompts)
-    assert any("vent" in str(prompt).lower() for prompt in prompts)
+    assert any(
+        ("vent" in str(prompt).lower())
+        or ("building polygon" in str(prompt).lower())
+        or ("draw your building outline" in str(prompt).lower())
+        for prompt in prompts
+    )
     assert any(
         ("non-combustible" in str(prompt).lower()) or ("map pin" in str(prompt).lower())
         for prompt in prompts
@@ -215,6 +220,8 @@ def test_homeowner_map_point_correction_can_improve_specificity_and_trust(monkey
     options = options_response.json()
     option_flags = set(options.get("geometry_issue_flags") or [])
     assert {"missing_footprint", "low_anchor_confidence", "parcel_mismatch"} <= option_flags
+    option_keys = set(options.get("missing_key_inputs") or [])
+    assert {"map_point_correction", "select_building_polygon", "draw_structure_manually"} <= option_keys
     option_text = " ".join(str(row).lower() for row in (options.get("improve_your_result_suggestions") or []))
     assert "move pin to your home" in option_text
     assert "confirm building location" in option_text
@@ -254,3 +261,114 @@ def test_homeowner_map_point_correction_can_improve_specificity_and_trust(monkey
     assert updated_trust.get("geometry_specificity_limited") is False
     assert updated_confidence_score > baseline_confidence_score
     assert updated_diff_score > baseline_diff_score
+
+
+def test_homeowner_polygon_geometry_correction_updates_what_changed_and_improves_confidence(monkeypatch, tmp_path: Path) -> None:
+    auth.API_KEYS = set()
+    monkeypatch.setattr(app_main.geocoder, "geocode", lambda _address: (46.8721, -113.9940, "test-geocoder"))
+
+    def _collect(_lat, _lon, **kwargs):
+        context = _ctx()
+        has_polygon = isinstance(kwargs.get("selected_structure_geometry"), dict)
+        if has_polygon:
+            context.property_level_context.update(
+                {
+                    "footprint_used": True,
+                    "footprint_status": "used",
+                    "fallback_mode": "footprint",
+                    "geometry_basis": "footprint",
+                    "structure_match_status": "matched",
+                    "ring_generation_mode": "footprint_aware_rings",
+                    "property_anchor_source": "user_selected_polygon",
+                    "property_anchor_quality_score": 0.94,
+                    "anchor_quality_score": 0.94,
+                    "parcel_id": "parcel-33",
+                    "parcel_lookup_method": "contains_point",
+                    "naip_feature_source": "prepared_region_naip",
+                    "near_structure_vegetation_0_5_pct": 40.0,
+                    "near_structure_vegetation_5_30_pct": 47.0,
+                    "canopy_adjacency_proxy_pct": 42.0,
+                    "vegetation_continuity_proxy_pct": 46.0,
+                    "final_structure_geometry_source": "user_selected_polygon",
+                    "selected_structure_geometry": kwargs.get("selected_structure_geometry"),
+                    "selected_structure_id": kwargs.get("selected_structure_id") or "manual-1",
+                    "structure_match_confidence": 0.95,
+                }
+            )
+        else:
+            context.property_level_context.update(
+                {
+                    "footprint_used": False,
+                    "footprint_status": "not_found",
+                    "fallback_mode": "point_based",
+                    "geometry_basis": "point",
+                    "structure_match_status": "none",
+                    "ring_generation_mode": "point_annulus_fallback",
+                    "property_anchor_source": "approximate_geocode",
+                    "property_anchor_quality_score": 0.33,
+                    "anchor_quality_score": 0.33,
+                    "naip_feature_source": None,
+                    "near_structure_vegetation_0_5_pct": None,
+                    "near_structure_vegetation_5_30_pct": None,
+                    "canopy_adjacency_proxy_pct": None,
+                    "vegetation_continuity_proxy_pct": None,
+                }
+            )
+        return context
+
+    monkeypatch.setattr(app_main.wildfire_data, "collect_context", _collect)
+    monkeypatch.setattr(app_main, "store", AssessmentStore(str(tmp_path / "homeowner_improvement_polygon.db")))
+
+    baseline = _assess("33 Polygon Update Way, Missoula, MT 59802")
+    baseline_conf = float(baseline.get("confidence_score") or 0.0)
+    baseline_diff = float(
+        (((baseline.get("homeowner_summary") or {}).get("trust_summary") or {}).get("local_differentiation_score"))
+        or (((baseline.get("homeowner_summary") or {}).get("trust_summary") or {}).get("neighborhood_differentiation_confidence"))
+        or 0.0
+    )
+
+    selected_structure_geometry = {
+        "type": "Feature",
+        "geometry": {
+            "type": "Polygon",
+            "coordinates": [
+                [
+                    [-113.99410, 46.87210],
+                    [-113.99400, 46.87210],
+                    [-113.99400, 46.87218],
+                    [-113.99410, 46.87218],
+                    [-113.99410, 46.87210],
+                ]
+            ],
+        },
+        "properties": {"structure_id": "manual-1"},
+    }
+    response = client.post(
+        f"/risk/improve/{baseline['assessment_id']}",
+        json={
+            "selected_structure_id": "manual-1",
+            "selected_structure_geometry": selected_structure_geometry,
+            "structure_geometry_source": "user_modified",
+            "selection_mode": "polygon",
+            "audience": "homeowner",
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body.get("confidence_improved") is True
+    assert body.get("what_changed", {}).get("geometry_updated") is True
+    assert isinstance(body.get("what_changed", {}).get("score_change"), dict)
+    assert isinstance(body.get("what_changed", {}).get("specificity_change"), dict)
+    assert isinstance(body.get("what_changed", {}).get("confidence_change"), dict)
+
+    updated_report = client.get(f"/report/{body['updated_assessment_id']}")
+    assert updated_report.status_code == 200
+    updated = updated_report.json()
+    updated_conf = float(updated.get("confidence_score") or 0.0)
+    updated_diff = float(
+        (((updated.get("homeowner_summary") or {}).get("trust_summary") or {}).get("local_differentiation_score"))
+        or (((updated.get("homeowner_summary") or {}).get("trust_summary") or {}).get("neighborhood_differentiation_confidence"))
+        or 0.0
+    )
+    assert updated_conf > baseline_conf
+    assert updated_diff > baseline_diff
