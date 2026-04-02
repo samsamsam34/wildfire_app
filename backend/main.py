@@ -798,6 +798,21 @@ def _build_confidence(
         if preflight.get("fallback_weight_fraction") is not None
         else fallback_dominance_ratio
     )
+    effective_observed_weight_fraction = float(observed_weight_fraction)
+    if effective_observed_weight_fraction <= 0.0 and not has_preflight:
+        observed_signals = float(confirmed_core_count + observed_core_count + max(0, 6 - missing_layer_count))
+        inferred_or_missing_signals = float(
+            inferred_count + max(0, len(assumptions.missing_inputs) - confirmed_core_count)
+        )
+        total_signals = max(1.0, observed_signals + inferred_or_missing_signals)
+        effective_observed_weight_fraction = max(0.0, min(1.0, observed_signals / total_signals))
+    if (
+        has_ring_metrics
+        and confirmed_core_count >= 3
+        and environmental_data_completeness >= 90.0
+    ):
+        # Confidence should follow evidence quality, not only contribution-weight internals.
+        effective_observed_weight_fraction = max(effective_observed_weight_fraction, 0.70)
     region_readiness = _coerce_region_readiness(preflight.get("region_property_specific_readiness"))
     region_required_missing_count = int(preflight.get("region_required_missing_count") or 0)
     region_optional_missing_count = int(preflight.get("region_optional_missing_count") or 0)
@@ -881,7 +896,7 @@ def _build_confidence(
         ),
     )
     property_context_score = 92.0 if has_ring_metrics else (64.0 if property_context_present else 24.0)
-    observed_weight_pct = max(0.0, min(100.0, float(observed_weight_fraction) * 100.0))
+    observed_weight_pct = max(0.0, min(100.0, float(effective_observed_weight_fraction) * 100.0))
     confidence = (
         0.32 * observed_weight_pct
         + 0.20 * max(0.0, min(100.0, environmental_data_completeness))
@@ -966,8 +981,10 @@ def _build_confidence(
             confidence = min(confidence, 42.0)
         elif fallback_weight_fraction >= 0.45:
             confidence = min(confidence, 56.0)
-        if float(observed_weight_fraction) < 0.45:
+        if float(effective_observed_weight_fraction) < 0.30:
             confidence = min(confidence, 48.0)
+        elif float(effective_observed_weight_fraction) < 0.40:
+            confidence = min(confidence, 60.0)
         if region_readiness == "address_level_only":
             confidence = min(confidence, 56.0)
         elif region_readiness == "limited_regional_ready":
@@ -990,14 +1007,26 @@ def _build_confidence(
     elif len(missing_critical_fields) >= 1:
         confidence = min(confidence, 62.0)
 
+    strong_observed_evidence = bool(
+        has_ring_metrics
+        and confirmed_core_count >= 3
+        and environmental_data_completeness >= 90.0
+        and provider_missing_count == 0
+        and provider_error_count == 0
+        and len(missing_critical_fields) == 0
+        and fallback_weight_fraction < 0.25
+    )
+    if strong_observed_evidence:
+        confidence = max(confidence, 86.0)
+
     critical_missing_pair = {
         "burn_probability_layer",
         "defensible_space_ft",
     }
     if critical_missing_pair.issubset(missing_inputs_set):
-        confidence = min(confidence - 6.0, 32.0)
+        confidence = min(confidence - 14.0, 18.0)
     elif "burn_probability_layer" in missing_inputs_set or "defensible_space_ft" in missing_inputs_set:
-        confidence -= 3.0
+        confidence -= 8.0
 
     # Final directional guardrail: higher fallback share always reduces confidence.
     confidence -= float(fallback_weight_fraction) * 6.0
@@ -1110,7 +1139,7 @@ def _build_confidence(
     multiple_critical_missing = important_missing >= 4
 
     if (
-        confidence < 50
+        confidence < 35
         or not geocode_verified
         or severe_layer_failure
         or multiple_critical_missing
@@ -1118,10 +1147,10 @@ def _build_confidence(
         or (not has_meaningful_environment and not has_meaningful_property)
     ):
         confidence_tier = "preliminary"
-    elif confidence < 70 or stale_share >= 25.0 or critical_unknown_or_stale >= 3:
+    elif confidence < 62 or stale_share >= 25.0 or critical_unknown_or_stale >= 3:
         confidence_tier = "low"
     elif (
-        confidence < 85
+        confidence < 82
         or stale_share > 10.0
         or critical_unknown_or_stale > 0
         or heuristic_count > 1
@@ -1150,8 +1179,10 @@ def _build_confidence(
             confidence_tier = "low"
     elif fallback_weight_fraction >= 0.45 and confidence_tier == "high":
         confidence_tier = "moderate"
-    if len(missing_critical_fields) >= 3:
+    if len(missing_critical_fields) >= 4:
         confidence_tier = "preliminary"
+    elif len(missing_critical_fields) >= 3 and confidence_tier == "high":
+        confidence_tier = "low"
     elif len(missing_critical_fields) >= 1 and confidence_tier == "high":
         confidence_tier = "moderate"
 
@@ -2554,14 +2585,36 @@ def _build_feature_coverage_preflight(
     bundle_metrics_present = bool(bundle_metrics)
     observed_weight_fraction = float(bundle_metrics.get("observed_weight_fraction") or 0.0)
     fallback_dominance_ratio = float(bundle_metrics.get("fallback_dominance_ratio") or 0.0)
-    geometry_quality_score = float(bundle_metrics.get("structure_geometry_quality_score") or 0.0)
-    environmental_layer_coverage_score = float(bundle_metrics.get("environmental_layer_coverage_score") or 0.0)
+    geometry_quality_score = float(
+        bundle_metrics.get("structure_geometry_quality_score")
+        if bundle_metrics.get("structure_geometry_quality_score") is not None
+        else (0.92 if footprint_available else (0.72 if parcel_polygon_available else 0.46))
+    )
+    environmental_layer_coverage_score = float(
+        bundle_metrics.get("environmental_layer_coverage_score")
+        if bundle_metrics.get("environmental_layer_coverage_score") is not None
+        else (
+            (
+                sum(1 for available in [hazard_available, burn_prob_available, dryness_available] if available)
+                / 3.0
+            )
+            * 100.0
+        )
+    )
     regional_enrichment_consumption_score = float(
         bundle_metrics.get("regional_enrichment_consumption_score")
         if bundle_metrics.get("regional_enrichment_consumption_score") is not None
         else environmental_layer_coverage_score
     )
-    property_specificity_score = float(bundle_metrics.get("property_specificity_score") or 0.0)
+    property_specificity_score = float(
+        bundle_metrics.get("property_specificity_score")
+        if bundle_metrics.get("property_specificity_score") is not None
+        else (
+            88.0
+            if (footprint_available and near_structure_available)
+            else (72.0 if footprint_available else (62.0 if parcel_polygon_available else 42.0))
+        )
+    )
     geometry_basis = (
         "footprint"
         if footprint_available
@@ -2574,7 +2627,7 @@ def _build_feature_coverage_preflight(
     )
 
     if (
-        feature_coverage_percent >= 72.0
+        feature_coverage_percent >= 70.0
         and footprint_available
         and near_structure_available
         and major_environmental_missing_count == 0
@@ -3066,12 +3119,14 @@ def _build_data_provenance(
 
     direct_count = sum(1 for meta in inputs if meta.source_type in DIRECT_SOURCE_TYPES)
     inferred_count = sum(1 for meta in inputs if meta.source_type in INFERRED_SOURCE_TYPES)
+    heuristic_count = sum(1 for meta in inputs if meta.source_type == "heuristic")
+    inferred_equivalent_count = max(inferred_count + heuristic_count, total - direct_count)
     missing_count = sum(1 for meta in inputs if meta.source_type in LOW_QUALITY_SOURCE_TYPES)
     stale_count = sum(1 for meta in inputs if meta.freshness_status == "stale")
     current_count = sum(1 for meta in inputs if meta.freshness_status == "current")
 
     direct_score = round((direct_count / total) * 100.0, 1)
-    inferred_score = round((inferred_count / total) * 100.0, 1)
+    inferred_score = round((inferred_equivalent_count / total) * 100.0, 1)
     missing_share = round((missing_count / total) * 100.0, 1)
     stale_share = round((stale_count / total) * 100.0, 1)
 
@@ -3080,7 +3135,7 @@ def _build_data_provenance(
         inferred_data_coverage_score=inferred_score,
         missing_data_share=missing_share,
         stale_data_share=stale_share,
-        heuristic_input_count=sum(1 for meta in inputs if meta.source_type == "heuristic"),
+        heuristic_input_count=heuristic_count,
         current_input_count=current_count,
     )
     provenance = DataProvenanceBlock(
@@ -3750,8 +3805,8 @@ def _derive_assessment_output_state(
 
     extreme_low_coverage = feature_coverage_percent <= 15.0
     low_coverage = feature_coverage_percent <= 30.0
-    high_fallback = float(fallback_dominance_ratio) >= 0.70
-    severe_fallback = float(fallback_dominance_ratio) >= 0.85
+    high_fallback = float(fallback_dominance_ratio) >= 0.70 and float(observed_weight_fraction) < 0.35
+    severe_fallback = float(fallback_dominance_ratio) >= 0.85 and float(observed_weight_fraction) < 0.25
     low_observed_weight = float(observed_weight_fraction) < 0.45
     severe_observed_weight_loss = float(observed_weight_fraction) < 0.30
 
@@ -3774,7 +3829,6 @@ def _derive_assessment_output_state(
         or high_fallback
         or major_environmental_missing_count >= 2
         or (no_property_geometry and high_fallback and major_environmental_missing_count >= 1)
-        or (region_optional_missing_count + region_enrichment_missing_count) >= 7
     ):
         return "limited_regional_estimate"
 
@@ -6011,7 +6065,7 @@ def _run_assessment(
         confidence_summary=homeowner_confidence_summary,
         trust_summary=trust_summary,
     )
-    if nearby_home_comparison_safeguard_triggered:
+    if nearby_home_comparison_safeguard_triggered and assessment_status != "insufficient_data":
         # Suppress parcel-level differentiation claims when the evidence is
         # mostly regional and neighborhood differentiation confidence is low.
         top_near_structure_risk_drivers = []

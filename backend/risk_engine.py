@@ -1075,13 +1075,28 @@ class RiskEngine:
             else (
                 property_level_context.get("anchor_quality_score")
                 if property_level_context.get("anchor_quality_score") is not None
-                else property_level_context.get("property_anchor_quality_score") or 0.0
+                else (
+                    property_level_context.get("property_anchor_quality_score")
+                    or (0.90 if geometry_basis == "footprint" else (0.72 if geometry_basis == "parcel" else 0.52))
+                )
             )
         )
+        env_status = (
+            context.environmental_layer_status
+            if isinstance(getattr(context, "environmental_layer_status", None), dict)
+            else {}
+        )
+        ok_env_layers = sum(
+            1
+            for status in env_status.values()
+            if str(status).strip().lower() in {"ok", "ok_nearby"}
+        )
+        env_layer_total = max(1, len(env_status))
+        env_coverage_default = (ok_env_layers / float(env_layer_total)) * 100.0
         regional_context_coverage_score = float(
             bundle_metrics.get("environmental_layer_coverage_score")
             if bundle_metrics.get("environmental_layer_coverage_score") is not None
-            else 50.0
+            else env_coverage_default
         )
         regional_enrichment_consumption_score = float(
             bundle_metrics.get("regional_enrichment_consumption_score")
@@ -1093,7 +1108,11 @@ class RiskEngine:
             if bundle_metrics.get("property_specificity_score") is not None
             else (85.0 if geometry_basis == "footprint" else (62.0 if geometry_basis == "parcel" else 42.0))
         )
-        feature_fallback_ratio = float(bundle_metrics.get("fallback_dominance_ratio") or 0.0)
+        if bundle_metrics.get("fallback_dominance_ratio") is not None:
+            feature_fallback_ratio = float(bundle_metrics.get("fallback_dominance_ratio") or 0.0)
+        else:
+            total_feature_count = max(1, observed_feature_count + inferred_feature_count + fallback_feature_count)
+            feature_fallback_ratio = float(fallback_feature_count) / float(total_feature_count)
         structure_model_inputs = (
             submodels.get("structure_vulnerability_risk").key_inputs
             if isinstance(submodels.get("structure_vulnerability_risk"), SubmodelResult)
@@ -1116,6 +1135,12 @@ class RiskEngine:
         ring_has_direct_geometry = bool(footprint_used and ring_metrics)
         ring_metric_rows = [row for row in ring_metrics.values() if isinstance(row, dict)]
         near_structure_observed = bool(
+            ring_has_direct_geometry
+            or any(
+                (row.get("vegetation_density") is not None)
+                for row in ring_metric_rows
+            )
+            or
             any(
                 property_level_context.get(key) is not None
                 for key in (
@@ -1155,12 +1180,13 @@ class RiskEngine:
             has_fallback_tokens: bool,
         ) -> float:
             multiplier = 1.0
-            assumption_hits = sum(
-                assumptions_text.count(token)
+            has_low_quality_assumption = any(
+                token in assumptions_text
                 for token in ("fallback", "proxy", "missing", "unavailable", "point-based")
             )
-            if assumption_hits > 0:
-                multiplier *= max(0.40, 1.0 - (0.11 * float(assumption_hits)))
+            if has_low_quality_assumption:
+                # Keep evidence penalties monotonic without collapsing viable runs.
+                multiplier *= 0.88
             if geometry_basis == "point":
                 if submodel == "defensible_space_risk":
                     multiplier *= 0.05
@@ -1223,7 +1249,12 @@ class RiskEngine:
             if observed_fraction < 0.45:
                 multiplier *= 0.75
             if has_fallback_tokens:
-                multiplier *= 0.82
+                multiplier *= 0.94
+            if footprint_used and ring_has_direct_geometry and submodel in GEOMETRY_SENSITIVE_SUBMODELS:
+                # When trustworthy footprint/ring evidence exists, avoid collapsing
+                # geometry-sensitive factors to near-zero availability.
+                minimum = 0.45 if submodel in {"defensible_space_risk", "flame_contact_risk"} else 0.50
+                multiplier = max(multiplier, minimum)
             return max(0.0, min(1.0, multiplier))
 
         for name, result in submodels.items():
@@ -1236,6 +1267,8 @@ class RiskEngine:
                 0.0,
                 min(1.0, float(observed_input_count) / float(expected_input_count)),
             )
+            if footprint_used and ring_has_direct_geometry and name in GEOMETRY_SENSITIVE_SUBMODELS:
+                observed_fraction = max(observed_fraction, 0.65)
             assumptions_text = " ".join(result.assumptions).lower()
             has_fallback_tokens = any(
                 tok in assumptions_text for tok in ("fallback", "proxy", "missing", "unavailable", "point-based")
@@ -1303,7 +1336,7 @@ class RiskEngine:
                 if observed_fraction >= 0.80 and availability_multiplier >= 0.85 and not has_fallback_tokens:
                     basis = "observed"
                     support_level = "high"
-                elif observed_fraction >= 0.45 and availability_multiplier >= 0.55:
+                elif observed_fraction >= 0.45 and availability_multiplier >= 0.25:
                     basis = "inferred"
                     support_level = "medium"
                 else:
@@ -1382,6 +1415,11 @@ class RiskEngine:
             if total_effective_weight > 0.0
             else (1.0 if fallback_factor_count > 0 else 0.0)
         )
+        if fallback_feature_count > 0:
+            fallback_feature_fraction = float(fallback_feature_count) / float(
+                max(1, observed_feature_count + inferred_feature_count + fallback_feature_count)
+            )
+            fallback_weight_fraction = max(fallback_weight_fraction, fallback_feature_fraction)
         uncertainty_penalty = min(
             25.0,
             max(0.0, (1.0 - observed_weight_fraction) * 20.0)

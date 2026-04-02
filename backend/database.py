@@ -2005,8 +2005,18 @@ class AssessmentStore:
         declined = sum(1 for r in records if r.workflow_state == "declined")
         escalated = sum(1 for r in records if r.workflow_state == "escalated")
 
-        avg_risk = round(sum(r.wildfire_risk_score for r in records) / len(records), 1) if records else 0.0
-        avg_readiness = round(sum(r.insurance_readiness_score for r in records) / len(records), 1) if records else 0.0
+        risk_values = [
+            float(r.wildfire_risk_score)
+            for r in records
+            if r.wildfire_risk_score is not None
+        ]
+        readiness_values = [
+            float(r.insurance_readiness_score)
+            for r in records
+            if r.insurance_readiness_score is not None
+        ]
+        avg_risk = round(sum(risk_values) / len(risk_values), 1) if risk_values else 0.0
+        avg_readiness = round(sum(readiness_values) / len(readiness_values), 1) if readiness_values else 0.0
 
         jobs_summary = self.summarize_portfolio_jobs(organization_id=organization_id)
 
