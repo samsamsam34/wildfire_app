@@ -1116,6 +1116,38 @@ class WildfireDataClient:
             radial += radial_step_m
         return values
 
+    @staticmethod
+    def _annulus_area_sqft(inner_ft: float, outer_ft: float) -> float:
+        if outer_ft <= inner_ft or outer_ft <= 0.0:
+            return 0.0
+        return max(0.0, math.pi * ((outer_ft ** 2) - (inner_ft ** 2)))
+
+    @staticmethod
+    def _geometry_area_sqft(geom: Any | None) -> float | None:
+        if geom is None or getattr(geom, "is_empty", True):
+            return None
+        if not (Transformer and shapely_transform):
+            return None
+        try:
+            to_3857 = Transformer.from_crs("EPSG:4326", "EPSG:3857", always_xy=True).transform
+            geom_m = shapely_transform(to_3857, geom)
+            area_m2 = float(max(0.0, geom_m.area))
+        except Exception:
+            return None
+        sqft = area_m2 * 10.7639
+        return round(max(0.0, sqft), 1)
+
+    @staticmethod
+    def _estimated_overlap_area_sqft(
+        *,
+        ring_area_sqft: float | None,
+        coverage_pct: float | None,
+    ) -> float | None:
+        if ring_area_sqft is None or coverage_pct is None:
+            return None
+        overlap = ring_area_sqft * (max(0.0, min(100.0, float(coverage_pct))) / 100.0)
+        return round(max(0.0, overlap), 1)
+
     def _build_point_proxy_ring_metrics(
         self,
         *,
@@ -1189,16 +1221,41 @@ class WildfireDataClient:
                 vegetation_density = canopy_stats["vegetation_density"]
                 if fuel_presence is not None:
                     vegetation_density = round((vegetation_density + fuel_presence) / 2.0, 1)
+                ring_area_sqft = round(self._annulus_area_sqft(inner_ft, outer_ft), 1)
                 zone = {
                     "canopy_mean": canopy_stats["canopy_mean"],
                     "canopy_max": canopy_stats["canopy_max"],
                     "vegetation_density": vegetation_density,
                     "coverage_pct": canopy_stats["coverage_pct"],
                     "fuel_presence_proxy": fuel_presence,
+                    "ring_area_sqft": ring_area_sqft,
+                    "vegetated_overlap_area_sqft": self._estimated_overlap_area_sqft(
+                        ring_area_sqft=ring_area_sqft,
+                        coverage_pct=canopy_stats["coverage_pct"],
+                    ),
                     "basis": "point_proxy",
                 }
+            if "ring_area_sqft" not in zone:
+                ring_area_sqft = round(self._annulus_area_sqft(inner_ft, outer_ft), 1)
+                zone["ring_area_sqft"] = ring_area_sqft
+                zone["vegetated_overlap_area_sqft"] = self._estimated_overlap_area_sqft(
+                    ring_area_sqft=ring_area_sqft,
+                    coverage_pct=self._coerce_float(zone.get("coverage_pct")),
+                )
             metrics[ring_key] = zone
             metrics[zone_aliases[ring_key]] = dict(zone)
+        metrics["_meta"] = {
+            "geometry_type": "point",
+            "precision_flag": "fallback_point_proxy",
+            "ring_generation_mode": "point_annulus_fallback",
+            "ring_definition_ft": {
+                "ring_0_5_ft": [0.0, 5.0],
+                "ring_5_30_ft": [5.0, 30.0],
+                "ring_30_100_ft": [30.0, 100.0],
+            },
+        }
+        metrics["geometry_type"] = "point"
+        metrics["precision_flag"] = "fallback_point_proxy"
         return metrics
 
     @staticmethod
@@ -1783,13 +1840,26 @@ class WildfireDataClient:
                 vegetation_density = canopy_stats["vegetation_density"]
                 if fuel_presence is not None:
                     vegetation_density = round((vegetation_density + fuel_presence) / 2.0, 1)
+                ring_area_sqft = self._geometry_area_sqft(ring_geom)
                 metrics = {
                     "canopy_mean": canopy_stats["canopy_mean"],
                     "canopy_max": canopy_stats["canopy_max"],
                     "vegetation_density": vegetation_density,
                     "coverage_pct": canopy_stats["coverage_pct"],
                     "fuel_presence_proxy": fuel_presence,
+                    "ring_area_sqft": ring_area_sqft,
+                    "vegetated_overlap_area_sqft": self._estimated_overlap_area_sqft(
+                        ring_area_sqft=ring_area_sqft,
+                        coverage_pct=canopy_stats["coverage_pct"],
+                    ),
                 }
+            if "ring_area_sqft" not in metrics:
+                ring_area_sqft = self._geometry_area_sqft(ring_geom)
+                metrics["ring_area_sqft"] = ring_area_sqft
+                metrics["vegetated_overlap_area_sqft"] = self._estimated_overlap_area_sqft(
+                    ring_area_sqft=ring_area_sqft,
+                    coverage_pct=self._coerce_float(metrics.get("coverage_pct")),
+                )
             ring_metrics[ring_key] = metrics
             ring_metrics[zone_aliases[ring_key]] = dict(metrics)
 
@@ -1823,6 +1893,28 @@ class WildfireDataClient:
 
         if ring_metrics:
             sources.append("Structure ring vegetation summaries")
+        directional_sectors = structure_veg_features.get("vegetation_directional_sectors")
+        if isinstance(directional_sectors, dict) and directional_sectors:
+            normalized_directional = {
+                str(k): self._coerce_float(v)
+                for k, v in directional_sectors.items()
+                if str(k).strip()
+            }
+        else:
+            normalized_directional = {}
+        ring_metrics["_meta"] = {
+            "geometry_type": "footprint",
+            "precision_flag": "footprint_relative",
+            "ring_generation_mode": "footprint_aware_rings",
+            "ring_definition_ft": {
+                "ring_0_5_ft": [0.0, 5.0],
+                "ring_5_30_ft": [5.0, 30.0],
+                "ring_30_100_ft": [30.0, 100.0],
+            },
+            "directional_segments": normalized_directional,
+        }
+        ring_metrics["geometry_type"] = "footprint"
+        ring_metrics["precision_flag"] = "footprint_relative"
 
         display_confidence_floor_raw = str(os.getenv("WF_STRUCTURE_DISPLAY_MIN_CONFIDENCE", "0.8")).strip()
         try:

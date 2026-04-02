@@ -3929,7 +3929,7 @@ def test_structure_ring_summary_pipeline(monkeypatch):
 
     assert context_blob["footprint_used"] is True
     assert context_blob["footprint_status"] == "used"
-    assert set(metrics.keys()) == {
+    for required_key in {
         "ring_0_5_ft",
         "ring_5_30_ft",
         "ring_30_100_ft",
@@ -3938,12 +3938,103 @@ def test_structure_ring_summary_pipeline(monkeypatch):
         "zone_5_30_ft",
         "zone_30_100_ft",
         "zone_100_300_ft",
-    }
+    }:
+        assert required_key in metrics
+    assert metrics["geometry_type"] == "footprint"
+    assert metrics["precision_flag"] == "footprint_relative"
+    assert isinstance(metrics["_meta"], dict)
+    assert metrics["_meta"]["geometry_type"] == "footprint"
     assert metrics["ring_0_5_ft"]["vegetation_density"] == 60.0
     assert metrics["zone_0_5_ft"]["vegetation_density"] == 60.0
     assert metrics["ring_5_30_ft"]["canopy_mean"] == 62.0
+    assert metrics["ring_0_5_ft"]["ring_area_sqft"] is not None
+    assert metrics["ring_0_5_ft"]["vegetated_overlap_area_sqft"] is not None
     assert "Structure ring vegetation summaries" in sources
     assert assumptions == []
+
+
+def test_ring_metrics_include_geometry_type_and_precision_for_footprint_vs_point(monkeypatch):
+    _require_shapely()
+    client = WildfireDataClient()
+    footprint = Polygon(
+        [
+            (-105.00004, 40.00004),
+            (-104.99996, 40.00004),
+            (-104.99996, 39.99996),
+            (-105.00004, 39.99996),
+            (-105.00004, 40.00004),
+        ]
+    )
+
+    monkeypatch.setattr(
+        client,
+        "_summarize_ring_canopy",
+        lambda _geom, canopy_path: {
+            "canopy_mean": 55.0,
+            "canopy_max": 72.0,
+            "coverage_pct": 52.0,
+            "vegetation_density": 55.0,
+        },
+    )
+    monkeypatch.setattr(client, "_summarize_ring_fuel_presence", lambda _geom, fuel_path: 40.0)
+
+    monkeypatch.setattr(
+        client.footprints,
+        "get_building_footprint",
+        lambda _lat, _lon, **_kwargs: BuildingFootprintResult(
+            found=True,
+            footprint=footprint,
+            centroid=(40.0, -105.0),
+            source="fixture",
+            confidence=0.92,
+            match_status="matched",
+            match_method="point_in_footprint",
+            matched_structure_id="fp-1",
+            match_distance_m=0.0,
+            candidate_count=1,
+            candidate_summaries=[],
+            assumptions=[],
+        ),
+    )
+    footprint_ctx, _fp_assumptions, _fp_sources = client._compute_structure_ring_metrics(
+        40.0,
+        -105.0,
+        canopy_path="canopy.tif",
+        fuel_path="fuel.tif",
+    )
+
+    monkeypatch.setattr(
+        client.footprints,
+        "get_building_footprint",
+        lambda _lat, _lon, **_kwargs: BuildingFootprintResult(
+            found=False,
+            footprint=None,
+            centroid=None,
+            source="fixture",
+            confidence=0.0,
+            match_status="none",
+            match_method="nearest_building_fallback",
+            matched_structure_id=None,
+            match_distance_m=35.0,
+            candidate_count=2,
+            candidate_summaries=[],
+            assumptions=["No nearby building footprint found for this location."],
+        ),
+    )
+    point_ctx, _pt_assumptions, _pt_sources = client._compute_structure_ring_metrics(
+        40.0,
+        -105.0,
+        canopy_path="",
+        fuel_path="",
+    )
+
+    fp_metrics = footprint_ctx["ring_metrics"]
+    pt_metrics = point_ctx["ring_metrics"]
+    assert fp_metrics["geometry_type"] == "footprint"
+    assert fp_metrics["precision_flag"] == "footprint_relative"
+    assert pt_metrics["geometry_type"] == "point"
+    assert pt_metrics["precision_flag"] == "fallback_point_proxy"
+    assert fp_metrics["ring_0_5_ft"]["ring_area_sqft"] != pt_metrics["ring_0_5_ft"]["ring_area_sqft"]
 
 
 def test_nearby_distinct_footprints_generate_distinct_ring_metrics(monkeypatch):
@@ -4020,7 +4111,12 @@ def test_nearby_distinct_footprints_generate_distinct_ring_metrics(monkeypatch):
     assert b["geometry_source"] == "trusted_building_footprint"
     assert a["ring_generation_mode"] == "footprint_aware_rings"
     assert b["ring_generation_mode"] == "footprint_aware_rings"
+    assert a["ring_metrics"]["geometry_type"] == "footprint"
+    assert b["ring_metrics"]["geometry_type"] == "footprint"
+    assert a["ring_metrics"]["precision_flag"] == "footprint_relative"
+    assert b["ring_metrics"]["precision_flag"] == "footprint_relative"
     assert a["ring_metrics"]["ring_0_5_ft"]["vegetation_density"] != b["ring_metrics"]["ring_0_5_ft"]["vegetation_density"]
+    assert a["ring_metrics"]["ring_0_5_ft"]["ring_area_sqft"] != b["ring_metrics"]["ring_0_5_ft"]["ring_area_sqft"]
 
 
 def test_context_collect_fallback_when_footprint_unavailable(monkeypatch):
