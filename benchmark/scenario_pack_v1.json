@@ -43,7 +43,7 @@
       "expected": {
         "risk_band": "low",
         "confidence_tiers": ["preliminary", "low"],
-        "use_restrictions": ["not_for_underwriting_or_binding"],
+        "use_restrictions": ["not_for_underwriting_or_binding", "agent_or_inspector_review_recommended"],
         "assessment_status_in": ["fully_scored", "partially_scored"],
         "fallback_mode": "footprint"
       },

@@ -1175,6 +1175,12 @@ class RiskEngine:
             else {}
         )
         ring_has_direct_geometry = bool(footprint_used and ring_metrics)
+        _ring_precision_flag = ring_metrics.get("precision_flag", "") if ring_metrics else ""
+        ring_has_parcel_geometry = bool(
+            not footprint_used
+            and ring_metrics
+            and _ring_precision_flag == "parcel_clipped_point_proxy"
+        )
         ring_metric_rows = [row for row in ring_metrics.values() if isinstance(row, dict)]
         near_structure_observed = bool(
             ring_has_direct_geometry
@@ -1254,8 +1260,10 @@ class RiskEngine:
                 multiplier *= 0.50
             if not parcel_available and submodel == "defensible_space_risk":
                 multiplier *= 0.64
-            if not ring_has_direct_geometry and submodel in {"defensible_space_risk", "flame_contact_risk"}:
+            if not ring_has_direct_geometry and not ring_has_parcel_geometry and submodel in {"defensible_space_risk", "flame_contact_risk"}:
                 multiplier *= 0.52
+            elif not ring_has_direct_geometry and ring_has_parcel_geometry and submodel in {"defensible_space_risk", "flame_contact_risk"}:
+                multiplier *= 0.72
             if not near_structure_observed and submodel in {"vegetation_intensity_risk", "fuel_proximity_risk", "flame_contact_risk"}:
                 multiplier *= 0.56
             if structure_geometry_confidence < 0.60 and submodel in GEOMETRY_SENSITIVE_SUBMODELS:
@@ -1297,6 +1305,10 @@ class RiskEngine:
                 # geometry-sensitive factors to near-zero availability.
                 minimum = 0.45 if submodel in {"defensible_space_risk", "flame_contact_risk"} else 0.50
                 multiplier = max(multiplier, minimum)
+            if ring_has_parcel_geometry and submodel in GEOMETRY_SENSITIVE_SUBMODELS:
+                # Parcel-clipped rings are geometrically grounded but less precise than footprint rings.
+                minimum = 0.35 if submodel in {"defensible_space_risk", "flame_contact_risk"} else 0.40
+                multiplier = max(multiplier, minimum)
             return max(0.0, min(1.0, multiplier))
 
         for name, result in submodels.items():
@@ -1311,6 +1323,8 @@ class RiskEngine:
             )
             if footprint_used and ring_has_direct_geometry and name in GEOMETRY_SENSITIVE_SUBMODELS:
                 observed_fraction = max(observed_fraction, 0.65)
+            if ring_has_parcel_geometry and name in GEOMETRY_SENSITIVE_SUBMODELS:
+                observed_fraction = max(observed_fraction, 0.50)
             assumptions_text = " ".join(result.assumptions).lower()
             has_fallback_tokens = any(
                 tok in assumptions_text for tok in ("fallback", "proxy", "missing", "unavailable", "point-based")
