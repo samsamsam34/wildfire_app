@@ -121,6 +121,78 @@ class ScoringConfig:
         }
     )
 
+    # Stability and confidence thresholds used by trust_metadata.py.
+    # Calibrated against internal benchmark runs to separate "unstable" results
+    # (score swing > 12 pts or 2+ tier flips) from "moderate" (> 6 pts or any
+    # flip) and "stable" (below both).  The sensitivity score uses a linear
+    # penalty of 6 pts per point of max swing, clamped to [0, 100].
+    trust_stability_params: Dict[str, float] = field(
+        default_factory=lambda: {
+            # Thresholds (score-point swing) separating stability rating buckets.
+            "unstable_swing_threshold": 12.0,
+            "moderate_swing_threshold": 6.0,
+            # Multiplier converting max swing into a 0-100 sensitivity score.
+            "sensitivity_score_multiplier": 6.0,
+            # Fallback fraction at which an assessment is classified "fallback_heavy".
+            # Below this, fallback weight is considered acceptable.
+            "fallback_heavy_fraction": 0.45,
+            # Swing threshold above which an assessment is flagged assumption_sensitive.
+            "assumption_sensitive_swing": 4.0,
+        }
+    )
+
+    # Derived index parameters used inside the scoring submodel calculations.
+    # These control curve shape, blending weights, and distance reference values.
+    # Values were calibrated against defensible-space zone research and internal
+    # benchmark stability runs; adjust only with benchmark validation.
+    vegetation_index_params: Dict[str, float] = field(
+        default_factory=lambda: {
+            # Nonlinear close-in (0–5 ft) vegetation penalty curve.
+            # Piecewise-linear with three slope segments to amplify moderate loading.
+            "nonlinear_breakpoint_1": 20.0,
+            "nonlinear_breakpoint_2": 40.0,
+            "nonlinear_breakpoint_3": 65.0,
+            "nonlinear_slope_0": 0.60,
+            "nonlinear_intercept_1": 12.0,
+            "nonlinear_slope_1": 1.35,
+            "nonlinear_intercept_2": 39.0,
+            "nonlinear_slope_2": 1.55,
+            "nonlinear_intercept_3": 77.75,
+            "nonlinear_slope_3": 0.90,
+            # Precision multiplier for directional vegetation features.
+            # Blends observed precision score toward a conservative floor.
+            "precision_multiplier_base": 0.55,
+            "precision_multiplier_range": 0.45,
+            "precision_multiplier_min": 0.45,
+            "precision_low_threshold": 0.60,
+            # Distance reference values (ft) for index normalisation.
+            # Score = clamp(100 - distance/ref * 100).
+            "high_fuel_patch_reference_ft": 300.0,
+            "continuous_vegetation_reference_ft": 120.0,
+            "structure_proximity_reference_ft": 300.0,
+            # Structure-to-structure exposure weights (count × weight → raw index).
+            "s2s_count_100_weight": 14.0,
+            "s2s_count_300_weight": 2.5,
+            # Local structure density: saturation counts and share weights.
+            "density_100_saturation": 8.0,
+            "density_300_saturation": 24.0,
+            "density_100_share": 70.0,
+            "density_300_share": 30.0,
+            # Clustering index: density vs proximity blend.
+            "clustering_density_weight": 0.70,
+            "clustering_proximity_weight": 0.30,
+            # Near-structure connectivity index blend weights (three variants
+            # depending on which signals are available).
+            "connectivity_full_continuity_weight": 0.55,
+            "connectivity_full_density_weight": 0.30,
+            "connectivity_full_canopy_weight": 0.15,
+            "connectivity_continuity_only_weight": 0.78,
+            "connectivity_continuity_canopy_weight": 0.22,
+            "connectivity_density_only_weight": 0.72,
+            "connectivity_density_canopy_weight": 0.28,
+        }
+    )
+
 
 def _merge_float_map(defaults: Dict[str, float], raw: str | None) -> Dict[str, float]:
     if not raw:
@@ -239,7 +311,19 @@ def load_scoring_config() -> ScoringConfig:
         payload.get("error_analysis_thresholds"),
     )
 
+    config.trust_stability_params = _merge_float_map_from_payload(
+        config.trust_stability_params,
+        payload.get("trust_stability_params"),
+    )
+    config.vegetation_index_params = _merge_float_map_from_payload(
+        config.vegetation_index_params,
+        payload.get("vegetation_index_params"),
+    )
+
     config.submodel_weights = _merge_float_map(config.submodel_weights, os.getenv("WILDFIRE_SUBMODEL_WEIGHTS_JSON"))
     config.readiness_penalties = _merge_float_map(config.readiness_penalties, os.getenv("WILDFIRE_READINESS_PENALTIES_JSON"))
     config.readiness_bonuses = _merge_float_map(config.readiness_bonuses, os.getenv("WILDFIRE_READINESS_BONUSES_JSON"))
+    config.vegetation_index_params = _merge_float_map(
+        config.vegetation_index_params, os.getenv("WILDFIRE_VEGETATION_INDEX_PARAMS_JSON")
+    )
     return config

@@ -121,6 +121,10 @@ class RiskEngine:
         attrs = normalize_property_attributes(attrs)
         submodels: Dict[str, SubmodelResult] = {}
 
+        # Pull vegetation index parameters from config so they can be overridden
+        # via scoring_parameters.yaml or WILDFIRE_VEGETATION_INDEX_PARAMS_JSON.
+        vp = self.config.vegetation_index_params
+
         def clamp_score(value: float | None) -> float:
             if value is None:
                 return 0.0
@@ -205,18 +209,34 @@ class RiskEngine:
             return max(0.0, min(100.0, float(value)))
 
         def _nonlinear_close_in_vegetation_penalty(value: float | None) -> float | None:
-            """Apply a stronger monotonic penalty for 0-5 ft vegetation loading."""
+            """Apply a stronger monotonic penalty for 0-5 ft vegetation loading.
+
+            Piecewise-linear curve with three segments that amplify moderate
+            loading. Breakpoints and slopes are read from
+            config.vegetation_index_params so they can be overridden without a
+            code change.
+            """
             clamped = _clamp_percent(value)
             if clamped is None:
                 return None
-            if clamped <= 20.0:
-                transformed = clamped * 0.60
-            elif clamped <= 40.0:
-                transformed = 12.0 + ((clamped - 20.0) * 1.35)
-            elif clamped <= 65.0:
-                transformed = 39.0 + ((clamped - 40.0) * 1.55)
+            bp1 = vp.get("nonlinear_breakpoint_1", 20.0)
+            bp2 = vp.get("nonlinear_breakpoint_2", 40.0)
+            bp3 = vp.get("nonlinear_breakpoint_3", 65.0)
+            s0 = vp.get("nonlinear_slope_0", 0.60)
+            i1 = vp.get("nonlinear_intercept_1", 12.0)
+            s1 = vp.get("nonlinear_slope_1", 1.35)
+            i2 = vp.get("nonlinear_intercept_2", 39.0)
+            s2 = vp.get("nonlinear_slope_2", 1.55)
+            i3 = vp.get("nonlinear_intercept_3", 77.75)
+            s3 = vp.get("nonlinear_slope_3", 0.90)
+            if clamped <= bp1:
+                transformed = clamped * s0
+            elif clamped <= bp2:
+                transformed = i1 + ((clamped - bp1) * s1)
+            elif clamped <= bp3:
+                transformed = i2 + ((clamped - bp2) * s2)
             else:
-                transformed = 77.75 + ((clamped - 65.0) * 0.90)
+                transformed = i3 + ((clamped - bp3) * s3)
             return round(max(0.0, min(100.0, transformed)), 1)
 
         near_structure_vegetation_0_5_pct = _to_float(
@@ -251,15 +271,18 @@ class RiskEngine:
             0.0,
             min(1.0, float(vegetation_directional_precision_score)),
         )
+        _pm_base = vp.get("precision_multiplier_base", 0.55)
+        _pm_range = vp.get("precision_multiplier_range", 0.45)
+        _pm_min = vp.get("precision_multiplier_min", 0.45)
         vegetation_precision_multiplier = max(
-            0.45,
-            min(1.0, 0.55 + (0.45 * vegetation_directional_precision_score)),
+            _pm_min,
+            min(1.0, _pm_base + (_pm_range * vegetation_directional_precision_score)),
         )
         if vegetation_directional_precision == "point_proxy":
             context_assumptions.append(
                 "Directional near-structure vegetation features used point-proxy sampling with lower precision."
             )
-        if vegetation_directional_precision_score < 0.60:
+        if vegetation_directional_precision_score < vp.get("precision_low_threshold", 0.60):
             context_assumptions.append(
                 "Near-structure directional vegetation evidence had low geometry precision; vegetation extremes were damped toward conservative values."
             )
@@ -285,14 +308,16 @@ class RiskEngine:
         nearest_high_fuel_patch_distance_ft = _to_float(
             property_level_context.get("nearest_high_fuel_patch_distance_ft")
         )
+        _hfp_ref = vp.get("high_fuel_patch_reference_ft", 300.0)
+        _cveg_ref = vp.get("continuous_vegetation_reference_ft", 120.0)
         nearest_high_fuel_patch_index = (
-            round(max(0.0, min(100.0, 100.0 - (nearest_high_fuel_patch_distance_ft / 300.0) * 100.0)), 1)
+            round(max(0.0, min(100.0, 100.0 - (nearest_high_fuel_patch_distance_ft / _hfp_ref) * 100.0)), 1)
             if nearest_high_fuel_patch_distance_ft is not None
             else None
         )
         nearest_continuous_vegetation_index = (
             round(
-                max(0.0, min(100.0, 100.0 - ((nearest_continuous_vegetation_distance_ft / 120.0) * 100.0))),
+                max(0.0, min(100.0, 100.0 - ((nearest_continuous_vegetation_distance_ft / _cveg_ref) * 100.0))),
                 1,
             )
             if nearest_continuous_vegetation_distance_ft is not None
@@ -326,23 +351,30 @@ class RiskEngine:
             nearest_structure_distance_ft = distance_to_nearest_structure_ft
         if distance_to_nearest_structure_ft is None and nearest_structure_distance_ft is not None:
             distance_to_nearest_structure_ft = nearest_structure_distance_ft
+        _s2s_w100 = vp.get("s2s_count_100_weight", 14.0)
+        _s2s_w300 = vp.get("s2s_count_300_weight", 2.5)
+        _sp_ref = vp.get("structure_proximity_reference_ft", 300.0)
         structure_to_structure_exposure_index = None
         if nearby_structure_count_100 is not None or nearby_structure_count_300 is not None:
             c100 = nearby_structure_count_100 or 0.0
             c300 = nearby_structure_count_300 or 0.0
-            structure_to_structure_exposure_index = round(min(100.0, (c100 * 14.0) + (c300 * 2.5)), 1)
+            structure_to_structure_exposure_index = round(min(100.0, (c100 * _s2s_w100) + (c300 * _s2s_w300)), 1)
         nearest_structure_proximity_index = None
         if nearest_structure_distance_ft is not None:
             nearest_structure_proximity_index = round(
-                max(0.0, min(100.0, 100.0 - ((nearest_structure_distance_ft / 300.0) * 100.0))),
+                max(0.0, min(100.0, 100.0 - ((nearest_structure_distance_ft / _sp_ref) * 100.0))),
                 1,
             )
         nearest_structure_isolation_index = None
         if nearest_structure_distance_ft is not None:
             nearest_structure_isolation_index = round(
-                max(0.0, min(100.0, (nearest_structure_distance_ft / 300.0) * 100.0)),
+                max(0.0, min(100.0, (nearest_structure_distance_ft / _sp_ref) * 100.0)),
                 1,
             )
+        _d100_sat = vp.get("density_100_saturation", 8.0)
+        _d300_sat = vp.get("density_300_saturation", 24.0)
+        _d100_share = vp.get("density_100_share", 70.0)
+        _d300_share = vp.get("density_300_share", 30.0)
         local_structure_density_index = None
         if nearby_structure_count_100 is not None or nearby_structure_count_300 is not None:
             c100 = nearby_structure_count_100 or 0.0
@@ -352,7 +384,8 @@ class RiskEngine:
             local_structure_density_index = round(
                 min(
                     100.0,
-                    ((min(c100, 8.0) / 8.0) * 70.0) + ((min(c300, 24.0) / 24.0) * 30.0),
+                    ((min(c100, _d100_sat) / _d100_sat) * _d100_share)
+                    + ((min(c300, _d300_sat) / _d300_sat) * _d300_share),
                 ),
                 1,
             )
@@ -368,14 +401,23 @@ class RiskEngine:
         if structure_density_proxy_index is not None:
             structure_density_proxy_index = round(max(0.0, min(100.0, float(structure_density_proxy_index))), 1)
 
+        _cl_dw = vp.get("clustering_density_weight", 0.70)
+        _cl_pw = vp.get("clustering_proximity_weight", 0.30)
         clustering_index = _to_float(property_level_context.get("clustering_index"))
         if clustering_index is None and structure_density_proxy_index is not None:
             prox = nearest_structure_proximity_index if nearest_structure_proximity_index is not None else 0.0
             clustering_index = round(
-                max(0.0, min(100.0, (0.70 * float(structure_density_proxy_index)) + (0.30 * float(prox)))),
+                max(0.0, min(100.0, (_cl_dw * float(structure_density_proxy_index)) + (_cl_pw * float(prox)))),
                 1,
             )
 
+        _cn_full_cont = vp.get("connectivity_full_continuity_weight", 0.55)
+        _cn_full_dens = vp.get("connectivity_full_density_weight", 0.30)
+        _cn_full_cnpy = vp.get("connectivity_full_canopy_weight", 0.15)
+        _cn_cont_only = vp.get("connectivity_continuity_only_weight", 0.78)
+        _cn_cont_cnpy = vp.get("connectivity_continuity_canopy_weight", 0.22)
+        _cn_dens_only = vp.get("connectivity_density_only_weight", 0.72)
+        _cn_dens_cnpy = vp.get("connectivity_density_canopy_weight", 0.28)
         if near_structure_connectivity_index is None:
             continuity_base = _clamp_percent(ring_5_30_continuity)
             if continuity_base is None:
@@ -391,9 +433,9 @@ class RiskEngine:
                         0.0,
                         min(
                             100.0,
-                            (0.55 * continuity_base)
-                            + (0.30 * density_bridge)
-                            + (0.15 * (canopy_bridge if canopy_bridge is not None else density_bridge)),
+                            (_cn_full_cont * continuity_base)
+                            + (_cn_full_dens * density_bridge)
+                            + (_cn_full_cnpy * (canopy_bridge if canopy_bridge is not None else density_bridge)),
                         ),
                     ),
                     1,
@@ -404,8 +446,8 @@ class RiskEngine:
                         0.0,
                         min(
                             100.0,
-                            (0.78 * continuity_base)
-                            + (0.22 * (canopy_bridge if canopy_bridge is not None else continuity_base)),
+                            (_cn_cont_only * continuity_base)
+                            + (_cn_cont_cnpy * (canopy_bridge if canopy_bridge is not None else continuity_base)),
                         ),
                     ),
                     1,
@@ -416,8 +458,8 @@ class RiskEngine:
                         0.0,
                         min(
                             100.0,
-                            (0.72 * density_bridge)
-                            + (0.28 * (canopy_bridge if canopy_bridge is not None else density_bridge)),
+                            (_cn_dens_only * density_bridge)
+                            + (_cn_dens_cnpy * (canopy_bridge if canopy_bridge is not None else density_bridge)),
                         ),
                     ),
                     1,

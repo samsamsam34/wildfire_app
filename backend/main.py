@@ -7,6 +7,7 @@ import logging
 import math
 import os
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -17,7 +18,8 @@ from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Qu
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, PlainTextResponse, Response
 
-from backend.auth import require_api_key
+from backend.auth import get_key_org, require_api_key
+from backend.resolver_config import ResolverConfig
 from backend.address_resolution import infer_localities_for_zip, resolve_local_address_candidate
 from backend.assessment_map import build_assessment_map_payload
 from backend.benchmarking import (
@@ -441,12 +443,48 @@ def get_actor_context(
     x_user_role: str | None = Header(default=None),
     x_organization_id: str | None = Header(default=None),
     x_user_id: str | None = Header(default=None),
+    x_api_key: str | None = Header(default=None),
 ) -> ActorContext:
-    return _build_context(x_user_role, x_organization_id, x_user_id)
+    ctx = _build_context(x_user_role, x_organization_id, x_user_id)
+    # If the API key is org-scoped, override the actor org to the bound value.
+    # This prevents a caller from using a key issued to org A to operate as org B
+    # simply by setting a different X-Organization-Id header.
+    if x_api_key:
+        key_org = get_key_org(x_api_key)
+        if key_org is not None:
+            ctx = ActorContext(user_role=ctx.user_role, organization_id=key_org, user_id=ctx.user_id)
+    return ctx
+
+
+# ---------------------------------------------------------------------------
+# Audit policy
+# ---------------------------------------------------------------------------
+# Two audit mechanisms exist: LOGGER (stdout, dev-mode diagnostics) and
+# store.log_event (DB audit table, durable).  Policy:
+#   - All SECURITY events (role denials, org scope violations) → DB audit table.
+#   - All WRITE events (assessment created, job created, org changed) → DB audit
+#     table via _log_audit().
+#   - Dev-mode diagnostics (request shapes, timing) → LOGGER only.
+# Never use LOGGER as the sole record for an event that a security audit would
+# need to reconstruct.
+# ---------------------------------------------------------------------------
 
 
 def _require_role(ctx: ActorContext, allowed_roles: Iterable[str], detail: str = "Forbidden") -> None:
     if ctx.user_role not in set(allowed_roles):
+        # Log denials to the DB audit table so they appear in audit queries,
+        # not just in stdout logs that may not be retained.
+        try:
+            store.log_event(
+                entity_type="access_control",
+                entity_id="role_check",
+                organization_id=ctx.organization_id,
+                user_role=ctx.user_role,
+                action="access_denied",
+                metadata={"detail": detail, "allowed_roles": sorted(allowed_roles)},
+            )
+        except Exception:
+            pass  # Never let audit failure block the 403 response
         raise HTTPException(status_code=403, detail=detail)
 
 
@@ -458,6 +496,17 @@ def _enforce_org_scope(ctx: ActorContext, organization_id: str) -> None:
     if ctx.user_role == "admin":
         return
     if ctx.organization_id != organization_id:
+        try:
+            store.log_event(
+                entity_type="access_control",
+                entity_id=organization_id,
+                organization_id=ctx.organization_id,
+                user_role=ctx.user_role,
+                action="org_scope_violation",
+                metadata={"requested_org": organization_id, "actor_org": ctx.organization_id},
+            )
+        except Exception:
+            pass  # Never let audit failure block the 403 response
         raise HTTPException(status_code=403, detail="Organization scope violation")
 
 
@@ -478,6 +527,29 @@ def _log_audit(
         action=action,
         metadata=metadata or {},
     )
+
+
+def _resolve_write_context(
+    ctx: ActorContext,
+    request_org: str | None,
+    ruleset_id: str | None,
+    role_detail: str = "Viewer role cannot perform this action",
+) -> tuple[str, "UnderwritingRuleset"]:
+    """Shared auth/org/ruleset setup for write endpoints.
+
+    Consolidates the four-step sequence that every write endpoint requires:
+      1. Enforce WRITE_ROLES
+      2. Resolve org_id from request or actor context
+      3. Enforce org scope (non-admins may only act within their own org)
+      4. Look up the requested ruleset (or fall back to default)
+
+    Returns (organization_id, ruleset) ready for use in the handler.
+    """
+    _require_role(ctx, WRITE_ROLES, role_detail)
+    organization_id = _resolve_org_id(request_org, ctx)
+    _enforce_org_scope(ctx, organization_id)
+    ruleset = _get_ruleset_or_default(ruleset_id)
+    return organization_id, ruleset
 
 
 def _attributes_to_dict(attrs: PropertyAttributes) -> Dict[str, object]:
@@ -2923,7 +2995,8 @@ def _normalize_layer_coverage(
         for item in raw_rows:
             try:
                 rows.append(LayerCoverageAuditItem.model_validate(item))
-            except Exception:
+            except Exception as exc:
+                LOGGER.warning("layer_coverage_audit item failed validation — skipping: %s | item=%r", exc, item)
                 continue
 
     if not rows:
@@ -3002,8 +3075,8 @@ def _normalize_layer_coverage(
         try:
             summary = LayerCoverageSummary.model_validate(raw_summary)
             return rows, summary
-        except Exception:
-            pass
+        except Exception as exc:
+            LOGGER.warning("coverage_summary failed validation — recomputing from rows: %s | raw=%r", exc, raw_summary)
 
     observed_count = sum(1 for row in rows if row.coverage_status == "observed")
     partial_count = sum(1 for row in rows if row.coverage_status == "partial")
@@ -8272,46 +8345,27 @@ def _build_assessment_trust_metadata(
                 geocode_resolution=geocode_override or geocode_resolution,
                 coverage_resolution=coverage_resolution,
             )
-        except Exception:
+        except Exception as exc:
+            LOGGER.warning("stability variant assessment failed — skipping sample: %s", exc)
             return None
 
     # Local stability checks: tiny geocode jitter + fallback-assumption perturbation.
+    # Build all variant (payload, metadata) tuples first, then run concurrently.
     jitter_offsets = [("jitter_north", 0.00010, 0.0), ("jitter_west", 0.0, -0.00010)]
+    jitter_jobs: list[tuple[str, AddressRequest, GeocodeResolution]] = []
     for name, dlat, dlon in jitter_offsets:
         jitter_geo = _jitter_geocode_resolution(geocode_resolution, lat_offset=dlat, lon_offset=dlon)
         jitter_payload = payload.model_copy(deep=True)
         jitter_payload.selection_mode = "point"
         jitter_payload.property_anchor_point = Coordinates(latitude=jitter_geo.latitude, longitude=jitter_geo.longitude)
         jitter_payload.user_selected_point = Coordinates(latitude=jitter_geo.latitude, longitude=jitter_geo.longitude)
-        variant = _run_variant(jitter_payload, geocode_override=jitter_geo)
-        if variant is None:
-            continue
-        stability_samples.append(
-            {
-                "name": name,
-                "sample_type": "geocode_jitter",
-                "risk_delta": _risk_delta(variant),
-                "tier_changed": str(variant.confidence_tier or "unknown") != base_conf_tier,
-                "band_changed": _risk_band_for_score(variant.wildfire_risk_score) != base_band,
-            }
-        )
+        jitter_jobs.append((name, jitter_payload, jitter_geo))
 
     fallback_payload = _clone_payload_with_attribute_overrides(
         payload,
         overrides={"roof_type": None, "vent_type": None, "defensible_space_ft": None},
         remove_confirmed_fields=["roof_type", "vent_type", "defensible_space_ft"],
     )
-    fallback_variant = _run_variant(fallback_payload)
-    if fallback_variant is not None:
-        stability_samples.append(
-            {
-                "name": "fallback_assumption_toggle",
-                "sample_type": "fallback_assumption",
-                "risk_delta": _risk_delta(fallback_variant),
-                "tier_changed": str(fallback_variant.confidence_tier or "unknown") != base_conf_tier,
-                "band_changed": _risk_band_for_score(fallback_variant.wildfire_risk_score) != base_band,
-            }
-        )
 
     # Mitigation sensitivity checks (bounded counterfactual variants).
     current_defensible = payload.attributes.defensible_space_ft
@@ -8348,19 +8402,64 @@ def _build_assessment_trust_metadata(
             [],
         ),
     ]
-    for name, variant_payload, expected_direction, notes in mitigation_variants:
-        variant = _run_variant(variant_payload)
-        if variant is None:
-            continue
-        mitigation_samples.append(
-            {
-                "name": name,
-                "expected_direction": expected_direction,
-                "risk_delta": _risk_delta(variant),
-                "readiness_delta": _readiness_delta(variant),
-                "notes": notes,
-            }
-        )
+
+    # Run all variants concurrently.  Each _run_variant call is CPU + I/O
+    # bound and independent, so a thread pool gives a meaningful speedup on
+    # multi-core hosts without requiring an async rewrite of the engine.
+    def _run_jitter(job: tuple[str, AddressRequest, GeocodeResolution]) -> tuple[str, AssessmentResult | None]:
+        name, vp, geo = job
+        return name, _run_variant(vp, geocode_override=geo)
+
+    def _run_mitigation(item: tuple[str, AddressRequest, str, list[str]]) -> tuple[str, AssessmentResult | None, str, list[str]]:
+        name, vp, direction, notes = item
+        return name, _run_variant(vp), direction, notes
+
+    with ThreadPoolExecutor(max_workers=7) as pool:
+        jitter_futures = {pool.submit(_run_jitter, job): "jitter" for job in jitter_jobs}
+        fallback_future = pool.submit(_run_variant, fallback_payload)
+        mitigation_futures = {
+            pool.submit(_run_mitigation, item): item for item in mitigation_variants
+        }
+
+        for future in as_completed(jitter_futures):
+            name, variant = future.result()
+            if variant is None:
+                continue
+            stability_samples.append(
+                {
+                    "name": name,
+                    "sample_type": "geocode_jitter",
+                    "risk_delta": _risk_delta(variant),
+                    "tier_changed": str(variant.confidence_tier or "unknown") != base_conf_tier,
+                    "band_changed": _risk_band_for_score(variant.wildfire_risk_score) != base_band,
+                }
+            )
+
+        fallback_variant = fallback_future.result()
+        if fallback_variant is not None:
+            stability_samples.append(
+                {
+                    "name": "fallback_assumption_toggle",
+                    "sample_type": "fallback_assumption",
+                    "risk_delta": _risk_delta(fallback_variant),
+                    "tier_changed": str(fallback_variant.confidence_tier or "unknown") != base_conf_tier,
+                    "band_changed": _risk_band_for_score(fallback_variant.wildfire_risk_score) != base_band,
+                }
+            )
+
+        for future in as_completed(mitigation_futures):
+            name, variant, expected_direction, notes = future.result()
+            if variant is None:
+                continue
+            mitigation_samples.append(
+                {
+                    "name": name,
+                    "expected_direction": expected_direction,
+                    "risk_delta": _risk_delta(variant),
+                    "readiness_delta": _readiness_delta(variant),
+                    "notes": notes,
+                }
+            )
 
     reference_artifacts = load_trust_reference_artifacts()
     return build_trust_diagnostics(
@@ -9971,84 +10070,25 @@ def _resolve_trusted_geocode(
     statewide_parcel_result: dict[str, Any] | None = None
     last_failure: HTTPException | None = None
 
-    try:
-        conflict_distance_m = max(50.0, float(os.getenv("WF_RESOLVER_CONFLICT_DISTANCE_M", "1500")))
-    except ValueError:
-        conflict_distance_m = 1500.0
-    try:
-        conflict_score_margin = max(1.0, float(os.getenv("WF_RESOLVER_CONFLICT_SCORE_MARGIN", "18")))
-    except ValueError:
-        conflict_score_margin = 18.0
-    try:
-        in_region_boost = max(0.0, float(os.getenv("WF_RESOLVER_IN_REGION_BOOST", "35")))
-    except ValueError:
-        in_region_boost = 35.0
-    try:
-        authoritative_source_bonus = max(0.0, float(os.getenv("WF_RESOLVER_AUTHORITATIVE_SOURCE_BONUS", "18")))
-    except ValueError:
-        authoritative_source_bonus = 18.0
-    try:
-        clear_winner_min_margin = max(0.0, float(os.getenv("WF_RESOLVER_CLEAR_WINNER_MIN_MARGIN", "12")))
-    except ValueError:
-        clear_winner_min_margin = 12.0
-    try:
-        clear_winner_min_score = max(0.0, float(os.getenv("WF_RESOLVER_CLEAR_WINNER_MIN_SCORE", "230")))
-    except ValueError:
-        clear_winner_min_score = 230.0
-    try:
-        in_region_preference_margin = max(0.0, float(os.getenv("WF_RESOLVER_IN_REGION_PREFERENCE_MARGIN", "18")))
-    except ValueError:
-        in_region_preference_margin = 18.0
-    try:
-        conflict_min_authority_gap = max(
-            0.0, float(os.getenv("WF_RESOLVER_CONFLICT_MIN_AUTHORITY_GAP", "8"))
-        )
-    except ValueError:
-        conflict_min_authority_gap = 8.0
-    try:
-        conflict_dominant_score_margin = max(
-            0.0, float(os.getenv("WF_RESOLVER_CONFLICT_DOMINANT_SCORE_MARGIN", "20"))
-        )
-    except ValueError:
-        conflict_dominant_score_margin = 20.0
-    try:
-        centroid_tolerance_multiplier = max(
-            1.0, float(os.getenv("WF_RESOLVER_CENTROID_TOLERANCE_MULTIPLIER", "2.5"))
-        )
-    except ValueError:
-        centroid_tolerance_multiplier = 2.5
-    try:
-        interpolated_tolerance_multiplier = max(
-            1.0, float(os.getenv("WF_RESOLVER_INTERPOLATED_TOLERANCE_MULTIPLIER", "1.8"))
-        )
-    except ValueError:
-        interpolated_tolerance_multiplier = 1.8
-    allow_interpolated_auto = _env_flag("WF_RESOLVER_ALLOW_INTERPOLATED_AUTO", True)
-    try:
-        min_geocoder_token_similarity = max(
-            0.0, min(1.0, float(os.getenv("WF_RESOLVER_MIN_GEOCODER_TOKEN_SIMILARITY", "0.55")))
-        )
-    except ValueError:
-        min_geocoder_token_similarity = 0.55
-    try:
-        min_geocoder_token_coverage = max(
-            0.0, min(1.0, float(os.getenv("WF_RESOLVER_MIN_GEOCODER_TOKEN_COVERAGE", "0.72")))
-        )
-    except ValueError:
-        min_geocoder_token_coverage = 0.72
-    try:
-        min_auto_candidate_score = max(0.0, float(os.getenv("WF_RESOLVER_MIN_AUTO_CANDIDATE_SCORE", "150")))
-    except ValueError:
-        min_auto_candidate_score = 150.0
-    emergency_in_region_guardrail = _env_flag("WF_RESOLVER_EMERGENCY_IN_REGION_MEDIUM_AUTORESOLVE", True)
-    try:
-        emergency_min_score = max(0.0, float(os.getenv("WF_RESOLVER_EMERGENCY_MIN_SCORE", "155")))
-    except ValueError:
-        emergency_min_score = 155.0
-    try:
-        emergency_min_margin = max(0.0, float(os.getenv("WF_RESOLVER_EMERGENCY_MIN_MARGIN", "8")))
-    except ValueError:
-        emergency_min_margin = 8.0
+    _rc = ResolverConfig.from_env()
+    conflict_distance_m = _rc.conflict_distance_m
+    conflict_score_margin = _rc.conflict_score_margin
+    in_region_boost = _rc.in_region_boost
+    authoritative_source_bonus = _rc.authoritative_source_bonus
+    clear_winner_min_margin = _rc.clear_winner_min_margin
+    clear_winner_min_score = _rc.clear_winner_min_score
+    in_region_preference_margin = _rc.in_region_preference_margin
+    conflict_min_authority_gap = _rc.conflict_min_authority_gap
+    conflict_dominant_score_margin = _rc.conflict_dominant_score_margin
+    centroid_tolerance_multiplier = _rc.centroid_tolerance_multiplier
+    interpolated_tolerance_multiplier = _rc.interpolated_tolerance_multiplier
+    allow_interpolated_auto = _rc.allow_interpolated_auto
+    min_geocoder_token_similarity = _rc.min_geocoder_token_similarity
+    min_geocoder_token_coverage = _rc.min_geocoder_token_coverage
+    min_auto_candidate_score = _rc.min_auto_candidate_score
+    emergency_in_region_guardrail = _rc.emergency_in_region_guardrail
+    emergency_min_score = _rc.emergency_min_score
+    emergency_min_margin = _rc.emergency_min_margin
 
     submitted_token_count = len([tok for tok in normalize_address(submitted_address).split() if tok])
     submitted_has_street_number = bool(re.match(r"^\s*\d+[a-zA-Z0-9-]*\b", submitted_address or ""))
@@ -12613,7 +12653,10 @@ def assess_risk(
     ),
     ctx: ActorContext = Depends(get_actor_context),
 ) -> AssessmentResult | AssessmentWithDiagnosticsResponse:
-    _require_role(ctx, WRITE_ROLES, "Viewer role cannot create assessments")
+    organization_id, ruleset = _resolve_write_context(
+        ctx, payload.organization_id, payload.ruleset_id,
+        "Viewer role cannot create assessments",
+    )
     if _is_dev_mode():
         LOGGER.info(
             "assessment_request %s",
@@ -12629,11 +12672,6 @@ def assess_risk(
                 sort_keys=True,
             ),
         )
-
-    organization_id = _resolve_org_id(payload.organization_id, ctx)
-    _enforce_org_scope(ctx, organization_id)
-
-    ruleset = _get_ruleset_or_default(payload.ruleset_id)
 
     auto_queue_on_uncovered = _env_flag("WF_AUTO_QUEUE_REGION_PREP_ON_MISS", False)
     require_prepared_region = _env_flag("WF_REQUIRE_PREPARED_REGION_COVERAGE", False)
@@ -13754,13 +13792,12 @@ def portfolio_assess(
     payload: BatchAssessmentRequest,
     ctx: ActorContext = Depends(get_actor_context),
 ) -> BatchAssessmentResponse:
-    _require_role(ctx, WRITE_ROLES, "Viewer role cannot run batch assessments")
+    organization_id, ruleset = _resolve_write_context(
+        ctx, payload.organization_id, payload.ruleset_id,
+        "Viewer role cannot run batch assessments",
+    )
     if not payload.items:
         raise HTTPException(status_code=400, detail="Batch request must include at least one property item")
-
-    organization_id = _resolve_org_id(payload.organization_id, ctx)
-    _enforce_org_scope(ctx, organization_id)
-    ruleset = _get_ruleset_or_default(payload.ruleset_id)
 
     batch = _run_batch(payload, actor=ctx, organization_id=organization_id, ruleset=ruleset)
     _log_audit(
@@ -13784,13 +13821,12 @@ def create_portfolio_job(
     background_tasks: BackgroundTasks,
     ctx: ActorContext = Depends(get_actor_context),
 ) -> PortfolioJobStatus:
-    _require_role(ctx, WRITE_ROLES, "Viewer role cannot create portfolio jobs")
+    organization_id, ruleset = _resolve_write_context(
+        ctx, payload.organization_id, payload.ruleset_id,
+        "Viewer role cannot create portfolio jobs",
+    )
     if not payload.items:
         raise HTTPException(status_code=400, detail="Job request must include at least one property item")
-
-    organization_id = _resolve_org_id(payload.organization_id, ctx)
-    _enforce_org_scope(ctx, organization_id)
-    ruleset = _get_ruleset_or_default(payload.ruleset_id)
 
     request_blob = payload.model_dump(mode="json")
     request_blob["organization_id"] = organization_id

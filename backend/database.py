@@ -2,11 +2,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import sqlite3
+import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
 from uuid import uuid4
+
+_DB_LOGGER = logging.getLogger("wildfire_app.database")
 
 from backend.models import (
     AdminSummary,
@@ -90,11 +94,19 @@ DEFAULT_RULESETS: list[UnderwritingRuleset] = [
 class AssessmentStore:
     def __init__(self, db_path: str = "wildfire_app.db") -> None:
         self.db_path = Path(db_path)
+        # Thread-local storage so each thread reuses a single connection rather
+        # than opening a fresh one per query.  WAL mode allows concurrent reads
+        # without blocking writes.
+        self._local = threading.local()
         self._init_db()
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
+        conn = getattr(self._local, "conn", None)
+        if conn is None:
+            conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA journal_mode=WAL")
+            self._local.conn = conn
         return conn
 
     def _now(self) -> str:
@@ -697,7 +709,12 @@ class AssessmentStore:
         for row in rows:
             try:
                 tags = json.loads(row["tags_json"]) if row["tags_json"] else []
-            except Exception:
+            except Exception as exc:
+                _DB_LOGGER.warning(
+                    "annotation tags_json corrupt for annotation_id=%s — defaulting to []: %s",
+                    row["annotation_id"],
+                    exc,
+                )
                 tags = []
             items.append(
                 AssessmentAnnotation(

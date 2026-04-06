@@ -29,7 +29,9 @@ TRUST_DIAGNOSTIC_CAVEAT = (
     "These diagnostics measure model coherence, stability, evidence quality, and external alignment. "
     "They do not establish real-world predictive accuracy or insurer approval."
 )
-_RISK_BUCKET_THRESHOLDS = load_scoring_config().risk_bucket_thresholds or {}
+_SCORING_CONFIG = load_scoring_config()
+_RISK_BUCKET_THRESHOLDS = _SCORING_CONFIG.risk_bucket_thresholds or {}
+_TRUST_STABILITY_PARAMS = _SCORING_CONFIG.trust_stability_params or {}
 
 
 def _safe_float(value: Any) -> float | None:
@@ -286,8 +288,9 @@ def build_trust_diagnostics(
         evidence_completeness = round(float(result.observed_weight_fraction or 0.0) * 100.0, 1)
 
     fallback_weight_fraction = float(result.fallback_weight_fraction or 0.0)
+    _fallback_heavy_threshold = float(_TRUST_STABILITY_PARAMS.get("fallback_heavy_fraction", 0.45))
     fallback_heavy = bool(
-        float(result.fallback_weight_fraction or 0.0) >= 0.45
+        float(result.fallback_weight_fraction or 0.0) >= _fallback_heavy_threshold
         or int(result.fallback_feature_count or 0) > int(result.observed_feature_count or 0)
     )
     inferred_fields = sorted(
@@ -346,10 +349,14 @@ def build_trust_diagnostics(
     max_jitter = max(jitter_swings) if jitter_swings else 0.0
     max_fallback = max(fallback_swings) if fallback_swings else 0.0
     max_combined = max(max_jitter, max_fallback)
-    local_sensitivity_score = max(0.0, min(100.0, 100.0 - (max_combined * 6.0)))
-    if max_combined >= 12.0 or tier_flips >= 2:
+    _unstable_thresh = float(_TRUST_STABILITY_PARAMS.get("unstable_swing_threshold", 12.0))
+    _moderate_thresh = float(_TRUST_STABILITY_PARAMS.get("moderate_swing_threshold", 6.0))
+    _sensitivity_mult = float(_TRUST_STABILITY_PARAMS.get("sensitivity_score_multiplier", 6.0))
+    _assumption_sensitive_swing = float(_TRUST_STABILITY_PARAMS.get("assumption_sensitive_swing", 4.0))
+    local_sensitivity_score = max(0.0, min(100.0, 100.0 - (max_combined * _sensitivity_mult)))
+    if max_combined >= _unstable_thresh or tier_flips >= 2:
         rating = "unstable"
-    elif max_combined >= 6.0 or tier_flips >= 1 or band_flips >= 1:
+    elif max_combined >= _moderate_thresh or tier_flips >= 1 or band_flips >= 1:
         rating = "moderate"
     else:
         rating = "stable"
@@ -369,7 +376,7 @@ def build_trust_diagnostics(
         local_sensitivity_score=round(local_sensitivity_score, 1),
         geocode_jitter_swing=round(max_jitter, 1),
         fallback_assumption_swing=round(max_fallback, 1),
-        assumption_sensitive=bool(max_fallback >= 4.0 or tier_flips >= 1),
+        assumption_sensitive=bool(max_fallback >= _assumption_sensitive_swing or tier_flips >= 1),
         tier_flip_risk=tier_flip_risk,
         notes=stability_notes,
     )

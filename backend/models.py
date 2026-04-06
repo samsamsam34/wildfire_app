@@ -104,10 +104,20 @@ class PropertyAttributes(BaseModel):
     vent_type: Optional[str] = None
     siding_type: Optional[str] = None
     window_type: Optional[str] = None
-    defensible_space_ft: Optional[float] = None
+    defensible_space_ft: Optional[float] = Field(
+        default=None,
+        ge=0.0,
+        le=5280.0,  # 1 mile; beyond this the input is almost certainly wrong
+        description="Defensible space clearance in feet from the structure.",
+    )
     vegetation_condition: Optional[str] = None
     driveway_access_notes: Optional[str] = None
-    construction_year: Optional[int] = None
+    construction_year: Optional[int] = Field(
+        default=None,
+        ge=1800,
+        le=2100,
+        description="Year the structure was built. Must be a plausible calendar year.",
+    )
     inspection_notes: Optional[str] = None
 
 
