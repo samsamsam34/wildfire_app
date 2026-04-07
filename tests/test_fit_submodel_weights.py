@@ -284,3 +284,50 @@ def test_direct_composite_auc_better_weights_lift_auc():
         f"Weights focused on discriminating submodel must beat uniform weights: "
         f"focused={auc_focused:.4f}, uniform={auc_uniform:.4f}"
     )
+
+
+# ---------------------------------------------------------------------------
+# --compare-weights: weight comparison verdict logic
+# ---------------------------------------------------------------------------
+
+def test_compare_weights_better_current_gives_better_verdict():
+    """direct_composite_auc delta is positive when current weights outperform
+    the reference — the comparison arithmetic is correct."""
+    rng = np.random.default_rng(17)
+    n = 200
+    y = rng.integers(0, 2, size=n).astype(float)
+    # All submodels carry moderate noise; submodel 0 has a weak signal.
+    X = rng.uniform(0.3, 0.7, size=(n, len(SUBMODELS)))
+    X[:, 0] = 0.5 + (y - 0.5) * 0.25 + rng.uniform(-0.1, 0.1, size=n)
+
+    # "Current" weights: heavy on the weak-signal submodel
+    current = {SUBMODELS[0]: 0.8, **{s: 0.2 / (len(SUBMODELS) - 1) for s in SUBMODELS[1:]}}
+    # "Reference" weights: uniform (dilutes the signal with noise)
+    reference = {s: 1.0 / len(SUBMODELS) for s in SUBMODELS}
+
+    cur_auc = direct_composite_auc(X, y, current)
+    ref_auc = direct_composite_auc(X, y, reference)
+    assert cur_auc > ref_auc, (
+        f"Current weights focused on discriminating submodel must beat reference: "
+        f"cur={cur_auc:.4f}, ref={ref_auc:.4f}"
+    )
+
+
+def test_compare_weights_worse_current_gives_negative_delta():
+    """When the reference weights are better, the delta (cur - ref) is negative."""
+    rng = np.random.default_rng(31)
+    n = 200
+    y = rng.integers(0, 2, size=n).astype(float)
+    X = rng.uniform(0.3, 0.7, size=(n, len(SUBMODELS)))
+    X[:, 0] = 0.5 + (y - 0.5) * 0.25 + rng.uniform(-0.1, 0.1, size=n)
+
+    # Reference is focused; current is uniform (worse)
+    reference = {SUBMODELS[0]: 0.8, **{s: 0.2 / (len(SUBMODELS) - 1) for s in SUBMODELS[1:]}}
+    current = {s: 1.0 / len(SUBMODELS) for s in SUBMODELS}
+
+    cur_auc = direct_composite_auc(X, y, current)
+    ref_auc = direct_composite_auc(X, y, reference)
+    assert cur_auc < ref_auc, (
+        f"Current uniform weights must score below focused reference: "
+        f"cur={cur_auc:.4f}, ref={ref_auc:.4f}"
+    )

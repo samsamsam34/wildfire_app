@@ -345,6 +345,17 @@ def main() -> int:
     parser.add_argument("--C", type=float, default=LOGREG_C, dest="C")
     parser.add_argument("--dry-run", action="store_true",
                         help="Report proposed weights but do not write config.")
+    parser.add_argument(
+        "--compare-weights",
+        type=str,
+        default=None,
+        metavar="JSON",
+        help=(
+            "JSON dict of a reference weight vector to compare against the "
+            "current config weights via direct_composite_auc.  Exits after "
+            "printing the comparison; does not fit or update weights."
+        ),
+    )
     args = parser.parse_args()
 
     # ── Load data ────────────────────────────────────────────────────────────
@@ -364,6 +375,27 @@ def main() -> int:
 
     # ── Load current weights (needed for baseline comparison) ─────────────
     current = load_current_weights(SCORING_CONFIG_PATH)
+
+    # ── --compare-weights: validate a reference vector vs current ─────────
+    if args.compare_weights is not None:
+        try:
+            ref_weights = json.loads(args.compare_weights)
+        except json.JSONDecodeError as exc:
+            print(f"ERROR: --compare-weights is not valid JSON: {exc}", file=sys.stderr)
+            return 1
+        ref_auc = direct_composite_auc(X, y, ref_weights)
+        cur_auc = direct_composite_auc(X, y, current)
+        print(f"\nDirect-blend AUC comparison:")
+        print(f"  Reference weights : {ref_auc:.4f}")
+        print(f"  Current weights   : {cur_auc:.4f}")
+        print(f"  Delta (cur - ref) : {cur_auc - ref_auc:+.4f}")
+        if cur_auc < ref_auc - 1e-4:
+            print("  VERDICT: current weights are WORSE — consider reverting.")
+        elif cur_auc > ref_auc + 1e-4:
+            print("  VERDICT: current weights are BETTER — change confirmed.")
+        else:
+            print("  VERDICT: negligible difference.")
+        return 0
 
     # ── Baseline AUC: two views ───────────────────────────────────────────
     # 1. Stale archived composite score from the dataset (scored with old weights
