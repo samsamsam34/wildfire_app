@@ -236,6 +236,44 @@ def test_direct_observation_improves_confidence() -> None:
     assert _tier_rank(strong_tier) >= _tier_rank(weak_tier)
 
 
+def test_low_observed_weight_fraction_cannot_be_high_confidence() -> None:
+    # Only one structural fact confirmed, so the effective_observed boost (requires >=3
+    # confirmed core facts) does not apply.  fallback_weight_fraction is intentionally
+    # kept below the existing 0.45 gate to isolate the new observed-weight gate.
+    assumptions = AssumptionsBlock(
+        confirmed_inputs={"roof_type": "class a"},
+        observed_inputs={
+            "address": "456 Fallback Lane, Test, MT",
+            "roof_type": "class a",
+            "vent_type": "standard",
+            "defensible_space_ft": 15,
+            "construction_year": 2005,
+        },
+        inferred_inputs={},
+        missing_inputs=[],
+        assumptions_used=[],
+    )
+    _, tier = _confidence(
+        assumptions=assumptions,
+        preflight=_preflight(
+            fallback_weight_fraction=0.38,
+            observed_weight_fraction=0.48,
+            observed_feature_count=5,
+            inferred_feature_count=3,
+            fallback_feature_count=4,
+            geometry_quality_score=0.88,
+            regional_context_coverage_score=92.0,
+            regional_enrichment_consumption_score=90.0,
+            property_specificity_score=72.0,
+        ),
+        observed_weight_fraction=0.48,
+        fallback_dominance_ratio=0.38,
+    )
+    assert tier != "high", (
+        f"Properties with <55% observed scoring weight must not reach 'high' confidence; got {tier!r}"
+    )
+
+
 def test_fallback_heavy_records_cannot_be_high_confidence() -> None:
     score, tier = _confidence(
         assumptions=_assumptions(),

@@ -1236,6 +1236,9 @@ def _build_confidence(
     else:
         confidence_tier = "high"
 
+    _conf_high_min_observed = float(
+        scoring_config.trust_stability_params.get("confidence_high_min_observed_fraction", 0.55)
+    )
     if confidence_tier == "high" and (
         environmental_data_completeness < 90.0
         or not property_level_context.get("footprint_used")
@@ -1246,6 +1249,7 @@ def _build_confidence(
         or fallback_weight_fraction >= 0.45
         or len(missing_critical_fields) > 0
         or len(inferred_critical_fields) > 0
+        or effective_observed_weight_fraction < _conf_high_min_observed
     ):
         confidence_tier = "moderate"
 

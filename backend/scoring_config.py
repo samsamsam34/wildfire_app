@@ -138,6 +138,11 @@ class ScoringConfig:
             "fallback_heavy_fraction": 0.45,
             # Swing threshold above which an assessment is flagged assumption_sensitive.
             "assumption_sensitive_swing": 4.0,
+            # Minimum observed-weight fraction required to award confidence_tier="high".
+            # Properties below this threshold are capped at "moderate" even when fallback
+            # fraction is under the fallback_heavy_fraction threshold, preventing regional-
+            # raster-only assessments from appearing as high-confidence property scores.
+            "confidence_high_min_observed_fraction": 0.55,
         }
     )
 

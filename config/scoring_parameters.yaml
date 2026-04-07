@@ -100,5 +100,8 @@
     "false_high_min_score": 70.0,
     "adverse_outcome_min_rank": 3.0,
     "non_adverse_outcome_max_rank": 1.0
+  },
+  "trust_stability_params": {
+    "confidence_high_min_observed_fraction": 0.55
   }
 }
