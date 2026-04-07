@@ -9,7 +9,12 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-from backend.building_footprints import BuildingFootprintClient, RING_KEYS, compute_structure_rings
+from backend.building_footprints import (
+    BuildingFootprintClient,
+    RING_KEYS,
+    compute_structure_rings,
+    compute_footprint_geometry_signals,
+)
 from backend.feature_bundle_cache import FeatureBundleCache
 from backend.feature_enrichment import (
     apply_enrichment_source_fallbacks,
@@ -2862,6 +2867,30 @@ class WildfireDataClient:
             vegetation_directional_sectors=structure_veg_features.get("vegetation_directional_sectors"),
             geometry_precision_flag="footprint_relative",
         )
+        # Stage 1: zone-specific slope means sampled at the midpoint arc of each ring.
+        # 17.5 ft = midpoint of 5-30 ft zone; 65 ft = midpoint of 30-100 ft zone.
+        ring_5_30_slope_mean_deg = self._compute_arc_slope_mean_deg(
+            slope_path, slope_origin_lat, slope_origin_lon, radius_ft=17.5
+        )
+        ring_30_100_slope_mean_deg = self._compute_arc_slope_mean_deg(
+            slope_path, slope_origin_lat, slope_origin_lon, radius_ft=65.0
+        )
+        # Stage 2: minimum clearance from footprint boundary to parcel boundary.
+        parcel_setback_min_ft: float | None = None
+        if (
+            result.footprint is not None
+            and parcel_polygon is not None
+            and Transformer is not None
+            and shapely_transform is not None
+        ):
+            try:
+                _to_3857 = Transformer.from_crs("EPSG:4326", "EPSG:3857", always_xy=True).transform
+                _fp_m = shapely_transform(_to_3857, result.footprint)
+                _parcel_m = shapely_transform(_to_3857, parcel_polygon)
+                _d_m = float(_parcel_m.exterior.distance(_fp_m))
+                parcel_setback_min_ft = round(_d_m / 0.3048, 1)
+            except Exception:
+                parcel_setback_min_ft = None
 
         neighbor_metrics = footprint_client.get_neighbor_structure_metrics(
             lat=query_lat,
@@ -2876,6 +2905,11 @@ class WildfireDataClient:
             neighbor_metrics=neighbor_metrics,
             proxy_year=proxy_year,
             public_record_fields=structure_public_record_fields,
+        )
+        # Stage 3: footprint geometry signals derived from the polygon and parcel.
+        footprint_geometry_signals = compute_footprint_geometry_signals(
+            footprint=result.footprint,
+            parcel_polygon=parcel_polygon,
         )
 
         if ring_metrics:
@@ -3038,11 +3072,24 @@ class WildfireDataClient:
             "vegetation_directional_basis": structure_veg_features.get("vegetation_directional_basis"),
             "directional_risk": structure_veg_features.get("directional_risk") or {},
             "structure_relative_slope": structure_relative_slope,
+            # Stage 1: zone-specific slope means (degrees) sampled at ring midpoint arcs.
+            "ring_5_30_slope_mean_deg": ring_5_30_slope_mean_deg,
+            "ring_30_100_slope_mean_deg": ring_30_100_slope_mean_deg,
+            # Stage 2: minimum footprint-to-parcel-boundary clearance (feet).
+            "parcel_setback_min_ft": parcel_setback_min_ft,
+            # Adjacent parcel vegetation not yet computable; flag explicitly as unknown.
+            "adjacent_parcel_vegetation_pressure": None,
             "neighboring_structure_metrics": neighbor_metrics,
             "building_age_proxy_year": proxy_year,
             "building_age_material_proxy_risk": proxy_risk,
             "structure_attributes": structure_attributes,
             "parcel_based_metrics": parcel_based_metrics,
+            # Stage 3: footprint shape and parcel coverage signals.
+            "footprint_perimeter_m": footprint_geometry_signals.get("footprint_perimeter_m"),
+            "footprint_compactness_ratio": footprint_geometry_signals.get("footprint_compactness_ratio"),
+            "footprint_long_axis_bearing_deg": footprint_geometry_signals.get("footprint_long_axis_bearing_deg"),
+            "parcel_coverage_ratio": footprint_geometry_signals.get("parcel_coverage_ratio"),
+            "multiple_structures_on_parcel": footprint_geometry_signals.get("multiple_structures_on_parcel"),
             "footprint_centroid": {
                 "latitude": result.centroid[0] if result.centroid else None,
                 "longitude": result.centroid[1] if result.centroid else None,
@@ -3159,6 +3206,34 @@ class WildfireDataClient:
                 if sample is not None:
                     values.append(sample)
         return values
+
+    def _compute_arc_slope_mean_deg(
+        self,
+        slope_path: str,
+        origin_lat: float,
+        origin_lon: float,
+        radius_ft: float,
+        n_samples: int = 8,
+    ) -> float | None:
+        """Sample slope raster at N equally-spaced points on an arc at radius_ft from origin.
+
+        Returns the mean slope in degrees, or None when the slope raster is unavailable
+        or fewer than 4 valid samples are obtained (too sparse to trust the mean).
+        """
+        if not slope_path or not self._file_exists(slope_path):
+            return None
+        radius_m = radius_ft * 0.3048
+        values: list[float] = []
+        for i in range(n_samples):
+            theta = 2.0 * math.pi * i / n_samples
+            d_lat = self._meters_to_lat_deg(radius_m * math.sin(theta))
+            d_lon = self._meters_to_lon_deg(radius_m * math.cos(theta), origin_lat)
+            val = self._sample_raster_point(slope_path, origin_lat + d_lat, origin_lon + d_lon)
+            if val is not None:
+                values.append(float(val))
+        if len(values) < 4:
+            return None
+        return round(sum(values) / len(values), 2)
 
     def _derive_slope_aspect_from_dem(self, dem_path: str, lat: float, lon: float, cell_m: float = 30.0) -> tuple[float | None, float | None]:
         center = self._sample_raster_point(dem_path, lat, lon)
@@ -3428,6 +3503,18 @@ class WildfireDataClient:
             "vegetation_directional_basis": "point_proxy_relative",
             "directional_risk": {},
             "structure_relative_slope": {},
+            # Stage 1 – ring slope means unavailable in point-proxy mode.
+            "ring_5_30_slope_mean_deg": None,
+            "ring_30_100_slope_mean_deg": None,
+            # Stage 2 – setback and adjacent parcel pressure unavailable without footprint.
+            "parcel_setback_min_ft": None,
+            "adjacent_parcel_vegetation_pressure": None,
+            # Stage 3 – footprint geometry signals unavailable in point-proxy mode.
+            "footprint_perimeter_m": None,
+            "footprint_compactness_ratio": None,
+            "footprint_long_axis_bearing_deg": None,
+            "parcel_coverage_ratio": None,
+            "multiple_structures_on_parcel": "unknown",
             "structure_attributes": {
                 "area": {"sqft": None, "source": None},
                 "density_context": {

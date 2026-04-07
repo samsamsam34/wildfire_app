@@ -503,6 +503,31 @@ class RiskEngine:
             context.slope_index,
             "Slope context missing; scoring used conservative fallback.",
         )
+        # Stage 1: blend structure-point slope with zone-specific ring slope means to produce
+        # a more spatially representative slope input for the topography submodel.
+        # ring_5_30_slope_mean_deg and ring_30_100_slope_mean_deg are in degrees (0–90+);
+        # normalise to 0-100 using the same 45° ceiling used by the main slope_index.
+        _slope_norm_max = 45.0
+        _ring_5_30_deg = _to_float(property_level_context.get("ring_5_30_slope_mean_deg"))
+        _ring_30_100_deg = _to_float(property_level_context.get("ring_30_100_slope_mean_deg"))
+        _zone_slope_terms = [v for v in [_ring_5_30_deg, _ring_30_100_deg] if v is not None]
+        _zone_slope_mean_deg = (
+            round(sum(_zone_slope_terms) / len(_zone_slope_terms), 2)
+            if _zone_slope_terms
+            else None
+        )
+        zone_slope_index = (
+            round(max(0.0, min(100.0, (_zone_slope_mean_deg / _slope_norm_max) * 100.0)), 1)
+            if _zone_slope_mean_deg is not None
+            else None
+        )
+        # Blend: 65% structure-point slope + 35% zone slope when both are available.
+        # Falls through to the unmodified slope_index when zone slope is absent.
+        blended_slope_index = (
+            round(0.65 * float(slope_index) + 0.35 * float(zone_slope_index), 1)
+            if slope_index is not None and zone_slope_index is not None
+            else slope_index
+        )
         aspect_index = ctx_metric(
             context.aspect_index,
             "Aspect context missing; scoring used conservative fallback.",
@@ -655,7 +680,7 @@ class RiskEngine:
         slope_assumptions: List[str] = []
         slope_score = weighted_score(
             [
-                (0.70, slope_index, "Slope input unavailable for topography model."),
+                (0.70, blended_slope_index, "Slope input unavailable for topography model."),
                 (0.30, aspect_index, "Aspect input unavailable for topography model."),
             ],
             slope_assumptions,
@@ -664,7 +689,12 @@ class RiskEngine:
         submodels["slope_topography_risk"] = SubmodelResult(
             score=slope_clamped,
             explanation="Slope/topography risk captures terrain-driven spread amplification.",
-            key_inputs={"slope_index": slope_index, "aspect_index": aspect_index},
+            key_inputs={
+                "slope_index": slope_index,
+                "zone_slope_index": zone_slope_index,
+                "blended_slope_index": blended_slope_index,
+                "aspect_index": aspect_index,
+            },
             assumptions=slope_assumptions + list(context_assumptions),
             raw_score=round(float(slope_score), 4),
             clamped_score=slope_clamped,

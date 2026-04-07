@@ -664,3 +664,90 @@ def compute_structure_rings(footprint: Any) -> tuple[dict[str, Any], list[str]]:
         assumptions.append("Some structure rings could not be generated from footprint geometry.")
 
     return rings_wgs84, assumptions
+
+
+def compute_footprint_geometry_signals(
+    footprint: Any,
+    parcel_polygon: Any | None = None,
+) -> dict[str, float | str | None]:
+    """Derive geometry signals from the structure footprint and optionally the parcel polygon.
+
+    Returns a dict with the following keys (all None when geometry is unavailable):
+      footprint_perimeter_m          -- exterior perimeter in metres (EPSG:3857)
+      footprint_compactness_ratio    -- 4π·area / perimeter² (1.0 = circle, lower = irregular)
+      footprint_long_axis_bearing_deg -- bearing (0–360°, clockwise from north) of the longer
+                                         bounding-box axis; 0° means the structure runs N–S
+      parcel_coverage_ratio          -- footprint area / parcel area (0–1); None when no parcel
+      multiple_structures_on_parcel  -- "unknown" always; reserved for future enumeration
+    """
+    if not (Transformer and shapely_transform):
+        return {
+            "footprint_perimeter_m": None,
+            "footprint_compactness_ratio": None,
+            "footprint_long_axis_bearing_deg": None,
+            "parcel_coverage_ratio": None,
+            "multiple_structures_on_parcel": "unknown",
+        }
+
+    import math as _math
+
+    try:
+        to_3857 = Transformer.from_crs("EPSG:4326", "EPSG:3857", always_xy=True).transform
+        fp_m = shapely_transform(to_3857, footprint)
+
+        area_m2 = float(fp_m.area)
+        perimeter_m = float(fp_m.exterior.length)
+        footprint_perimeter_m = round(perimeter_m, 2) if perimeter_m > 0 else None
+        footprint_compactness_ratio = (
+            round(min(1.0, (4.0 * _math.pi * area_m2) / (perimeter_m * perimeter_m)), 4)
+            if perimeter_m > 0 and area_m2 > 0
+            else None
+        )
+
+        # Long-axis bearing from the bounding box. minx, miny, maxx, maxy in 3857 (metres).
+        minx, miny, maxx, maxy = fp_m.bounds
+        dx = maxx - minx  # east–west extent in metres
+        dy = maxy - miny  # north–south extent in metres
+        # If dx > dy the structure is wider east–west → long axis runs E–W → bearing ≈ 90°.
+        # If dy > dx the structure is taller north–south → long axis runs N–S → bearing ≈ 0°.
+        if dx > 0 and dy > 0:
+            # Bearing of the long axis measured clockwise from north.
+            if dy >= dx:
+                footprint_long_axis_bearing_deg = round(
+                    (_math.degrees(_math.atan2(dx, dy))) % 180.0, 1
+                )
+            else:
+                footprint_long_axis_bearing_deg = round(
+                    (_math.degrees(_math.atan2(dy, dx)) + 90.0) % 180.0, 1
+                )
+        else:
+            footprint_long_axis_bearing_deg = None
+
+        parcel_coverage_ratio: float | None = None
+        if parcel_polygon is not None:
+            try:
+                parcel_m = shapely_transform(to_3857, parcel_polygon)
+                parcel_area = float(parcel_m.area)
+                if parcel_area > 0:
+                    parcel_coverage_ratio = round(
+                        min(1.0, area_m2 / parcel_area), 4
+                    )
+            except Exception:
+                parcel_coverage_ratio = None
+
+    except Exception:
+        return {
+            "footprint_perimeter_m": None,
+            "footprint_compactness_ratio": None,
+            "footprint_long_axis_bearing_deg": None,
+            "parcel_coverage_ratio": None,
+            "multiple_structures_on_parcel": "unknown",
+        }
+
+    return {
+        "footprint_perimeter_m": footprint_perimeter_m,
+        "footprint_compactness_ratio": footprint_compactness_ratio,
+        "footprint_long_axis_bearing_deg": footprint_long_axis_bearing_deg,
+        "parcel_coverage_ratio": parcel_coverage_ratio,
+        "multiple_structures_on_parcel": "unknown",
+    }
