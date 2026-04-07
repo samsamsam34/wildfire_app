@@ -679,7 +679,7 @@ def compute_structure_rings(
             continue
         rings_wgs84[key] = shapely_transform(to_wgs84, ring)
 
-    if len(rings_wgs84) != len(RING_KEYS):
+    if parcel_polygon is None and len(rings_wgs84) != len(RING_KEYS):
         assumptions.append("Some structure rings could not be generated from footprint geometry.")
 
     return rings_wgs84, assumptions

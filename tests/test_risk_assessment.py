@@ -4081,6 +4081,14 @@ def test_structure_ring_generation_no_parcel_backward_compat():
     assert not assumptions
 
 
+def test_structure_ring_degenerate_footprint_assumption_fires_without_parcel():
+    """Degenerate footprint (None) still records an assumption when no parcel is supplied."""
+    _require_shapely()
+    rings, assumptions = compute_structure_rings(None)
+    assert rings == {}
+    assert any("footprint geometry is missing" in a for a in assumptions)
+
+
 def test_structure_ring_summary_pipeline(monkeypatch):
     _require_shapely()
     client = WildfireDataClient()
