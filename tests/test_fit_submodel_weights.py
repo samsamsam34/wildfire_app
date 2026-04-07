@@ -18,7 +18,9 @@ if str(REPO_ROOT) not in sys.path:
 from scripts.fit_submodel_weights import (
     SUBMODELS,
     MIN_SUBMODEL_WEIGHT,
+    direct_composite_auc,
     extract_features,
+    load_current_weights,
     normalize_weights,
     roc_auc,
     sigmoid,
@@ -200,3 +202,85 @@ def test_kfold_each_fold_has_both_classes():
     y = np.array([0, 1] * 10, dtype=float)
     for train, val in stratified_kfold_indices(y, k=5):
         assert 1 in y[val] and 0 in y[val], "Each val fold must contain both classes"
+
+
+# ---------------------------------------------------------------------------
+# load_current_weights — JSON-quoted key handling
+# ---------------------------------------------------------------------------
+
+def test_load_current_weights_reads_json_quoted_key(tmp_path):
+    """load_current_weights must parse a JSON-style config where the block key
+    is surrounded by double quotes, e.g. "submodel_weights": { ... }"""
+    cfg = tmp_path / "scoring_parameters.yaml"
+    lines = [
+        '{',
+        '  "submodel_weights": {',
+    ]
+    for i, s in enumerate(SUBMODELS):
+        comma = "," if i < len(SUBMODELS) - 1 else ""
+        lines.append(f'    "{s}": 0.{i + 10}{comma}')
+    lines += ['  },', '  "other_key": 1', '}']
+    cfg.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    weights = load_current_weights(cfg)
+    assert set(weights.keys()) == set(SUBMODELS), (
+        f"All submodels must be parsed; got keys: {list(weights.keys())}"
+    )
+    for s in SUBMODELS:
+        assert weights[s] > 0, f"Weight for {s} must be positive"
+
+
+def test_load_current_weights_reads_bare_yaml_key(tmp_path):
+    """load_current_weights must also handle bare YAML-style keys."""
+    cfg = tmp_path / "scoring_parameters.yaml"
+    lines = ["submodel_weights:"]
+    for s in SUBMODELS:
+        lines.append(f'  "{s}": 0.12')
+    cfg.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    weights = load_current_weights(cfg)
+    assert set(weights.keys()) == set(SUBMODELS)
+
+
+# ---------------------------------------------------------------------------
+# direct_composite_auc
+# ---------------------------------------------------------------------------
+
+def test_direct_composite_auc_perfect_predictor():
+    """A weight dict that puts all mass on the one perfectly discriminating
+    feature must return AUC == 1.0."""
+    n = 20
+    X = np.zeros((n, len(SUBMODELS)))
+    y = np.array([i % 2 for i in range(n)], dtype=float)
+    # Make the first submodel a perfect predictor
+    X[:, 0] = y
+    weights = {SUBMODELS[0]: 1.0}
+    assert direct_composite_auc(X, y, weights) == pytest.approx(1.0)
+
+
+def test_direct_composite_auc_empty_weights_returns_half():
+    """Zero or absent weights must return 0.5 (undefined, safe fallback)."""
+    X = np.ones((10, len(SUBMODELS))) * 0.5
+    y = np.array([0, 1] * 5, dtype=float)
+    assert direct_composite_auc(X, y, {}) == pytest.approx(0.5)
+
+
+def test_direct_composite_auc_better_weights_lift_auc():
+    """Fitted weights should produce higher AUC than uniform weights on a
+    dataset where one submodel is strongly predictive."""
+    rng = np.random.default_rng(99)
+    n = 100
+    y = rng.integers(0, 2, size=n).astype(float)
+    X = rng.uniform(0, 0.4, size=(n, len(SUBMODELS)))
+    # Make the last submodel a near-perfect predictor
+    X[:, -1] = y * 0.9 + rng.uniform(0, 0.05, size=n)
+
+    uniform_weights = {s: 1.0 / len(SUBMODELS) for s in SUBMODELS}
+    focused_weights = {SUBMODELS[-1]: 1.0}
+
+    auc_uniform = direct_composite_auc(X, y, uniform_weights)
+    auc_focused = direct_composite_auc(X, y, focused_weights)
+    assert auc_focused > auc_uniform, (
+        f"Weights focused on discriminating submodel must beat uniform weights: "
+        f"focused={auc_focused:.4f}, uniform={auc_uniform:.4f}"
+    )

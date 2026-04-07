@@ -195,6 +195,20 @@ def cross_val_auc(
     return mean, std, fold_aucs
 
 
+def direct_composite_auc(X: np.ndarray, y: np.ndarray, weights: dict) -> float:
+    """AUC of a direct weighted-sum composite using the given weight dict.
+
+    X columns correspond to SUBMODELS (normalised to [0, 1]).
+    Submodels absent from *weights* receive zero weight.
+    """
+    w = np.array([weights.get(s, 0.0) for s in SUBMODELS], dtype=np.float64)
+    total = w.sum()
+    if total <= 0:
+        return 0.5
+    scores = X @ (w / total)
+    return roc_auc(scores, y)
+
+
 # ---------------------------------------------------------------------------
 # Weight derivation
 # ---------------------------------------------------------------------------
@@ -239,7 +253,10 @@ def load_current_weights(config_path: Path) -> dict:
     weights: dict = {}
     for line in text.splitlines():
         stripped = line.strip()
-        if stripped.startswith("submodel_weights"):
+        # Match both bare YAML key and JSON-quoted key:
+        #   submodel_weights:      (YAML)
+        #   "submodel_weights": {  (JSON-style)
+        if stripped.lstrip('"\'').startswith("submodel_weights") and ":" in stripped:
             in_block = True
             continue
         if in_block:
@@ -345,8 +362,13 @@ def main() -> int:
 
     print(f"Usable rows: {n}  |  positive rate: {y.mean():.3f}  |  submodels: {d}")
 
-    # ── Baseline AUC (current wildfire_risk_score) ────────────────────────
-    baseline_scores = np.array([
+    # ── Load current weights (needed for baseline comparison) ─────────────
+    current = load_current_weights(SCORING_CONFIG_PATH)
+
+    # ── Baseline AUC: two views ───────────────────────────────────────────
+    # 1. Stale archived composite score from the dataset (scored with old weights
+    #    at eval-dataset creation time; provided as historical context only).
+    archived_scores = np.array([
         r["scores"].get("wildfire_risk_score", 50.0)
         for r in rows
         if r.get("evaluation", {}).get("row_usable")
@@ -356,8 +378,13 @@ def main() -> int:
             for s in SUBMODELS
         )
     ], dtype=np.float64)
-    baseline_auc = roc_auc(baseline_scores, y)
-    print(f"\nBaseline (wildfire_risk_score) ROC AUC: {baseline_auc:.4f}")
+    archived_auc = roc_auc(archived_scores, y)
+    # 2. Direct composite AUC using current config weights on the same submodel
+    #    features extracted above — apples-to-apples baseline for gate comparison.
+    old_direct_auc = direct_composite_auc(X, y, current)
+    baseline_auc = old_direct_auc
+    print(f"\nBaseline AUC (archived wildfire_risk_score): {archived_auc:.4f}")
+    print(f"Baseline AUC (current weights, direct blend): {old_direct_auc:.4f}")
 
     # ── Cross-validated AUC with logistic regression ──────────────────────
     print(f"\nFitting logistic regression ({args.folds}-fold CV, C={args.C}) ...")
@@ -385,7 +412,9 @@ def main() -> int:
           "\n  ".join(f"{SUBMODELS[i]:35s}: {w_full[i]:+.4f}" for i in range(d)))
 
     proposed = normalize_weights(w_full)
-    current = load_current_weights(SCORING_CONFIG_PATH)
+    new_direct_auc = direct_composite_auc(X, y, proposed)
+    print(f"\nDirect-blend AUC — old weights: {old_direct_auc:.4f}  →  new weights: {new_direct_auc:.4f}  "
+          f"({new_direct_auc - old_direct_auc:+.4f})")
 
     _print_weight_table(current, proposed)
 
