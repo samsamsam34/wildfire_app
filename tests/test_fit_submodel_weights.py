@@ -1,0 +1,202 @@
+"""Unit tests for scripts/fit_submodel_weights.py.
+
+Covers the pure-Python/numpy utility functions without touching the filesystem
+or requiring the evaluation dataset to be present.
+"""
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+import numpy as np
+import pytest
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from scripts.fit_submodel_weights import (
+    SUBMODELS,
+    MIN_SUBMODEL_WEIGHT,
+    extract_features,
+    normalize_weights,
+    roc_auc,
+    sigmoid,
+    stratified_kfold_indices,
+)
+
+
+# ---------------------------------------------------------------------------
+# sigmoid
+# ---------------------------------------------------------------------------
+
+def test_sigmoid_zero():
+    assert sigmoid(np.array([0.0]))[0] == pytest.approx(0.5)
+
+
+def test_sigmoid_large_positive():
+    assert sigmoid(np.array([500.0]))[0] == pytest.approx(1.0, abs=1e-6)
+
+
+def test_sigmoid_large_negative():
+    assert sigmoid(np.array([-500.0]))[0] == pytest.approx(0.0, abs=1e-6)
+
+
+def test_sigmoid_monotone():
+    z = np.linspace(-10, 10, 50)
+    s = sigmoid(z)
+    assert np.all(np.diff(s) > 0), "sigmoid must be strictly increasing"
+
+
+# ---------------------------------------------------------------------------
+# roc_auc
+# ---------------------------------------------------------------------------
+
+def test_roc_auc_perfect():
+    scores = np.array([0.9, 0.8, 0.3, 0.1])
+    labels = np.array([1.0, 1.0, 0.0, 0.0])
+    assert roc_auc(scores, labels) == pytest.approx(1.0)
+
+
+def test_roc_auc_random():
+    """AUC of a random (uniform) predictor should be near 0.5."""
+    rng = np.random.default_rng(42)
+    scores = rng.uniform(size=500)
+    labels = rng.integers(0, 2, size=500).astype(float)
+    auc = roc_auc(scores, labels)
+    assert 0.4 <= auc <= 0.6, f"Random predictor AUC should be ~0.5, got {auc:.4f}"
+
+
+def test_roc_auc_all_positive():
+    """All-positive label set returns 0.5 (undefined, safe fallback)."""
+    scores = np.array([0.9, 0.8])
+    labels = np.array([1.0, 1.0])
+    assert roc_auc(scores, labels) == 0.5
+
+
+def test_roc_auc_worse_than_random():
+    """Inverted predictor gives ~0.0 AUC."""
+    scores = np.array([0.1, 0.2, 0.8, 0.9])
+    labels = np.array([1.0, 1.0, 0.0, 0.0])
+    assert roc_auc(scores, labels) == pytest.approx(0.0)
+
+
+# ---------------------------------------------------------------------------
+# normalize_weights
+# ---------------------------------------------------------------------------
+
+def test_normalize_weights_sums_to_one():
+    coef = np.array([1.0, 2.0, 3.0, 0.5, 1.5, 0.1, 2.5, 1.0])
+    w = normalize_weights(coef)
+    assert sum(w.values()) == pytest.approx(1.0, abs=1e-9)
+
+
+def test_normalize_weights_covers_all_submodels():
+    coef = np.ones(len(SUBMODELS))
+    w = normalize_weights(coef)
+    assert set(w.keys()) == set(SUBMODELS)
+
+
+def test_normalize_weights_floor_applied():
+    """Every submodel must have weight >= MIN_SUBMODEL_WEIGHT."""
+    # One large coefficient dominates; others would be near zero without floor.
+    coef = np.zeros(len(SUBMODELS))
+    coef[0] = 100.0
+    w = normalize_weights(coef)
+    assert all(v >= MIN_SUBMODEL_WEIGHT - 1e-9 for v in w.values()), (
+        f"All weights must be >= {MIN_SUBMODEL_WEIGHT}; got {w}"
+    )
+
+
+def test_normalize_weights_all_negative_sums_to_one():
+    """All-negative coefficients fall back to equal pre-rounding weights;
+    post-rounding the sum must still be exactly 1.0."""
+    coef = np.full(len(SUBMODELS), -1.0)
+    w = normalize_weights(coef)
+    assert sum(w.values()) == pytest.approx(1.0, abs=1e-9)
+    # Floor must be applied to every submodel
+    assert all(v >= MIN_SUBMODEL_WEIGHT - 1e-9 for v in w.values())
+
+
+def test_normalize_weights_rounding_residual_absorbed():
+    """Output weights must sum exactly to 1.0 after rounding."""
+    rng = np.random.default_rng(7)
+    coef = rng.uniform(0.1, 2.0, size=len(SUBMODELS))
+    w = normalize_weights(coef)
+    total = round(sum(w.values()), 10)
+    assert total == pytest.approx(1.0, abs=1e-9), f"Weights sum to {total}, not 1.0"
+
+
+# ---------------------------------------------------------------------------
+# extract_features
+# ---------------------------------------------------------------------------
+
+def _make_row(scores: list[float | None], label: int) -> dict:
+    fcd = {}
+    for submodel, score in zip(SUBMODELS, scores):
+        if score is not None:
+            fcd[submodel] = {"clamped_submodel_score": score}
+    return {
+        "evaluation": {"row_usable": True},
+        "outcome": {"structure_loss_or_major_damage": label},
+        "feature_snapshot": {"factor_contribution_breakdown": fcd},
+        "scores": {"wildfire_risk_score": 50.0},
+    }
+
+
+def test_extract_features_shape():
+    rows = [_make_row([float(i)] * len(SUBMODELS), i % 2) for i in range(10)]
+    X, y = extract_features(rows)
+    assert X.shape == (10, len(SUBMODELS))
+    assert y.shape == (10,)
+
+
+def test_extract_features_normalised_to_unit():
+    """All feature values must be in [0, 1] after normalisation."""
+    rows = [_make_row([0.0] * len(SUBMODELS), 0),
+            _make_row([100.0] * len(SUBMODELS), 1)]
+    X, y = extract_features(rows)
+    assert X.min() >= 0.0
+    assert X.max() <= 1.0
+
+
+def test_extract_features_drops_incomplete_rows():
+    """Rows with any missing submodel score must be excluded."""
+    scores_complete = [50.0] * len(SUBMODELS)
+    scores_partial = scores_complete[:]
+    scores_partial[0] = None  # one missing
+    rows = [_make_row(scores_complete, 1), _make_row(scores_partial, 0)]
+    X, y = extract_features(rows)
+    assert X.shape[0] == 1, "Row with missing submodel score must be dropped"
+
+
+def test_extract_features_labels_binary():
+    rows = [_make_row([50.0] * len(SUBMODELS), 0),
+            _make_row([50.0] * len(SUBMODELS), 1)]
+    X, y = extract_features(rows)
+    assert set(y.tolist()) <= {0.0, 1.0}
+
+
+# ---------------------------------------------------------------------------
+# stratified_kfold_indices
+# ---------------------------------------------------------------------------
+
+def test_kfold_covers_all_indices():
+    y = np.array([0, 1, 0, 1, 0, 1, 0, 1, 0, 1], dtype=float)
+    folds = stratified_kfold_indices(y, k=5)
+    all_val = np.concatenate([val for _, val in folds])
+    assert sorted(all_val.tolist()) == list(range(len(y))), (
+        "All indices must appear exactly once across validation folds"
+    )
+
+
+def test_kfold_train_val_disjoint():
+    y = np.array([0, 1] * 10, dtype=float)
+    for train, val in stratified_kfold_indices(y, k=5):
+        assert len(np.intersect1d(train, val)) == 0, "Train and val must be disjoint"
+
+
+def test_kfold_each_fold_has_both_classes():
+    y = np.array([0, 1] * 10, dtype=float)
+    for train, val in stratified_kfold_indices(y, k=5):
+        assert 1 in y[val] and 0 in y[val], "Each val fold must contain both classes"

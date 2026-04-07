@@ -1,13 +1,13 @@
 {
   "submodel_weights": {
-    "vegetation_intensity_risk": 0.16,
-    "fuel_proximity_risk": 0.14,
-    "slope_topography_risk": 0.08,
-    "ember_exposure_risk": 0.11,
-    "flame_contact_risk": 0.18,
-    "historic_fire_risk": 0.04,
-    "structure_vulnerability_risk": 0.12,
-    "defensible_space_risk": 0.17
+    "vegetation_intensity_risk": 0.08,
+    "fuel_proximity_risk": 0.09,
+    "slope_topography_risk": 0.09,
+    "ember_exposure_risk": 0.14,
+    "flame_contact_risk": 0.1,
+    "historic_fire_risk": 0.17,
+    "structure_vulnerability_risk": 0.23,
+    "defensible_space_risk": 0.1
   },
   "risk_blending_weights": {
     "environmental": 0.45,
