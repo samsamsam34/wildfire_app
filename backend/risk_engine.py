@@ -330,6 +330,49 @@ class RiskEngine:
             _clamp_percent(canopy_dense_fuel_asymmetry_pct)
         )
 
+        # Upslope sector risk: identify the cardinal direction most closely aligned with the
+        # upslope bearing (aspect + 180°) and extract its directional sector risk score.
+        # This differentiates homes whose most exposed direction has dense fuel from homes
+        # whose high-fuel sectors are on the sheltered side.
+        slope_aspect_deg_raw = _to_float(property_level_context.get("slope_aspect_deg"))
+        vegetation_directional_sectors_raw = property_level_context.get("vegetation_directional_sectors") or {}
+        upslope_sector_risk_index: float | None = None
+        if slope_aspect_deg_raw is not None and vegetation_directional_sectors_raw:
+            _upslope_bearing = (float(slope_aspect_deg_raw) + 180.0) % 360.0
+            _cardinal_bearings: dict[str, float] = {
+                "N": 0.0, "NE": 45.0, "E": 90.0, "SE": 135.0,
+                "S": 180.0, "SW": 225.0, "W": 270.0, "NW": 315.0,
+            }
+            _closest_dir = min(
+                _cardinal_bearings,
+                key=lambda d: min(
+                    abs(_cardinal_bearings[d] - _upslope_bearing),
+                    360.0 - abs(_cardinal_bearings[d] - _upslope_bearing),
+                ),
+            )
+            _sector_data = vegetation_directional_sectors_raw.get(_closest_dir) or {}
+            _upslope_raw = _to_float(_sector_data.get("sector_risk_score"))
+            if _upslope_raw is not None:
+                upslope_sector_risk_index = _precision_adjust(_upslope_raw)
+
+        # Parcel geometry pressure signals (from Stages 2-3).
+        # setback_pressure_index: 0 ft setback → 100 (maximum pressure),
+        #   30 ft setback → 0 (Zone 1 requirement met, no additional pressure).
+        # parcel_density_index: footprint/parcel area ratio → 0.0 = open lot (0),
+        #   0.4 = very dense lot (100).
+        parcel_setback_min_ft = _to_float(property_level_context.get("parcel_setback_min_ft"))
+        parcel_coverage_ratio_raw = _to_float(property_level_context.get("parcel_coverage_ratio"))
+        setback_pressure_index = (
+            round(max(0.0, min(100.0, 100.0 - float(parcel_setback_min_ft) * (100.0 / 30.0))), 1)
+            if parcel_setback_min_ft is not None
+            else None
+        )
+        parcel_density_index = (
+            round(min(100.0, float(parcel_coverage_ratio_raw) * 250.0), 1)
+            if parcel_coverage_ratio_raw is not None
+            else None
+        )
+
         neighboring_structures = property_level_context.get("neighboring_structure_metrics") or {}
         nearby_structure_count_100 = _to_float((neighboring_structures or {}).get("nearby_structure_count_100_ft"))
         nearby_structure_count_300 = _to_float((neighboring_structures or {}).get("nearby_structure_count_300_ft"))
@@ -560,6 +603,7 @@ class RiskEngine:
                 (0.18, vent_ignition, "Vent type unavailable for ember model."),
                 (0.15, roof_ignition, "Roof type unavailable for ember model."),
                 (0.15, structure_to_structure_exposure_index, "Neighbor structure density unavailable for ember model."),
+                (0.07, upslope_sector_risk_index, "Upslope sector risk unavailable for ember model."),
             ],
             ember_assumptions,
         )
@@ -681,7 +725,8 @@ class RiskEngine:
         slope_score = weighted_score(
             [
                 (0.70, blended_slope_index, "Slope input unavailable for topography model."),
-                (0.30, aspect_index, "Aspect input unavailable for topography model."),
+                (0.20, aspect_index, "Aspect input unavailable for topography model."),
+                (0.10, upslope_sector_risk_index, "Upslope sector fuel risk unavailable for topography model."),
             ],
             slope_assumptions,
         )
@@ -694,6 +739,7 @@ class RiskEngine:
                 "zone_slope_index": zone_slope_index,
                 "blended_slope_index": blended_slope_index,
                 "aspect_index": aspect_index,
+                "upslope_sector_risk_index": upslope_sector_risk_index,
             },
             assumptions=slope_assumptions + list(context_assumptions),
             raw_score=round(float(slope_score), 4),
@@ -833,15 +879,15 @@ class RiskEngine:
         historic_assumptions: List[str] = []
         if historic_fire_index is None:
             historic_assumptions.append("Historic fire recurrence unavailable for this location.")
-        historic_raw = 0.0 if historic_fire_index is None else float(historic_fire_index)
+        historic_raw = None if historic_fire_index is None else float(historic_fire_index)
         historic_clamped = clamp_score(historic_raw)
         submodels["historic_fire_risk"] = SubmodelResult(
             score=historic_clamped,
             explanation="Historic fire risk reflects nearby fire recurrence and perimeter history.",
             key_inputs={"historic_fire_index": historic_fire_index},
             assumptions=historic_assumptions + list(context_assumptions),
-            raw_score=round(historic_raw, 4),
-            clamped_score=historic_clamped,
+            raw_score=round(historic_raw, 4) if historic_raw is not None else None,
+            clamped_score=historic_clamped if historic_raw is not None else None,
         )
 
         structure_assumptions: List[str] = []
