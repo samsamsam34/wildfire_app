@@ -21,7 +21,7 @@ except Exception:  # pragma: no cover - optional geospatial runtime deps
     shapely_transform = None
 
 
-DEFAULT_PRIORITY = ("address_point", "parcel_centroid", "geocode")
+DEFAULT_PRIORITY = ("address_point", "geocode", "parcel_centroid")
 
 
 @dataclass

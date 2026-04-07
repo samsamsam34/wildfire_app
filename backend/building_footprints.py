@@ -628,7 +628,10 @@ class BuildingFootprintClient:
         }
 
 
-def compute_structure_rings(footprint: Any) -> tuple[dict[str, Any], list[str]]:
+def compute_structure_rings(
+    footprint: Any,
+    parcel_polygon: Any | None = None,
+) -> tuple[dict[str, Any], list[str]]:
     assumptions: list[str] = []
     if not (Transformer and shapely_transform):
         assumptions.append("Cannot compute structure rings; geospatial dependencies missing.")
@@ -647,12 +650,28 @@ def compute_structure_rings(footprint: Any) -> tuple[dict[str, Any], list[str]]:
     b100_m = footprint_m.buffer(100.0 * FEET_TO_METERS)
     b300_m = footprint_m.buffer(300.0 * FEET_TO_METERS)
 
-    rings_m = {
+    rings_m: dict[str, Any] = {
         "ring_0_5_ft": b5_m.difference(footprint_m),
         "ring_5_30_ft": b30_m.difference(b5_m),
         "ring_30_100_ft": b100_m.difference(b30_m),
         "ring_100_300_ft": b300_m.difference(b100_m),
     }
+
+    if parcel_polygon is not None:
+        try:
+            parcel_m = shapely_transform(to_3857, parcel_polygon)
+            clipped: dict[str, Any] = {}
+            for key, ring in rings_m.items():
+                if ring.is_empty:
+                    continue
+                intersection = ring.intersection(parcel_m)
+                if intersection is None or intersection.is_empty:
+                    assumptions.append(f"Ring {key} lies entirely outside the parcel boundary after clipping.")
+                    continue
+                clipped[key] = intersection
+            rings_m = clipped
+        except Exception:
+            assumptions.append("Parcel clipping failed; using unclipped ring geometries.")
 
     rings_wgs84: dict[str, Any] = {}
     for key, ring in rings_m.items():

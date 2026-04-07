@@ -2662,7 +2662,7 @@ class WildfireDataClient:
             }, assumptions, sources
 
         sources.append("Building footprint source")
-        rings, ring_assumptions = compute_structure_rings(result.footprint)
+        rings, ring_assumptions = compute_structure_rings(result.footprint, parcel_polygon=parcel_polygon)
         assumptions.extend(ring_assumptions)
 
         ring_metrics: dict[str, dict[str, float | None]] = {}
@@ -3503,6 +3503,8 @@ class WildfireDataClient:
             "vegetation_directional_basis": "point_proxy_relative",
             "directional_risk": {},
             "structure_relative_slope": {},
+            # Aspect direction of slope (degrees, 0-360, meteorological); None in point-proxy mode.
+            "slope_aspect_deg": None,
             # Stage 1 – ring slope means unavailable in point-proxy mode.
             "ring_5_30_slope_mean_deg": None,
             "ring_30_100_slope_mean_deg": None,
@@ -4365,6 +4367,8 @@ class WildfireDataClient:
             "index": aspect_index,
             "scope": "property_specific" if aspect is not None else "fallback",
         }
+        # Expose raw aspect degrees so risk_engine can identify the upslope cardinal sector.
+        property_level_context["slope_aspect_deg"] = round(float(aspect), 1) if aspect is not None else None
 
         fuel_path = runtime_paths["fuel"]
         fuel_center, fuel_status_detail, fuel_reason = self._sample_layer_value_detailed(fuel_path, lat, lon)

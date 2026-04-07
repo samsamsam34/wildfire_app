@@ -4011,6 +4011,76 @@ def test_structure_ring_generation_correctness():
     assert area_100_300 > area_30_100
 
 
+def test_structure_ring_parcel_clipping_happy_path():
+    """Rings clipped to a small parcel must be strictly smaller than unclipped rings."""
+    _require_shapely()
+    # ~20m x 20m footprint at 40°N
+    footprint = Polygon([
+        (-105.00012, 40.00012),
+        (-104.99988, 40.00012),
+        (-104.99988, 39.99988),
+        (-105.00012, 39.99988),
+        (-105.00012, 40.00012),
+    ])
+    # Parcel is ~60m × 60m – tight enough that ring_30_100_ft and ring_100_300_ft spill outside
+    parcel = Polygon([
+        (-105.00030, 40.00030),
+        (-104.99970, 40.00030),
+        (-104.99970, 39.99970),
+        (-105.00030, 39.99970),
+        (-105.00030, 40.00030),
+    ])
+    unclipped, _ = compute_structure_rings(footprint)
+    clipped, assumptions = compute_structure_rings(footprint, parcel_polygon=parcel)
+
+    # All four ring keys present when parcel overlaps all zones
+    assert set(clipped.keys()) == {"ring_0_5_ft", "ring_5_30_ft", "ring_30_100_ft", "ring_100_300_ft"}
+    # Outer rings must be smaller after clipping
+    assert clipped["ring_30_100_ft"].area < unclipped["ring_30_100_ft"].area
+    assert clipped["ring_100_300_ft"].area < unclipped["ring_100_300_ft"].area
+    # Inner rings should be unchanged (parcel fully contains them)
+    assert abs(clipped["ring_0_5_ft"].area - unclipped["ring_0_5_ft"].area) < 1e-10
+    assert not assumptions
+
+
+def test_structure_ring_parcel_clipping_ring_entirely_outside_parcel():
+    """A ring that lies fully outside the parcel is omitted and an assumption is recorded."""
+    _require_shapely()
+    footprint = Polygon([
+        (-105.00005, 40.00005),
+        (-104.99995, 40.00005),
+        (-104.99995, 39.99995),
+        (-105.00005, 39.99995),
+        (-105.00005, 40.00005),
+    ])
+    # Parcel is the same size as the footprint buffer zone 0-5ft – outer rings fall outside
+    parcel = Polygon([
+        (-105.00010, 40.00010),
+        (-104.99990, 40.00010),
+        (-104.99990, 39.99990),
+        (-105.00010, 39.99990),
+        (-105.00010, 40.00010),
+    ])
+    _, assumptions = compute_structure_rings(footprint, parcel_polygon=parcel)
+    # At least the 100-300ft ring is entirely outside and should generate an assumption
+    assert any("ring_100_300_ft" in a and "outside the parcel" in a for a in assumptions)
+
+
+def test_structure_ring_generation_no_parcel_backward_compat():
+    """Calling compute_structure_rings without parcel_polygon returns all four rings unchanged."""
+    _require_shapely()
+    footprint = Polygon([
+        (-105.00005, 40.00005),
+        (-104.99995, 40.00005),
+        (-104.99995, 39.99995),
+        (-105.00005, 39.99995),
+        (-105.00005, 40.00005),
+    ])
+    rings, assumptions = compute_structure_rings(footprint)
+    assert set(rings.keys()) == {"ring_0_5_ft", "ring_5_30_ft", "ring_30_100_ft", "ring_100_300_ft"}
+    assert not assumptions
+
+
 def test_structure_ring_summary_pipeline(monkeypatch):
     _require_shapely()
     client = WildfireDataClient()
