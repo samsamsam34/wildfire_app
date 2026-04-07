@@ -148,6 +148,7 @@ class RiskEngine:
             return float(value)
 
         def weighted_score(components: List[tuple[float, float | None, str]], assumptions: List[str]) -> float:
+            total_weight = sum(w for w, _, _ in components)
             available: List[tuple[float, float]] = []
             for weight, value, note in components:
                 if value is None:
@@ -161,7 +162,17 @@ class RiskEngine:
             denominator = sum(weight for weight, _ in available)
             if denominator <= 0:
                 return 0.0
-            return numerator / denominator
+            raw_score = numerator / denominator
+            # When inputs are missing their weights are dropped and the raw score
+            # renormalises over the remaining terms, making a sparse assessment
+            # indistinguishable from a complete one at the same signal values.
+            # Pull the score toward the neutral anchor (50) in proportion to the
+            # fraction of total weight that was absent.  When all inputs are
+            # present coverage==1.0 and the result is identical to the old formula.
+            if total_weight > 0 and denominator < total_weight - 1e-9:
+                coverage = denominator / total_weight
+                return raw_score * coverage + 50.0 * (1.0 - coverage)
+            return raw_score
 
         def ring_density(ring_key: str) -> float | None:
             return ring_metric(ring_key, "vegetation_density")
