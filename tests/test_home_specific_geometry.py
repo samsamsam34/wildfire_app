@@ -252,3 +252,144 @@ def test_point_proxy_fallback_has_none_ring_slope_fields(tmp_path: pytest.TempPa
         assert f'"{key}"' in src, (
             f"Key {key!r} missing from point-proxy property_level_context in get_context"
         )
+
+
+# ---------------------------------------------------------------------------
+# Long-axis bearing — minimum rotated rectangle correctness
+# ---------------------------------------------------------------------------
+
+@pytest.mark.skipif(not _GEO_READY, reason="Shapely required")
+def test_long_axis_bearing_diagonal_rectangle() -> None:
+    """A rectangle rotated 45° must report a bearing near 45°, not 0° or 90°.
+
+    The bounding box of a 45°-rotated rectangle has equal dx and dy, which
+    the old code resolved to 0° (or undefined).  The MRR must return ~45°.
+    """
+    from backend.building_footprints import compute_footprint_geometry_signals
+    import math
+
+    # Build a thin rectangle rotated exactly 45° in WGS-84 coordinates.
+    # Long axis runs NE–SW (bearing 45°).  We use a ~30 m × 5 m shape.
+    cx, cy = -105.0, 40.0
+    # half-lengths in degrees: ~15 m along long axis, ~2.5 m along short axis
+    long_half = 0.000135   # ≈15 m at lat 40
+    short_half = 0.0000225  # ≈2.5 m
+    cos45 = math.cos(math.radians(45))
+    sin45 = math.sin(math.radians(45))
+    # Four corners of the rotated rectangle
+    corners = [
+        (cx + long_half * cos45 - short_half * sin45,
+         cy + long_half * sin45 + short_half * cos45),
+        (cx + long_half * cos45 + short_half * sin45,
+         cy + long_half * sin45 - short_half * cos45),
+        (cx - long_half * cos45 + short_half * sin45,
+         cy - long_half * sin45 - short_half * cos45),
+        (cx - long_half * cos45 - short_half * sin45,
+         cy - long_half * sin45 + short_half * cos45),
+    ]
+    footprint = ShapelyPolygon(corners)
+
+    signals = compute_footprint_geometry_signals(footprint=footprint)
+    bearing = signals["footprint_long_axis_bearing_deg"]
+
+    assert bearing is not None, "Bearing must not be None for a valid rotated footprint"
+    assert 0.0 <= bearing < 180.0, "Bearing must be in [0, 180)"
+    # MRR must recover a bearing within ±10° of 45°
+    assert abs(bearing - 45.0) <= 10.0, (
+        f"Diagonal footprint expected bearing ~45°, got {bearing}°"
+    )
+
+
+@pytest.mark.skipif(not _GEO_READY, reason="Shapely required")
+def test_long_axis_bearing_ns_rectangle() -> None:
+    """A taller-than-wide (N–S) rectangle must report bearing near 0°."""
+    from backend.building_footprints import compute_footprint_geometry_signals
+
+    d_lon = 0.00005   # ~4 m east–west
+    d_lat = 0.00018   # ~20 m north–south  (long axis N–S → bearing ≈ 0°)
+    footprint = ShapelyPolygon([
+        (-105.0 - d_lon, 40.0 - d_lat),
+        (-105.0 + d_lon, 40.0 - d_lat),
+        (-105.0 + d_lon, 40.0 + d_lat),
+        (-105.0 - d_lon, 40.0 + d_lat),
+        (-105.0 - d_lon, 40.0 - d_lat),
+    ])
+    signals = compute_footprint_geometry_signals(footprint=footprint)
+    bearing = signals["footprint_long_axis_bearing_deg"]
+
+    assert bearing is not None
+    # N–S rectangle: bearing should be < 25° (well below 45°)
+    assert bearing < 25.0, f"N–S rectangle expected bearing near 0°, got {bearing}°"
+
+
+@pytest.mark.skipif(not _GEO_READY, reason="Shapely required")
+def test_long_axis_bearing_ew_rectangle() -> None:
+    """A wider-than-tall (E–W) rectangle must report bearing near 90°."""
+    from backend.building_footprints import compute_footprint_geometry_signals
+
+    d_lon = 0.00018   # ~14 m east–west  (long axis E–W → bearing ≈ 90°)
+    d_lat = 0.00005   # ~6 m north–south
+    footprint = ShapelyPolygon([
+        (-105.0 - d_lon, 40.0 - d_lat),
+        (-105.0 + d_lon, 40.0 - d_lat),
+        (-105.0 + d_lon, 40.0 + d_lat),
+        (-105.0 - d_lon, 40.0 + d_lat),
+        (-105.0 - d_lon, 40.0 - d_lat),
+    ])
+    signals = compute_footprint_geometry_signals(footprint=footprint)
+    bearing = signals["footprint_long_axis_bearing_deg"]
+
+    assert bearing is not None
+    # E–W rectangle: bearing should be > 65°
+    assert bearing > 65.0, f"E–W rectangle expected bearing near 90°, got {bearing}°"
+
+
+@pytest.mark.skipif(not _GEO_READY, reason="Shapely required")
+def test_long_axis_bearing_diagonal_differs_from_axis_aligned() -> None:
+    """The MRR bearing for a 45°-rotated footprint must differ materially from
+    the bearing of an equivalent axis-aligned footprint.
+
+    This is the regression guard: bounding-box logic would return nearly the
+    same value for both shapes (≈0° or ≈90°), whereas MRR must distinguish them.
+    """
+    from backend.building_footprints import compute_footprint_geometry_signals
+    import math
+
+    # Axis-aligned N–S rectangle
+    d_lon, d_lat = 0.00005, 0.00015
+    aligned = ShapelyPolygon([
+        (-105.0 - d_lon, 40.0 - d_lat),
+        (-105.0 + d_lon, 40.0 - d_lat),
+        (-105.0 + d_lon, 40.0 + d_lat),
+        (-105.0 - d_lon, 40.0 + d_lat),
+        (-105.0 - d_lon, 40.0 - d_lat),
+    ])
+
+    # Same dimensions, rotated 45°
+    cx, cy = -105.0, 40.0
+    long_half, short_half = 0.00015, 0.00005
+    cos45, sin45 = math.cos(math.radians(45)), math.sin(math.radians(45))
+    corners = [
+        (cx + long_half * cos45 - short_half * sin45,
+         cy + long_half * sin45 + short_half * cos45),
+        (cx + long_half * cos45 + short_half * sin45,
+         cy + long_half * sin45 - short_half * cos45),
+        (cx - long_half * cos45 + short_half * sin45,
+         cy - long_half * sin45 - short_half * cos45),
+        (cx - long_half * cos45 - short_half * sin45,
+         cy - long_half * sin45 + short_half * cos45),
+    ]
+    diagonal = ShapelyPolygon(corners)
+
+    sig_aligned = compute_footprint_geometry_signals(aligned)
+    sig_diagonal = compute_footprint_geometry_signals(diagonal)
+
+    bearing_aligned = sig_aligned["footprint_long_axis_bearing_deg"]
+    bearing_diagonal = sig_diagonal["footprint_long_axis_bearing_deg"]
+
+    assert bearing_aligned is not None
+    assert bearing_diagonal is not None
+    assert abs(bearing_aligned - bearing_diagonal) > 20.0, (
+        f"MRR must distinguish 45°-rotated from axis-aligned footprint; "
+        f"got aligned={bearing_aligned}°, diagonal={bearing_diagonal}°"
+    )

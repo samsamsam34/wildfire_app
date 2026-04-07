@@ -723,23 +723,32 @@ def compute_footprint_geometry_signals(
             else None
         )
 
-        # Long-axis bearing from the bounding box. minx, miny, maxx, maxy in 3857 (metres).
-        minx, miny, maxx, maxy = fp_m.bounds
-        dx = maxx - minx  # east–west extent in metres
-        dy = maxy - miny  # north–south extent in metres
-        # If dx > dy the structure is wider east–west → long axis runs E–W → bearing ≈ 90°.
-        # If dy > dx the structure is taller north–south → long axis runs N–S → bearing ≈ 0°.
-        if dx > 0 and dy > 0:
-            # Bearing of the long axis measured clockwise from north.
-            if dy >= dx:
-                footprint_long_axis_bearing_deg = round(
-                    (_math.degrees(_math.atan2(dx, dy))) % 180.0, 1
-                )
-            else:
-                footprint_long_axis_bearing_deg = round(
-                    (_math.degrees(_math.atan2(dy, dx)) + 90.0) % 180.0, 1
-                )
-        else:
+        # Long-axis bearing from the minimum rotated rectangle (MRR).  The MRR
+        # correctly captures the true orientation of diagonal, L-shaped, or
+        # rotated footprints; the bounding box would give the wrong axis for
+        # anything not aligned with the cardinal grid.
+        footprint_long_axis_bearing_deg = None
+        try:
+            mrr = fp_m.minimum_rotated_rectangle
+            if mrr is not None and not getattr(mrr, "is_empty", True):
+                coords = list(mrr.exterior.coords)
+                if len(coords) >= 4:
+                    # MRR exterior has 4 corners + closing point.  Identify the
+                    # longer of the two distinct sides — that is the long axis.
+                    s1_dx = coords[1][0] - coords[0][0]
+                    s1_dy = coords[1][1] - coords[0][1]
+                    s2_dx = coords[2][0] - coords[1][0]
+                    s2_dy = coords[2][1] - coords[1][1]
+                    len1 = _math.hypot(s1_dx, s1_dy)
+                    len2 = _math.hypot(s2_dx, s2_dy)
+                    axis_dx, axis_dy = (s1_dx, s1_dy) if len1 >= len2 else (s2_dx, s2_dy)
+                    if _math.hypot(axis_dx, axis_dy) > 0:
+                        # Bearing clockwise from north: atan2(east, north).
+                        # In EPSG:3857 x=east, y=north, so atan2(dx, dy).
+                        # Fold to [0, 180) — axis bearing is not directional.
+                        bearing = _math.degrees(_math.atan2(axis_dx, axis_dy)) % 180.0
+                        footprint_long_axis_bearing_deg = round(bearing, 1)
+        except Exception:
             footprint_long_axis_bearing_deg = None
 
         parcel_coverage_ratio: float | None = None
