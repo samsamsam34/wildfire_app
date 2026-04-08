@@ -241,10 +241,103 @@ def test_near_structure_feature_block_distinguishes_parcel_and_point_proxy_quali
     assert parcel_features["data_quality_tier"] == "parcel_proxy"
     assert parcel_features["claim_strength"] == "parcel_directional"
     assert parcel_features["supports_property_specific_claims"] is False
+    assert parcel_features["confidence_flag"] == "low"
+    assert any("not precise enough for structure-specific claims" in note.lower() for note in parcel_features["notes"])
     assert point_features["data_quality_tier"] == "point_proxy"
     assert point_features["claim_strength"] == "coarse_directional"
     assert point_features["supports_property_specific_claims"] is False
     assert float(parcel_features["quality_score"]) > float(point_features["quality_score"])
+
+
+@pytest.mark.skipif(Polygon is None, reason="Structure-centroid regression test requires shapely")
+def test_footprint_mode_uses_centroid_for_directional_and_neighbor_sampling(monkeypatch):
+    client = WildfireDataClient()
+    footprint = Polygon(
+        [
+            (-113.994020, 46.872320),
+            (-113.993940, 46.872320),
+            (-113.993940, 46.872380),
+            (-113.994020, 46.872380),
+        ]
+    )
+    centroid = footprint.centroid
+    captured: dict[str, float] = {}
+
+    class StubFootprints:
+        def get_building_footprint(self, _lat, _lon, **_kwargs):
+            return BuildingFootprintResult(
+                found=True,
+                footprint=footprint,
+                centroid=(float(centroid.y), float(centroid.x)),
+                source="stub-footprints.geojson",
+                confidence=0.9,
+                match_status="matched",
+                match_method="point_in_footprint",
+                matched_structure_id="stub-1",
+                match_distance_m=0.0,
+                candidate_count=1,
+                candidate_summaries=[],
+                assumptions=[],
+            )
+
+        def get_neighbor_structure_metrics(self, **kwargs):
+            captured["neighbor_lat"] = float(kwargs.get("lat"))
+            captured["neighbor_lon"] = float(kwargs.get("lon"))
+            return {
+                "nearby_structure_count_100_ft": 1,
+                "nearby_structure_count_300_ft": 4,
+                "nearest_structure_distance_ft": 28.0,
+            }
+
+    client.footprints = StubFootprints()
+    monkeypatch.setattr(
+        client,
+        "_summarize_ring_canopy",
+        lambda *_args, **_kwargs: {
+            "canopy_mean": 34.0,
+            "canopy_max": 41.0,
+            "vegetation_density": 36.0,
+            "coverage_pct": 33.0,
+        },
+    )
+    monkeypatch.setattr(client, "_summarize_ring_fuel_presence", lambda *_args, **_kwargs: 31.0)
+
+    def _capture_structure_features(**kwargs):
+        captured["veg_origin_lat"] = float(kwargs.get("origin_lat"))
+        captured["veg_origin_lon"] = float(kwargs.get("origin_lon"))
+        return {
+            "near_structure_vegetation_0_5_pct": 39.0,
+            "near_structure_vegetation_5_30_pct": 47.0,
+            "vegetation_edge_directional_concentration_pct": 12.0,
+            "canopy_dense_fuel_asymmetry_pct": 8.0,
+            "nearest_continuous_vegetation_distance_ft": 21.0,
+            "vegetation_directional_sectors": {},
+            "vegetation_directional_precision": "footprint_relative",
+            "vegetation_directional_precision_score": 0.9,
+            "vegetation_directional_basis": "footprint_relative",
+            "directional_risk": {},
+        }
+
+    monkeypatch.setattr(client, "_compute_structure_aware_vegetation_features", _capture_structure_features)
+    monkeypatch.setattr(
+        client,
+        "_compute_structure_relative_slope",
+        lambda **_kwargs: {"local_slope": 9.0, "precision_flag": "footprint_relative"},
+    )
+
+    context, _assumptions, _sources = client._compute_structure_ring_metrics(
+        46.872300,
+        -113.994120,
+        canopy_path="canopy.tif",
+        fuel_path="fuel.tif",
+        slope_path="",
+    )
+
+    assert context.get("footprint_used") is True
+    assert captured["veg_origin_lat"] == pytest.approx(float(centroid.y), abs=1e-7)
+    assert captured["veg_origin_lon"] == pytest.approx(float(centroid.x), abs=1e-7)
+    assert captured["neighbor_lat"] == pytest.approx(float(centroid.y), abs=1e-7)
+    assert captured["neighbor_lon"] == pytest.approx(float(centroid.x), abs=1e-7)
 
 
 def test_structure_relative_slope_differs_for_nearby_homes_with_micro_topography(monkeypatch):
@@ -707,6 +800,10 @@ def test_neighboring_parcels_produce_distinct_parcel_based_metrics(monkeypatch):
 
     west_parcel_metrics = west_ctx.get("parcel_based_metrics") or {}
     east_parcel_metrics = east_ctx.get("parcel_based_metrics") or {}
+    assert west_parcel_metrics.get("metric_scope") == "parcel_context"
+    assert east_parcel_metrics.get("metric_scope") == "parcel_context"
+    assert west_parcel_metrics.get("supports_structure_specific_claims") is False
+    assert east_parcel_metrics.get("supports_structure_specific_claims") is False
     assert west_parcel_metrics.get("vegetation_within_parcel") != east_parcel_metrics.get("vegetation_within_parcel")
     assert west_parcel_metrics.get("cleared_area_ratio") != east_parcel_metrics.get("cleared_area_ratio")
     assert west_parcel_metrics.get("edge_exposure") != east_parcel_metrics.get("edge_exposure")
@@ -881,3 +978,265 @@ def test_matched_footprint_ring_sampling_is_clipped_to_parcel_boundary(monkeypat
     assert east_ring.get("vegetation_density_full_context") is not None
     assert west_ring.get("cross_boundary_exposure_ratio") is not None
     assert east_ring.get("cross_boundary_exposure_ratio") is not None
+
+
+@pytest.mark.skipif(Polygon is None, reason="Large-neighbor parcel test requires shapely")
+def test_large_neighboring_parcels_still_differentiate_by_footprint_placement(monkeypatch):
+    if wildfire_data_module.Transformer is None:
+        pytest.skip("Large-neighbor parcel test requires pyproj transformer support")
+
+    client = WildfireDataClient()
+    west_footprint = Polygon(
+        [
+            (-113.99620, 46.87200),
+            (-113.99610, 46.87200),
+            (-113.99610, 46.87210),
+            (-113.99620, 46.87210),
+        ]
+    )
+    east_footprint = Polygon(
+        [
+            (-113.99310, 46.87200),
+            (-113.99300, 46.87200),
+            (-113.99300, 46.87210),
+            (-113.99310, 46.87210),
+        ]
+    )
+
+    class StubFootprints:
+        def get_building_footprint(self, _lat, lon, **_kwargs):
+            geom = west_footprint if float(lon) < -113.9940 else east_footprint
+            centroid = geom.centroid
+            return BuildingFootprintResult(
+                found=True,
+                footprint=geom,
+                centroid=(float(centroid.y), float(centroid.x)),
+                source="stub-large-parcels.geojson",
+                confidence=0.92,
+                match_status="matched",
+                match_method="point_in_footprint",
+                matched_structure_id="west-home" if geom is west_footprint else "east-home",
+                match_distance_m=0.0,
+                candidate_count=1,
+                candidate_summaries=[],
+                assumptions=[],
+            )
+
+        def get_neighbor_structure_metrics(self, **_kwargs):
+            return {
+                "nearby_structure_count_100_ft": 1,
+                "nearby_structure_count_300_ft": 6,
+                "nearest_structure_distance_ft": 34.0,
+            }
+
+    client.footprints = StubFootprints()
+
+    def _canopy_summary(ring_geometry, canopy_path: str):  # noqa: ARG001
+        cx = float(ring_geometry.centroid.x)
+        vegetation = 79.0 if cx < -113.9940 else 24.0
+        return {
+            "canopy_mean": vegetation,
+            "canopy_max": vegetation,
+            "coverage_pct": vegetation,
+            "vegetation_density": vegetation,
+        }
+
+    monkeypatch.setattr(client, "_summarize_ring_canopy", _canopy_summary)
+    monkeypatch.setattr(
+        client,
+        "_summarize_ring_fuel_presence",
+        lambda ring_geometry, **_kwargs: (73.0 if float(ring_geometry.centroid.x) < -113.9940 else 20.0),
+    )
+    monkeypatch.setattr(
+        client,
+        "_compute_structure_aware_vegetation_features",
+        lambda **kwargs: {
+            "near_structure_vegetation_0_5_pct": 80.0 if float(kwargs.get("origin_lon")) < -113.9940 else 26.0,
+            "near_structure_vegetation_5_30_pct": 72.0 if float(kwargs.get("origin_lon")) < -113.9940 else 34.0,
+            "vegetation_edge_directional_concentration_pct": 14.0,
+            "canopy_dense_fuel_asymmetry_pct": 9.0,
+            "nearest_continuous_vegetation_distance_ft": 22.0,
+            "vegetation_directional_sectors": {},
+            "vegetation_directional_precision": "footprint_relative",
+            "vegetation_directional_precision_score": 0.9,
+            "vegetation_directional_basis": "footprint_relative",
+            "directional_risk": {},
+        },
+    )
+    monkeypatch.setattr(
+        client,
+        "_compute_structure_relative_slope",
+        lambda **_kwargs: {
+            "local_slope": 10.0,
+            "uphill_exposure": 20.0,
+            "downhill_buffer": 80.0,
+            "precision_flag": "footprint_relative",
+        },
+    )
+
+    west_large_parcel = Polygon(
+        [
+            (-113.99720, 46.87150),
+            (-113.99530, 46.87150),
+            (-113.99530, 46.87300),
+            (-113.99720, 46.87300),
+        ]
+    )
+    east_large_parcel = Polygon(
+        [
+            (-113.99380, 46.87150),
+            (-113.99190, 46.87150),
+            (-113.99190, 46.87300),
+            (-113.99380, 46.87300),
+        ]
+    )
+
+    west_ctx, _wa, _ws = client._compute_structure_ring_metrics(
+        46.87205,
+        -113.99615,
+        canopy_path="canopy.tif",
+        fuel_path="fuel.tif",
+        slope_path="slope.tif",
+        parcel_polygon=west_large_parcel,
+    )
+    east_ctx, _ea, _es = client._compute_structure_ring_metrics(
+        46.87205,
+        -113.99305,
+        canopy_path="canopy.tif",
+        fuel_path="fuel.tif",
+        slope_path="slope.tif",
+        parcel_polygon=east_large_parcel,
+    )
+
+    west_ring_0_5 = ((west_ctx.get("ring_metrics") or {}).get("ring_0_5_ft") or {}).get("vegetation_density")
+    east_ring_0_5 = ((east_ctx.get("ring_metrics") or {}).get("ring_0_5_ft") or {}).get("vegetation_density")
+    assert west_ctx.get("footprint_used") is True
+    assert east_ctx.get("footprint_used") is True
+    assert west_ring_0_5 is not None and east_ring_0_5 is not None
+    assert abs(float(west_ring_0_5) - float(east_ring_0_5)) >= 15.0
+
+    west_features = client._build_near_structure_feature_block(ring_context=west_ctx)
+    east_features = client._build_near_structure_feature_block(ring_context=east_ctx)
+    assert west_features["data_quality_tier"] == "footprint_precise"
+    assert east_features["data_quality_tier"] == "footprint_precise"
+    assert west_features["supports_property_specific_claims"] is True
+    assert east_features["supports_property_specific_claims"] is True
+    assert abs(float(west_features["veg_density_0_5"]) - float(east_features["veg_density_0_5"])) >= 15.0
+
+
+@pytest.mark.skipif(Polygon is None, reason="Footprint-vs-parcel proxy test requires shapely")
+def test_precise_footprint_vs_parcel_proxy_are_separated_and_labeled(monkeypatch):
+    if wildfire_data_module.Transformer is None:
+        pytest.skip("Footprint-vs-parcel proxy test requires pyproj transformer support")
+
+    client = WildfireDataClient()
+    precise_footprint = Polygon(
+        [
+            (-113.99422, 46.87228),
+            (-113.99408, 46.87228),
+            (-113.99408, 46.87238),
+            (-113.99422, 46.87238),
+        ]
+    )
+    precise_centroid = precise_footprint.centroid
+
+    class StubFootprints:
+        def get_building_footprint(self, lat, _lon, **_kwargs):
+            if float(lat) < 46.87235:
+                return BuildingFootprintResult(
+                    found=True,
+                    footprint=precise_footprint,
+                    centroid=(float(precise_centroid.y), float(precise_centroid.x)),
+                    source="stub-footprints.geojson",
+                    confidence=0.92,
+                    match_status="matched",
+                    match_method="point_in_footprint",
+                    matched_structure_id="precise-home",
+                    match_distance_m=0.0,
+                    candidate_count=1,
+                    candidate_summaries=[],
+                    assumptions=[],
+                )
+            return BuildingFootprintResult(
+                found=False,
+                source="stub-footprints.geojson",
+                confidence=0.0,
+                match_status="none",
+                assumptions=["no footprint in coarse fixture"],
+            )
+
+        def get_neighbor_structure_metrics(self, **_kwargs):
+            return {
+                "nearby_structure_count_100_ft": 2,
+                "nearby_structure_count_300_ft": 6,
+                "nearest_structure_distance_ft": 40.0,
+            }
+
+    client.footprints = StubFootprints()
+    monkeypatch.setattr(
+        client,
+        "_summarize_ring_canopy",
+        lambda *_args, **_kwargs: {"canopy_mean": 35.0, "canopy_max": 44.0, "coverage_pct": 39.0, "vegetation_density": 41.0},
+    )
+    monkeypatch.setattr(client, "_summarize_ring_fuel_presence", lambda *_args, **_kwargs: 38.0)
+    monkeypatch.setattr(
+        client,
+        "_compute_structure_aware_vegetation_features",
+        lambda **kwargs: {
+            "near_structure_vegetation_0_5_pct": 46.0 if kwargs.get("footprint") is not None else 39.0,
+            "near_structure_vegetation_5_30_pct": 52.0 if kwargs.get("footprint") is not None else 42.0,
+            "vegetation_edge_directional_concentration_pct": 12.0,
+            "canopy_dense_fuel_asymmetry_pct": 8.0,
+            "nearest_continuous_vegetation_distance_ft": 24.0,
+            "vegetation_directional_sectors": {},
+            "vegetation_directional_precision": "footprint_relative" if kwargs.get("footprint") is not None else "point_proxy",
+            "vegetation_directional_precision_score": 0.9 if kwargs.get("footprint") is not None else 0.35,
+            "vegetation_directional_basis": "footprint_relative" if kwargs.get("footprint") is not None else "point_proxy_relative",
+            "directional_risk": {},
+        },
+    )
+    monkeypatch.setattr(
+        client,
+        "_compute_structure_relative_slope",
+        lambda **kwargs: {
+            "local_slope": 12.0,
+            "precision_flag": str(kwargs.get("geometry_precision_flag")),
+            "source": "sampled",
+        },
+    )
+
+    shared_parcel = Polygon(
+        [
+            (-113.99440, 46.87210),
+            (-113.99380, 46.87210),
+            (-113.99380, 46.87250),
+            (-113.99440, 46.87250),
+        ]
+    )
+
+    precise_ctx, _pa, _ps = client._compute_structure_ring_metrics(
+        46.87230,
+        -113.99415,
+        canopy_path="canopy.tif",
+        fuel_path="fuel.tif",
+        slope_path="slope.tif",
+        parcel_polygon=shared_parcel,
+    )
+    coarse_ctx, _ca, _cs = client._compute_structure_ring_metrics(
+        46.87240,
+        -113.99415,
+        canopy_path="canopy.tif",
+        fuel_path="fuel.tif",
+        slope_path="slope.tif",
+        parcel_polygon=shared_parcel,
+    )
+
+    precise_features = client._build_near_structure_feature_block(ring_context=precise_ctx)
+    coarse_features = client._build_near_structure_feature_block(ring_context=coarse_ctx)
+
+    assert precise_features["data_quality_tier"] == "footprint_precise"
+    assert precise_features["supports_property_specific_claims"] is True
+    assert coarse_features["data_quality_tier"] == "parcel_proxy"
+    assert coarse_features["supports_property_specific_claims"] is False
+    assert coarse_features["claim_strength"] == "parcel_directional"
+    assert coarse_features["confidence_flag"] == "low"

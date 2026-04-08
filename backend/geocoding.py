@@ -99,6 +99,7 @@ class Geocoder:
         min_importance_raw = os.getenv("WF_GEOCODE_MIN_IMPORTANCE", default_min_importance)
         ambiguity_delta_raw = os.getenv("WF_GEOCODE_AMBIGUITY_DELTA", "0.0")
         max_candidates_raw = os.getenv("WF_GEOCODE_MAX_CANDIDATES", "5")
+        max_query_variants_raw = os.getenv("WF_GEOCODE_MAX_QUERY_VARIANTS", "7")
         allow_precise_low_importance_raw = os.getenv("WF_GEOCODE_ALLOW_PRECISE_LOW_IMPORTANCE", "true")
 
         try:
@@ -117,6 +118,10 @@ class Geocoder:
             self.max_candidates = max(1, min(10, int(max_candidates_raw)))
         except ValueError:
             self.max_candidates = 5
+        try:
+            self.max_query_variants = max(3, min(12, int(max_query_variants_raw)))
+        except ValueError:
+            self.max_query_variants = 7
         self.allow_precise_low_importance = allow_precise_low_importance_raw.strip().lower() not in {
             "0",
             "false",
@@ -162,7 +167,26 @@ class Geocoder:
 
     @staticmethod
     def _strip_unit_tokens(normalized_address: str) -> str:
-        return re.sub(r"\b(?:apt|apartment|unit|suite|ste|#)\s*[\w-]+\b", "", normalized_address, flags=re.IGNORECASE).strip()
+        value = f" {normalize_address(normalized_address)} "
+        patterns = [
+            r"(?:^|[\s,])#\s*[\w-]+",
+            r"(?:^|[\s,])(?:apt|apartment|unit|suite|ste|room|rm|floor|fl|bldg|building|lot|space|spc|trailer|trlr|dept)\.?\s*[\w-]+",
+        ]
+        for pattern in patterns:
+            value = re.sub(pattern, " ", value, flags=re.IGNORECASE)
+        value = re.sub(r"\s*,\s*", ", ", value)
+        value = re.sub(r",\s*,+", ", ", value)
+        value = re.sub(r"\s+", " ", value).strip(" ,")
+        return normalize_address(value)
+
+    @staticmethod
+    def _clean_query_address(address: str) -> str:
+        value = normalize_address(address)
+        value = value.replace(";", ",")
+        value = re.sub(r"\s*,\s*", ", ", value)
+        value = re.sub(r",\s*,+", ", ", value)
+        value = re.sub(r"\s+", " ", value).strip(" ,")
+        return value
 
     @staticmethod
     def _expand_common_abbreviations(normalized_address: str) -> str:
@@ -206,34 +230,79 @@ class Geocoder:
             return 0.0
         return float(overlap / union)
 
+    @staticmethod
+    def _leading_house_number(value: str) -> str:
+        normalized = _normalize_for_similarity(value)
+        match = re.match(r"^\s*(\d+[a-zA-Z0-9-]*)\b", normalized)
+        return str(match.group(1)).strip().lower() if match else ""
+
+    @staticmethod
+    def _candidate_house_number(candidate: Any) -> str:
+        if not isinstance(candidate, dict):
+            return ""
+        address = candidate.get("address")
+        if isinstance(address, dict):
+            house = str(address.get("house_number") or "").strip().lower()
+            if house:
+                return house
+        # Some providers omit address.house_number but keep it in display_name.
+        return Geocoder._leading_house_number(str(candidate.get("display_name") or ""))
+
+    @staticmethod
+    def _precision_rank(precision: str) -> int:
+        return {
+            "rooftop": 4,
+            "parcel_or_address_point": 3,
+            "interpolated": 2,
+            "approximate": 1,
+            "unknown": 0,
+        }.get(str(precision or "unknown"), 0)
+
+    def _candidate_rank_tuple(self, *, submitted_address: str, candidate: Any) -> tuple[float, ...]:
+        if not isinstance(candidate, dict):
+            return (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+        similarity = self._address_similarity_ratio(submitted_address, candidate.get("display_name"))
+        precise = self._candidate_has_precise_address(candidate)
+        importance = self._to_float(candidate.get("importance")) or 0.0
+        submitted_house = self._leading_house_number(submitted_address)
+        candidate_house = self._candidate_house_number(candidate)
+        house_match = bool(submitted_house and candidate_house and submitted_house == candidate_house)
+        house_mismatch = bool(submitted_house and candidate_house and submitted_house != candidate_house)
+        precision, _ = self._derive_precision_tier(candidate, importance)
+        return (
+            1.0 if house_match else 0.0,
+            1.0 if not house_mismatch else 0.0,
+            1.0 if precise else 0.0,
+            float(self._precision_rank(precision)),
+            float(similarity),
+            float(importance),
+        )
+
     def _query_variants(self, normalized_address: str) -> list[str]:
         variants: list[str] = []
-        base = normalize_address(normalized_address)
-        if base:
-            variants.append(base)
-        stripped_unit = normalize_address(self._strip_unit_tokens(base))
-        if stripped_unit and stripped_unit not in variants and len(stripped_unit) >= 5:
-            variants.append(stripped_unit)
-        expanded = normalize_address(self._expand_common_abbreviations(base))
-        if expanded and expanded not in variants and len(expanded) >= 5:
-            variants.append(expanded)
-        if stripped_unit:
-            expanded_stripped = normalize_address(self._expand_common_abbreviations(stripped_unit))
-            if expanded_stripped and expanded_stripped not in variants and len(expanded_stripped) >= 5:
-                variants.append(expanded_stripped)
-        no_house = normalize_address(self._strip_leading_house_number(base))
-        if no_house and no_house not in variants and len(no_house) >= 5:
-            variants.append(no_house)
-        no_house_stripped = normalize_address(self._strip_leading_house_number(stripped_unit))
-        if no_house_stripped and no_house_stripped not in variants and len(no_house_stripped) >= 5:
-            variants.append(no_house_stripped)
+        base = self._clean_query_address(normalized_address)
+
+        def _append(value: str | None) -> None:
+            normalized = self._clean_query_address(str(value or ""))
+            if normalized and len(normalized) >= 5 and normalized not in variants:
+                variants.append(normalized)
+
+        _append(base)
+        stripped_unit = self._strip_unit_tokens(base)
+        _append(stripped_unit)
+        _append(self._expand_common_abbreviations(base))
+        _append(self._expand_common_abbreviations(stripped_unit))
+        _append(self._strip_leading_house_number(base))
+        _append(self._strip_leading_house_number(stripped_unit))
         if "," in base:
             parts = [part.strip() for part in base.split(",") if part.strip()]
             if len(parts) >= 2:
-                street_and_locality = normalize_address(", ".join(parts[:2]))
-                if street_and_locality and street_and_locality not in variants and len(street_and_locality) >= 5:
-                    variants.append(street_and_locality)
-        return variants[:4]
+                _append(", ".join(parts[:2]))
+                _append(self._strip_unit_tokens(", ".join(parts[:2])))
+            if parts:
+                _append(parts[0])
+                _append(self._strip_unit_tokens(parts[0]))
+        return variants[: self.max_query_variants]
 
     def _fetch_candidates(self, query_address: str) -> list[dict[str, Any]]:
         provider = self.provider_name
@@ -337,6 +406,10 @@ class Geocoder:
             return "rooftop", location_type
         if precise:
             return "parcel_or_address_point", location_type
+        if cand_type in {"postcode", "postal_code", "city", "town", "village", "hamlet", "administrative"}:
+            return "approximate", location_type
+        if cand_class in {"boundary"}:
+            return "approximate", location_type
         if cand_class in {"highway", "place"} or cand_type in {"residential", "road", "street"}:
             return "interpolated", location_type
         if importance is not None and importance < max(0.01, self.min_importance or 0.0):
@@ -345,7 +418,7 @@ class Geocoder:
 
     def geocode_with_diagnostics(self, address: str) -> GeocodeResult:
         submitted_address = str(address or "")
-        normalized_address = normalize_address(submitted_address)
+        normalized_address = self._clean_query_address(submitted_address)
         provider = self.provider_name
 
         if len(normalized_address) < 5:
@@ -359,7 +432,7 @@ class Geocoder:
 
         query_variants = self._query_variants(normalized_address)
         query_attempts: list[dict[str, Any]] = []
-        payload: list[dict[str, Any]] = []
+        collected_candidates: list[dict[str, Any]] = []
         selected_query = normalized_address
         for idx, query_variant in enumerate(query_variants):
             attempt_payload = self._fetch_candidates(query_variant)
@@ -373,11 +446,26 @@ class Geocoder:
                 }
             )
             if attempt_payload:
-                payload = attempt_payload
-                selected_query = query_variant
-                break
+                for candidate_idx, row in enumerate(attempt_payload):
+                    candidate = dict(row)
+                    candidate["_query_variant"] = query_variant
+                    candidate["_attempt_index"] = idx
+                    candidate["_candidate_index"] = candidate_idx
+                    collected_candidates.append(candidate)
+                # Early-stop only on clearly strong, precise top match.
+                top_similarity = self._address_similarity_ratio(
+                    submitted_address,
+                    attempt_payload[0].get("display_name"),
+                )
+                top_importance = self._to_float(attempt_payload[0].get("importance"))
+                if (
+                    self._candidate_has_precise_address(attempt_payload[0])
+                    and top_similarity >= 0.72
+                    and (top_importance is None or top_importance >= 0.05)
+                ):
+                    break
 
-        if not payload:
+        if not collected_candidates:
             raise GeocodingError(
                 status="no_match",
                 message="No geocoding result found.",
@@ -393,14 +481,32 @@ class Geocoder:
                 },
             )
 
+        deduped_candidates: dict[tuple[float | None, float | None, str], dict[str, Any]] = {}
+        for row in collected_candidates:
+            lat = self._to_float(row.get("lat"))
+            lon = self._to_float(row.get("lon"))
+            key = (
+                round(float(lat), 7) if lat is not None else None,
+                round(float(lon), 7) if lon is not None else None,
+                str(row.get("display_name") or "").strip().lower(),
+            )
+            existing = deduped_candidates.get(key)
+            if existing is None:
+                deduped_candidates[key] = row
+                continue
+            if self._candidate_rank_tuple(submitted_address=submitted_address, candidate=row) > self._candidate_rank_tuple(
+                submitted_address=submitted_address,
+                candidate=existing,
+            ):
+                deduped_candidates[key] = row
+
         ranked_candidates = sorted(
-            payload,
-            key=lambda cand: (
-                -(self._to_float(cand.get("importance")) or 0.0),
-                -self._address_similarity_ratio(submitted_address, cand.get("display_name")),
-            ),
+            deduped_candidates.values(),
+            key=lambda cand: self._candidate_rank_tuple(submitted_address=submitted_address, candidate=cand),
+            reverse=True,
         )
         first = ranked_candidates[0]
+        selected_query = str(first.get("_query_variant") or normalized_address)
         lat = self._to_float(first.get("lat") if isinstance(first, dict) else None)
         lon = self._to_float(first.get("lon") if isinstance(first, dict) else None)
         if lat is None or lon is None:
@@ -477,6 +583,28 @@ class Geocoder:
 
         matched_address = first.get("display_name") if isinstance(first, dict) else None
         geocode_precision, geocode_location_type = self._derive_precision_tier(first, importance)
+        submitted_house = self._leading_house_number(submitted_address)
+        top_house = self._candidate_house_number(first)
+        if submitted_house and top_house and submitted_house != top_house:
+            raise GeocodingError(
+                status="low_confidence",
+                message="Best geocoding match had a conflicting house number.",
+                submitted_address=submitted_address,
+                normalized_address=normalized_address,
+                provider=provider,
+                rejection_reason=(
+                    f"house_number_mismatch submitted={submitted_house} candidate={top_house}"
+                ),
+                raw_response_preview={
+                    "top_candidate": self._preview_candidate(first),
+                    "candidate_count": len(ranked_candidates),
+                    "trust_filter_rule": "house_number_mismatch",
+                    "query_variants": query_variants,
+                    "query_attempts": query_attempts,
+                    "selected_query": selected_query,
+                    "parsed_candidates": [self._preview_candidate(c) for c in ranked_candidates[:3]],
+                },
+            )
         candidate_previews = [
             p
             for p in (self._preview_candidate(c) for c in ranked_candidates[: self.max_candidates])

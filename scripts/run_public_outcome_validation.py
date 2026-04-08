@@ -431,6 +431,31 @@ def _build_summary_markdown(
         if isinstance(report.get("modeling_viability"), dict)
         else {}
     )
+    reported_metrics = (
+        report.get("reported_metrics")
+        if isinstance(report.get("reported_metrics"), dict)
+        else {}
+    )
+    reported_primary = (
+        reported_metrics.get("primary")
+        if isinstance(reported_metrics.get("primary"), dict)
+        else {}
+    )
+    reported_in_sample = (
+        reported_metrics.get("in_sample")
+        if isinstance(reported_metrics.get("in_sample"), dict)
+        else {}
+    )
+    reported_holdout = (
+        reported_metrics.get("holdout_event_level_out_of_sample")
+        if isinstance(reported_metrics.get("holdout_event_level_out_of_sample"), dict)
+        else {}
+    )
+    reporting_claim_guardrails = (
+        report.get("reporting_claim_guardrails")
+        if isinstance(report.get("reporting_claim_guardrails"), dict)
+        else {}
+    )
     feature_diag = (
         report.get("feature_signal_diagnostics")
         if isinstance(report.get("feature_signal_diagnostics"), dict)
@@ -458,15 +483,37 @@ def _build_summary_markdown(
         f"- Usable labeled rows: `{sample_counts.get('row_count_usable')}`",
         f"- Unusable retained rows: `{sample_counts.get('row_count_unusable')}`",
         f"- Outcome prevalence (adverse): `{_format_float(sample_counts.get('positive_rate'))}`",
+        f"- Reported metrics source: `{reported_metrics.get('primary_source') or 'in_sample_fallback'}`",
         f"- Narrative headline: `{str(narrative.get('headline') or 'n/a')}`",
         "",
-        "## Discrimination",
+        "## Headline Metrics (Strict Default)",
+        f"- ROC AUC: `{_format_float(reported_primary.get('wildfire_risk_score_auc'))}`",
+        f"- PR AUC: `{_format_float(reported_primary.get('wildfire_risk_score_pr_auc'))}`",
+        f"- Brier: `{_format_float(reported_primary.get('wildfire_risk_score_brier'))}`",
+        f"- Row count / positives / negatives: "
+        f"`{reported_primary.get('count')} / {reported_primary.get('positive_count')} / {reported_primary.get('negative_count')}`",
+        "",
+        "## In-Sample Discrimination",
         f"- ROC AUC (wildfire risk): `{_format_float(discrimination.get('wildfire_risk_score_auc'))}`",
         f"- ROC AUC 95% CI: `{_format_ci(discrimination.get('wildfire_risk_score_auc_confidence_interval_95'))}`",
         f"- PR AUC (wildfire risk): `{_format_float(discrimination.get('wildfire_risk_score_pr_auc'))}`",
         f"- PR AUC 95% CI: `{_format_ci(discrimination.get('wildfire_risk_score_pr_auc_confidence_interval_95'))}`",
         f"- Spearman rank correlation: `{_format_float(discrimination.get('wildfire_vs_outcome_rank_spearman'))}`",
         f"- Discrimination stability: `{discrimination.get('wildfire_discrimination_stability')}`",
+        f"- In-sample row count / positives / negatives: "
+        f"`{reported_in_sample.get('count')} / {reported_in_sample.get('positive_count')} / {reported_in_sample.get('negative_count')}`",
+        "",
+        "## Event-Level Holdout (Out-of-Sample)",
+        f"- ROC AUC: `{_format_float(reported_holdout.get('wildfire_risk_score_auc'))}`",
+        f"- PR AUC: `{_format_float(reported_holdout.get('wildfire_risk_score_pr_auc'))}`",
+        f"- Brier: `{_format_float(reported_holdout.get('wildfire_risk_score_brier'))}`",
+        f"- Holdout row count / positives / negatives: "
+        f"`{reported_holdout.get('count')} / {reported_holdout.get('positive_count')} / {reported_holdout.get('negative_count')}`",
+        "",
+        "## Reporting Guardrails",
+        f"- Strong performance claims allowed: `{reporting_claim_guardrails.get('strong_performance_claims_allowed')}`",
+        f"- Calibration claims allowed: `{reporting_claim_guardrails.get('calibration_claims_allowed')}`",
+        f"- Failed checks: `{reporting_claim_guardrails.get('failed_checks')}`",
         "",
         "## Baseline Comparison",
     ]
@@ -1268,6 +1315,60 @@ def _insufficient_data_report(
                 "wildfire_risk_score_brier": None,
             },
         },
+        "event_level_out_of_sample": {
+            "available": False,
+            "method": "event_level_holdout_aggregation",
+            "reason": "no_usable_rows",
+            "thresholds": {
+                "min_event_rows": 4,
+                "min_event_positive_count": 1,
+                "min_event_negative_count": 1,
+            },
+            "event_count_total": 0,
+            "event_count_eligible": 0,
+            "event_count_ineligible": 0,
+            "aggregate": {
+                "count": 0,
+                "positive_count": 0,
+                "negative_count": 0,
+                "positive_rate": None,
+                "wildfire_risk_score_auc": None,
+                "wildfire_risk_score_pr_auc": None,
+                "wildfire_risk_score_brier": None,
+            },
+            "per_event": [],
+        },
+        "reported_metrics": {
+            "default_reporting_path": "event_level_holdout_out_of_sample",
+            "primary_source": "in_sample_fallback",
+            "primary": {
+                "count": 0,
+                "positive_count": 0,
+                "negative_count": 0,
+                "positive_rate": None,
+                "wildfire_risk_score_auc": None,
+                "wildfire_risk_score_pr_auc": None,
+                "wildfire_risk_score_brier": None,
+            },
+            "in_sample": {
+                "count": 0,
+                "positive_count": 0,
+                "negative_count": 0,
+                "positive_rate": None,
+                "wildfire_risk_score_auc": None,
+                "wildfire_risk_score_pr_auc": None,
+                "wildfire_risk_score_brier": None,
+            },
+            "holdout_event_level_out_of_sample": {
+                "count": 0,
+                "positive_count": 0,
+                "negative_count": 0,
+                "positive_rate": None,
+                "wildfire_risk_score_auc": None,
+                "wildfire_risk_score_pr_auc": None,
+                "wildfire_risk_score_brier": None,
+            },
+        },
         "confidence_tier_performance": {
             "min_slice_size": 20,
             "tiers": {
@@ -1356,6 +1457,24 @@ def _insufficient_data_report(
                     "high-confidence subset metrics are unavailable."
                 ),
             },
+        },
+        "reporting_claim_guardrails": {
+            "strong_performance_claims_allowed": False,
+            "calibration_claims_allowed": False,
+            "checks": {
+                "sample_count_ok": False,
+                "positive_class_count_ok": False,
+                "negative_class_count_ok": False,
+                "class_balance_ok": False,
+                "event_level_holdout_available": False,
+            },
+            "failed_checks": [
+                "sample_count_ok",
+                "positive_class_count_ok",
+                "negative_class_count_ok",
+                "class_balance_ok",
+                "event_level_holdout_available",
+            ],
         },
         "narrative_summary": {
             "headline": "Directional validation is unavailable because no usable labeled rows were found.",
@@ -1504,8 +1623,8 @@ def run_public_outcome_validation(
     false_low_max_score: float = 40.0,
     false_high_min_score: float = 70.0,
     min_labeled_rows: int = 1,
-    allow_label_derived_target: bool = True,
-    allow_surrogate_wildfire_score: bool = True,
+    allow_label_derived_target: bool = False,
+    allow_surrogate_wildfire_score: bool = False,
     use_high_signal_simplified_model: bool = False,
     high_signal_feature_weights: dict[str, float] | None = None,
     high_signal_feature_filtering: dict[str, Any] | None = None,
@@ -1989,6 +2108,12 @@ def run_public_outcome_validation(
     )
 
     dataset_governance = _dataset_governance(dataset_path, rows)
+    reported_metrics = report.get("reported_metrics") if isinstance(report.get("reported_metrics"), dict) else {}
+    reported_primary = (
+        reported_metrics.get("primary")
+        if isinstance(reported_metrics.get("primary"), dict)
+        else {}
+    )
 
     manifest = {
         "schema_version": "1.0.0",
@@ -2096,11 +2221,22 @@ def run_public_outcome_validation(
             "summary_markdown": str(summary_path),
         },
         "headline": {
-            "row_count_labeled": report.get("row_count_labeled"),
-            "positive_rate": ((report.get("sample_counts") or {}).get("positive_rate") if isinstance(report.get("sample_counts"), dict) else None),
-            "roc_auc": ((report.get("discrimination_metrics") or {}).get("wildfire_risk_score_auc") if isinstance(report.get("discrimination_metrics"), dict) else None),
-            "pr_auc": ((report.get("discrimination_metrics") or {}).get("wildfire_risk_score_pr_auc") if isinstance(report.get("discrimination_metrics"), dict) else None),
-            "brier": ((report.get("brier_scores") or {}).get("wildfire_probability_proxy") if isinstance(report.get("brier_scores"), dict) else None),
+            "metrics_source": reported_metrics.get("primary_source") or "in_sample_fallback",
+            "row_count_labeled": reported_primary.get("count"),
+            "positive_rate": reported_primary.get("positive_rate"),
+            "roc_auc": reported_primary.get("wildfire_risk_score_auc"),
+            "pr_auc": reported_primary.get("wildfire_risk_score_pr_auc"),
+            "brier": reported_primary.get("wildfire_risk_score_brier"),
+            "in_sample_metrics": (
+                reported_metrics.get("in_sample")
+                if isinstance(reported_metrics.get("in_sample"), dict)
+                else {}
+            ),
+            "holdout_metrics": (
+                reported_metrics.get("holdout_event_level_out_of_sample")
+                if isinstance(reported_metrics.get("holdout_event_level_out_of_sample"), dict)
+                else {}
+            ),
             "dataset_viable_for_predictive_modeling": (
                 ((report.get("modeling_viability") or {}).get("dataset_viable_for_predictive_modeling"))
                 if isinstance(report.get("modeling_viability"), dict)
@@ -2181,16 +2317,19 @@ def main() -> int:
     parser.add_argument(
         "--allow-label-derived-target",
         action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Allow deriving adverse-outcome target from outcome label when binary target is missing.",
+        default=False,
+        help=(
+            "Opt in to deriving adverse-outcome target from outcome label when binary target is missing. "
+            "Disabled by default for strict validation."
+        ),
     )
     parser.add_argument(
         "--allow-surrogate-wildfire-score",
         action=argparse.BooleanOptionalAction,
-        default=True,
+        default=False,
         help=(
-            "Allow surrogate wildfire-risk score from available hazard/vulnerability components when "
-            "wildfire_risk_score is missing."
+            "Opt in to surrogate wildfire-risk score from available hazard/vulnerability components when "
+            "wildfire_risk_score is missing. Disabled by default for strict validation."
         ),
     )
     parser.add_argument(

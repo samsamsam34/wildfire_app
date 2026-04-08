@@ -30,6 +30,9 @@ _NORMALIZATION_REPLACEMENTS = {
     r"\beast\b": "e",
     r"\bwest\b": "w",
     r"\bwashington\b": "wa",
+    r"\bapartment\b": "apt",
+    r"\bunit\b": "apt",
+    r"\bsuite\b": "ste",
 }
 
 _DIRECT_ADDRESS_KEYS = (
@@ -60,6 +63,12 @@ def normalize_address_for_matching(value: str) -> str:
     normalized = re.sub(r"[^a-z0-9\s]", " ", normalized)
     for pattern, replacement in _NORMALIZATION_REPLACEMENTS.items():
         normalized = re.sub(pattern, replacement, normalized)
+    normalized = re.sub(
+        r"(?:^|[\s,])(?:apt|ste|room|rm|floor|fl|bldg|building|lot|space|spc|dept)\.?\s*[\w-]+",
+        " ",
+        normalized,
+    )
+    normalized = re.sub(r"(?:^|[\s,])#\s*[\w-]+", " ", normalized)
     return " ".join(normalized.split())
 
 
@@ -759,14 +768,14 @@ def resolve_local_address_candidate(
                     if not _candidate_is_relevant(str(match_eval["match_type"]), float(score)):
                         continue
                     auto_usable = bool(match_eval["auto_usable"]) and _CONFIDENCE_RANK.get(confidence, -1) >= required_rank
-                candidates.append(
-                    {
-                        "latitude": float(lon_lat[1]),
-                        "longitude": float(lon_lat[0]),
-                        "match_score": round(score, 4),
-                        "ranking_score": round(score, 4),
-                        "matched_address": addr,
-                        "region_id": region_id or None,
+                    candidates.append(
+                        {
+                            "latitude": float(lon_lat[1]),
+                            "longitude": float(lon_lat[0]),
+                            "match_score": round(score, 4),
+                            "ranking_score": round(score, 4),
+                            "matched_address": addr,
+                            "region_id": region_id or None,
                             "source": layer_key,
                             "source_type": source_type,
                             "source_path": str(path_obj),

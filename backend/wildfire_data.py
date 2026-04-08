@@ -1344,7 +1344,7 @@ class WildfireDataClient:
         elif data_quality_tier == "footprint_precise":
             confidence_flag = "moderate"
         elif data_quality_tier == "parcel_proxy":
-            confidence_flag = "moderate" if imagery_available else "low"
+            confidence_flag = "low"
         else:
             confidence_flag = "low"
 
@@ -1362,6 +1362,7 @@ class WildfireDataClient:
             notes.append("Near-structure features are approximated from fallback canopy/fuel layers.")
         if data_quality_tier == "parcel_proxy":
             notes.append("Near-structure features are parcel-clipped proxies and should be treated as directional.")
+            notes.append("Parcel-proxy geometry is not precise enough for structure-specific claims.")
         elif data_quality_tier == "point_proxy":
             notes.append("Point-based proxy geometry reduces near-structure feature precision.")
 
@@ -1853,6 +1854,9 @@ class WildfireDataClient:
             "neighbor_proximity_context": neighbor_proximity_context,
             "parcel_context": parcel_context,
             "boundary_mode": "parcel_polygon",
+            "metric_scope": "parcel_context",
+            "claim_strength": "parcel_context_only",
+            "supports_structure_specific_claims": False,
         }
 
     def _build_point_proxy_ring_metrics(
@@ -2886,16 +2890,18 @@ class WildfireDataClient:
             if density is not None and float(density) >= 40.0:
                 nearest_vegetation_distance_ft = approx_ft
                 break
+        structure_origin_lat = float(result.centroid[0]) if result.centroid else float(query_lat)
+        structure_origin_lon = float(result.centroid[1]) if result.centroid else float(query_lon)
         structure_veg_features = self._compute_structure_aware_vegetation_features(
-            origin_lat=query_lat,
-            origin_lon=query_lon,
+            origin_lat=structure_origin_lat,
+            origin_lon=structure_origin_lon,
             canopy_path=canopy_path,
             fuel_path=fuel_path,
             slope_path=slope_path,
             footprint=result.footprint,
         )
-        slope_origin_lat = float(result.centroid[0]) if result.centroid else float(query_lat)
-        slope_origin_lon = float(result.centroid[1]) if result.centroid else float(query_lon)
+        slope_origin_lat = structure_origin_lat
+        slope_origin_lon = structure_origin_lon
         structure_relative_slope = self._compute_structure_relative_slope(
             slope_path=slope_path,
             origin_lat=slope_origin_lat,
@@ -2929,8 +2935,8 @@ class WildfireDataClient:
                 parcel_setback_min_ft = None
 
         neighbor_metrics = footprint_client.get_neighbor_structure_metrics(
-            lat=query_lat,
-            lon=query_lon,
+            lat=structure_origin_lat,
+            lon=structure_origin_lon,
             subject_footprint=result.footprint,
             source_path=result.source,
             radius_m=300.0 * 0.3048,
@@ -3403,6 +3409,7 @@ class WildfireDataClient:
         lon: float,
         *,
         geocode_precision: str | None = None,
+        geocode_confidence_score: float | None = None,
         structure_geometry_source: str | None = None,
         selection_mode: str | None = None,
         property_anchor_point: dict[str, Any] | None = None,
@@ -3415,6 +3422,16 @@ class WildfireDataClient:
         assumptions: List[str] = []
         sources: List[str] = []
         normalized_geocode_precision = str(geocode_precision or "unknown").strip().lower() or "unknown"
+        normalized_geocode_confidence: float | None = None
+        if geocode_confidence_score is not None:
+            try:
+                parsed_conf = float(geocode_confidence_score)
+            except (TypeError, ValueError):
+                parsed_conf = None
+            if parsed_conf is not None:
+                if parsed_conf > 1.0:
+                    parsed_conf /= 100.0
+                normalized_geocode_confidence = max(0.0, min(1.0, parsed_conf))
         normalized_structure_geometry_source = str(structure_geometry_source or "auto_detected").strip().lower()
         if normalized_structure_geometry_source not in {"auto_detected", "user_selected", "user_modified"}:
             normalized_structure_geometry_source = "auto_detected"
@@ -3453,6 +3470,11 @@ class WildfireDataClient:
             region_context=region_context,
             extras={
                 "geocode_precision": normalized_geocode_precision,
+                "geocode_confidence_bucket": (
+                    round(float(normalized_geocode_confidence), 2)
+                    if normalized_geocode_confidence is not None
+                    else None
+                ),
                 "structure_geometry_source": normalized_structure_geometry_source,
                 "selection_mode": normalized_selection_mode,
                 "user_selected_point": (
@@ -3583,6 +3605,7 @@ class WildfireDataClient:
             "property_anchor_source": "geocoded_address_point",
             "property_anchor_precision": "unknown",
             "geocoded_address_point": {"latitude": float(lat), "longitude": float(lon)},
+            "geocode_confidence_score": normalized_geocode_confidence,
             "assessed_property_display_point": {"latitude": float(lat), "longitude": float(lon)},
             "structure_geometry_source": normalized_structure_geometry_source,
             "selection_mode": normalized_selection_mode,
@@ -3690,6 +3713,7 @@ class WildfireDataClient:
             geocoded_lon=float(lon),
             geocode_provider=None,
             geocode_precision=normalized_geocode_precision,
+            geocode_confidence_score=normalized_geocode_confidence,
             geocoded_address=None,
             property_anchor_override=explicit_anchor_override,
             property_anchor_override_source=explicit_anchor_source,

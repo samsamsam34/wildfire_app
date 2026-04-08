@@ -6865,6 +6865,7 @@ def _run_assessment(
     geocode_source = geocode_resolution.geocode_source
     geocode_meta = dict(geocode_resolution.geocode_meta or {})
     geocode_precision = str(geocode_meta.get("geocode_precision") or "unknown")
+    geocode_confidence_score = geocode_meta.get("confidence_score")
     requested_structure_source = str(payload.structure_geometry_source or "auto_detected").strip().lower()
     if requested_structure_source not in {"auto_detected", "user_selected", "user_modified"}:
         requested_structure_source = "auto_detected"
@@ -6918,6 +6919,7 @@ def _run_assessment(
             requested_user_selected_point = None
     collect_kwargs = {
         "geocode_precision": geocode_precision,
+        "geocode_confidence_score": geocode_confidence_score,
         "structure_geometry_source": requested_structure_source,
         "selection_mode": requested_selection_mode,
         "property_anchor_point": requested_property_anchor_point,
@@ -6946,6 +6948,7 @@ def _run_assessment(
     property_level_context["geocode_provider"] = geocode_provider or None
     property_level_context["geocoded_address"] = geocode_meta.get("geocoded_address") or geocode_meta.get("matched_address")
     property_level_context["geocode_precision"] = geocode_precision
+    property_level_context["geocode_confidence_score"] = geocode_confidence_score
     if property_level_context.get("property_anchor_source") in {
         "geocoded_address_point",
         "rooftop_geocode",
@@ -9568,9 +9571,17 @@ def _normalize_address_for_component_compare(value: str) -> str:
         r"\bwest\b": "w",
         r"\bapartment\b": "apt",
         r"\bunit\b": "apt",
+        r"\bsuite\b": "ste",
+        r"\broom\b": "rm",
     }
     for pattern, repl in replacements.items():
         normalized = re.sub(pattern, repl, normalized)
+    normalized = re.sub(
+        r"(?:^|[\s,])(?:apt|ste|rm|floor|fl|bldg|building|lot|space|spc|dept)\.?\s*[\w-]+",
+        " ",
+        normalized,
+    )
+    normalized = re.sub(r"(?:^|[\s,])#\s*[\w-]+", " ", normalized)
     return " ".join(normalized.split())
 
 
@@ -10137,20 +10148,74 @@ def _build_provider_attempt(
 def _build_provider_backoff_queries(address_input: str) -> list[str]:
     base = normalize_address(address_input)
     variants: list[str] = []
-    if base:
-        variants.append(base)
-    no_house = re.sub(r"^\s*\d+[a-zA-Z0-9-]*\s+", "", base, count=1).strip()
-    if no_house and no_house not in variants:
-        variants.append(no_house)
+
+    def _normalize_variant(value: str) -> str:
+        normalized = normalize_address(str(value or ""))
+        normalized = normalized.replace(";", ",")
+        normalized = re.sub(r"\s*,\s*", ", ", normalized)
+        normalized = re.sub(r",\s*,+", ", ", normalized)
+        return normalize_address(normalized).strip(" ,")
+
+    def _strip_unit_noise(value: str) -> str:
+        working = f" {_normalize_variant(value)} "
+        for pattern in (
+            r"(?:^|[\s,])#\s*[\w-]+",
+            r"(?:^|[\s,])(?:apt|apartment|unit|suite|ste|room|rm|floor|fl|bldg|building|lot|space|spc|trailer|trlr|dept)\.?\s*[\w-]+",
+        ):
+            working = re.sub(pattern, " ", working, flags=re.IGNORECASE)
+        working = re.sub(r"\s+", " ", working).strip(" ,")
+        return _normalize_variant(working)
+
+    def _expand_common(value: str) -> str:
+        expanded = f" {_normalize_variant(value)} "
+        replacements = {
+            " rd ": " road ",
+            " st ": " street ",
+            " ave ": " avenue ",
+            " blvd ": " boulevard ",
+            " dr ": " drive ",
+            " ln ": " lane ",
+            " ct ": " court ",
+            " pl ": " place ",
+            " hwy ": " highway ",
+            " n ": " north ",
+            " s ": " south ",
+            " e ": " east ",
+            " w ": " west ",
+        }
+        for short, full in replacements.items():
+            expanded = expanded.replace(short, full)
+        return _normalize_variant(expanded)
+
+    def _strip_house(value: str) -> str:
+        return _normalize_variant(re.sub(r"^\s*\d+[a-zA-Z0-9-]*\s+", "", _normalize_variant(value), count=1))
+
+    def _append(value: str) -> None:
+        normalized = _normalize_variant(value)
+        if normalized and len(normalized) >= 5 and normalized not in variants:
+            variants.append(normalized)
+
+    _append(base)
+    stripped_unit = _strip_unit_noise(base)
+    _append(stripped_unit)
+    _append(_expand_common(base))
+    _append(_expand_common(stripped_unit))
+    _append(_strip_house(base))
+    _append(_strip_house(stripped_unit))
+
     parts = [part.strip() for part in base.split(",") if part.strip()]
     if len(parts) >= 2:
-        street_and_locality = ", ".join(parts[:2])
-        if street_and_locality not in variants:
-            variants.append(street_and_locality)
-        street_only = parts[0]
-        if street_only not in variants:
-            variants.append(street_only)
-    return [v for v in variants if v][:4]
+        _append(", ".join(parts[:2]))
+        _append(_strip_unit_noise(", ".join(parts[:2])))
+    if parts:
+        _append(parts[0])
+
+    limit_raw = str(os.getenv("WF_GEOCODE_BACKOFF_QUERY_LIMIT", "6")).strip()
+    try:
+        limit = max(3, min(10, int(limit_raw)))
+    except ValueError:
+        limit = 6
+    return variants[:limit]
 
 
 def _secondary_provider_name() -> str:

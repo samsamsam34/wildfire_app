@@ -600,7 +600,10 @@ class BuildingFootprintClient:
         to_3857 = Transformer.from_crs("EPSG:4326", "EPSG:3857", always_xy=True).transform
         point = Point(lon, lat)
         point_m = shapely_transform(to_3857, point)
-        subject_m = shapely_transform(to_3857, subject_footprint) if subject_footprint is not None else None
+        try:
+            subject_m = shapely_transform(to_3857, subject_footprint) if subject_footprint is not None else None
+        except Exception:
+            subject_m = None
 
         nearby_100 = 0
         nearby_300 = 0
@@ -609,11 +612,19 @@ class BuildingFootprintClient:
         r300 = min(radius_m, 300.0 * FEET_TO_METERS)
 
         for geom in geoms:
-            geom_m = shapely_transform(to_3857, geom)
+            try:
+                geom_m = shapely_transform(to_3857, geom)
+            except Exception:
+                continue
             if subject_m is not None and geom_m.distance(subject_m) < 0.5:
                 continue
 
-            d = float(point_m.distance(geom_m))
+            # When a subject footprint is available, use footprint-edge proximity
+            # so nearby homes with different placement get distinct metrics.
+            if subject_m is not None:
+                d = float(subject_m.distance(geom_m))
+            else:
+                d = float(point_m.distance(geom_m))
             nearest_m = d if nearest_m is None else min(nearest_m, d)
             if d <= r100:
                 nearby_100 += 1

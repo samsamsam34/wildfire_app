@@ -882,6 +882,7 @@ python scripts/run_public_outcome_validation.py
 ```
 
 This writes a validation bundle under `benchmark/public_outcomes/validation/<timestamp>/` using the latest labeled dataset from `benchmark/public_outcomes/evaluation_dataset/<run_id>/evaluation_dataset.jsonl` (or an explicitly supplied dataset path).
+Strict validation is the default reporting path: headline metrics prefer event-level out-of-sample aggregates when available, and permissive target/score fallbacks are opt-in flags.
 
 End-to-end workflow:
 

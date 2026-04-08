@@ -25,11 +25,15 @@ def evaluate_dataset(
     output_csv: Path | None = None,
     thresholds: list[float] | None = None,
     bins: int = 10,
+    allow_label_derived_target: bool = False,
+    allow_surrogate_wildfire_score: bool = False,
 ) -> dict[str, Any]:
     report, rows = evaluate_public_outcome_dataset_file(
         dataset_path=dataset_path,
         thresholds=thresholds or list(DEFAULT_THRESHOLDS),
         bins=bins,
+        allow_label_derived_target=bool(allow_label_derived_target),
+        allow_surrogate_wildfire_score=bool(allow_surrogate_wildfire_score),
     )
     output_json.parent.mkdir(parents=True, exist_ok=True)
     output_json.write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
@@ -68,6 +72,18 @@ def main() -> int:
         default=10,
         help="Number of quantile bins for calibration tables.",
     )
+    parser.add_argument(
+        "--allow-label-derived-target",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Opt in to deriving target from outcome label when structure_loss_or_major_damage is missing.",
+    )
+    parser.add_argument(
+        "--allow-surrogate-wildfire-score",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Opt in to surrogate wildfire score when wildfire_risk_score is missing.",
+    )
     args = parser.parse_args()
 
     thresholds = [float(token) for token in str(args.thresholds).split(",") if token.strip()]
@@ -77,6 +93,8 @@ def main() -> int:
         output_csv=(Path(args.output_csv).expanduser() if args.output_csv else None),
         thresholds=thresholds,
         bins=max(2, int(args.bins)),
+        allow_label_derived_target=bool(args.allow_label_derived_target),
+        allow_surrogate_wildfire_score=bool(args.allow_surrogate_wildfire_score),
     )
 
     print(

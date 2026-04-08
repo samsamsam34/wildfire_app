@@ -32,6 +32,10 @@ If the dataset fails these checks, the report explicitly marks:
 Default behavior:
 - looks for the latest labeled dataset under `benchmark/public_outcomes/evaluation_dataset/<run_id>/evaluation_dataset.jsonl`
 - writes a new validation bundle under `benchmark/public_outcomes/validation/<run_id>/`
+- uses strict metric eligibility by default:
+  - `structure_loss_or_major_damage` must be explicitly present (no label-derived target fallback)
+  - `wildfire_risk_score` must be explicitly present (no surrogate score fallback)
+  - event-level out-of-sample metrics are preferred for headline reporting when available
 
 Use an explicit dataset path:
 
@@ -96,15 +100,22 @@ When a feature falls below either threshold, it is excluded automatically from t
 - `validation_metrics.json` under `high_signal_feature_filtering`
 - `manifest.json` under input/command config
 
-Filtering strictness is configurable and defaults to row-retention with tagging:
+Strict row retention/tagging remains configurable (rows can be retained even when unusable for metrics):
 
 ```bash
 python scripts/run_public_outcome_validation.py \
   --evaluation-dataset-run-id <run_id> \
   --min-join-confidence-score-for-metrics 0.7 \
-  --allow-label-derived-target \
-  --allow-surrogate-wildfire-score \
   --retain-unusable-rows
+```
+
+Permissive fallbacks are now explicit opt-ins:
+
+```bash
+python scripts/run_public_outcome_validation.py \
+  --evaluation-dataset-run-id <run_id> \
+  --allow-label-derived-target \
+  --allow-surrogate-wildfire-score
 ```
 
 Compare explicitly against a baseline validation run:
@@ -241,6 +252,14 @@ Subset metrics are also reported for:
 - high-confidence subset
 - medium-confidence subset
 - high-evidence subset
+
+Headline reporting now explicitly separates:
+- `reported_metrics.in_sample`
+- `reported_metrics.holdout_event_level_out_of_sample`
+- `reported_metrics.primary_source` (`event_level_out_of_sample` when available, otherwise `in_sample_fallback`)
+
+Event-level out-of-sample evaluation is emitted in:
+- `event_level_out_of_sample` (per-event eligibility + aggregate metrics)
 
 Validation output also includes an explicit confidence-tier comparison block:
 - `confidence_tier_performance.tiers.all_data`

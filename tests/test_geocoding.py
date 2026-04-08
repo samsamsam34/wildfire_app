@@ -196,3 +196,159 @@ def test_geocoder_retries_with_house_number_stripped_variant(monkeypatch):
     assert attempts
     assert any((attempt or {}).get("query", "").startswith("6 Pineview Rd") for attempt in attempts)
     assert any((attempt or {}).get("query", "").startswith("Pineview Rd") for attempt in attempts)
+
+
+def test_geocoder_strips_suite_and_hash_noise(monkeypatch):
+    empty_payload: list[dict[str, Any]] = []
+    clean_payload = [
+        {
+            "display_name": "12 Twin Lakes Rd, Winthrop, WA 98862, USA",
+            "lat": "48.4782",
+            "lon": "-120.1870",
+            "importance": 0.07,
+            "class": "building",
+            "type": "house",
+            "address": {
+                "house_number": "12",
+                "road": "Twin Lakes Rd",
+                "town": "Winthrop",
+                "state": "Washington",
+                "postcode": "98862",
+                "country_code": "us",
+            },
+        }
+    ]
+
+    def _fake_urlopen(req, timeout=None):  # noqa: ARG001
+        parsed = urllib.parse.urlparse(req.full_url)
+        q = urllib.parse.parse_qs(parsed.query).get("q", [""])[0].lower()
+        if "ste 200" in q or "#12" in q:
+            return _FakeHTTPResponse(empty_payload)
+        if "twin lakes rd" in q:
+            return _FakeHTTPResponse(clean_payload)
+        return _FakeHTTPResponse(empty_payload)
+
+    monkeypatch.setattr("backend.geocoding.urllib.request.urlopen", _fake_urlopen)
+    geocoder = Geocoder(user_agent="test-suite")
+    result = geocoder.geocode_with_diagnostics("12 Twin Lakes Rd Ste 200 #12, Winthrop, WA 98862")
+    assert result.geocode_status == "accepted"
+    assert result.latitude == pytest.approx(48.4782)
+    preview = result.raw_response_preview or {}
+    attempts = preview.get("query_attempts") or []
+    assert any("ste 200" in str((attempt or {}).get("query", "")).lower() for attempt in attempts)
+    assert any("twin lakes rd, winthrop, wa 98862" in str((attempt or {}).get("query", "")).lower() for attempt in attempts)
+
+
+def test_geocoder_prefers_better_candidate_from_later_query_variant(monkeypatch):
+    weak_payload = [
+        {
+            "display_name": "12 Twin Lakes Rd, Other Town, WA 98862, USA",
+            "lat": "48.3100",
+            "lon": "-120.4300",
+            "importance": 0.35,
+            "class": "place",
+            "type": "residential",
+            "address": {
+                "house_number": "12",
+                "road": "Twin Lakes Rd",
+                "town": "Other Town",
+                "state": "Washington",
+                "postcode": "98862",
+                "country_code": "us",
+            },
+        }
+    ]
+    strong_payload = [
+        {
+            "display_name": "12 Twin Lakes Rd, Winthrop, WA 98862, USA",
+            "lat": "48.4782",
+            "lon": "-120.1870",
+            "importance": 0.05,
+            "class": "building",
+            "type": "house",
+            "address": {
+                "house_number": "12",
+                "road": "Twin Lakes Rd",
+                "town": "Winthrop",
+                "state": "Washington",
+                "postcode": "98862",
+                "country_code": "us",
+            },
+        }
+    ]
+
+    def _fake_urlopen(req, timeout=None):  # noqa: ARG001
+        parsed = urllib.parse.urlparse(req.full_url)
+        q = urllib.parse.parse_qs(parsed.query).get("q", [""])[0].lower()
+        if "apt 3" in q:
+            return _FakeHTTPResponse(weak_payload)
+        if "twin lakes rd, winthrop, wa 98862" in q:
+            return _FakeHTTPResponse(strong_payload)
+        return _FakeHTTPResponse([])
+
+    monkeypatch.setattr("backend.geocoding.urllib.request.urlopen", _fake_urlopen)
+    geocoder = Geocoder(user_agent="test-suite")
+    result = geocoder.geocode_with_diagnostics("12 Twin Lakes Rd Apt 3, Winthrop, WA 98862")
+    assert result.geocode_status == "accepted"
+    assert result.latitude == pytest.approx(48.4782)
+    assert result.matched_address == "12 Twin Lakes Rd, Winthrop, WA 98862, USA"
+    preview = result.raw_response_preview or {}
+    assert str(preview.get("selected_query") or "").lower() != "12 twin lakes rd apt 3, winthrop, wa 98862"
+
+
+def test_geocoder_labels_boundary_locality_as_approximate(monkeypatch):
+    payload = [
+        {
+            "display_name": "Winthrop, WA, USA",
+            "lat": "48.4785",
+            "lon": "-120.1865",
+            "importance": 0.63,
+            "class": "boundary",
+            "type": "administrative",
+            "address": {
+                "town": "Winthrop",
+                "state": "Washington",
+                "postcode": "98862",
+                "country_code": "us",
+            },
+        }
+    ]
+
+    monkeypatch.setenv("WF_GEOCODE_MIN_IMPORTANCE", "0.0")
+    monkeypatch.setattr("backend.geocoding.urllib.request.urlopen", lambda *args, **kwargs: _FakeHTTPResponse(payload))
+    geocoder = Geocoder(user_agent="test-suite")
+    result = geocoder.geocode_with_diagnostics("Winthrop, WA 98862")
+    assert result.geocode_status == "accepted"
+    assert result.geocode_precision == "approximate"
+
+
+def test_geocoder_rejects_conflicting_house_number_even_if_candidate_is_precise(monkeypatch):
+    payload = [
+        {
+            "display_name": "14 Twin Lakes Rd, Winthrop, WA 98862, USA",
+            "lat": "48.4782",
+            "lon": "-120.1870",
+            "importance": 0.41,
+            "class": "building",
+            "type": "house",
+            "address": {
+                "house_number": "14",
+                "road": "Twin Lakes Rd",
+                "town": "Winthrop",
+                "state": "Washington",
+                "postcode": "98862",
+                "country_code": "us",
+            },
+        }
+    ]
+
+    monkeypatch.setenv("WF_GEOCODE_MIN_IMPORTANCE", "0.0")
+    monkeypatch.setattr("backend.geocoding.urllib.request.urlopen", lambda *args, **kwargs: _FakeHTTPResponse(payload))
+    geocoder = Geocoder(user_agent="test-suite")
+    with pytest.raises(GeocodingError) as exc:
+        geocoder.geocode_with_diagnostics("12 Twin Lakes Rd, Winthrop, WA 98862")
+
+    assert exc.value.status == "low_confidence"
+    assert "house_number_mismatch" in str(exc.value.rejection_reason or "")
+    preview = exc.value.raw_response_preview or {}
+    assert preview.get("trust_filter_rule") == "house_number_mismatch"

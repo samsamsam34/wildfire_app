@@ -181,6 +181,82 @@ def test_interpolated_geocode_allows_wider_address_point_tolerance(tmp_path: Pat
 
 
 @pytest.mark.skipif(not _geo_ready(), reason="Property anchor tests require shapely")
+def test_low_confidence_rooftop_geocode_widens_address_point_tolerance(tmp_path: Path) -> None:
+    address_points = _write_geojson(
+        tmp_path / "address_points_low_conf.geojson",
+        [
+            {
+                "type": "Feature",
+                "properties": {"address_id": "ap-low-conf"},
+                "geometry": {"type": "Point", "coordinates": [-113.99410, 46.87199]},
+            }
+        ],
+    )
+    resolver = PropertyAnchorResolver(address_points_path=address_points, parcels_path=None)
+
+    high_conf = resolver.resolve(
+        geocoded_lat=46.87230,
+        geocoded_lon=-113.99410,
+        geocode_precision="rooftop",
+        geocode_confidence_score=0.82,
+    )
+    low_conf = resolver.resolve(
+        geocoded_lat=46.87230,
+        geocoded_lon=-113.99410,
+        geocode_precision="rooftop",
+        geocode_confidence_score=0.20,
+    )
+
+    assert high_conf.anchor_source != "authoritative_address_point"
+    assert low_conf.anchor_source == "authoritative_address_point"
+    assert low_conf.geocode_confidence_score == pytest.approx(0.20)
+    assert any("expanded anchor lookup tolerances" in note.lower() for note in low_conf.diagnostics)
+
+
+@pytest.mark.skipif(not _geo_ready(), reason="Property anchor tests require shapely")
+def test_low_confidence_rooftop_does_not_expand_parcel_nearest_tolerance(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("WF_PARCEL_LOOKUP_MAX_DISTANCE_M", "30")
+    parcels = _write_geojson(
+        tmp_path / "parcels_low_conf_rooftop.geojson",
+        [
+            {
+                "type": "Feature",
+                "properties": {"parcel_id": "near-but-not-too-near"},
+                "geometry": {
+                    "type": "Polygon",
+                    "coordinates": [[
+                        [-113.99350, 46.87224],
+                        [-113.99334, 46.87224],
+                        [-113.99334, 46.87196],
+                        [-113.99350, 46.87196],
+                        [-113.99350, 46.87224],
+                    ]],
+                },
+            }
+        ],
+    )
+    resolver = PropertyAnchorResolver(parcels_path=parcels)
+
+    rooftop_low_conf = resolver.resolve(
+        geocoded_lat=46.87210,
+        geocoded_lon=-113.99410,
+        geocode_precision="rooftop",
+        geocode_confidence_score=0.20,
+    )
+    interpolated_low_conf = resolver.resolve(
+        geocoded_lat=46.87210,
+        geocoded_lon=-113.99410,
+        geocode_precision="interpolated",
+        geocode_confidence_score=0.20,
+    )
+
+    assert rooftop_low_conf.parcel_id is None
+    assert rooftop_low_conf.parcel_lookup_method in {None, "none"}
+    assert interpolated_low_conf.parcel_id == "near-but-not-too-near"
+    assert interpolated_low_conf.parcel_lookup_method in {"nearest_within_tolerance", "contains_point"}
+
+
+@pytest.mark.skipif(not _geo_ready(), reason="Property anchor tests require shapely")
 def test_parcel_resolution_clean_match_reports_matched_status(tmp_path: Path) -> None:
     parcels = _write_geojson(
         tmp_path / "county_parcels.geojson",

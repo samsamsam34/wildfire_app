@@ -148,6 +148,13 @@ def test_evaluate_public_outcome_dataset_reports_required_metrics(tmp_path: Path
     assert "subset_metrics" in report
     assert report["subset_metrics"]["full_dataset"]["count"] == report["row_count_labeled"]
     assert "medium_confidence_subset" in report["subset_metrics"]
+    assert "event_level_out_of_sample" in report
+    assert "reported_metrics" in report
+    assert "reporting_claim_guardrails" in report
+    assert (report.get("reported_metrics") or {}).get("primary_source") in {
+        "event_level_out_of_sample",
+        "in_sample_fallback",
+    }
     assert "confidence_tier_performance" in report
     tier_perf = report["confidence_tier_performance"]
     assert "tiers" in tier_perf
@@ -239,6 +246,7 @@ def test_public_outcome_validation_orchestration_is_deterministic_with_fixed_run
         ((manifest_obj.get("artifacts") or {}).get("feature_signal_report_json"))
         == first["feature_signal_report_path"]
     )
+    assert ((manifest_obj.get("headline") or {}).get("metrics_source") in {"event_level_out_of_sample", "in_sample_fallback"})
 
     evaluation_text_1 = Path(first["validation_metrics_path"]).read_text(encoding="utf-8")
     evaluation_text_2 = Path(second["validation_metrics_path"]).read_text(encoding="utf-8")
@@ -393,7 +401,125 @@ def test_evaluate_public_outcome_dataset_allows_small_usable_set_when_configured
     assert report["metric_stability"]["auc_stable"] is False
     assert "Insufficient data for stable AUC/PR-AUC" in " ".join(report["narrative_summary"]["bullets"])
     assert "Dataset too small for calibration trust" in " ".join(report["narrative_summary"]["bullets"])
+    assert (report.get("reported_metrics") or {}).get("primary_source") == "in_sample_fallback"
+    assert (report.get("reporting_claim_guardrails") or {}).get("strong_performance_claims_allowed") is False
+    assert report.get("calibration_artifact_recommendation") == "not_recommended_yet"
     assert len(rows) == 1
+
+
+def test_strict_defaults_require_explicit_target_and_wildfire_score(tmp_path: Path) -> None:
+    dataset_path = tmp_path / "strict_defaults.jsonl"
+    dataset_path.write_text(
+        json.dumps(
+            {
+                "event": {"event_id": "evt-strict"},
+                "feature": {"record_id": "strict-1"},
+                "outcome": {
+                    "damage_label": "destroyed",
+                    "damage_severity_class": "destroyed",
+                    "structure_loss_or_major_damage": None,
+                },
+                "scores": {
+                    "wildfire_risk_score": None,
+                    "site_hazard_score": 88.0,
+                    "home_ignition_vulnerability_score": 84.0,
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="Not enough usable labeled rows"):
+        evaluate_public_outcome_dataset_file(
+            dataset_path=dataset_path,
+            min_labeled_rows=1,
+        )
+
+
+def test_permissive_fallbacks_are_opt_in(tmp_path: Path) -> None:
+    dataset_path = tmp_path / "permissive_opt_in.jsonl"
+    dataset_path.write_text(
+        json.dumps(
+            {
+                "event": {"event_id": "evt-strict"},
+                "feature": {"record_id": "strict-1"},
+                "outcome": {
+                    "damage_label": "destroyed",
+                    "damage_severity_class": "destroyed",
+                    "structure_loss_or_major_damage": None,
+                },
+                "scores": {
+                    "wildfire_risk_score": None,
+                    "site_hazard_score": 88.0,
+                    "home_ignition_vulnerability_score": 84.0,
+                },
+                "join_metadata": {"join_confidence_tier": "high", "join_confidence_score": 0.95},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    report, rows = evaluate_public_outcome_dataset_file(
+        dataset_path=dataset_path,
+        min_labeled_rows=1,
+        allow_label_derived_target=True,
+        allow_surrogate_wildfire_score=True,
+    )
+    assert report["row_count_labeled"] == 1
+    usable = [row for row in rows if bool(row.get("row_usable_for_metrics"))]
+    assert len(usable) == 1
+    assert str(usable[0].get("wildfire_score_source")) == "surrogate_from_site_and_vulnerability"
+
+
+def test_reported_metrics_separate_in_sample_and_event_holdout(tmp_path: Path) -> None:
+    rows = []
+    for event_id, data in (
+        (
+            "evt-a",
+            [
+                ("a1", 95.0, 1),
+                ("a2", 88.0, 1),
+                ("a3", 28.0, 0),
+                ("a4", 22.0, 0),
+            ],
+        ),
+        (
+            "evt-b",
+            [
+                ("b1", 90.0, 1),
+                ("b2", 82.0, 1),
+                ("b3", 30.0, 0),
+                ("b4", 24.0, 0),
+            ],
+        ),
+    ):
+        for record_id, score, label in data:
+            rows.append(
+                {
+                    "event": {"event_id": event_id, "event_date": "2021-08-01"},
+                    "feature": {"record_id": record_id, "source_record_id": record_id},
+                    "outcome": {
+                        "damage_label": "destroyed" if label == 1 else "no_damage",
+                        "damage_severity_class": "destroyed" if label == 1 else "none",
+                        "structure_loss_or_major_damage": label,
+                    },
+                    "scores": {"wildfire_risk_score": score},
+                    "join_metadata": {"join_confidence_tier": "high", "join_confidence_score": 0.95},
+                    "confidence": {"confidence_tier": "high"},
+                    "evidence": {"evidence_quality_tier": "high"},
+                }
+            )
+    dataset_path = tmp_path / "event_holdout.jsonl"
+    dataset_path.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
+
+    report, _ = evaluate_public_outcome_dataset_file(dataset_path=dataset_path, min_labeled_rows=1)
+    event_oos = report.get("event_level_out_of_sample") or {}
+    reported = report.get("reported_metrics") or {}
+    assert event_oos.get("available") is True
+    assert int((event_oos.get("aggregate") or {}).get("count") or 0) == 8
+    assert reported.get("primary_source") == "event_level_out_of_sample"
+    assert int((reported.get("in_sample") or {}).get("count") or 0) == 8
+    assert int((reported.get("holdout_event_level_out_of_sample") or {}).get("count") or 0) == 8
 
 
 def test_small_sample_metrics_are_marked_unstable_even_with_perfect_auc(tmp_path: Path) -> None:

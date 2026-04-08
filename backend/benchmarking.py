@@ -806,6 +806,35 @@ def _scenario_snapshot(
         else (homeowner_trust_summary.get("parcel_level_comparison_allowed"))
     )
     specificity_headline = str(specificity_obj.get("headline") or "").strip()
+    property_level_context = result.property_level_context if isinstance(result.property_level_context, dict) else {}
+    ring_metrics = property_level_context.get("ring_metrics") if isinstance(property_level_context.get("ring_metrics"), dict) else {}
+
+    def _ring_density(key: str) -> float | None:
+        row = ring_metrics.get(key)
+        if not isinstance(row, dict):
+            row = ring_metrics.get(key.replace("ring_", "zone_"))
+        if not isinstance(row, dict):
+            return None
+        return _safe_float(row.get("vegetation_density"))
+
+    near_structure_features = (
+        property_level_context.get("near_structure_features")
+        if isinstance(property_level_context.get("near_structure_features"), dict)
+        else {}
+    )
+    geometry_quality_tier = str(near_structure_features.get("data_quality_tier") or "").strip().lower()
+    if geometry_quality_tier not in {"footprint_precise", "parcel_proxy", "point_proxy"}:
+        if bool(property_level_context.get("footprint_used")):
+            geometry_quality_tier = "footprint_precise"
+        elif str(property_level_context.get("geometry_basis") or "").strip().lower() == "parcel":
+            geometry_quality_tier = "parcel_proxy"
+        else:
+            geometry_quality_tier = "point_proxy"
+    supports_property_specific_claims = (
+        bool(near_structure_features.get("supports_property_specific_claims"))
+        if "supports_property_specific_claims" in near_structure_features
+        else bool(geometry_quality_tier == "footprint_precise")
+    )
 
     return {
         "scenario_id": scenario["scenario_id"],
@@ -899,6 +928,17 @@ def _scenario_snapshot(
             "final_structure_geometry_source": result.final_structure_geometry_source,
             "structure_geometry_confidence": result.structure_geometry_confidence,
             "structure_match_method": result.structure_match_method,
+        },
+        "geometry_features": {
+            "ring_0_5_ft_vegetation_density": _ring_density("ring_0_5_ft"),
+            "ring_5_30_ft_vegetation_density": _ring_density("ring_5_30_ft"),
+            "ring_30_100_ft_vegetation_density": _ring_density("ring_30_100_ft"),
+            "near_structure_vegetation_0_5_pct": _safe_float(property_level_context.get("near_structure_vegetation_0_5_pct")),
+            "near_structure_vegetation_5_30_pct": _safe_float(property_level_context.get("near_structure_vegetation_5_30_pct")),
+            "geometry_quality_tier": geometry_quality_tier,
+            "supports_property_specific_claims": supports_property_specific_claims,
+            "parcel_id": property_level_context.get("parcel_id"),
+            "matched_structure_id": property_level_context.get("matched_structure_id"),
         },
         "debug_excerpt": {
             "eligibility": debug_payload.get("eligibility", {}),
@@ -1051,6 +1091,7 @@ def _build_nearby_differentiation_performance_summary(
     assertion_results: list[dict[str, Any]],
 ) -> dict[str, Any]:
     nearby_scenario_ids: list[str] = []
+    scenario_tags: dict[str, set[str]] = {}
     for scenario in scenarios:
         if not isinstance(scenario, dict):
             continue
@@ -1059,6 +1100,7 @@ def _build_nearby_differentiation_performance_summary(
             continue
         tags = scenario.get("profile_tags") if isinstance(scenario.get("profile_tags"), list) else []
         normalized_tags = {str(tag).strip().lower() for tag in tags if str(tag).strip()}
+        scenario_tags[scenario_id] = normalized_tags
         if ("nearby_differentiation" in normalized_tags) or scenario_id.startswith("nearby_"):
             nearby_scenario_ids.append(scenario_id)
     nearby_scenario_ids = sorted(set(nearby_scenario_ids))
@@ -1090,6 +1132,21 @@ def _build_nearby_differentiation_performance_summary(
             "abstention_success_rate_when_data_weak": None,
             "false_similarity_case_count": 0,
             "false_similarity_cases": [],
+            "geometry_feature_separation": {
+                "pair_count": 0,
+                "expected_distinct_pair_count": 0,
+                "distinct_pair_count": 0,
+                "collapsed_pair_count": 0,
+                "collapsed_unexpected_pair_count": 0,
+                "separation_success_rate_expected_distinct": None,
+                "pairs": [],
+            },
+            "geometry_confidence_guardrails": {
+                "low_quality_scenario_count": 0,
+                "low_quality_labeled_count": 0,
+                "low_quality_treated_as_precise_count": 0,
+                "low_quality_treated_as_precise_scenarios": [],
+            },
         }
 
     relevant_assertions: list[dict[str, Any]] = []
@@ -1260,6 +1317,144 @@ def _build_nearby_differentiation_performance_summary(
         if collapsed_toward_similarity_count > 0
         else None
     )
+
+    # Geometry-feature separation diagnostics: detect when nearby homes collapse
+    # to nearly identical ring/near-structure features despite precise geometry.
+    geometry_pair_rows: list[dict[str, Any]] = []
+    expected_distinct_pair_count = 0
+    distinct_pair_count = 0
+    collapsed_pair_count = 0
+    collapsed_unexpected_pair_count = 0
+    pair_metrics: dict[tuple[str, str], set[str]] = {}
+    for assertion in relevant_assertions:
+        left_id = str(assertion.get("left") or "").strip()
+        right_id = str(assertion.get("right") or "").strip()
+        metric = str(assertion.get("metric") or "").strip()
+        if not left_id or not right_id:
+            continue
+        pair_key = tuple(sorted((left_id, right_id)))
+        pair_metrics.setdefault(pair_key, set()).add(metric)
+    seen_pairs: set[tuple[str, str]] = set()
+    for assertion in relevant_assertions:
+        left_id = str(assertion.get("left") or "").strip()
+        right_id = str(assertion.get("right") or "").strip()
+        if not left_id or not right_id:
+            continue
+        pair_key = tuple(sorted((left_id, right_id)))
+        if pair_key in seen_pairs:
+            continue
+        seen_pairs.add(pair_key)
+
+        left_snapshot = snapshots.get(left_id) if isinstance(snapshots.get(left_id), dict) else {}
+        right_snapshot = snapshots.get(right_id) if isinstance(snapshots.get(right_id), dict) else {}
+        left_geom = left_snapshot.get("geometry_features") if isinstance(left_snapshot.get("geometry_features"), dict) else {}
+        right_geom = right_snapshot.get("geometry_features") if isinstance(right_snapshot.get("geometry_features"), dict) else {}
+        if not left_geom or not right_geom:
+            continue
+
+        feature_keys = (
+            "ring_0_5_ft_vegetation_density",
+            "ring_5_30_ft_vegetation_density",
+            "near_structure_vegetation_0_5_pct",
+            "near_structure_vegetation_5_30_pct",
+        )
+        feature_deltas: dict[str, float] = {}
+        max_abs_delta: float | None = None
+        for feature_key in feature_keys:
+            left_value = _safe_float(left_geom.get(feature_key))
+            right_value = _safe_float(right_geom.get(feature_key))
+            if left_value is None or right_value is None:
+                continue
+            delta = abs(float(left_value) - float(right_value))
+            feature_deltas[feature_key] = round(delta, 3)
+            max_abs_delta = delta if max_abs_delta is None else max(max_abs_delta, delta)
+        if max_abs_delta is None:
+            continue
+
+        left_specificity = left_snapshot.get("specificity") if isinstance(left_snapshot.get("specificity"), dict) else {}
+        right_specificity = right_snapshot.get("specificity") if isinstance(right_snapshot.get("specificity"), dict) else {}
+        left_tier = str(left_geom.get("geometry_quality_tier") or "").strip().lower()
+        right_tier = str(right_geom.get("geometry_quality_tier") or "").strip().lower()
+        left_supports = bool(left_geom.get("supports_property_specific_claims"))
+        right_supports = bool(right_geom.get("supports_property_specific_claims"))
+        metrics_for_pair = pair_metrics.get(pair_key) or set()
+        left_tags = scenario_tags.get(left_id) or set()
+        right_tags = scenario_tags.get(right_id) or set()
+        geometry_context_tags = {"local_vegetation", "naip_proxy", "geometry_gap"}
+        has_geometry_context = bool((left_tags | right_tags) & geometry_context_tags)
+        has_geometry_sensitive_assertion = any(
+            str(metric).startswith("scores.home_ignition_vulnerability_score")
+            or str(metric).startswith("scores.site_hazard_score")
+            for metric in metrics_for_pair
+        )
+        expected_distinct = bool(
+            has_geometry_context
+            and
+            has_geometry_sensitive_assertion
+            and
+            left_tier == "footprint_precise"
+            and right_tier == "footprint_precise"
+            and left_supports
+            and right_supports
+            and bool(left_specificity.get("comparison_allowed"))
+            and bool(right_specificity.get("comparison_allowed"))
+        )
+        distinct = bool(max_abs_delta >= 8.0)
+        collapsed = not distinct
+        if expected_distinct:
+            expected_distinct_pair_count += 1
+        if distinct:
+            distinct_pair_count += 1
+        else:
+            collapsed_pair_count += 1
+            if expected_distinct:
+                collapsed_unexpected_pair_count += 1
+        geometry_pair_rows.append(
+            {
+                "left": left_id,
+                "right": right_id,
+                "max_abs_feature_delta": round(float(max_abs_delta), 3),
+                "feature_deltas": feature_deltas,
+                "expected_distinct": expected_distinct,
+                "distinct": distinct,
+                "collapsed": collapsed,
+                "left_quality_tier": left_tier or None,
+                "right_quality_tier": right_tier or None,
+            }
+        )
+
+    separation_success_rate_expected_distinct = (
+        round(
+            float(max(0, expected_distinct_pair_count - collapsed_unexpected_pair_count))
+            / float(expected_distinct_pair_count),
+            4,
+        )
+        if expected_distinct_pair_count > 0
+        else None
+    )
+
+    low_quality_scenario_count = 0
+    low_quality_labeled_count = 0
+    low_quality_treated_as_precise_scenarios: list[str] = []
+    for scenario_id in nearby_scenario_ids:
+        snap = snapshots.get(scenario_id)
+        if not isinstance(snap, dict):
+            continue
+        geom = snap.get("geometry_features") if isinstance(snap.get("geometry_features"), dict) else {}
+        if not geom:
+            continue
+        quality_tier = str(geom.get("geometry_quality_tier") or "").strip().lower()
+        if quality_tier not in {"parcel_proxy", "point_proxy"}:
+            continue
+        low_quality_scenario_count += 1
+        specificity = snap.get("specificity") if isinstance(snap.get("specificity"), dict) else {}
+        comparison_allowed = bool(specificity.get("comparison_allowed"))
+        supports_property_specific_claims = bool(geom.get("supports_property_specific_claims"))
+        if (not comparison_allowed) and (not supports_property_specific_claims):
+            low_quality_labeled_count += 1
+        else:
+            low_quality_treated_as_precise_scenarios.append(scenario_id)
+
     return {
         "available": True,
         "scenario_count": len(nearby_scenario_ids),
@@ -1290,6 +1485,21 @@ def _build_nearby_differentiation_performance_summary(
         "abstention_success_rate_when_data_weak": abstention_success_rate,
         "false_similarity_case_count": false_similarity_case_count,
         "false_similarity_cases": false_similarity_cases,
+        "geometry_feature_separation": {
+            "pair_count": len(geometry_pair_rows),
+            "expected_distinct_pair_count": expected_distinct_pair_count,
+            "distinct_pair_count": distinct_pair_count,
+            "collapsed_pair_count": collapsed_pair_count,
+            "collapsed_unexpected_pair_count": collapsed_unexpected_pair_count,
+            "separation_success_rate_expected_distinct": separation_success_rate_expected_distinct,
+            "pairs": geometry_pair_rows,
+        },
+        "geometry_confidence_guardrails": {
+            "low_quality_scenario_count": low_quality_scenario_count,
+            "low_quality_labeled_count": low_quality_labeled_count,
+            "low_quality_treated_as_precise_count": len(low_quality_treated_as_precise_scenarios),
+            "low_quality_treated_as_precise_scenarios": low_quality_treated_as_precise_scenarios,
+        },
         "scenario_diagnostics": scenario_diagnostics,
         "notes": [
             "Nearby-home differentiation scenarios should separate local sub-scores while confidence/differentiation diagnostics track data quality.",

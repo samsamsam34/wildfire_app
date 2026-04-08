@@ -34,6 +34,7 @@ class PropertyAnchorResolution:
     geocoded_longitude: float
     geocode_provider: str | None = None
     geocode_precision: str = "unknown"
+    geocode_confidence_score: float | None = None
     geocoded_address: str | None = None
     parcel_id: str | None = None
     parcel_polygon: Any | None = None
@@ -73,6 +74,7 @@ class PropertyAnchorResolution:
             "geocode_provider": self.geocode_provider,
             "geocoded_address": self.geocoded_address,
             "geocode_precision": self.geocode_precision,
+            "geocode_confidence_score": self.geocode_confidence_score,
             "parcel_address_point": self.parcel_address_point_geojson,
             "parcel_geometry": self.parcel_geometry_geojson,
             "parcel_id": self.parcel_id,
@@ -336,16 +338,35 @@ class PropertyAnchorResolver:
             return "rooftop_geocode"
         if p == "parcel_or_address_point":
             return "address_point_geocode"
+        if p == "parcel":
+            return "parcel_centroid_geocode"
         if p == "interpolated":
             return "interpolated_geocode"
+        if p in {"road", "street"}:
+            return "interpolated_geocode"
+        if p in {"locality", "zip_centroid"}:
+            return "approximate_geocode"
         if p == "approximate":
             return "approximate_geocode"
         return "geocoded_address_point"
 
     @staticmethod
+    def _normalize_confidence_score(value: float | None) -> float | None:
+        if value is None:
+            return None
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            return None
+        if parsed > 1.0:
+            parsed /= 100.0
+        return max(0.0, min(1.0, parsed))
+
+    @staticmethod
     def _distance_limits_for_precision(
         *,
         geocode_precision: str,
+        geocode_confidence_score: float | None,
         address_default_m: float,
         parcel_default_m: float,
         override_anchor: bool,
@@ -361,6 +382,14 @@ class PropertyAnchorResolver:
         elif precision in {"approximate", "unknown"}:
             address_limit = max(address_limit + 25.0, address_limit * 2.2)
             parcel_limit = max(parcel_limit + 28.0, parcel_limit * 2.4)
+        confidence = PropertyAnchorResolver._normalize_confidence_score(geocode_confidence_score)
+        if confidence is not None and confidence <= 0.35:
+            address_limit = max(address_limit + 10.0, address_limit * 1.2)
+            # Conservative guardrail: low-confidence geocodes can expand parcel lookup
+            # only when precision is already coarse. For otherwise precise geocodes,
+            # keep parcel tolerance tight to avoid wrong nearest-parcel overmatching.
+            if precision in {"interpolated", "approximate", "unknown", "road", "street", "locality", "zip_centroid"}:
+                parcel_limit = max(parcel_limit + 14.0, parcel_limit * 1.25)
         if override_anchor:
             parcel_limit = max(parcel_limit, parcel_default_m * 2.0)
         return min(address_limit, 160.0), min(parcel_limit, 220.0)
@@ -370,6 +399,7 @@ class PropertyAnchorResolver:
         *,
         anchor_source: str,
         geocode_precision: str,
+        geocode_confidence_score: float | None,
         geocode_to_anchor_distance_m: float,
         parcel_present: bool,
         address_point_present: bool,
@@ -399,6 +429,12 @@ class PropertyAnchorResolver:
             score -= 0.08
         elif precision == "unknown":
             score -= 0.05
+        confidence = PropertyAnchorResolver._normalize_confidence_score(geocode_confidence_score)
+        if confidence is not None:
+            if confidence < 0.20:
+                score -= 0.10
+            elif confidence < 0.35:
+                score -= 0.06
         if geocode_to_anchor_distance_m > 90.0:
             score -= 0.12
         elif geocode_to_anchor_distance_m > 45.0:
@@ -421,12 +457,14 @@ class PropertyAnchorResolver:
         geocoded_lon: float,
         geocode_provider: str | None = None,
         geocode_precision: str | None = None,
+        geocode_confidence_score: float | None = None,
         geocoded_address: str | None = None,
         property_anchor_override: tuple[float, float] | None = None,
         property_anchor_override_source: str | None = None,
         property_anchor_override_precision: str | None = None,
     ) -> PropertyAnchorResolution:
         fallback_precision = str(geocode_precision or "unknown")
+        normalized_confidence = self._normalize_confidence_score(geocode_confidence_score)
         override_anchor = None
         if property_anchor_override is not None:
             try:
@@ -454,6 +492,7 @@ class PropertyAnchorResolver:
                 geocoded_longitude=float(geocoded_lon),
                 geocode_provider=geocode_provider,
                 geocode_precision=fallback_precision,
+                geocode_confidence_score=normalized_confidence,
                 geocoded_address=geocoded_address,
                 diagnostics=["Property anchor resolver fell back to geocode point; geospatial dependencies unavailable."],
             )
@@ -466,6 +505,7 @@ class PropertyAnchorResolver:
         )
         address_limit_m, parcel_limit_m = self._distance_limits_for_precision(
             geocode_precision=fallback_precision,
+            geocode_confidence_score=normalized_confidence,
             address_default_m=self.max_address_point_distance_m,
             parcel_default_m=self.max_parcel_lookup_distance_m,
             override_anchor=override_anchor is not None,
@@ -551,6 +591,7 @@ class PropertyAnchorResolver:
         anchor_quality, anchor_quality_score = self._anchor_quality_summary(
             anchor_source=anchor_source,
             geocode_precision=fallback_precision,
+            geocode_confidence_score=normalized_confidence,
             geocode_to_anchor_distance_m=geocode_to_anchor_distance_m,
             parcel_present=parcel_geom is not None,
             address_point_present=address_point is not None,
@@ -567,6 +608,10 @@ class PropertyAnchorResolver:
         diagnostics.append(
             f"Anchor lookup tolerances used: address_point<= {address_limit_m:.1f} m, parcel<= {parcel_limit_m:.1f} m."
         )
+        if normalized_confidence is not None and normalized_confidence <= 0.35:
+            diagnostics.append(
+                "Low-confidence geocode expanded anchor lookup tolerances before parcel fallback."
+            )
         diagnostics.append(
             f"Anchor quality assessed as {anchor_quality} ({anchor_quality_score:.2f})."
         )
@@ -625,6 +670,7 @@ class PropertyAnchorResolver:
             geocoded_longitude=float(geocoded_lon),
             geocode_provider=geocode_provider,
             geocode_precision=fallback_precision,
+            geocode_confidence_score=normalized_confidence,
             geocoded_address=geocoded_address,
             parcel_id=self._extract_parcel_id(parcel_props),
             parcel_polygon=parcel_geom,

@@ -188,6 +188,12 @@ def _validation_run_summary(report: dict[str, Any]) -> dict[str, Any]:
     sample_counts = report.get("sample_counts") if isinstance(report.get("sample_counts"), dict) else {}
     discrimination = report.get("discrimination_metrics") if isinstance(report.get("discrimination_metrics"), dict) else {}
     brier = report.get("brier_scores") if isinstance(report.get("brier_scores"), dict) else {}
+    reported_metrics = report.get("reported_metrics") if isinstance(report.get("reported_metrics"), dict) else {}
+    reported_primary = (
+        reported_metrics.get("primary")
+        if isinstance(reported_metrics.get("primary"), dict)
+        else {}
+    )
     cal = report.get("calibration_metrics") if isinstance(report.get("calibration_metrics"), dict) else {}
     wildfire_cal = cal.get("wildfire_risk_score") if isinstance(cal.get("wildfire_risk_score"), dict) else {}
     review = report.get("false_review_sets") if isinstance(report.get("false_review_sets"), dict) else {}
@@ -197,11 +203,32 @@ def _validation_run_summary(report: dict[str, Any]) -> dict[str, Any]:
         else {}
     )
     return {
-        "sample_count": int(sample_counts.get("row_count_usable") or 0),
-        "prevalence": _safe_float(sample_counts.get("positive_rate")),
-        "roc_auc": _safe_float(discrimination.get("wildfire_risk_score_auc")),
-        "pr_auc": _safe_float(discrimination.get("wildfire_risk_score_pr_auc")),
-        "brier_score": _safe_float(brier.get("wildfire_probability_proxy")),
+        "sample_count": int(
+            reported_primary.get("count")
+            if reported_primary.get("count") is not None
+            else (sample_counts.get("row_count_usable") or 0)
+        ),
+        "prevalence": (
+            _safe_float(reported_primary.get("positive_rate"))
+            if reported_primary.get("positive_rate") is not None
+            else _safe_float(sample_counts.get("positive_rate"))
+        ),
+        "roc_auc": (
+            _safe_float(reported_primary.get("wildfire_risk_score_auc"))
+            if reported_primary.get("wildfire_risk_score_auc") is not None
+            else _safe_float(discrimination.get("wildfire_risk_score_auc"))
+        ),
+        "pr_auc": (
+            _safe_float(reported_primary.get("wildfire_risk_score_pr_auc"))
+            if reported_primary.get("wildfire_risk_score_pr_auc") is not None
+            else _safe_float(discrimination.get("wildfire_risk_score_pr_auc"))
+        ),
+        "brier_score": (
+            _safe_float(reported_primary.get("wildfire_risk_score_brier"))
+            if reported_primary.get("wildfire_risk_score_brier") is not None
+            else _safe_float(brier.get("wildfire_probability_proxy"))
+        ),
+        "metrics_source": (reported_metrics.get("primary_source") or "in_sample_fallback"),
         "calibration_error": _safe_float(wildfire_cal.get("expected_calibration_error")),
         "false_low_count": int(review.get("false_low_count") or 0),
         "false_high_count": int(review.get("false_high_count") or 0),

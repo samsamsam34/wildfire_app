@@ -378,3 +378,81 @@ def test_structure_matching_falls_back_when_overture_source_missing(tmp_path: Pa
     assert result.found is True
     assert result.source is not None and "fallback" in result.source
     assert result.matched_structure_id == "fallback-home"
+
+
+@pytest.mark.skipif(not _geo_ready(), reason="Building footprint matching tests require shapely")
+def test_neighbor_metrics_use_subject_footprint_distance_when_available(tmp_path: Path) -> None:
+    footprints_path = _write_geojson(
+        tmp_path / "neighbor_distance_basis.geojson",
+        [
+            {
+                "type": "Feature",
+                "properties": {"id": "west_neighbor"},
+                "geometry": {
+                    "type": "Polygon",
+                    "coordinates": [[
+                        [-105.00060, 40.00003],
+                        [-105.00052, 40.00003],
+                        [-105.00052, 39.99997],
+                        [-105.00060, 39.99997],
+                        [-105.00060, 40.00003],
+                    ]],
+                },
+            },
+            {
+                "type": "Feature",
+                "properties": {"id": "east_neighbor"},
+                "geometry": {
+                    "type": "Polygon",
+                    "coordinates": [[
+                        [-105.00020, 40.00003],
+                        [-105.00012, 40.00003],
+                        [-105.00012, 39.99997],
+                        [-105.00020, 39.99997],
+                        [-105.00020, 40.00003],
+                    ]],
+                },
+            },
+        ],
+    )
+    client = BuildingFootprintClient(path=footprints_path)
+
+    subject_close = shapely_shape(
+        {
+            "type": "Polygon",
+            "coordinates": [[
+                [-105.00066, 40.00003],
+                [-105.00062, 40.00003],
+                [-105.00062, 39.99997],
+                [-105.00066, 39.99997],
+                [-105.00066, 40.00003],
+            ]],
+        }
+    )
+    subject_far = shapely_shape(
+        {
+            "type": "Polygon",
+            "coordinates": [[
+                [-105.00036, 40.00003],
+                [-105.00030, 40.00003],
+                [-105.00030, 39.99997],
+                [-105.00036, 39.99997],
+                [-105.00036, 40.00003],
+            ]],
+        }
+    )
+
+    close_metrics = client.get_neighbor_structure_metrics(
+        lat=40.0,
+        lon=-105.00040,
+        subject_footprint=subject_close,
+    )
+    far_metrics = client.get_neighbor_structure_metrics(
+        lat=40.0,
+        lon=-105.00040,
+        subject_footprint=subject_far,
+    )
+
+    assert close_metrics["nearest_structure_distance_ft"] is not None
+    assert far_metrics["nearest_structure_distance_ft"] is not None
+    assert float(close_metrics["nearest_structure_distance_ft"]) < float(far_metrics["nearest_structure_distance_ft"])

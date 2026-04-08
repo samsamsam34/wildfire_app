@@ -82,6 +82,12 @@ VIABILITY_MIN_INDEPENDENT_SAMPLES = 30
 VIABILITY_MIN_FEATURES_WITH_VARIANCE = 5
 VIABILITY_MIN_FEATURE_VARIATION_RATIO = 0.25
 VIABILITY_MIN_AUC_MARGIN_VS_RANDOM = 0.05
+EVENT_OOS_MIN_EVENT_ROWS = 4
+EVENT_OOS_MIN_EVENT_CLASS_COUNT = 1
+REPORTING_MIN_SAMPLE_COUNT = 100
+REPORTING_MIN_CLASS_COUNT = 10
+REPORTING_MIN_POSITIVE_RATE = 0.10
+REPORTING_MAX_POSITIVE_RATE = 0.90
 HIGH_SIGNAL_MODEL_SIGNAL_WEIGHTS: dict[str, float] = {
     # Weights are proportional to observed directional signal from recent
     # feature-signal diagnostics and then renormalized on available features.
@@ -1141,6 +1147,238 @@ def _compute_subset_metrics(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "wildfire_risk_score_auc": _roc_auc(y_true, probs),
         "wildfire_risk_score_pr_auc": _pr_auc(y_true, probs),
         "wildfire_risk_score_brier": _brier(y_true, probs),
+    }
+
+
+def _event_level_out_of_sample_metrics(
+    *,
+    rows: list[dict[str, Any]],
+    min_event_rows: int = EVENT_OOS_MIN_EVENT_ROWS,
+    min_event_class_count: int = EVENT_OOS_MIN_EVENT_CLASS_COUNT,
+) -> dict[str, Any]:
+    event_groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        event_groups[str(row.get("event_id") or "unknown")].append(row)
+
+    min_rows = max(1, int(min_event_rows))
+    min_class = max(1, int(min_event_class_count))
+    per_event: list[dict[str, Any]] = []
+    eligible: list[dict[str, Any]] = []
+    ineligible: list[dict[str, Any]] = []
+
+    for event_id in sorted(event_groups.keys()):
+        bucket = event_groups[event_id]
+        labels = [int(row.get("structure_loss_or_major_damage") or 0) for row in bucket]
+        positives = int(sum(labels))
+        negatives = int(len(bucket) - positives)
+        metrics = _compute_subset_metrics(bucket)
+        reasons: list[str] = []
+        if len(bucket) < min_rows:
+            reasons.append(f"event_rows_below_min({len(bucket)}<{min_rows})")
+        if positives < min_class:
+            reasons.append(f"event_positive_count_below_min({positives}<{min_class})")
+        if negatives < min_class:
+            reasons.append(f"event_negative_count_below_min({negatives}<{min_class})")
+        row = {
+            "event_id": event_id,
+            "count": len(bucket),
+            "positive_count": positives,
+            "negative_count": negatives,
+            "positive_rate": metrics.get("positive_rate"),
+            "wildfire_risk_score_auc": metrics.get("wildfire_risk_score_auc"),
+            "wildfire_risk_score_pr_auc": metrics.get("wildfire_risk_score_pr_auc"),
+            "wildfire_risk_score_brier": metrics.get("wildfire_risk_score_brier"),
+            "eligible_for_event_holdout_reporting": not reasons,
+            "ineligible_reasons": reasons,
+        }
+        per_event.append(row)
+        if reasons:
+            ineligible.append(row)
+        else:
+            eligible.append(row)
+
+    if not eligible:
+        return {
+            "available": False,
+            "method": "event_level_holdout_aggregation",
+            "reason": "no_event_met_minimum_rows_and_class_balance_requirements",
+            "thresholds": {
+                "min_event_rows": min_rows,
+                "min_event_positive_count": min_class,
+                "min_event_negative_count": min_class,
+            },
+            "event_count_total": len(per_event),
+            "event_count_eligible": 0,
+            "event_count_ineligible": len(ineligible),
+            "aggregate": {
+                "count": 0,
+                "positive_count": 0,
+                "negative_count": 0,
+                "positive_rate": None,
+                "wildfire_risk_score_auc": None,
+                "wildfire_risk_score_pr_auc": None,
+                "wildfire_risk_score_brier": None,
+            },
+            "per_event": per_event,
+        }
+
+    eligible_row_count = int(sum(int(row.get("count") or 0) for row in eligible))
+    eligible_positive_count = int(sum(int(row.get("positive_count") or 0) for row in eligible))
+    eligible_negative_count = int(sum(int(row.get("negative_count") or 0) for row in eligible))
+
+    auc_values = [
+        float(row.get("wildfire_risk_score_auc"))
+        for row in eligible
+        if isinstance(row.get("wildfire_risk_score_auc"), (int, float))
+    ]
+    pr_values = [
+        float(row.get("wildfire_risk_score_pr_auc"))
+        for row in eligible
+        if isinstance(row.get("wildfire_risk_score_pr_auc"), (int, float))
+    ]
+    brier_values = [
+        float(row.get("wildfire_risk_score_brier"))
+        for row in eligible
+        if isinstance(row.get("wildfire_risk_score_brier"), (int, float))
+    ]
+
+    def _weighted_average(metric_key: str) -> float | None:
+        weighted_rows = [
+            (float(row.get(metric_key)), int(row.get("count") or 0))
+            for row in eligible
+            if isinstance(row.get(metric_key), (int, float)) and int(row.get("count") or 0) > 0
+        ]
+        if not weighted_rows:
+            return None
+        total_weight = sum(weight for _, weight in weighted_rows)
+        if total_weight <= 0:
+            return None
+        return sum(value * weight for value, weight in weighted_rows) / float(total_weight)
+
+    return {
+        "available": True,
+        "method": "event_level_holdout_aggregation",
+        "thresholds": {
+            "min_event_rows": min_rows,
+            "min_event_positive_count": min_class,
+            "min_event_negative_count": min_class,
+        },
+        "event_count_total": len(per_event),
+        "event_count_eligible": len(eligible),
+        "event_count_ineligible": len(ineligible),
+        "aggregate": {
+            "count": eligible_row_count,
+            "positive_count": eligible_positive_count,
+            "negative_count": eligible_negative_count,
+            "positive_rate": (
+                (eligible_positive_count / float(eligible_row_count))
+                if eligible_row_count > 0
+                else None
+            ),
+            "wildfire_risk_score_auc": _mean(auc_values),
+            "wildfire_risk_score_pr_auc": _mean(pr_values),
+            "wildfire_risk_score_brier": _mean(brier_values),
+            "wildfire_risk_score_auc_weighted_by_event_rows": _weighted_average(
+                "wildfire_risk_score_auc"
+            ),
+            "wildfire_risk_score_pr_auc_weighted_by_event_rows": _weighted_average(
+                "wildfire_risk_score_pr_auc"
+            ),
+            "wildfire_risk_score_brier_weighted_by_event_rows": _weighted_average(
+                "wildfire_risk_score_brier"
+            ),
+        },
+        "per_event": per_event,
+    }
+
+
+def _build_reporting_claim_guardrails(
+    *,
+    sample_count: int,
+    positive_count: int,
+    negative_count: int,
+    holdout_available: bool,
+) -> dict[str, Any]:
+    n = max(0, int(sample_count))
+    pos = max(0, int(positive_count))
+    neg = max(0, int(negative_count))
+    positive_rate = (pos / float(n)) if n > 0 else None
+    checks = {
+        "sample_count_ok": n >= REPORTING_MIN_SAMPLE_COUNT,
+        "positive_class_count_ok": pos >= REPORTING_MIN_CLASS_COUNT,
+        "negative_class_count_ok": neg >= REPORTING_MIN_CLASS_COUNT,
+        "class_balance_ok": (
+            positive_rate is not None
+            and REPORTING_MIN_POSITIVE_RATE <= float(positive_rate) <= REPORTING_MAX_POSITIVE_RATE
+        ),
+        "event_level_holdout_available": bool(holdout_available),
+    }
+    failed_checks = [name for name, ok in checks.items() if not bool(ok)]
+    strong_claims_allowed = not failed_checks
+    return {
+        "strong_performance_claims_allowed": strong_claims_allowed,
+        "calibration_claims_allowed": strong_claims_allowed,
+        "checks": checks,
+        "failed_checks": failed_checks,
+        "thresholds": {
+            "min_sample_count": REPORTING_MIN_SAMPLE_COUNT,
+            "min_positive_count": REPORTING_MIN_CLASS_COUNT,
+            "min_negative_count": REPORTING_MIN_CLASS_COUNT,
+            "min_positive_rate": REPORTING_MIN_POSITIVE_RATE,
+            "max_positive_rate": REPORTING_MAX_POSITIVE_RATE,
+        },
+        "sample_count": n,
+        "positive_count": pos,
+        "negative_count": neg,
+        "positive_rate": positive_rate,
+    }
+
+
+def _build_reported_metrics(
+    *,
+    in_sample_rows: list[dict[str, Any]],
+    event_oos: dict[str, Any],
+) -> dict[str, Any]:
+    in_sample = _compute_subset_metrics(in_sample_rows)
+    in_sample_positive_count = int(
+        sum(int(row.get("structure_loss_or_major_damage") or 0) for row in in_sample_rows)
+    )
+    in_sample_negative_count = max(0, int(len(in_sample_rows) - in_sample_positive_count))
+    in_sample_metrics = {
+        **in_sample,
+        "positive_count": in_sample_positive_count,
+        "negative_count": in_sample_negative_count,
+    }
+    holdout_aggregate = (
+        event_oos.get("aggregate")
+        if isinstance(event_oos.get("aggregate"), dict)
+        else {}
+    )
+    holdout_available = bool(event_oos.get("available")) and bool(holdout_aggregate)
+    holdout_metrics = {
+        "count": int(holdout_aggregate.get("count") or 0),
+        "positive_count": int(holdout_aggregate.get("positive_count") or 0),
+        "negative_count": int(holdout_aggregate.get("negative_count") or 0),
+        "positive_rate": holdout_aggregate.get("positive_rate"),
+        "wildfire_risk_score_auc": holdout_aggregate.get("wildfire_risk_score_auc"),
+        "wildfire_risk_score_pr_auc": holdout_aggregate.get("wildfire_risk_score_pr_auc"),
+        "wildfire_risk_score_brier": holdout_aggregate.get("wildfire_risk_score_brier"),
+    }
+    primary = (
+        holdout_metrics
+        if holdout_available
+        else in_sample_metrics
+    )
+    return {
+        "default_reporting_path": "event_level_holdout_out_of_sample",
+        "primary_source": (
+            "event_level_out_of_sample"
+            if holdout_available
+            else "in_sample_fallback"
+        ),
+        "primary": primary,
+        "in_sample": in_sample_metrics,
+        "holdout_event_level_out_of_sample": holdout_metrics,
     }
 
 
@@ -2462,15 +2700,27 @@ def _build_narrative_summary(
     data_sufficiency: dict[str, Any],
     by_evidence_group: dict[str, Any],
     metric_stability: dict[str, Any] | None = None,
+    reporting_claim_guardrails: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     flags = (data_sufficiency.get("flags") or {}) if isinstance(data_sufficiency, dict) else {}
     stability = metric_stability if isinstance(metric_stability, dict) else {}
+    claim_guardrails = (
+        reporting_claim_guardrails
+        if isinstance(reporting_claim_guardrails, dict)
+        else {}
+    )
+    strong_claims_allowed = bool(claim_guardrails.get("strong_performance_claims_allowed"))
     lines: list[str] = []
     if not bool(stability.get("auc_stable", True)):
         lines.append("Insufficient data for stable AUC/PR-AUC; treat discrimination values as unstable.")
     if isinstance(raw_auc, float):
         if raw_auc >= 0.7:
-            lines.append("Model shows directional discrimination in this sample.")
+            if strong_claims_allowed:
+                lines.append("Model shows directional discrimination in this sample.")
+            else:
+                lines.append(
+                    "AUC appears elevated, but reporting guardrails are not met; avoid strong performance claims."
+                )
         elif raw_auc >= 0.6:
             lines.append("Model shows weak-to-moderate directional discrimination in this sample.")
         else:
@@ -2491,6 +2741,18 @@ def _build_narrative_summary(
         lines.append("A substantial share of rows rely on low-confidence joins.")
     if bool(flags.get("fallback_heavy_prevalent")):
         lines.append("Fallback-heavy evidence is common and reduces reliability.")
+    if not strong_claims_allowed:
+        failed = (
+            claim_guardrails.get("failed_checks")
+            if isinstance(claim_guardrails.get("failed_checks"), list)
+            else []
+        )
+        if failed:
+            lines.append(
+                "Reporting guardrails block strong-performance/calibration claims: "
+                + ", ".join(str(item) for item in failed)
+                + "."
+            )
 
     evidence_text = None
     if isinstance(by_evidence_group, dict):
@@ -2888,8 +3150,8 @@ def _false_review_sets(
 def _prepare_rows(
     rows: list[dict[str, Any]],
     *,
-    allow_label_derived_target: bool = True,
-    allow_surrogate_wildfire_score: bool = True,
+    allow_label_derived_target: bool = False,
+    allow_surrogate_wildfire_score: bool = False,
     use_high_signal_simplified_model: bool = False,
     high_signal_feature_weights: dict[str, float] | None = None,
     min_join_confidence_score_for_metrics: float | None = None,
@@ -3064,8 +3326,8 @@ def evaluate_public_outcome_dataset_rows(
     false_low_max_score: float = 40.0,
     false_high_min_score: float = 70.0,
     min_labeled_rows: int = 1,
-    allow_label_derived_target: bool = True,
-    allow_surrogate_wildfire_score: bool = True,
+    allow_label_derived_target: bool = False,
+    allow_surrogate_wildfire_score: bool = False,
     use_high_signal_simplified_model: bool = False,
     high_signal_feature_weights: dict[str, float] | None = None,
     min_join_confidence_score_for_metrics: float | None = None,
@@ -3256,6 +3518,17 @@ def evaluate_public_outcome_dataset_rows(
     high_confidence_rows = [row for row in usable_rows if str(row.get("validation_confidence_tier")) == "high-confidence"]
     medium_confidence_rows = [row for row in usable_rows if str(row.get("validation_confidence_tier")) == "medium-confidence"]
     high_evidence_rows = [row for row in usable_rows if str(row.get("evidence_group")) == "high_evidence"]
+    event_level_out_of_sample = _event_level_out_of_sample_metrics(rows=usable_rows)
+    reported_metrics = _build_reported_metrics(
+        in_sample_rows=usable_rows,
+        event_oos=event_level_out_of_sample,
+    )
+    reporting_claim_guardrails = _build_reporting_claim_guardrails(
+        sample_count=int((reported_metrics.get("primary") or {}).get("count") or 0),
+        positive_count=int((reported_metrics.get("primary") or {}).get("positive_count") or 0),
+        negative_count=int((reported_metrics.get("primary") or {}).get("negative_count") or 0),
+        holdout_available=(str(reported_metrics.get("primary_source") or "") == "event_level_out_of_sample"),
+    )
     confidence_tier_performance = _build_confidence_tier_performance(
         all_rows=usable_rows,
         high_confidence_rows=high_confidence_rows,
@@ -3277,6 +3550,18 @@ def evaluate_public_outcome_dataset_rows(
             "Dataset not viable for predictive modeling in this run: "
             + str(modeling_viability.get("reason") or "viability guardrail check failed.")
         )
+    if not bool(reporting_claim_guardrails.get("strong_performance_claims_allowed")):
+        failed_checks = (
+            reporting_claim_guardrails.get("failed_checks")
+            if isinstance(reporting_claim_guardrails.get("failed_checks"), list)
+            else []
+        )
+        if failed_checks:
+            guardrail_warnings.append(
+                "Reporting guardrails not met for strong-performance/calibration claims: "
+                + ", ".join(str(token) for token in failed_checks)
+                + "."
+            )
     guardrail_warnings.extend(list(confidence_tier_performance.get("warnings") or []))
     guardrail_warnings.extend(list(metric_stability.get("warnings") or []))
     guardrail_warnings = sorted(set(str(item) for item in guardrail_warnings if str(item).strip()))
@@ -3305,9 +3590,10 @@ def evaluate_public_outcome_dataset_rows(
     }
 
     directional_predictive_value = bool(
-        raw_auc is not None
-        and raw_auc >= 0.6
+        isinstance(((reported_metrics.get("primary") or {}).get("wildfire_risk_score_auc")), (int, float))
+        and float((reported_metrics.get("primary") or {}).get("wildfire_risk_score_auc")) >= 0.6
         and bool(modeling_viability.get("dataset_viable_for_predictive_modeling"))
+        and bool(reporting_claim_guardrails.get("strong_performance_claims_allowed"))
     )
     calibration_recommendation = (
         "candidate"
@@ -3315,7 +3601,7 @@ def evaluate_public_outcome_dataset_rows(
         and raw_ece is not None
         and raw_ece <= 0.12
         and fallback_heavy_fraction < 0.5
-        and len(usable_rows) >= 100
+        and bool(reporting_claim_guardrails.get("calibration_claims_allowed"))
         else "not_recommended_yet"
     )
     slice_metrics_data = {
@@ -3495,10 +3781,13 @@ def evaluate_public_outcome_dataset_rows(
             "medium_confidence_subset": _compute_subset_metrics(medium_confidence_rows),
             "high_evidence_subset": _compute_subset_metrics(high_evidence_rows),
         },
+        "event_level_out_of_sample": event_level_out_of_sample,
+        "reported_metrics": reported_metrics,
         "confidence_tier_performance": confidence_tier_performance,
         "minimum_viable_metrics": minimum_viable_metrics,
         "data_sufficiency_flags": data_sufficiency_flags,
         "data_sufficiency_indicator": data_sufficiency_indicator,
+        "reporting_claim_guardrails": reporting_claim_guardrails,
         "fallback_diagnostics": fallback_stats,
         "factor_contribution_summary_by_confusion_class": _factor_summary_by_confusion_class(usable_rows),
         "false_review_sets": review_sets,
@@ -3527,6 +3816,7 @@ def evaluate_public_outcome_dataset_rows(
         data_sufficiency=data_sufficiency_flags,
         by_evidence_group=(report.get("slice_metrics") or {}).get("by_evidence_group") if isinstance(report.get("slice_metrics"), dict) else {},
         metric_stability=metric_stability,
+        reporting_claim_guardrails=reporting_claim_guardrails,
     )
     proxy_validation = _compute_proxy_validation(usable_rows)
     synthetic_validation = _run_synthetic_stress_validation()
@@ -3559,8 +3849,8 @@ def evaluate_public_outcome_dataset_file(
     false_low_max_score: float = 40.0,
     false_high_min_score: float = 70.0,
     min_labeled_rows: int = 1,
-    allow_label_derived_target: bool = True,
-    allow_surrogate_wildfire_score: bool = True,
+    allow_label_derived_target: bool = False,
+    allow_surrogate_wildfire_score: bool = False,
     use_high_signal_simplified_model: bool = False,
     high_signal_feature_weights: dict[str, float] | None = None,
     min_join_confidence_score_for_metrics: float | None = None,
@@ -3596,8 +3886,8 @@ def evaluate_public_outcome_dataset_file(
 def trace_public_outcome_dataset_flow(
     *,
     dataset_path: Path,
-    allow_label_derived_target: bool = True,
-    allow_surrogate_wildfire_score: bool = True,
+    allow_label_derived_target: bool = False,
+    allow_surrogate_wildfire_score: bool = False,
     use_high_signal_simplified_model: bool = False,
     high_signal_feature_weights: dict[str, float] | None = None,
     min_join_confidence_score_for_metrics: float | None = None,
