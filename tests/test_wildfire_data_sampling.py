@@ -185,6 +185,68 @@ def test_naip_near_structure_features_differ_for_nearby_homes_with_different_pat
     assert clear_features["confidence_flag"] in {"high", "moderate"}
 
 
+def test_near_structure_feature_block_marks_footprint_tier_as_property_specific():
+    client = WildfireDataClient()
+    features = client._build_near_structure_feature_block(
+        ring_context={
+            "footprint_used": True,
+            "geometry_basis": "footprint",
+            "ring_generation_mode": "footprint_aware_rings",
+            "naip_feature_source": "prepared_region_naip",
+            "ring_metrics": {
+                "geometry_type": "footprint",
+                "precision_flag": "footprint_relative",
+                "ring_0_5_ft": {"vegetation_density": 42.0},
+                "ring_5_30_ft": {"vegetation_density": 51.0},
+            },
+        }
+    )
+
+    assert features["data_quality_tier"] == "footprint_precise"
+    assert features["claim_strength"] == "structure_specific"
+    assert features["supports_property_specific_claims"] is True
+    assert features["confidence_flag"] in {"high", "moderate"}
+
+
+def test_near_structure_feature_block_distinguishes_parcel_and_point_proxy_quality():
+    client = WildfireDataClient()
+    parcel_features = client._build_near_structure_feature_block(
+        ring_context={
+            "footprint_used": False,
+            "geometry_basis": "parcel",
+            "ring_generation_mode": "point_annulus_parcel_clipped",
+            "naip_feature_source": "prepared_region_naip",
+            "ring_metrics": {
+                "geometry_type": "point",
+                "precision_flag": "parcel_clipped_point_proxy",
+                "ring_0_5_ft": {"vegetation_density": 37.0},
+                "ring_5_30_ft": {"vegetation_density": 49.0},
+            },
+        }
+    )
+    point_features = client._build_near_structure_feature_block(
+        ring_context={
+            "footprint_used": False,
+            "geometry_basis": "geocode_point",
+            "ring_generation_mode": "point_annulus_fallback",
+            "ring_metrics": {
+                "geometry_type": "point",
+                "precision_flag": "fallback_point_proxy",
+                "ring_0_5_ft": {"vegetation_density": 37.0},
+                "ring_5_30_ft": {"vegetation_density": 49.0},
+            },
+        }
+    )
+
+    assert parcel_features["data_quality_tier"] == "parcel_proxy"
+    assert parcel_features["claim_strength"] == "parcel_directional"
+    assert parcel_features["supports_property_specific_claims"] is False
+    assert point_features["data_quality_tier"] == "point_proxy"
+    assert point_features["claim_strength"] == "coarse_directional"
+    assert point_features["supports_property_specific_claims"] is False
+    assert float(parcel_features["quality_score"]) > float(point_features["quality_score"])
+
+
 def test_structure_relative_slope_differs_for_nearby_homes_with_micro_topography(monkeypatch):
     client = WildfireDataClient()
 

@@ -327,6 +327,30 @@ def build_feature_bundle_summary(
         "nearest_high_fuel_patch_distance_ft": property_level_context.get("nearest_high_fuel_patch_distance_ft"),
         "access_exposure_index": ((property_level_context.get("access_context") or {}).get("access_exposure_index")),
     }
+    near_structure_features = (
+        property_level_context.get("near_structure_features")
+        if isinstance(property_level_context.get("near_structure_features"), dict)
+        else {}
+    )
+    near_structure_data_quality_tier = str(
+        near_structure_features.get("data_quality_tier") or ""
+    ).strip().lower()
+    if near_structure_data_quality_tier not in {"footprint_precise", "parcel_proxy", "point_proxy"}:
+        if geometry_basis == "footprint":
+            near_structure_data_quality_tier = "footprint_precise"
+        elif geometry_basis == "parcel":
+            near_structure_data_quality_tier = "parcel_proxy"
+        else:
+            near_structure_data_quality_tier = "point_proxy"
+    near_structure_claim_strength = str(
+        near_structure_features.get("claim_strength") or ""
+    ).strip().lower()
+    if near_structure_claim_strength not in {"structure_specific", "parcel_directional", "coarse_directional"}:
+        near_structure_claim_strength = (
+            "structure_specific"
+            if near_structure_data_quality_tier == "footprint_precise"
+            else ("parcel_directional" if near_structure_data_quality_tier == "parcel_proxy" else "coarse_directional")
+        )
     feature_sampling = (
         property_level_context.get("feature_sampling")
         if isinstance(property_level_context.get("feature_sampling"), dict)
@@ -388,7 +412,14 @@ def build_feature_bundle_summary(
             "access_exposure_index",
         ):
             if feature_snapshot.get(field) is not None:
-                observed_feature_count += 1
+                if field == "access_exposure_index":
+                    observed_feature_count += 1
+                elif near_structure_data_quality_tier == "footprint_precise":
+                    observed_feature_count += 1
+                elif near_structure_data_quality_tier == "parcel_proxy":
+                    inferred_feature_count += 1
+                else:
+                    fallback_feature_count += 1
 
         if observed_feature_count == 0 and fallback_feature_count == 0 and missing_feature_count == 0:
             for available in coverage_flags.values():
@@ -430,6 +461,10 @@ def build_feature_bundle_summary(
         )
     elif anchor_quality_score is not None:
         geometry_quality_score = (geometry_quality_score * 0.7) + (max(0.0, min(1.0, anchor_quality_score)) * 0.3)
+    if near_structure_data_quality_tier == "parcel_proxy":
+        geometry_quality_score = min(geometry_quality_score, 0.68)
+    elif near_structure_data_quality_tier == "point_proxy":
+        geometry_quality_score = min(geometry_quality_score, 0.48)
     environmental_keys = ("burn_probability", "historical_fire", "roads", "climate_dryness", "vegetation", "canopy")
     environmental_layer_coverage_score = round(
         (
@@ -451,6 +486,10 @@ def build_feature_bundle_summary(
         ),
         1,
     )
+    if near_structure_data_quality_tier == "parcel_proxy":
+        property_specificity_score = min(property_specificity_score, 74.0)
+    elif near_structure_data_quality_tier == "point_proxy":
+        property_specificity_score = min(property_specificity_score, 52.0)
     enrichment_runtime_status = _build_enrichment_runtime_status(
         layer_coverage_audit=layer_coverage_audit,
         property_level_context=property_level_context,
@@ -491,6 +530,11 @@ def build_feature_bundle_summary(
             "missing_feature_count": missing_feature_count,
             "observed_weight_fraction": observed_weight_fraction,
             "fallback_dominance_ratio": fallback_dominance_ratio,
+            "near_structure_data_quality_tier": near_structure_data_quality_tier,
+            "near_structure_claim_strength": near_structure_claim_strength,
+            "near_structure_supports_property_specific_claims": bool(
+                near_structure_data_quality_tier == "footprint_precise"
+            ),
             "structure_geometry_quality_score": round(float(geometry_quality_score), 3),
             "structure_geometry_confidence": (
                 round(max(0.0, min(1.0, float(structure_geometry_confidence))), 3)

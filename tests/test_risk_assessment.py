@@ -6220,6 +6220,30 @@ def test_homeowner_trust_summary_maps_internal_tiers_to_user_friendly_labels():
         == "This estimate is not precise enough to compare adjacent homes."
     )
 
+    proxy_guardrailed = app_main._build_homeowner_trust_summary(
+        confidence_tier="high",
+        fallback_decisions=[],
+        missing_inputs=[],
+        preflight={
+            "feature_coverage_summary": {
+                "building_footprint_available": True,
+                "parcel_polygon_available": True,
+                "near_structure_vegetation_available": True,
+            },
+            "near_structure_data_quality_tier": "point_proxy",
+        },
+        differentiation_snapshot={
+            "differentiation_mode": "highly_local",
+            "local_differentiation_score": 84.0,
+            "neighborhood_differentiation_confidence": 84.0,
+            "notes": [],
+        },
+    )
+    assert proxy_guardrailed.get("near_structure_data_quality_tier") == "point_proxy"
+    assert proxy_guardrailed.get("supports_property_specific_claims") is False
+    assert proxy_guardrailed.get("nearby_home_comparison_safeguard_triggered") is True
+    assert proxy_guardrailed.get("parcel_level_comparison_allowed") is False
+
     property_specific = app_main._build_homeowner_trust_summary(
         confidence_tier="high",
         fallback_decisions=[],
@@ -6318,6 +6342,50 @@ def test_specificity_summary_is_influenced_by_local_differentiation_score():
     )
     assert medium_property_data.get("specificity_tier") == "address_level"
     assert medium_property_data.get("comparison_allowed") is False
+
+    parcel_proxy_geometry = app_main._build_specificity_summary(
+        assessment_specificity_tier="property_specific",
+        assessment_mode="property_specific",
+        limited_assessment_flag=False,
+        confidence_summary={"assessment_type": "high confidence"},
+        trust_summary={
+            "differentiation_mode": "highly_local",
+            "local_differentiation_score": 90.0,
+            "nearby_home_comparison_safeguard_triggered": False,
+            "parcel_level_comparison_allowed": True,
+            "near_structure_data_quality_tier": "parcel_proxy",
+        },
+        property_confidence_summary={
+            "score": 82.0,
+            "level": "strong_property_specific",
+            "key_reasons": [],
+            "user_action_recommended": "",
+        },
+    )
+    assert parcel_proxy_geometry.get("specificity_tier") in {"address_level", "regional_estimate"}
+    assert parcel_proxy_geometry.get("comparison_allowed") is False
+
+    point_proxy_geometry = app_main._build_specificity_summary(
+        assessment_specificity_tier="property_specific",
+        assessment_mode="property_specific",
+        limited_assessment_flag=False,
+        confidence_summary={"assessment_type": "high confidence"},
+        trust_summary={
+            "differentiation_mode": "highly_local",
+            "local_differentiation_score": 90.0,
+            "nearby_home_comparison_safeguard_triggered": False,
+            "parcel_level_comparison_allowed": True,
+            "near_structure_data_quality_tier": "point_proxy",
+        },
+        property_confidence_summary={
+            "score": 82.0,
+            "level": "strong_property_specific",
+            "key_reasons": [],
+            "user_action_recommended": "",
+        },
+    )
+    assert point_proxy_geometry.get("specificity_tier") == "regional_estimate"
+    assert point_proxy_geometry.get("comparison_allowed") is False
 
     mismatch_case = app_main._build_specificity_summary(
         assessment_specificity_tier="property_specific",

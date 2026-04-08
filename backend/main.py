@@ -2467,7 +2467,66 @@ def _normalize_property_level_context(
         normalized["ring_metrics"] = None
     near_structure_features = normalized.get("near_structure_features")
     if isinstance(near_structure_features, dict) and near_structure_features:
-        normalized["near_structure_features"] = dict(near_structure_features)
+        normalized_features = dict(near_structure_features)
+        geometry_type = str(normalized_features.get("geometry_type") or "").strip().lower()
+        if geometry_type not in {"footprint", "point"}:
+            geometry_type = "footprint" if bool(normalized.get("footprint_used")) else "point"
+        precision_flag = str(normalized_features.get("precision_flag") or "").strip().lower()
+        if not precision_flag:
+            precision_flag = "footprint_relative" if geometry_type == "footprint" else "fallback_point_proxy"
+        geometry_basis = str(normalized.get("geometry_basis") or "").strip().lower()
+        ring_generation_mode = str(normalized.get("ring_generation_mode") or "").strip().lower()
+        imagery_available = (
+            str(normalized.get("naip_feature_source") or "").strip().lower() == "prepared_region_naip"
+        )
+        data_quality_tier = str(normalized_features.get("data_quality_tier") or "").strip().lower()
+        if data_quality_tier not in {"footprint_precise", "parcel_proxy", "point_proxy"}:
+            if geometry_type == "footprint" and precision_flag == "footprint_relative":
+                data_quality_tier = "footprint_precise"
+            elif (
+                precision_flag == "parcel_clipped_point_proxy"
+                or ring_generation_mode == "point_annulus_parcel_clipped"
+                or geometry_basis == "parcel"
+            ):
+                data_quality_tier = "parcel_proxy"
+            else:
+                data_quality_tier = "point_proxy"
+        quality_score = _safe_float(normalized_features.get("quality_score"))
+        if quality_score is None:
+            quality_score = 0.92 if data_quality_tier == "footprint_precise" else (0.62 if data_quality_tier == "parcel_proxy" else 0.36)
+            if imagery_available:
+                quality_score = min(1.0, quality_score + 0.04)
+        claim_strength = str(normalized_features.get("claim_strength") or "").strip().lower()
+        if claim_strength not in {"structure_specific", "parcel_directional", "coarse_directional"}:
+            claim_strength = (
+                "structure_specific"
+                if data_quality_tier == "footprint_precise"
+                else ("parcel_directional" if data_quality_tier == "parcel_proxy" else "coarse_directional")
+            )
+        confidence_flag = str(normalized_features.get("confidence_flag") or "").strip().lower()
+        if confidence_flag not in {"high", "moderate", "low"}:
+            if data_quality_tier == "footprint_precise":
+                confidence_flag = "high" if imagery_available else "moderate"
+            elif data_quality_tier == "parcel_proxy":
+                confidence_flag = "moderate" if imagery_available else "low"
+            else:
+                confidence_flag = "low"
+        normalized_features.update(
+            {
+                "geometry_type": geometry_type,
+                "precision_flag": precision_flag,
+                "imagery_available": imagery_available,
+                "confidence_flag": confidence_flag,
+                "data_quality_tier": data_quality_tier,
+                "quality_score": round(max(0.0, min(1.0, float(quality_score))), 3),
+                "claim_strength": claim_strength,
+                "supports_property_specific_claims": bool(data_quality_tier == "footprint_precise"),
+                "source": "naip_imagery" if imagery_available else "fallback_layers",
+            }
+        )
+        notes = normalized_features.get("notes")
+        normalized_features["notes"] = list(notes) if isinstance(notes, list) else []
+        normalized["near_structure_features"] = normalized_features
     else:
         ring0 = {}
         ring5 = {}
@@ -2510,11 +2569,34 @@ def _normalize_property_level_context(
         )
         if not precision_flag:
             precision_flag = "footprint_relative" if geometry_type == "footprint" else "fallback_point_proxy"
-        imagery_available = bool(normalized.get("naip_feature_source"))
-        confidence_flag = (
-            "high"
-            if (imagery_available and geometry_type == "footprint")
-            else ("moderate" if imagery_available else "low")
+        geometry_basis = str(normalized.get("geometry_basis") or "").strip().lower()
+        ring_generation_mode = str(normalized.get("ring_generation_mode") or "").strip().lower()
+        imagery_available = (
+            str(normalized.get("naip_feature_source") or "").strip().lower() == "prepared_region_naip"
+        )
+        if geometry_type == "footprint" and precision_flag == "footprint_relative":
+            data_quality_tier = "footprint_precise"
+        elif (
+            precision_flag == "parcel_clipped_point_proxy"
+            or ring_generation_mode == "point_annulus_parcel_clipped"
+            or geometry_basis == "parcel"
+        ):
+            data_quality_tier = "parcel_proxy"
+        else:
+            data_quality_tier = "point_proxy"
+        quality_score = 0.92 if data_quality_tier == "footprint_precise" else (0.62 if data_quality_tier == "parcel_proxy" else 0.36)
+        if imagery_available:
+            quality_score = min(1.0, quality_score + 0.04)
+        if data_quality_tier == "footprint_precise":
+            confidence_flag = "high" if imagery_available else "moderate"
+        elif data_quality_tier == "parcel_proxy":
+            confidence_flag = "moderate" if imagery_available else "low"
+        else:
+            confidence_flag = "low"
+        claim_strength = (
+            "structure_specific"
+            if data_quality_tier == "footprint_precise"
+            else ("parcel_directional" if data_quality_tier == "parcel_proxy" else "coarse_directional")
         )
         normalized["near_structure_features"] = {
             "veg_density_0_5": veg_density_0_5,
@@ -2525,7 +2607,12 @@ def _normalize_property_level_context(
             "precision_flag": precision_flag,
             "imagery_available": imagery_available,
             "confidence_flag": confidence_flag,
+            "data_quality_tier": data_quality_tier,
+            "quality_score": round(max(0.0, min(1.0, float(quality_score))), 3),
+            "claim_strength": claim_strength,
+            "supports_property_specific_claims": bool(data_quality_tier == "footprint_precise"),
             "source": "naip_imagery" if imagery_available else "fallback_layers",
+            "notes": [],
         }
     directional_risk = normalized.get("directional_risk")
     if isinstance(directional_risk, dict):
@@ -2849,6 +2936,31 @@ def _build_geometry_resolution_summary(
     if ring_generation_mode not in {"footprint_aware_rings", "point_annulus_fallback", "point_annulus_parcel_clipped"}:
         ring_generation_mode = "footprint_aware_rings" if bool(ctx.get("footprint_used")) else "point_annulus_fallback"
 
+    near_structure_features = (
+        ctx.get("near_structure_features")
+        if isinstance(ctx.get("near_structure_features"), dict)
+        else {}
+    )
+    near_structure_data_quality_tier = str(
+        near_structure_features.get("data_quality_tier") or ""
+    ).strip().lower()
+    if near_structure_data_quality_tier not in {"footprint_precise", "parcel_proxy", "point_proxy"}:
+        if ring_generation_mode == "footprint_aware_rings" and bool(ctx.get("footprint_used")):
+            near_structure_data_quality_tier = "footprint_precise"
+        elif ring_generation_mode == "point_annulus_parcel_clipped":
+            near_structure_data_quality_tier = "parcel_proxy"
+        else:
+            near_structure_data_quality_tier = "point_proxy"
+    near_structure_claim_strength = str(
+        near_structure_features.get("claim_strength") or ""
+    ).strip().lower()
+    if near_structure_claim_strength not in {"structure_specific", "parcel_directional", "coarse_directional"}:
+        near_structure_claim_strength = (
+            "structure_specific"
+            if near_structure_data_quality_tier == "footprint_precise"
+            else ("parcel_directional" if near_structure_data_quality_tier == "parcel_proxy" else "coarse_directional")
+        )
+
     has_near_structure_values = any(
         ctx.get(key) is not None
         for key in (
@@ -2862,7 +2974,9 @@ def _build_geometry_resolution_summary(
     naip_status = "missing"
     naip_feature_source = str(ctx.get("naip_feature_source") or "").strip()
     if has_near_structure_values and naip_feature_source:
-        naip_status = "observed"
+        naip_status = (
+            "observed" if near_structure_data_quality_tier == "footprint_precise" else "fallback_or_proxy"
+        )
     elif has_near_structure_values:
         naip_status = "fallback_or_proxy"
     layer_rows = ctx.get("layer_coverage_audit")
@@ -2964,6 +3078,14 @@ def _build_geometry_resolution_summary(
         geometry_limitations.append(
             "Near-structure vegetation features rely on proxy/fallback signals."
         )
+    if near_structure_data_quality_tier == "parcel_proxy":
+        geometry_limitations.append(
+            "Near-structure feature geometry is parcel-proxy and should be treated as directional."
+        )
+    elif near_structure_data_quality_tier == "point_proxy":
+        geometry_limitations.append(
+            "Near-structure feature geometry is point-proxy and is not parcel-precise."
+        )
     if source_conflict_flag:
         geometry_limitations.append(
             "Anchor and geometry sources were partially conflicting."
@@ -2982,6 +3104,9 @@ def _build_geometry_resolution_summary(
         footprint_source=footprint_source,
         ring_generation_mode=ring_generation_mode,
         naip_structure_feature_status=naip_status,
+        near_structure_data_quality_tier=near_structure_data_quality_tier,
+        near_structure_claim_strength=near_structure_claim_strength,
+        supports_property_specific_claims=bool(near_structure_data_quality_tier == "footprint_precise"),
         property_mismatch_flag=property_mismatch_flag,
         mismatch_reason=mismatch_reason,
         geometry_limitations=geometry_limitations,
@@ -3317,19 +3442,39 @@ def _build_property_confidence_summary(
         user_inputs_score = ((float(user_inputs_provided) + (1.0 if geometry_user_input else 0.0)) / 7.0) * 100.0
 
     rings = property_level_context.get("ring_metrics") if isinstance(property_level_context.get("ring_metrics"), dict) else {}
+    near_structure_feature_block = (
+        property_level_context.get("near_structure_features")
+        if isinstance(property_level_context.get("near_structure_features"), dict)
+        else {}
+    )
+    near_structure_data_quality_tier = str(
+        near_structure_feature_block.get("data_quality_tier") or ""
+    ).strip().lower()
+    if near_structure_data_quality_tier not in {"footprint_precise", "parcel_proxy", "point_proxy"}:
+        if bool(property_level_context.get("footprint_used")):
+            near_structure_data_quality_tier = "footprint_precise"
+        elif isinstance(property_level_context.get("parcel_geometry"), dict):
+            near_structure_data_quality_tier = "parcel_proxy"
+        else:
+            near_structure_data_quality_tier = "point_proxy"
     near_structure_ring_count = sum(
         1
         for key in ("ring_0_5_ft", "zone_0_5_ft", "ring_5_30_ft", "zone_5_30_ft", "ring_30_100_ft", "zone_30_100_ft")
         if isinstance(rings.get(key), dict) and _safe_float((rings.get(key) or {}).get("vegetation_density")) is not None
     )
-    if near_structure_ring_count >= 2:
-        near_structure_evidence_score = 90.0
-    elif near_structure_ring_count == 1:
-        near_structure_evidence_score = 72.0
-    elif fallback_mode == "point_based":
-        near_structure_evidence_score = 30.0
+    if near_structure_data_quality_tier == "footprint_precise":
+        if near_structure_ring_count >= 2:
+            near_structure_evidence_score = 90.0
+        elif near_structure_ring_count == 1:
+            near_structure_evidence_score = 72.0
+        elif fallback_mode == "point_based":
+            near_structure_evidence_score = 30.0
+        else:
+            near_structure_evidence_score = 55.0
+    elif near_structure_data_quality_tier == "parcel_proxy":
+        near_structure_evidence_score = 58.0 if near_structure_ring_count >= 1 else 48.0
     else:
-        near_structure_evidence_score = 55.0
+        near_structure_evidence_score = 34.0 if near_structure_ring_count >= 1 else 26.0
 
     combined_structure_score = min(
         100.0,
@@ -3376,6 +3521,10 @@ def _build_property_confidence_summary(
         score = min(score, 32.0)
     if anchor_confidence < 45.0:
         score = min(score, 36.0)
+    if near_structure_data_quality_tier == "parcel_proxy":
+        score = min(score, 64.0)
+    elif near_structure_data_quality_tier == "point_proxy":
+        score = min(score, 46.0)
 
     key_reasons: list[str] = []
     if parcel_status in {"not_found", "multiple_candidates"} or parcel_confidence < 60.0:
@@ -3388,6 +3537,10 @@ def _build_property_confidence_summary(
         key_reasons.append("Address/geocode anchor confidence is limited for this location.")
     if naip_structure_feature_score < 60.0:
         key_reasons.append("Near-structure imagery detail is limited or fallback-based.")
+    if near_structure_data_quality_tier == "parcel_proxy":
+        key_reasons.append("Near-structure evidence is parcel-proxy and only directional.")
+    elif near_structure_data_quality_tier == "point_proxy":
+        key_reasons.append("Near-structure evidence is point-proxy and not parcel-precise.")
     if structure_available_count < 2:
         key_reasons.append("Structure attributes are limited; more property-specific structure detail is needed.")
     if payload is not None and user_inputs_provided < 2:
@@ -3443,6 +3596,11 @@ def _build_feature_coverage_preflight(
             "vegetation_continuity_proxy_pct",
         ]
     )
+    near_structure_features = (
+        property_level_context.get("near_structure_features")
+        if isinstance(property_level_context.get("near_structure_features"), dict)
+        else {}
+    )
     parcel_polygon_available = isinstance(property_level_context.get("parcel_geometry"), dict)
     footprint_available = bool(property_level_context.get("footprint_used"))
     hazard_available = getattr(context, "hazard_severity_index", None) is not None
@@ -3454,6 +3612,34 @@ def _build_feature_coverage_preflight(
         or str(access_context.get("status") or "") in {"ok", "partial"}
     )
     near_structure_available = near_structure_ring_available or near_structure_proxy_available
+    near_structure_data_quality_tier = str(
+        near_structure_features.get("data_quality_tier") or ""
+    ).strip().lower()
+    if near_structure_data_quality_tier not in {"footprint_precise", "parcel_proxy", "point_proxy"}:
+        ring_generation_mode = str(property_level_context.get("ring_generation_mode") or "").strip().lower()
+        if footprint_available and near_structure_ring_available and ring_generation_mode != "point_annulus_parcel_clipped":
+            near_structure_data_quality_tier = "footprint_precise"
+        elif parcel_polygon_available and near_structure_available:
+            near_structure_data_quality_tier = "parcel_proxy"
+        elif near_structure_available:
+            near_structure_data_quality_tier = "point_proxy"
+        else:
+            near_structure_data_quality_tier = "point_proxy"
+    near_structure_claim_strength = str(
+        near_structure_features.get("claim_strength") or ""
+    ).strip().lower()
+    if near_structure_claim_strength not in {"structure_specific", "parcel_directional", "coarse_directional"}:
+        near_structure_claim_strength = (
+            "structure_specific"
+            if near_structure_data_quality_tier == "footprint_precise"
+            else ("parcel_directional" if near_structure_data_quality_tier == "parcel_proxy" else "coarse_directional")
+        )
+    near_structure_supports_property_specific_claims = bool(
+        near_structure_data_quality_tier == "footprint_precise"
+    )
+    near_structure_precise_available = bool(
+        near_structure_available and near_structure_supports_property_specific_claims
+    )
     region_readiness = _region_readiness_penalty_summary(property_level_context)
     region_readiness_state = str(region_readiness.get("region_property_specific_readiness") or "limited_regional_ready")
     feature_bundle_summary = (
@@ -3475,9 +3661,19 @@ def _build_feature_coverage_preflight(
         "dryness_available": dryness_available,
         "road_network_available": road_network_available,
         "near_structure_vegetation_available": near_structure_available,
+        "near_structure_precise_available": near_structure_precise_available,
     }
-    observed_count = sum(1 for available in feature_coverage_summary.values() if available)
-    total_count = max(1, len(feature_coverage_summary))
+    core_coverage_keys = (
+        "parcel_polygon_available",
+        "building_footprint_available",
+        "hazard_severity_available",
+        "burn_probability_available",
+        "dryness_available",
+        "road_network_available",
+        "near_structure_vegetation_available",
+    )
+    observed_count = sum(1 for key in core_coverage_keys if bool(feature_coverage_summary.get(key)))
+    total_count = max(1, len(core_coverage_keys))
     feature_coverage_percent = round((observed_count / float(total_count)) * 100.0, 1)
     missing_core_layer_count = total_count - observed_count
     observed_feature_count = int(bundle_metrics.get("observed_feature_count") or 0)
@@ -3498,6 +3694,10 @@ def _build_feature_coverage_preflight(
         if bundle_metrics.get("structure_geometry_quality_score") is not None
         else (0.92 if footprint_available else (0.72 if parcel_polygon_available else 0.46))
     )
+    if near_structure_data_quality_tier == "parcel_proxy":
+        geometry_quality_score = min(geometry_quality_score, 0.68)
+    elif near_structure_data_quality_tier == "point_proxy":
+        geometry_quality_score = min(geometry_quality_score, 0.48)
     environmental_layer_coverage_score = float(
         bundle_metrics.get("environmental_layer_coverage_score")
         if bundle_metrics.get("environmental_layer_coverage_score") is not None
@@ -3523,6 +3723,10 @@ def _build_feature_coverage_preflight(
             else (72.0 if footprint_available else (62.0 if parcel_polygon_available else 42.0))
         )
     )
+    if near_structure_data_quality_tier == "parcel_proxy":
+        property_specificity_score = min(property_specificity_score, 74.0)
+    elif near_structure_data_quality_tier == "point_proxy":
+        property_specificity_score = min(property_specificity_score, 52.0)
     geometry_basis = (
         "footprint"
         if footprint_available
@@ -3546,7 +3750,7 @@ def _build_feature_coverage_preflight(
     if (
         feature_coverage_percent >= 70.0
         and footprint_available
-        and near_structure_available
+        and near_structure_precise_available
         and major_environmental_missing_count == 0
         and coverage_summary.failed_count <= 1
     ):
@@ -3563,6 +3767,8 @@ def _build_feature_coverage_preflight(
     if region_readiness_state == "limited_regional_ready":
         assessment_specificity_tier = "regional_estimate"
     elif region_readiness_state == "address_level_only" and assessment_specificity_tier == "property_specific":
+        assessment_specificity_tier = "address_level"
+    if near_structure_data_quality_tier != "footprint_precise" and assessment_specificity_tier == "property_specific":
         assessment_specificity_tier = "address_level"
 
     # If both parcel and footprint are missing, never allow property-specific semantics.
@@ -3598,6 +3804,7 @@ def _build_feature_coverage_preflight(
         or int(region_readiness.get("region_required_missing_count") or 0) > 0
         or property_data_confidence < 40.0
         or property_mismatch_flag
+        or near_structure_data_quality_tier != "footprint_precise"
     )
     specificity_warning = None
     if limited_assessment_flag:
@@ -3615,6 +3822,10 @@ def _build_feature_coverage_preflight(
                 "Geometry inputs may refer to the wrong property; specificity is downgraded until location/building "
                 "alignment is corrected."
             )
+        elif near_structure_data_quality_tier != "footprint_precise":
+            specificity_warning = (
+                "Near-structure geometry is proxy-based, so parcel-level claims are intentionally weakened."
+            )
 
     preflight = {
         "feature_coverage_summary": feature_coverage_summary,
@@ -3623,6 +3834,9 @@ def _build_feature_coverage_preflight(
         "limited_assessment_flag": limited_assessment_flag,
         "missing_core_layer_count": missing_core_layer_count,
         "geometry_basis": geometry_basis,
+        "near_structure_data_quality_tier": near_structure_data_quality_tier,
+        "near_structure_claim_strength": near_structure_claim_strength,
+        "near_structure_supports_property_specific_claims": near_structure_supports_property_specific_claims,
         "major_environmental_missing_count": major_environmental_missing_count,
         "observed_feature_count": observed_feature_count,
         "inferred_feature_count": inferred_feature_count,
@@ -3980,6 +4194,25 @@ def _build_data_provenance(
             details=f"{details} basis={ring_basis}",
         )
 
+    near_structure_features = (
+        property_level_context.get("near_structure_features")
+        if isinstance(property_level_context.get("near_structure_features"), dict)
+        else {}
+    )
+    near_structure_data_quality_tier = str(
+        near_structure_features.get("data_quality_tier") or ""
+    ).strip().lower()
+    if near_structure_data_quality_tier not in {"footprint_precise", "parcel_proxy", "point_proxy"}:
+        ring_generation_mode = str(property_level_context.get("ring_generation_mode") or "").strip().lower()
+        if bool(property_level_context.get("footprint_used")) and ring_generation_mode == "footprint_aware_rings":
+            near_structure_data_quality_tier = "footprint_precise"
+        elif (
+            ring_generation_mode == "point_annulus_parcel_clipped"
+            or isinstance(property_level_context.get("parcel_geometry"), dict)
+        ):
+            near_structure_data_quality_tier = "parcel_proxy"
+        else:
+            near_structure_data_quality_tier = "point_proxy"
     imagery_source = str(property_level_context.get("naip_feature_source") or "").strip()
     imagery_fields = [
         "near_structure_vegetation_0_5_pct",
@@ -3989,11 +4222,21 @@ def _build_data_provenance(
     ]
     for field_name in imagery_fields:
         raw_value = property_level_context.get(field_name) if isinstance(property_level_context, dict) else None
-        if raw_value is not None and imagery_source:
+        if raw_value is not None and imagery_source and near_structure_data_quality_tier == "footprint_precise":
             src_type: SourceType = "observed"
             provider_status: ProviderStatus = "ok"
             details = "Observed from precomputed NAIP ring-feature artifact."
             source_name = "naip_structure_features"
+        elif raw_value is not None and imagery_source and near_structure_data_quality_tier == "parcel_proxy":
+            src_type = "heuristic"
+            provider_status = "ok"
+            details = "Derived from parcel-proxy near-structure geometry; treat as directional."
+            source_name = "naip_structure_features_proxy"
+        elif raw_value is not None and imagery_source:
+            src_type = "heuristic"
+            provider_status = "ok"
+            details = "Derived from point-proxy near-structure geometry; not parcel-precise."
+            source_name = "naip_structure_features_proxy"
         elif raw_value is not None:
             src_type = "heuristic"
             provider_status = "ok"
@@ -5061,6 +5304,14 @@ def _build_specificity_summary(
         else _property_data_confidence_level(property_data_confidence)
     ).strip().lower()
     property_confidence_band = _property_confidence_band(property_confidence_level)
+    near_structure_data_quality_tier = str(
+        trust_summary.get("near_structure_data_quality_tier") or "footprint_precise"
+    ).strip().lower()
+    if near_structure_data_quality_tier not in {"footprint_precise", "parcel_proxy", "point_proxy"}:
+        near_structure_data_quality_tier = "point_proxy"
+    near_structure_evidence_available = bool(
+        trust_summary.get("near_structure_evidence_available", True)
+    )
 
     # Property-specificity output should degrade when local evidence is weak.
     if (
@@ -5087,6 +5338,18 @@ def _build_specificity_summary(
             specificity_tier = "address_level"
         elif specificity_tier == "address_level" and property_data_confidence < 35.0:
             specificity_tier = "regional_estimate"
+    if (
+        near_structure_evidence_available
+        and near_structure_data_quality_tier == "parcel_proxy"
+        and specificity_tier == "property_specific"
+    ):
+        specificity_tier = "address_level"
+    if (
+        near_structure_evidence_available
+        and near_structure_data_quality_tier == "point_proxy"
+        and specificity_tier in {"property_specific", "address_level"}
+    ):
+        specificity_tier = "regional_estimate"
 
     nearby_home_guardrail = bool(trust_summary.get("nearby_home_comparison_safeguard_triggered"))
     comparison_allowed = bool(trust_summary.get("parcel_level_comparison_allowed"))
@@ -5097,6 +5360,7 @@ def _build_specificity_summary(
         and not nearby_home_guardrail
         and property_data_confidence >= 55.0
         and property_confidence_band != "low"
+        and near_structure_data_quality_tier == "footprint_precise"
     ):
         comparison_allowed = True
     if specificity_tier in {"regional_estimate", "insufficient_data"}:
@@ -5106,6 +5370,8 @@ def _build_specificity_summary(
     if nearby_home_guardrail:
         comparison_allowed = False
     if property_mismatch_flag:
+        comparison_allowed = False
+    if near_structure_evidence_available and near_structure_data_quality_tier != "footprint_precise":
         comparison_allowed = False
 
     confidence_level = str(trust_summary.get("confidence_level") or "").strip().lower()
@@ -5157,6 +5423,14 @@ def _build_specificity_summary(
     elif property_confidence_level == "address_level":
         what_this_means = (
             f"{what_this_means} Confirming building geometry can improve specificity."
+        ).strip()
+    if near_structure_evidence_available and near_structure_data_quality_tier == "parcel_proxy":
+        what_this_means = (
+            f"{what_this_means} Near-structure geometry is parcel-proxy, so claims are directional rather than parcel-precise."
+        ).strip()
+    elif near_structure_evidence_available and near_structure_data_quality_tier == "point_proxy":
+        what_this_means = (
+            f"{what_this_means} Near-structure geometry is point-proxy, so adjacent-home comparison claims are intentionally withheld."
         ).strip()
 
     return {
@@ -5222,6 +5496,7 @@ def _build_homeowner_trust_summary(
     ]
     missing_field_labels = list(dict.fromkeys(missing_field_labels))[:4]
 
+    coverage = dict(preflight.get("feature_coverage_summary") or {})
     coverage_gaps: list[str] = []
     missing_core_layer_count = int(preflight.get("missing_core_layer_count") or 0)
     feature_coverage_percent = float(preflight.get("feature_coverage_percent") or 0.0)
@@ -5258,6 +5533,38 @@ def _build_homeowner_trust_summary(
         coverage_gaps.append(
             f"Only {feature_coverage_percent:.1f}% of assessment signals were observed directly."
         )
+    near_structure_available = bool(coverage.get("near_structure_vegetation_available"))
+    near_structure_data_quality_tier = str(
+        preflight.get("near_structure_data_quality_tier")
+        or coverage.get("near_structure_data_quality_tier")
+        or ""
+    ).strip().lower()
+    if near_structure_data_quality_tier not in {"footprint_precise", "parcel_proxy", "point_proxy"}:
+        if bool(coverage.get("building_footprint_available")) and near_structure_available:
+            near_structure_data_quality_tier = "footprint_precise"
+        elif bool(coverage.get("parcel_polygon_available")) and near_structure_available:
+            near_structure_data_quality_tier = "parcel_proxy"
+        elif near_structure_available:
+            near_structure_data_quality_tier = "point_proxy"
+        else:
+            near_structure_data_quality_tier = "point_proxy"
+    near_structure_claim_strength = str(
+        preflight.get("near_structure_claim_strength")
+        or coverage.get("near_structure_claim_strength")
+        or ""
+    ).strip().lower()
+    if near_structure_claim_strength not in {"structure_specific", "parcel_directional", "coarse_directional"}:
+        near_structure_claim_strength = (
+            "structure_specific"
+            if near_structure_data_quality_tier == "footprint_precise"
+            else ("parcel_directional" if near_structure_data_quality_tier == "parcel_proxy" else "coarse_directional")
+        )
+    supports_property_specific_claims = bool(
+        near_structure_available and near_structure_data_quality_tier == "footprint_precise"
+    )
+    proxy_geometry_guardrail_triggered = bool(
+        near_structure_available and not supports_property_specific_claims
+    )
 
     uncertainty_drivers: list[str] = []
     if fallback_drivers:
@@ -5287,6 +5594,8 @@ def _build_homeowner_trust_summary(
         differentiation_mode,
         differentiation_confidence,
     )
+    if proxy_geometry_guardrail_triggered:
+        nearby_home_comparison_safeguard_triggered = True
     nearby_home_comparison_safeguard_message = (
         "This estimate is not precise enough to compare adjacent homes."
         if nearby_home_comparison_safeguard_triggered
@@ -5344,6 +5653,7 @@ def _build_homeowner_trust_summary(
         or parcel_match_status in {"not_found", "provider_unavailable"}
         or anchor_quality_score < 0.60
         or naip_status in {"missing", "provider_unavailable", "present_but_not_consumed", "fallback_or_proxy"}
+        or proxy_geometry_guardrail_triggered
         or property_mismatch_flag
     )
     geometry_resolution_summary = None
@@ -5355,6 +5665,9 @@ def _build_homeowner_trust_summary(
             "footprint_match_status": footprint_match_status or "none",
             "ring_generation_mode": ring_mode or "point_annulus_fallback",
             "naip_structure_feature_status": naip_status or "missing",
+            "near_structure_data_quality_tier": near_structure_data_quality_tier,
+            "near_structure_claim_strength": near_structure_claim_strength,
+            "supports_property_specific_claims": supports_property_specific_claims,
             "property_mismatch_flag": property_mismatch_flag,
             "mismatch_reason": mismatch_reason,
         }
@@ -5364,6 +5677,12 @@ def _build_homeowner_trust_summary(
                 + list(uncertainty_drivers)
             )
         )[:4]
+    if proxy_geometry_guardrail_triggered:
+        if near_structure_data_quality_tier == "parcel_proxy":
+            proxy_note = "Near-structure geometry is parcel-proxy, so nearby-home comparisons are directional only."
+        else:
+            proxy_note = "Near-structure geometry is point-proxy, so nearby-home comparisons are intentionally withheld."
+        uncertainty_drivers = list(dict.fromkeys([proxy_note] + list(uncertainty_drivers)))[:4]
     if property_mismatch_flag:
         mismatch_note = (
             f"Potential property mismatch: {mismatch_reason}"
@@ -5439,7 +5758,12 @@ def _build_homeowner_trust_summary(
             and local_differentiation_score >= 60.0
             and property_data_confidence >= 55.0
             and property_confidence_band != "low"
+            and supports_property_specific_claims
         ),
+        "near_structure_data_quality_tier": near_structure_data_quality_tier,
+        "near_structure_claim_strength": near_structure_claim_strength,
+        "supports_property_specific_claims": supports_property_specific_claims,
+        "near_structure_evidence_available": near_structure_available,
         "property_data_confidence": round(property_data_confidence, 1),
         "property_confidence_summary": {
             "score": round(property_data_confidence, 1),
@@ -5476,6 +5800,11 @@ def _build_low_differentiation_explanation_block(
 
     coverage = dict(preflight.get("feature_coverage_summary") or {})
     geometry_basis = str(preflight.get("geometry_basis") or "geocode_point").strip().lower()
+    near_structure_data_quality_tier = str(
+        preflight.get("near_structure_data_quality_tier")
+        or coverage.get("near_structure_data_quality_tier")
+        or ""
+    ).strip().lower()
 
     footprint_available = bool(coverage.get("building_footprint_available"))
     parcel_available = bool(coverage.get("parcel_polygon_available"))
@@ -5496,11 +5825,17 @@ def _build_low_differentiation_explanation_block(
         estimated_from_regional.append("Building footprint was missing, so location detail was limited.")
         make_more_property_specific.append("Add or confirm a building footprint for this home.")
 
-    if near_structure_available and geometry_basis != "geocode_point":
+    if near_structure_available and near_structure_data_quality_tier == "footprint_precise" and geometry_basis != "geocode_point":
         measured_directly.append("Vegetation close to the home was measured around the structure.")
+    elif near_structure_available and near_structure_data_quality_tier == "parcel_proxy":
+        estimated_from_regional.append("Near-home vegetation was measured from parcel-proxy geometry and treated as directional.")
+        make_more_property_specific.append("Confirm a building footprint to replace parcel-proxy near-home vegetation estimates.")
     elif near_structure_available and geometry_basis == "geocode_point":
         estimated_from_regional.append("Near-home vegetation was sampled from a map point estimate.")
         make_more_property_specific.append("Pin the exact home location or add structure geometry for better near-home vegetation detail.")
+    elif near_structure_available and near_structure_data_quality_tier == "point_proxy":
+        estimated_from_regional.append("Near-home vegetation was sampled from point-proxy geometry rather than structure boundaries.")
+        make_more_property_specific.append("Provide parcel and footprint geometry for reliable 0-5 ft and 5-30 ft vegetation detail.")
     else:
         estimated_from_regional.append("Near-home vegetation detail was estimated from broader area signals.")
         make_more_property_specific.append("Add near-home vegetation detail, especially in the 0–5 ft and 5–30 ft zones.")
@@ -5571,16 +5906,35 @@ def _build_data_quality_summary(
     parcel_available = bool(coverage.get("parcel_polygon_available"))
     footprint_available = bool(coverage.get("building_footprint_available"))
     near_structure_available = bool(coverage.get("near_structure_vegetation_available"))
+    near_structure_data_quality_tier = str(
+        preflight.get("near_structure_data_quality_tier")
+        or coverage.get("near_structure_data_quality_tier")
+        or ""
+    ).strip().lower()
+    if near_structure_data_quality_tier not in {"footprint_precise", "parcel_proxy", "point_proxy"}:
+        if footprint_available and near_structure_available:
+            near_structure_data_quality_tier = "footprint_precise"
+        elif parcel_available and near_structure_available:
+            near_structure_data_quality_tier = "parcel_proxy"
+        elif near_structure_available:
+            near_structure_data_quality_tier = "point_proxy"
+        else:
+            near_structure_data_quality_tier = "point_proxy"
     hazard_available = bool(coverage.get("hazard_severity_available"))
     burn_available = bool(coverage.get("burn_probability_available"))
     dryness_available = bool(coverage.get("dryness_available"))
     roads_available = bool(coverage.get("road_network_available"))
 
     property_geometry = "observed" if footprint_available else ("partial" if parcel_available else "missing")
-    structure_features = "observed" if (footprint_available and near_structure_available) else (
-        "partial" if near_structure_available else "missing"
-    )
-    vegetation_context = "observed" if near_structure_available else "partial"
+    if near_structure_data_quality_tier == "footprint_precise" and near_structure_available:
+        structure_features = "observed"
+        vegetation_context = "observed"
+    elif near_structure_available:
+        structure_features = "partial"
+        vegetation_context = "partial"
+    else:
+        structure_features = "missing"
+        vegetation_context = "partial"
     if not near_structure_available and geometry_basis == "geocode_point":
         vegetation_context = "missing"
     regional_hazard_layers = "observed" if (hazard_available and burn_available) else (
@@ -5597,6 +5951,7 @@ def _build_data_quality_summary(
         "road_access_context": road_access_context,
         "climate_dryness_context": climate_dryness_context,
         "prepared_region_readiness": region_readiness,
+        "near_structure_data_quality_tier": near_structure_data_quality_tier,
     }
 
 
@@ -5630,6 +5985,17 @@ def _build_homeowner_limitation_groups(
         _add(
             "property_shape_and_structure",
             "Only partial property geometry was available, so some near-structure findings rely on approximations.",
+        )
+    near_structure_tier = str(data_quality_summary.get("near_structure_data_quality_tier") or "").strip().lower()
+    if near_structure_tier == "parcel_proxy":
+        _add(
+            "property_shape_and_structure",
+            "Near-structure geometry is parcel-proxy, so nearby-home differences are directional rather than parcel-precise.",
+        )
+    elif near_structure_tier == "point_proxy":
+        _add(
+            "property_shape_and_structure",
+            "Near-structure geometry is point-proxy, so adjacent-home comparison claims are intentionally withheld.",
         )
 
     if not bool(coverage.get("hazard_severity_available")) or not bool(coverage.get("burn_probability_available")):

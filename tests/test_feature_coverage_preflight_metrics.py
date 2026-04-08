@@ -58,6 +58,46 @@ def test_preflight_uses_feature_bundle_metrics_for_specificity_caps():
     assert "regional_enrichment_consumption_score" in preflight
 
 
+def test_preflight_disallows_property_specific_tier_for_proxy_near_structure_geometry():
+    preflight = _build_feature_coverage_preflight(
+        context=_context(),
+        property_level_context={
+            "footprint_used": True,
+            "fallback_mode": "point_based",
+            "parcel_geometry": {"type": "Feature", "geometry": {"type": "Polygon", "coordinates": []}},
+            "ring_metrics": {"ring_0_5_ft": {"vegetation_density": 55.0}},
+            "near_structure_vegetation_0_5_pct": 61.0,
+            "canopy_adjacency_proxy_pct": 48.0,
+            "vegetation_continuity_proxy_pct": 44.0,
+            "near_structure_features": {
+                "data_quality_tier": "point_proxy",
+                "claim_strength": "coarse_directional",
+                "supports_property_specific_claims": False,
+            },
+            "feature_bundle_summary": {
+                "coverage_metrics": {
+                    "observed_weight_fraction": 0.82,
+                    "fallback_dominance_ratio": 0.12,
+                    "structure_geometry_quality_score": 0.88,
+                    "environmental_layer_coverage_score": 92.0,
+                    "regional_enrichment_consumption_score": 91.0,
+                    "property_specificity_score": 89.0,
+                    "observed_feature_count": 12,
+                    "fallback_feature_count": 1,
+                    "missing_feature_count": 0,
+                }
+            },
+            "region_property_specific_readiness": "property_specific_ready",
+        },
+        coverage_summary=LayerCoverageSummary(),
+    )
+
+    assert preflight["near_structure_data_quality_tier"] == "point_proxy"
+    assert preflight["near_structure_supports_property_specific_claims"] is False
+    assert preflight["assessment_specificity_tier"] in {"address_level", "regional_estimate"}
+    assert preflight["limited_assessment_flag"] is True
+
+
 def test_property_confidence_summary_high_with_strong_property_data():
     preflight = _build_feature_coverage_preflight(
         context=_context(),

@@ -1317,20 +1317,52 @@ class WildfireDataClient:
         if not precision_flag:
             precision_flag = "footprint_relative" if geometry_type == "footprint" else "fallback_point_proxy"
 
+        geometry_basis = str(context.get("geometry_basis") or "").strip().lower()
+        ring_generation_mode = str(context.get("ring_generation_mode") or "").strip().lower()
         imagery_available = bool(context.get("naip_feature_source") == "prepared_region_naip")
-        if imagery_available and geometry_type == "footprint":
+        if geometry_type == "footprint" and precision_flag == "footprint_relative":
+            data_quality_tier = "footprint_precise"
+        elif (
+            precision_flag == "parcel_clipped_point_proxy"
+            or ring_generation_mode == "point_annulus_parcel_clipped"
+            or geometry_basis == "parcel"
+        ):
+            data_quality_tier = "parcel_proxy"
+        else:
+            data_quality_tier = "point_proxy"
+
+        quality_score = 0.92
+        if data_quality_tier == "parcel_proxy":
+            quality_score = 0.62
+        elif data_quality_tier == "point_proxy":
+            quality_score = 0.36
+        if imagery_available:
+            quality_score = min(1.0, quality_score + 0.04)
+
+        if data_quality_tier == "footprint_precise" and imagery_available:
             confidence_flag = "high"
-        elif imagery_available:
+        elif data_quality_tier == "footprint_precise":
             confidence_flag = "moderate"
+        elif data_quality_tier == "parcel_proxy":
+            confidence_flag = "moderate" if imagery_available else "low"
         else:
             confidence_flag = "low"
+
+        if data_quality_tier == "footprint_precise":
+            claim_strength = "structure_specific"
+        elif data_quality_tier == "parcel_proxy":
+            claim_strength = "parcel_directional"
+        else:
+            claim_strength = "coarse_directional"
 
         notes: list[str] = []
         if imagery_available:
             notes.append("Near-structure features are derived from NAIP imagery enrichment.")
         else:
             notes.append("Near-structure features are approximated from fallback canopy/fuel layers.")
-        if precision_flag == "fallback_point_proxy":
+        if data_quality_tier == "parcel_proxy":
+            notes.append("Near-structure features are parcel-clipped proxies and should be treated as directional.")
+        elif data_quality_tier == "point_proxy":
             notes.append("Point-based proxy geometry reduces near-structure feature precision.")
 
         return {
@@ -1342,6 +1374,10 @@ class WildfireDataClient:
             "precision_flag": precision_flag,
             "imagery_available": imagery_available,
             "confidence_flag": confidence_flag,
+            "data_quality_tier": data_quality_tier,
+            "quality_score": round(max(0.0, min(1.0, quality_score)), 3),
+            "claim_strength": claim_strength,
+            "supports_property_specific_claims": bool(data_quality_tier == "footprint_precise"),
             "source": "naip_imagery" if imagery_available else "fallback_layers",
             "notes": notes,
         }
@@ -4696,6 +4732,21 @@ class WildfireDataClient:
                 failure_reason="; ".join(access_summary.notes[:2]) if access_summary.notes else "Road sampling unavailable.",
             )
 
+        near_structure_feature_block = (
+            property_level_context.get("near_structure_features")
+            if isinstance(property_level_context.get("near_structure_features"), dict)
+            else {}
+        )
+        near_structure_quality_tier = str(
+            near_structure_feature_block.get("data_quality_tier") or ""
+        ).strip().lower()
+        if near_structure_quality_tier == "footprint_precise":
+            near_structure_scope = "property_specific"
+        elif near_structure_quality_tier == "parcel_proxy":
+            near_structure_scope = "inferred"
+        else:
+            near_structure_scope = "fallback"
+
         property_level_context.update(
             {
                 "hazard_context": hazard_context,
@@ -4742,7 +4793,7 @@ class WildfireDataClient:
                             else None
                         ),
                         "scope": (
-                            "property_specific"
+                            near_structure_scope
                             if property_level_context.get("near_structure_vegetation_0_5_pct") is not None
                             else "fallback"
                         ),
@@ -4756,7 +4807,7 @@ class WildfireDataClient:
                             else None
                         ),
                         "scope": (
-                            "property_specific"
+                            near_structure_scope
                             if property_level_context.get("canopy_adjacency_proxy_pct") is not None
                             else "fallback"
                         ),
@@ -4770,7 +4821,7 @@ class WildfireDataClient:
                             else None
                         ),
                         "scope": (
-                            "property_specific"
+                            near_structure_scope
                             if property_level_context.get("vegetation_continuity_proxy_pct") is not None
                             else "fallback"
                         ),
@@ -4797,7 +4848,7 @@ class WildfireDataClient:
                             else None
                         ),
                         "scope": (
-                            "property_specific"
+                            near_structure_scope
                             if property_level_context.get("nearest_high_fuel_patch_distance_ft") is not None
                             else "fallback"
                         ),

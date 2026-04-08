@@ -964,6 +964,9 @@ class GeometryResolutionSummary(BaseModel):
     footprint_source: Optional[str] = None
     ring_generation_mode: str = "point_annulus_fallback"
     naip_structure_feature_status: str = "missing"
+    near_structure_data_quality_tier: str = "point_proxy"
+    near_structure_claim_strength: str = "coarse_directional"
+    supports_property_specific_claims: bool = False
     property_mismatch_flag: bool = False
     mismatch_reason: Optional[str] = None
     geometry_limitations: List[str] = Field(default_factory=list)
