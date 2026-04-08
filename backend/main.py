@@ -907,6 +907,9 @@ def _build_confidence(
         else regional_context_coverage_score
     )
     property_specificity_score = float(preflight.get("property_specificity_score") or 0.0)
+    structure_factor_uncertainty_tier = str(
+        preflight.get("structure_factor_uncertainty_tier") or ""
+    ).strip().lower()
     missing_critical_fields_set: set[str] = {
         missing
         for missing in assumptions.missing_inputs
@@ -1048,6 +1051,8 @@ def _build_confidence(
             confidence = min(confidence, 40.0)
         elif property_specificity_score < 60.0:
             confidence = min(confidence, 50.0)
+        if structure_factor_uncertainty_tier == "low":
+            confidence = min(confidence, 54.0)
         if float(fallback_dominance_ratio) >= 0.70:
             confidence = min(confidence, 40.0)
         if fallback_weight_fraction >= 0.72:
@@ -1190,6 +1195,8 @@ def _build_confidence(
         low_confidence_flags.append("Regional enrichment layers are partially consumed or missing for this location")
     if property_specificity_score < 60.0:
         low_confidence_flags.append("Property-specific evidence strength is limited for this run")
+    if structure_factor_uncertainty_tier == "low":
+        low_confidence_flags.append("Critical structure-factor evidence is missing or proxy-derived")
     if fallback_feature_count > observed_feature_count and has_preflight:
         low_confidence_flags.append("Fallback feature count exceeds observed feature count")
     if any("provisional" in note.lower() for note in assumptions.assumptions_used):
@@ -2853,6 +2860,35 @@ def _normalize_property_level_context(
         },
         user_attributes=user_attributes,
     )
+    structure_factor_uncertainty = _summarize_structure_factor_uncertainty(
+        normalized.get("structure_attributes")
+    )
+    normalized["structure_factor_uncertainty"] = structure_factor_uncertainty
+    near_structure_features = normalized.get("near_structure_features")
+    if isinstance(near_structure_features, dict):
+        claim_rank = {
+            "coarse_directional": 0,
+            "parcel_directional": 1,
+            "structure_specific": 2,
+        }
+        claim_strength = str(near_structure_features.get("claim_strength") or "").strip().lower()
+        if claim_strength not in claim_rank:
+            claim_strength = "coarse_directional"
+        claim_cap = str(structure_factor_uncertainty.get("claim_strength_cap") or "").strip().lower()
+        if claim_cap not in claim_rank:
+            claim_cap = claim_strength
+        if claim_rank.get(claim_strength, 0) > claim_rank.get(claim_cap, 0):
+            near_structure_features["claim_strength"] = claim_cap
+            near_structure_features["supports_property_specific_claims"] = bool(
+                claim_cap == "structure_specific"
+            )
+            existing_notes = near_structure_features.get("notes")
+            notes = list(existing_notes) if isinstance(existing_notes, list) else []
+            notes.append(
+                "Claim strength downgraded because structure-factor evidence is missing or proxy-derived."
+            )
+            near_structure_features["notes"] = list(dict.fromkeys(notes))[:6]
+        normalized["near_structure_features"] = near_structure_features
     return normalized
 
 
@@ -2960,6 +2996,21 @@ def _build_geometry_resolution_summary(
             if near_structure_data_quality_tier == "footprint_precise"
             else ("parcel_directional" if near_structure_data_quality_tier == "parcel_proxy" else "coarse_directional")
         )
+    structure_factor_uncertainty = (
+        ctx.get("structure_factor_uncertainty")
+        if isinstance(ctx.get("structure_factor_uncertainty"), dict)
+        else _summarize_structure_factor_uncertainty(ctx.get("structure_attributes"))
+    )
+    claim_strength_cap = str(
+        (structure_factor_uncertainty or {}).get("claim_strength_cap") or ""
+    ).strip().lower()
+    claim_rank = {
+        "coarse_directional": 0,
+        "parcel_directional": 1,
+        "structure_specific": 2,
+    }
+    if claim_strength_cap in claim_rank and claim_rank.get(near_structure_claim_strength, 0) > claim_rank[claim_strength_cap]:
+        near_structure_claim_strength = claim_strength_cap
 
     has_near_structure_values = any(
         ctx.get(key) is not None
@@ -3086,6 +3137,10 @@ def _build_geometry_resolution_summary(
         geometry_limitations.append(
             "Near-structure feature geometry is point-proxy and is not parcel-precise."
         )
+    if str((structure_factor_uncertainty or {}).get("tier") or "").strip().lower() == "low":
+        geometry_limitations.append(
+            "Structure-factor evidence quality is limited; strong property-specific claims are capped."
+        )
     if source_conflict_flag:
         geometry_limitations.append(
             "Anchor and geometry sources were partially conflicting."
@@ -3106,7 +3161,10 @@ def _build_geometry_resolution_summary(
         naip_structure_feature_status=naip_status,
         near_structure_data_quality_tier=near_structure_data_quality_tier,
         near_structure_claim_strength=near_structure_claim_strength,
-        supports_property_specific_claims=bool(near_structure_data_quality_tier == "footprint_precise"),
+        supports_property_specific_claims=bool(
+            near_structure_data_quality_tier == "footprint_precise"
+            and near_structure_claim_strength == "structure_specific"
+        ),
         property_mismatch_flag=property_mismatch_flag,
         mismatch_reason=mismatch_reason,
         geometry_limitations=geometry_limitations,
@@ -3295,6 +3353,109 @@ def _property_confidence_band(level: str) -> str:
     return "low"
 
 
+def _summarize_structure_factor_uncertainty(
+    structure_attributes: dict[str, Any] | None,
+) -> dict[str, Any]:
+    attrs = structure_attributes if isinstance(structure_attributes, dict) else {}
+    provenance = attrs.get("attribute_provenance") if isinstance(attrs.get("attribute_provenance"), dict) else {}
+    confidence = attrs.get("attribute_confidence") if isinstance(attrs.get("attribute_confidence"), dict) else {}
+    critical_fields = ("year_built", "building_area_sqft")
+    supplemental_fields = ("roof_material_public_record",)
+    high_count = 0
+    moderate_count = 0
+    low_count = 0
+    missing_count = 0
+    notes: list[str] = []
+    confidence_values: list[float] = []
+    field_status: dict[str, str] = {}
+
+    for field in (*critical_fields, *supplemental_fields):
+        prov = str(provenance.get(field) or "missing").strip().lower()
+        value_present = False
+        if field == "year_built":
+            value_present = _safe_float(attrs.get("year_built")) is not None
+        elif field == "building_area_sqft":
+            value_present = (
+                _safe_float(attrs.get("building_area_sqft")) is not None
+                or _safe_float(((attrs.get("area") or {}).get("sqft"))) is not None
+            )
+        elif field == "roof_material_public_record":
+            value_present = bool(str(attrs.get("roof_material_public_record") or "").strip())
+        if prov in {"missing", "unavailable"} and value_present:
+            # Backward-compat: callers may provide simplified structure attributes
+            # without explicit provenance blocks.
+            prov = "observed_public_record"
+        conf_raw = _safe_float(confidence.get(field))
+        if conf_raw is None and value_present and prov in {"observed_public_record", "user_provided"}:
+            conf_raw = 0.72
+        conf = max(0.0, min(1.0, float(conf_raw))) if conf_raw is not None else 0.0
+        if conf_raw is not None:
+            confidence_values.append(conf)
+
+        if prov in {"missing", "unavailable"}:
+            status = "missing"
+            if field in critical_fields:
+                missing_count += 1
+        elif prov in {"observed_public_record", "user_provided"} and conf >= 0.72:
+            status = "high"
+            if field in critical_fields:
+                high_count += 1
+        elif prov == "inferred_from_geometry" and conf >= 0.55:
+            status = "moderate"
+            if field in critical_fields:
+                moderate_count += 1
+        elif prov in {"observed_public_record", "user_provided"} and conf >= 0.55:
+            status = "moderate"
+            if field in critical_fields:
+                moderate_count += 1
+        else:
+            status = "low"
+            if field in critical_fields:
+                low_count += 1
+        field_status[field] = status
+
+    score = (
+        round(sum(confidence_values) / float(len(confidence_values)), 3)
+        if confidence_values
+        else 0.0
+    )
+    if high_count >= len(critical_fields) and low_count == 0 and missing_count == 0:
+        tier = "high"
+        claim_strength_cap = "structure_specific"
+        strong_claims_allowed = True
+    elif (missing_count >= len(critical_fields)) or (low_count >= 1 and missing_count >= 1):
+        tier = "low"
+        claim_strength_cap = "coarse_directional"
+        strong_claims_allowed = False
+    else:
+        tier = "moderate"
+        claim_strength_cap = "structure_specific"
+        strong_claims_allowed = True
+
+    if not strong_claims_allowed:
+        notes.append(
+            "Structure-factor evidence has missing or proxy-derived fields; strong property-specific claims are capped."
+        )
+    if missing_count > 0:
+        notes.append(f"{missing_count} critical structure attribute(s) are missing.")
+    if low_count > 0:
+        notes.append(f"{low_count} critical structure attribute(s) are inferred/proxy-quality.")
+
+    return {
+        "tier": tier,
+        "score": score,
+        "critical_field_count": len(critical_fields),
+        "high_quality_field_count": high_count,
+        "moderate_quality_field_count": moderate_count,
+        "low_quality_field_count": low_count,
+        "missing_field_count": missing_count,
+        "field_status": field_status,
+        "claim_strength_cap": claim_strength_cap,
+        "strong_claims_allowed": strong_claims_allowed,
+        "notes": notes[:4],
+    }
+
+
 def _build_property_confidence_summary(
     *,
     payload: AddressRequest | None,
@@ -3317,6 +3478,12 @@ def _build_property_confidence_summary(
         if isinstance(property_level_context.get("structure_attributes"), dict)
         else {}
     )
+    structure_factor_uncertainty = (
+        property_level_context.get("structure_factor_uncertainty")
+        if isinstance(property_level_context.get("structure_factor_uncertainty"), dict)
+        else _summarize_structure_factor_uncertainty(structure_attributes)
+    )
+    uncertainty_tier = str((structure_factor_uncertainty or {}).get("tier") or "low").strip().lower()
     property_linkage = (
         property_level_context.get("property_linkage")
         if isinstance(property_level_context.get("property_linkage"), dict)
@@ -3525,6 +3692,8 @@ def _build_property_confidence_summary(
         score = min(score, 64.0)
     elif near_structure_data_quality_tier == "point_proxy":
         score = min(score, 46.0)
+    if uncertainty_tier == "low":
+        score = min(score, 58.0)
 
     key_reasons: list[str] = []
     if parcel_status in {"not_found", "multiple_candidates"} or parcel_confidence < 60.0:
@@ -3543,6 +3712,8 @@ def _build_property_confidence_summary(
         key_reasons.append("Near-structure evidence is point-proxy and not parcel-precise.")
     if structure_available_count < 2:
         key_reasons.append("Structure attributes are limited; more property-specific structure detail is needed.")
+    if uncertainty_tier == "low":
+        key_reasons.append("Critical structure factors are missing or proxy-derived.")
     if payload is not None and user_inputs_provided < 2:
         key_reasons.append("Few homeowner-provided structure details were supplied.")
     if fallback_evidence_fraction >= 0.50 or fallback_dominance_ratio >= 0.60:
@@ -3634,8 +3805,25 @@ def _build_feature_coverage_preflight(
             if near_structure_data_quality_tier == "footprint_precise"
             else ("parcel_directional" if near_structure_data_quality_tier == "parcel_proxy" else "coarse_directional")
         )
+    structure_factor_uncertainty = (
+        property_level_context.get("structure_factor_uncertainty")
+        if isinstance(property_level_context.get("structure_factor_uncertainty"), dict)
+        else _summarize_structure_factor_uncertainty(property_level_context.get("structure_attributes"))
+    )
+    uncertainty_tier = str((structure_factor_uncertainty or {}).get("tier") or "low").strip().lower()
+    claim_strength_cap = str(
+        (structure_factor_uncertainty or {}).get("claim_strength_cap") or ""
+    ).strip().lower()
+    claim_rank = {
+        "coarse_directional": 0,
+        "parcel_directional": 1,
+        "structure_specific": 2,
+    }
+    if claim_strength_cap in claim_rank and claim_rank.get(near_structure_claim_strength, 0) > claim_rank[claim_strength_cap]:
+        near_structure_claim_strength = claim_strength_cap
     near_structure_supports_property_specific_claims = bool(
         near_structure_data_quality_tier == "footprint_precise"
+        and near_structure_claim_strength == "structure_specific"
     )
     near_structure_precise_available = bool(
         near_structure_available and near_structure_supports_property_specific_claims
@@ -3727,6 +3915,8 @@ def _build_feature_coverage_preflight(
         property_specificity_score = min(property_specificity_score, 74.0)
     elif near_structure_data_quality_tier == "point_proxy":
         property_specificity_score = min(property_specificity_score, 52.0)
+    if uncertainty_tier == "low":
+        property_specificity_score = min(property_specificity_score, 54.0)
     geometry_basis = (
         "footprint"
         if footprint_available
@@ -3770,6 +3960,8 @@ def _build_feature_coverage_preflight(
         assessment_specificity_tier = "address_level"
     if near_structure_data_quality_tier != "footprint_precise" and assessment_specificity_tier == "property_specific":
         assessment_specificity_tier = "address_level"
+    if uncertainty_tier == "low" and assessment_specificity_tier == "property_specific":
+        assessment_specificity_tier = "address_level"
 
     # If both parcel and footprint are missing, never allow property-specific semantics.
     if not footprint_available and not parcel_polygon_available and assessment_specificity_tier == "property_specific":
@@ -3805,6 +3997,7 @@ def _build_feature_coverage_preflight(
         or property_data_confidence < 40.0
         or property_mismatch_flag
         or near_structure_data_quality_tier != "footprint_precise"
+        or uncertainty_tier == "low"
     )
     specificity_warning = None
     if limited_assessment_flag:
@@ -3826,6 +4019,10 @@ def _build_feature_coverage_preflight(
             specificity_warning = (
                 "Near-structure geometry is proxy-based, so parcel-level claims are intentionally weakened."
             )
+        elif uncertainty_tier == "low":
+            specificity_warning = (
+                "Critical structure-factor evidence is missing or proxy-derived, so strong property-specific claims are capped."
+            )
 
     preflight = {
         "feature_coverage_summary": feature_coverage_summary,
@@ -3837,6 +4034,10 @@ def _build_feature_coverage_preflight(
         "near_structure_data_quality_tier": near_structure_data_quality_tier,
         "near_structure_claim_strength": near_structure_claim_strength,
         "near_structure_supports_property_specific_claims": near_structure_supports_property_specific_claims,
+        "structure_factor_uncertainty_tier": uncertainty_tier,
+        "structure_factor_uncertainty_score": float((structure_factor_uncertainty or {}).get("score") or 0.0),
+        "strong_structure_factor_claims_allowed": bool((structure_factor_uncertainty or {}).get("strong_claims_allowed")),
+        "structure_factor_uncertainty_notes": list((structure_factor_uncertainty or {}).get("notes") or [])[:4],
         "major_environmental_missing_count": major_environmental_missing_count,
         "observed_feature_count": observed_feature_count,
         "inferred_feature_count": inferred_feature_count,
@@ -5559,8 +5760,22 @@ def _build_homeowner_trust_summary(
             if near_structure_data_quality_tier == "footprint_precise"
             else ("parcel_directional" if near_structure_data_quality_tier == "parcel_proxy" else "coarse_directional")
         )
+    raw_structure_factor_claims_allowed = preflight.get("strong_structure_factor_claims_allowed")
+    structure_factor_claims_allowed = (
+        True
+        if raw_structure_factor_claims_allowed is None
+        else bool(raw_structure_factor_claims_allowed)
+    )
+    if (
+        not structure_factor_claims_allowed
+        and near_structure_claim_strength == "structure_specific"
+    ):
+        near_structure_claim_strength = "parcel_directional"
     supports_property_specific_claims = bool(
-        near_structure_available and near_structure_data_quality_tier == "footprint_precise"
+        near_structure_available
+        and near_structure_data_quality_tier == "footprint_precise"
+        and near_structure_claim_strength == "structure_specific"
+        and structure_factor_claims_allowed
     )
     proxy_geometry_guardrail_triggered = bool(
         near_structure_available and not supports_property_specific_claims

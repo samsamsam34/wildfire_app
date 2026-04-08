@@ -17,12 +17,14 @@ Usage
     python scripts/fit_submodel_weights.py
     python scripts/fit_submodel_weights.py --dry-run
     python scripts/fit_submodel_weights.py --dataset path/to/eval.jsonl --folds 5
+    python scripts/fit_submodel_weights.py --allow-row-level-cv
 """
 from __future__ import annotations
 
 import argparse
 import json
 import math
+import re
 import sys
 from pathlib import Path
 from typing import List, Tuple
@@ -90,7 +92,52 @@ def extract_features(rows: List[dict]) -> Tuple[np.ndarray, np.ndarray]:
     y shape: (n_rows,), binary 0/1.
     Rows where any submodel score is absent are dropped.
     """
-    X_list, y_list = [], []
+    X, y, _groups = extract_features_with_groups(rows)
+    return X, y
+
+
+def _extract_year(value: object) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return "unknown"
+    m = re.search(r"(19|20)\d{2}", text)
+    if not m:
+        return "unknown"
+    return m.group(0)
+
+
+def _row_group_key(row: dict, row_idx: int) -> str:
+    event_id = (
+        str(row.get("property_event_id") or "").strip()
+        or str(row.get("event_id") or "").strip()
+        or str((row.get("event") or {}).get("event_id") if isinstance(row.get("event"), dict) else "").strip()
+    )
+    region_id = (
+        str(row.get("region_id") or "").strip()
+        or str(row.get("resolved_region_id") or "").strip()
+        or str((row.get("feature_snapshot") or {}).get("region_id") if isinstance(row.get("feature_snapshot"), dict) else "").strip()
+        or str((row.get("property_level_context") or {}).get("region_id") if isinstance(row.get("property_level_context"), dict) else "").strip()
+        or str((row.get("model_governance") or {}).get("region_data_version") if isinstance(row.get("model_governance"), dict) else "").strip()
+    )
+    event_date = (
+        row.get("event_date")
+        or ((row.get("event") or {}).get("event_date") if isinstance(row.get("event"), dict) else None)
+        or ((row.get("outcome") or {}).get("event_date") if isinstance(row.get("outcome"), dict) else None)
+    )
+    year = _extract_year(event_date)
+    if not event_id:
+        fallback_id = str(row.get("record_id") or "").strip() or str(row.get("source_record_id") or "").strip()
+        event_id = fallback_id or f"row_{row_idx}"
+    return f"event={event_id}|region={region_id or 'unknown'}|year={year}"
+
+
+def extract_features_with_groups(rows: List[dict]) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Extract (X, y, groups) from usable evaluation rows.
+
+    groups represent event/region/year holdout buckets used to avoid
+    optimistic leakage across rows from the same wildfire context.
+    """
+    X_list, y_list, groups = [], [], []
     for row in rows:
         fcd = row.get("feature_snapshot", {}).get("factor_contribution_breakdown", {})
         scores = [fcd.get(s, {}).get("clamped_submodel_score") for s in SUBMODELS]
@@ -98,7 +145,12 @@ def extract_features(rows: List[dict]) -> Tuple[np.ndarray, np.ndarray]:
             continue
         X_list.append([float(v) / 100.0 for v in scores])
         y_list.append(int(row["outcome"]["structure_loss_or_major_damage"]))
-    return np.array(X_list, dtype=np.float64), np.array(y_list, dtype=np.float64)
+        groups.append(_row_group_key(row, len(groups)))
+    return (
+        np.array(X_list, dtype=np.float64),
+        np.array(y_list, dtype=np.float64),
+        np.array(groups, dtype=object),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -177,16 +229,81 @@ def stratified_kfold_indices(y: np.ndarray, k: int) -> List[Tuple[np.ndarray, np
     return folds
 
 
+def grouped_stratified_kfold_indices(
+    y: np.ndarray,
+    groups: np.ndarray,
+    k: int,
+) -> List[Tuple[np.ndarray, np.ndarray]]:
+    """Return grouped folds while keeping label balance as close as possible."""
+    if len(y) != len(groups):
+        raise ValueError("y and groups must have equal length")
+    unique_groups = [g for g in sorted(set(str(v) for v in groups.tolist())) if g]
+    if len(unique_groups) < 2:
+        return stratified_kfold_indices(y, k)
+    k_eff = max(2, min(int(k), len(unique_groups)))
+
+    members: dict[str, np.ndarray] = {}
+    for group in unique_groups:
+        members[group] = np.where(groups.astype(str) == group)[0]
+    group_order = sorted(unique_groups, key=lambda g: (-len(members[g]), g))
+
+    total_pos = float(y.sum())
+    total_neg = float(len(y) - total_pos)
+    target_pos = total_pos / float(k_eff)
+    target_neg = total_neg / float(k_eff)
+
+    fold_indices: List[List[int]] = [[] for _ in range(k_eff)]
+    fold_pos = [0.0 for _ in range(k_eff)]
+    fold_neg = [0.0 for _ in range(k_eff)]
+
+    for group in group_order:
+        idx = members[group]
+        g_pos = float(y[idx].sum())
+        g_neg = float(len(idx) - g_pos)
+        best_fold = 0
+        best_score = float("inf")
+        for fold in range(k_eff):
+            score = (
+                abs((fold_pos[fold] + g_pos) - target_pos)
+                + abs((fold_neg[fold] + g_neg) - target_neg)
+                + (0.01 * len(fold_indices[fold]))
+            )
+            if score < best_score:
+                best_score = score
+                best_fold = fold
+        fold_indices[best_fold].extend(idx.tolist())
+        fold_pos[best_fold] += g_pos
+        fold_neg[best_fold] += g_neg
+
+    all_idx = np.arange(len(y))
+    folds: List[Tuple[np.ndarray, np.ndarray]] = []
+    for vals in fold_indices:
+        val = np.array(sorted(set(vals)), dtype=int)
+        if val.size == 0:
+            continue
+        train = np.setdiff1d(all_idx, val)
+        folds.append((train, val))
+    if len(folds) < 2:
+        return stratified_kfold_indices(y, k)
+    return folds
+
+
 def cross_val_auc(
     X: np.ndarray,
     y: np.ndarray,
     *,
     k: int = 5,
     C: float = LOGREG_C,
+    groups: np.ndarray | None = None,
+    grouped_holdout: bool = True,
 ) -> Tuple[float, float, List[float]]:
     """Return (mean_auc, std_auc, per_fold_aucs)."""
+    if grouped_holdout and groups is not None and len(set(str(v) for v in groups.tolist())) >= 2:
+        folds = grouped_stratified_kfold_indices(y, groups, k)
+    else:
+        folds = stratified_kfold_indices(y, k)
     fold_aucs = []
-    for train_idx, val_idx in stratified_kfold_indices(y, k):
+    for train_idx, val_idx in folds:
         w, b = fit_logreg(X[train_idx], y[train_idx], C=C)
         val_scores = sigmoid(X[val_idx] @ w + b)
         fold_aucs.append(roc_auc(val_scores, y[val_idx]))
@@ -346,6 +463,14 @@ def main() -> int:
     parser.add_argument("--dry-run", action="store_true",
                         help="Report proposed weights but do not write config.")
     parser.add_argument(
+        "--allow-row-level-cv",
+        action="store_true",
+        help=(
+            "Use legacy row-level stratified CV. Default is grouped holdout "
+            "by event/region/year for stricter leakage control."
+        ),
+    )
+    parser.add_argument(
         "--compare-weights",
         type=str,
         default=None,
@@ -365,13 +490,17 @@ def main() -> int:
         print("ERROR: no usable rows found.", file=sys.stderr)
         return 1
 
-    X, y = extract_features(rows)
+    X, y, groups = extract_features_with_groups(rows)
     n, d = X.shape
     if n < 50:
         print(f"ERROR: only {n} rows with complete submodel scores (minimum 50).", file=sys.stderr)
         return 1
 
-    print(f"Usable rows: {n}  |  positive rate: {y.mean():.3f}  |  submodels: {d}")
+    group_count = len(set(str(v) for v in groups.tolist()))
+    print(
+        f"Usable rows: {n}  |  positive rate: {y.mean():.3f}  |  "
+        f"submodels: {d}  |  holdout groups: {group_count}"
+    )
 
     # ── Load current weights (needed for baseline comparison) ─────────────
     current = load_current_weights(SCORING_CONFIG_PATH)
@@ -419,8 +548,16 @@ def main() -> int:
     print(f"Baseline AUC (current weights, direct blend): {old_direct_auc:.4f}")
 
     # ── Cross-validated AUC with logistic regression ──────────────────────
-    print(f"\nFitting logistic regression ({args.folds}-fold CV, C={args.C}) ...")
-    mean_auc, std_auc, fold_aucs = cross_val_auc(X, y, k=args.folds, C=args.C)
+    holdout_mode = "row_level" if args.allow_row_level_cv else "grouped_event_region_year"
+    print(f"\nFitting logistic regression ({args.folds}-fold CV, C={args.C}, holdout={holdout_mode}) ...")
+    mean_auc, std_auc, fold_aucs = cross_val_auc(
+        X,
+        y,
+        k=args.folds,
+        C=args.C,
+        groups=groups,
+        grouped_holdout=(not args.allow_row_level_cv),
+    )
     print(f"CV AUC: {mean_auc:.4f} ± {std_auc:.4f}  (folds: {[round(a,4) for a in fold_aucs]})")
 
     # ── Stop conditions ───────────────────────────────────────────────────

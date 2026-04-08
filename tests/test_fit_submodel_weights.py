@@ -18,8 +18,11 @@ if str(REPO_ROOT) not in sys.path:
 from scripts.fit_submodel_weights import (
     SUBMODELS,
     MIN_SUBMODEL_WEIGHT,
+    cross_val_auc,
     direct_composite_auc,
     extract_features,
+    extract_features_with_groups,
+    grouped_stratified_kfold_indices,
     load_current_weights,
     normalize_weights,
     roc_auc,
@@ -133,7 +136,14 @@ def test_normalize_weights_rounding_residual_absorbed():
 # extract_features
 # ---------------------------------------------------------------------------
 
-def _make_row(scores: list[float | None], label: int) -> dict:
+def _make_row(
+    scores: list[float | None],
+    label: int,
+    *,
+    event_id: str | None = None,
+    region_id: str | None = None,
+    event_date: str | None = None,
+) -> dict:
     fcd = {}
     for submodel, score in zip(SUBMODELS, scores):
         if score is not None:
@@ -143,6 +153,9 @@ def _make_row(scores: list[float | None], label: int) -> dict:
         "outcome": {"structure_loss_or_major_damage": label},
         "feature_snapshot": {"factor_contribution_breakdown": fcd},
         "scores": {"wildfire_risk_score": 50.0},
+        "event_id": event_id,
+        "region_id": region_id,
+        "event_date": event_date,
     }
 
 
@@ -179,6 +192,29 @@ def test_extract_features_labels_binary():
     assert set(y.tolist()) <= {0.0, 1.0}
 
 
+def test_extract_features_with_groups_includes_event_region_year_key():
+    rows = [
+        _make_row(
+            [20.0] * len(SUBMODELS),
+            1,
+            event_id="evt-a",
+            region_id="region-1",
+            event_date="2021-08-15",
+        ),
+        _make_row(
+            [35.0] * len(SUBMODELS),
+            0,
+            event_id="evt-b",
+            region_id="region-2",
+            event_date="2020-09-10",
+        ),
+    ]
+    _X, _y, groups = extract_features_with_groups(rows)
+    assert groups.shape == (2,)
+    assert "event=evt-a|region=region-1|year=2021" in set(groups.tolist())
+    assert "event=evt-b|region=region-2|year=2020" in set(groups.tolist())
+
+
 # ---------------------------------------------------------------------------
 # stratified_kfold_indices
 # ---------------------------------------------------------------------------
@@ -202,6 +238,33 @@ def test_kfold_each_fold_has_both_classes():
     y = np.array([0, 1] * 10, dtype=float)
     for train, val in stratified_kfold_indices(y, k=5):
         assert 1 in y[val] and 0 in y[val], "Each val fold must contain both classes"
+
+
+def test_grouped_kfold_keeps_groups_disjoint_between_train_and_val():
+    y = np.array([1, 0, 1, 0, 1, 0, 1, 0], dtype=float)
+    groups = np.array(["a", "a", "b", "b", "c", "c", "d", "d"], dtype=object)
+    folds = grouped_stratified_kfold_indices(y, groups, k=3)
+    for train, val in folds:
+        train_groups = set(groups[train].tolist())
+        val_groups = set(groups[val].tolist())
+        assert train_groups.isdisjoint(val_groups)
+
+
+def test_cross_val_auc_grouped_holdout_uses_multiple_folds():
+    y = np.array([1, 0, 1, 0, 1, 0, 1, 0], dtype=float)
+    groups = np.array(["e1", "e1", "e2", "e2", "e3", "e3", "e4", "e4"], dtype=object)
+    X = np.zeros((len(y), len(SUBMODELS)))
+    X[:, 0] = y
+    mean_auc, std_auc, fold_aucs = cross_val_auc(
+        X,
+        y,
+        k=5,
+        groups=groups,
+        grouped_holdout=True,
+    )
+    assert 0.0 <= mean_auc <= 1.0
+    assert std_auc >= 0.0
+    assert len(fold_aucs) >= 2
 
 
 # ---------------------------------------------------------------------------

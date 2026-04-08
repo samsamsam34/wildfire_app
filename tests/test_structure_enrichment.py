@@ -87,3 +87,28 @@ def test_structure_enrichment_handles_missing_records_with_explicit_missing_prov
     assert provenance["building_area_sqft"] == PROVENANCE_MISSING
     assert provenance["land_use_class"] == PROVENANCE_MISSING
     assert provenance["roof_material_public_record"] == PROVENANCE_MISSING
+
+
+def test_structure_enrichment_does_not_promote_geometry_age_proxy_by_default() -> None:
+    enriched = enrich_structure_attributes(
+        base_structure_attributes={
+            "estimated_age_proxy": {"proxy_year": 1988, "era_bucket": "1980_1999"},
+        },
+        public_record_fields={},
+        user_attributes=None,
+    )
+    assert enriched["year_built"] is None
+    assert enriched["attribute_provenance"]["year_built"] == PROVENANCE_MISSING
+
+
+def test_structure_enrichment_can_opt_in_geometry_age_proxy_for_year_built() -> None:
+    enriched = enrich_structure_attributes(
+        base_structure_attributes={
+            "estimated_age_proxy": {"proxy_year": 1988, "era_bucket": "1980_1999"},
+        },
+        public_record_fields={},
+        user_attributes=None,
+        allow_geometry_age_proxy=True,
+    )
+    assert enriched["year_built"] == 1988
+    assert enriched["attribute_provenance"]["year_built"] == PROVENANCE_INFERRED_FROM_GEOMETRY

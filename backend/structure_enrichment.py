@@ -206,6 +206,7 @@ def enrich_structure_attributes(
     base_structure_attributes: dict[str, Any] | None,
     public_record_fields: dict[str, Any] | None = None,
     user_attributes: dict[str, Any] | None = None,
+    allow_geometry_age_proxy: bool = False,
 ) -> dict[str, Any]:
     base = dict(base_structure_attributes or {})
     records = dict(public_record_fields or {})
@@ -229,7 +230,7 @@ def enrich_structure_attributes(
     elif record_year is not None:
         year_built = record_year
         year_provenance = PROVENANCE_OBSERVED_PUBLIC_RECORD
-    elif age_proxy_year is not None:
+    elif allow_geometry_age_proxy and age_proxy_year is not None:
         year_built = age_proxy_year
         year_provenance = PROVENANCE_INFERRED_FROM_GEOMETRY
 

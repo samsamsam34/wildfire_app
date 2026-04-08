@@ -188,6 +188,62 @@ def test_structure_proxy_features_raise_vulnerability_when_direct_structure_age_
     assert (high_struct - low_struct) >= 5.0
 
 
+def test_public_record_year_built_takes_precedence_over_proxy_age_risk():
+    engine = RiskEngine(load_scoring_config())
+    attrs = PropertyAttributes(
+        roof_type="class a",
+        vent_type="ember-resistant",
+        defensible_space_ft=30.0,
+        construction_year=None,
+    )
+
+    newer_record_context = _context(
+        ring_metrics={
+            "ring_0_5_ft": {"vegetation_density": 24.0},
+            "ring_5_30_ft": {"vegetation_density": 31.0},
+            "ring_30_100_ft": {"vegetation_density": 42.0},
+        }
+    )
+    newer_record_context.property_level_context.update(
+        {
+            "building_age_proxy_year": 1948.0,
+            "building_age_material_proxy_risk": 90.0,
+            "structure_attributes": {
+                "year_built": 2016,
+                "attribute_provenance": {"year_built": "observed_public_record"},
+                "attribute_confidence": {"year_built": 0.92},
+            },
+        }
+    )
+
+    older_record_context = _context(
+        ring_metrics={
+            "ring_0_5_ft": {"vegetation_density": 24.0},
+            "ring_5_30_ft": {"vegetation_density": 31.0},
+            "ring_30_100_ft": {"vegetation_density": 42.0},
+        }
+    )
+    older_record_context.property_level_context.update(
+        {
+            "building_age_proxy_year": 2018.0,
+            "building_age_material_proxy_risk": 15.0,
+            "structure_attributes": {
+                "year_built": 1958,
+                "attribute_provenance": {"year_built": "observed_public_record"},
+                "attribute_confidence": {"year_built": 0.90},
+            },
+        }
+    )
+
+    newer = engine.score(attrs, lat=0.0, lon=0.0, context=newer_record_context)
+    older = engine.score(attrs, lat=0.0, lon=0.0, context=older_record_context)
+    newer_struct = newer.submodel_scores["structure_vulnerability_risk"].score
+    older_struct = older.submodel_scores["structure_vulnerability_risk"].score
+
+    assert older_struct > newer_struct
+    assert (older_struct - newer_struct) >= 5.0
+
+
 def test_structure_density_and_clustering_proxies_increase_structure_vulnerability() -> None:
     engine = RiskEngine(load_scoring_config())
     attrs = PropertyAttributes(

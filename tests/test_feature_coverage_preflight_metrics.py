@@ -98,6 +98,43 @@ def test_preflight_disallows_property_specific_tier_for_proxy_near_structure_geo
     assert preflight["limited_assessment_flag"] is True
 
 
+def test_preflight_caps_claims_when_structure_factor_uncertainty_is_low():
+    preflight = _build_feature_coverage_preflight(
+        context=_context(),
+        property_level_context={
+            "footprint_used": True,
+            "fallback_mode": "footprint",
+            "parcel_geometry": {"type": "Feature", "geometry": {"type": "Polygon", "coordinates": []}},
+            "ring_metrics": {
+                "ring_0_5_ft": {"vegetation_density": 51.0},
+                "ring_5_30_ft": {"vegetation_density": 47.0},
+            },
+            "near_structure_features": {
+                "data_quality_tier": "footprint_precise",
+                "claim_strength": "structure_specific",
+                "supports_property_specific_claims": True,
+            },
+            "structure_attributes": {
+                "area": {"sqft": None},
+                "density_context": {"index": 55.0},
+                "estimated_age_proxy": {"proxy_year": 1989.0},
+                "shape_complexity": {"index": 25.0},
+                "year_built": None,
+                "building_area_sqft": None,
+                "roof_material_public_record": None,
+            },
+            "region_property_specific_readiness": "property_specific_ready",
+        },
+        coverage_summary=LayerCoverageSummary(),
+    )
+
+    assert preflight["structure_factor_uncertainty_tier"] == "low"
+    assert preflight["strong_structure_factor_claims_allowed"] is False
+    assert preflight["near_structure_claim_strength"] == "coarse_directional"
+    assert preflight["near_structure_supports_property_specific_claims"] is False
+    assert preflight["assessment_specificity_tier"] in {"address_level", "regional_estimate"}
+
+
 def test_property_confidence_summary_high_with_strong_property_data():
     preflight = _build_feature_coverage_preflight(
         context=_context(),

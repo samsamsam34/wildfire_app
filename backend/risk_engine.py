@@ -903,10 +903,29 @@ class RiskEngine:
 
         structure_assumptions: List[str] = []
         construction_risk = None
+        construction_year_from_public_record = False
         building_age_proxy_year = _to_float((context.property_level_context or {}).get("building_age_proxy_year"))
         building_age_material_proxy_risk = _to_float(
             (context.property_level_context or {}).get("building_age_material_proxy_risk")
         )
+        structure_attributes = (
+            property_level_context.get("structure_attributes")
+            if isinstance(property_level_context.get("structure_attributes"), dict)
+            else {}
+        )
+        attribute_provenance = (
+            structure_attributes.get("attribute_provenance")
+            if isinstance(structure_attributes.get("attribute_provenance"), dict)
+            else {}
+        )
+        attribute_confidence = (
+            structure_attributes.get("attribute_confidence")
+            if isinstance(structure_attributes.get("attribute_confidence"), dict)
+            else {}
+        )
+        record_year_built = _to_float(structure_attributes.get("year_built"))
+        record_year_provenance = str(attribute_provenance.get("year_built") or "").strip().lower()
+        record_year_confidence = _to_float(attribute_confidence.get("year_built"))
         window = (attrs.window_type or "unknown").lower()
         window_ignition = None
         if attrs.window_type is not None:
@@ -930,7 +949,21 @@ class RiskEngine:
             return min(75.0, 50.0 + (years_pre_2008 * 0.55))
 
         if attrs.construction_year is None:
-            if building_age_material_proxy_risk is not None:
+            record_year_trustworthy = bool(
+                record_year_built is not None
+                and record_year_provenance in {"observed_public_record", "user_provided"}
+                and (
+                    record_year_confidence is None
+                    or float(record_year_confidence) >= 0.70
+                )
+            )
+            if record_year_trustworthy:
+                construction_risk = _construction_risk_from_year(record_year_built)
+                construction_year_from_public_record = True
+                structure_assumptions.append(
+                    "Construction year missing from user inputs; used observed public-record year_built."
+                )
+            elif building_age_material_proxy_risk is not None:
                 construction_risk = max(0.0, min(100.0, float(building_age_material_proxy_risk)))
                 structure_assumptions.append(
                     "Construction year missing; used proxy age/material risk estimate from local structure context."
@@ -983,6 +1016,8 @@ class RiskEngine:
         else:
             structure_defaulted_fields.append("window_type")
         if attrs.construction_year is not None:
+            structure_observed_fields.append("construction_year")
+        elif construction_year_from_public_record:
             structure_observed_fields.append("construction_year")
         elif construction_risk is not None:
             structure_inferred_fields.append("construction_year")
