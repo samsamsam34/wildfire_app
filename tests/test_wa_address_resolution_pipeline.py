@@ -209,6 +209,146 @@ def test_authoritative_in_region_medium_candidate_beats_outside_geocoder(monkeyp
     }
 
 
+def test_invalid_local_address_source_is_suggestion_only_and_cannot_override_in_region_geocoder(monkeypatch):
+    auth.API_KEYS = set()
+    monkeypatch.setenv("WF_GEOCODE_SECONDARY_ENABLED", "false")
+    monkeypatch.setattr(
+        app_main.geocoder,
+        "geocode",
+        lambda _addr: (48.4772, -120.1864, "test-primary"),
+    )
+    monkeypatch.setattr(
+        app_main.geocoder,
+        "last_result",
+        {
+            "geocode_status": "accepted",
+            "provider": "test-primary",
+            "matched_address": "6 Pineview Rd, Winthrop, WA 98862",
+            "confidence_score": 0.44,
+            "candidate_count": 1,
+            "geocode_precision": "parcel_or_address_point",
+            "geocode_trust_tier": "high",
+            "raw_response_preview": {"candidate_count": 1},
+        },
+    )
+    monkeypatch.setattr(
+        app_main,
+        "_resolve_local_authoritative_coordinates",
+        lambda _address, **_kwargs: {
+            "matched": True,
+            "confidence": "high",
+            "match_method": "exact_normalized_address",
+            "candidate_count": 1,
+            "normalized_address": "6 pineview rd winthrop wa 98862",
+            "best_match": {
+                "latitude": 48.4329,
+                "longitude": -120.1824,
+                "matched_address": "6 Pineview Rd, Winthrop, WA 98862",
+                "source": "winthrop_pilot:parcel_address_points",
+                "source_type": "prepared_region_parcel_address_dataset",
+                "match_type": "exact_normalized_address",
+                "confidence_tier": "high",
+                "match_score": 0.99,
+                "address_source_valid": False,
+                "address_source_fallback_mode": "invalid_address_point_parcel_fallback",
+                "point_geometry": False,
+                "geometry_type": "Polygon",
+                "feature_properties": {"address_id": "bad-1"},
+            },
+            "top_candidates": [],
+            "diagnostics": ["Invalid address-point dataset fallback mode was used."],
+        },
+    )
+    monkeypatch.setattr(
+        app_main,
+        "_resolve_statewide_parcel_coordinates",
+        lambda _address, **_kwargs: {"matched": False, "candidate_count": 0, "top_candidates": [], "failure_reason": "no_match"},
+    )
+    monkeypatch.setattr(
+        app_main,
+        "_resolve_local_fallback_coordinates",
+        lambda _address: {"matched": False, "candidate_count": 0, "top_candidates": [], "failure_reason": "no_match"},
+    )
+    monkeypatch.setattr(app_main, "lookup_region_for_point", _covered_lookup)
+
+    response = client.post("/regions/coverage-check", json={"address": "6 Pineview Rd, Winthrop, WA 98862"})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["coverage_available"] is True
+    assert body["resolution_method"] == "primary_geocoder"
+    degraded_candidates = [
+        row for row in (body.get("resolver_candidates") or []) if row.get("source_stage") in {"county_address_points", "local_authoritative_fallback"}
+    ]
+    assert degraded_candidates
+    assert degraded_candidates[0].get("auto_eligible") is False
+    assert degraded_candidates[0].get("auto_gate_reason") in {
+        "invalid_address_point_source_suggestion_only",
+        "address_point_geometry_not_point",
+    }
+
+
+def test_mt_address_passes_state_hint_to_local_resolvers(monkeypatch):
+    auth.API_KEYS = set()
+    captured: dict[str, Any] = {}
+
+    monkeypatch.setattr(
+        app_main.geocoder,
+        "geocode",
+        lambda _addr: (46.8721, -113.9940, "test-primary"),
+    )
+    monkeypatch.setattr(
+        app_main.geocoder,
+        "last_result",
+        {
+            "geocode_status": "accepted",
+            "provider": "test-primary",
+            "matched_address": "100 Main St, Missoula, MT 59802",
+            "confidence_score": 0.36,
+            "candidate_count": 1,
+            "geocode_precision": "parcel_or_address_point",
+            "geocode_trust_tier": "high",
+            "raw_response_preview": {"candidate_count": 1},
+        },
+    )
+
+    def _capture_authoritative(_address: str, **kwargs):
+        captured["authoritative_kwargs"] = dict(kwargs)
+        return {"matched": False, "candidate_count": 0, "top_candidates": []}
+
+    def _capture_statewide(_address: str, **kwargs):
+        captured["statewide_kwargs"] = dict(kwargs)
+        return {"matched": False, "candidate_count": 0, "top_candidates": []}
+
+    monkeypatch.setattr(
+        app_main,
+        "_resolve_local_authoritative_coordinates",
+        _capture_authoritative,
+    )
+    monkeypatch.setattr(
+        app_main,
+        "_resolve_statewide_parcel_coordinates",
+        _capture_statewide,
+    )
+    monkeypatch.setattr(app_main, "_resolve_local_fallback_coordinates", lambda _address: {"matched": False, "candidate_count": 0, "top_candidates": []})
+    monkeypatch.setattr(
+        app_main,
+        "lookup_region_for_point",
+        lambda lat, lon, regions_root=None: {
+            "covered": True,
+            "region_id": "missoula_pilot",
+            "display_name": "Missoula Pilot",
+            "diagnostics": [],
+            "containing_region_ids": ["missoula_pilot"],
+        },
+    )
+
+    response = client.post("/regions/coverage-check", json={"address": "100 Main St, Missoula, MT 59802"})
+    assert response.status_code == 200
+    assert response.json()["coverage_available"] is True
+    assert (captured.get("authoritative_kwargs") or {}).get("required_state") == "MT"
+    assert (captured.get("statewide_kwargs") or {}).get("required_state") == "MT"
+
+
 def test_secondary_geocoder_selected_when_local_sources_missing(monkeypatch):
     auth.API_KEYS = set()
     monkeypatch.setattr(

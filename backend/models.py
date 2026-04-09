@@ -239,7 +239,7 @@ class AddressCandidateSearchRequest(BaseModel):
     address: str = Field(..., min_length=3)
     zip_code: Optional[str] = None
     locality: Optional[str] = None
-    state: Optional[str] = "WA"
+    state: Optional[str] = None
     limit: int = Field(default=8, ge=1, le=25)
 
 

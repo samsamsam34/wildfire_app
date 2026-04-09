@@ -10451,7 +10451,14 @@ def _resolve_local_fallback_coordinates(address_input: str) -> dict[str, Any]:
     )
 
 
-def _resolve_local_authoritative_coordinates(address_input: str) -> dict[str, Any]:
+def _resolve_local_authoritative_coordinates(
+    address_input: str,
+    *,
+    required_state: str | None = None,
+    preferred_postal: str | None = None,
+    preferred_locality: str | None = None,
+) -> dict[str, Any]:
+    preferred_localities = [preferred_locality] if str(preferred_locality or "").strip() else None
     return resolve_local_address_candidate(
         address=address_input,
         regions_root=_region_data_root(),
@@ -10463,10 +10470,20 @@ def _resolve_local_authoritative_coordinates(address_input: str) -> dict[str, An
             "prepared_region_parcel_address_dataset",
             "county_address_dataset",
         },
+        preferred_postal=preferred_postal,
+        preferred_localities=preferred_localities,
+        required_state=required_state,
     )
 
 
-def _resolve_statewide_parcel_coordinates(address_input: str) -> dict[str, Any]:
+def _resolve_statewide_parcel_coordinates(
+    address_input: str,
+    *,
+    required_state: str | None = None,
+    preferred_postal: str | None = None,
+    preferred_locality: str | None = None,
+) -> dict[str, Any]:
+    preferred_localities = [preferred_locality] if str(preferred_locality or "").strip() else None
     return resolve_local_address_candidate(
         address=address_input,
         regions_root=_region_data_root(),
@@ -10477,12 +10494,43 @@ def _resolve_statewide_parcel_coordinates(address_input: str) -> dict[str, Any]:
             "statewide_parcel_dataset",
             "prepared_region_parcel_dataset",
         },
+        preferred_postal=preferred_postal,
+        preferred_localities=preferred_localities,
+        required_state=required_state,
     )
 
 
 def _extract_zip5(value: str | None) -> str:
     match = re.search(r"\b(\d{5})(?:-\d{4})?\b", str(value or ""))
     return match.group(1) if match else ""
+
+
+def _infer_state_from_address_text(address: str | None) -> str | None:
+    text = str(address or "").strip()
+    if not text:
+        return None
+    compact = re.sub(r"\s+", " ", text)
+
+    zip_state_match = re.search(r"\b([A-Za-z]{2})\s+\d{5}(?:-\d{4})?\b", compact)
+    if zip_state_match:
+        return zip_state_match.group(1).upper()
+
+    trailing_state_match = re.search(r",\s*([A-Za-z]{2})\s*$", compact)
+    if trailing_state_match:
+        return trailing_state_match.group(1).upper()
+
+    state_name_to_abbrev = {
+        "washington": "WA",
+        "montana": "MT",
+        "idaho": "ID",
+        "oregon": "OR",
+        "california": "CA",
+    }
+    normalized = normalize_address(compact)
+    for state_name, abbrev in state_name_to_abbrev.items():
+        if f" {state_name} " in f" {normalized} ":
+            return abbrev
+    return None
 
 
 def _infer_locality_from_address_text(address: str) -> str | None:
@@ -10592,11 +10640,12 @@ def _build_manual_address_candidates(
 ) -> dict[str, Any]:
     normalized_input = normalize_address(address)
     zip5 = _extract_zip5(zip_code or address)
+    state_hint = str(state or "").strip().upper() or _infer_state_from_address_text(address)
     inferred_locality_raw = _infer_locality_from_address_text(address)
     inferred = infer_localities_for_zip(
         zip_code=zip5,
         regions_root=_region_data_root(),
-        state_hint=state or "WA",
+        state_hint=state_hint,
         max_localities=10,
     )
     inferred_localities = list(inferred.get("localities") or [])
@@ -10617,7 +10666,7 @@ def _build_manual_address_candidates(
         min_auto_confidence_tier="low",
         preferred_localities=preferred_localities or None,
         preferred_postal=zip5 or None,
-        required_state=state or "WA",
+        required_state=state_hint,
         top_candidate_limit=max(limit * 3, 12),
     )
 
@@ -10742,6 +10791,9 @@ def _resolve_trusted_geocode(
 
     submitted_token_count = len([tok for tok in normalize_address(submitted_address).split() if tok])
     submitted_has_street_number = bool(re.match(r"^\s*\d+[a-zA-Z0-9-]*\b", submitted_address or ""))
+    submitted_state_hint = _infer_state_from_address_text(submitted_address)
+    submitted_postal_hint = _extract_zip5(submitted_address)
+    submitted_locality_hint = _infer_locality_from_address_text(submitted_address)
 
     def _confidence_rank(tier: str | None) -> int:
         mapping = {"high": 3, "medium": 2, "low": 1}
@@ -10848,6 +10900,14 @@ def _resolve_trusted_geocode(
     def _candidate_auto_gate_reason(candidate: dict[str, Any]) -> str:
         if candidate.get("source") == "user_selected_point":
             return "eligible"
+        if candidate.get("address_source_valid") is False:
+            return "invalid_address_point_source_suggestion_only"
+        if (
+            str(candidate.get("source_type") or "")
+            in {"county_address_dataset", "prepared_region_address_dataset", "prepared_region_parcel_address_dataset"}
+            and candidate.get("point_geometry") is False
+        ):
+            return "address_point_geometry_not_point"
         if _confidence_rank(str(candidate.get("confidence_tier") or "low")) < 2:
             return "confidence_below_medium"
         precision = str(candidate.get("precision_type") or "unknown")
@@ -10863,6 +10923,15 @@ def _resolve_trusted_geocode(
 
     def _candidate_is_auto_eligible(candidate: dict[str, Any]) -> bool:
         return _candidate_auto_gate_reason(candidate) == "eligible"
+
+    def _candidate_is_geocoder_stage(candidate: dict[str, Any]) -> bool:
+        return str(candidate.get("source_stage") or "") in {"primary_geocoder", "secondary_geocoder", "provider_backoff_query"}
+
+    def _candidate_is_degraded_local_source(candidate: dict[str, Any]) -> bool:
+        return bool(
+            candidate.get("address_source_valid") is False
+            or candidate.get("address_source_fallback_mode") == "invalid_address_point_parcel_fallback"
+        )
 
     def _is_authoritative_source(candidate: dict[str, Any]) -> bool:
         source_type = str(candidate.get("source_type") or "")
@@ -11047,6 +11116,10 @@ def _resolve_trusted_geocode(
             "nearest_region_id": coverage_lookup.get("nearest_region_id"),
             "unsupported_location_reason": coverage_lookup.get("reason"),
             "geocode_meta": dict(geocode_meta or {}),
+            "address_source_valid": geocode_meta.get("address_source_valid"),
+            "address_source_fallback_mode": geocode_meta.get("address_source_fallback_mode"),
+            "geometry_type": geocode_meta.get("geometry_type"),
+            "point_geometry": geocode_meta.get("point_geometry"),
             "address_component_comparison": address_cmp or None,
             "address_similarity_token_ratio": token_similarity,
             "address_similarity_token_coverage": token_coverage,
@@ -11198,7 +11271,18 @@ def _resolve_trusted_geocode(
     # Stage C: county/prepared local authoritative address points
     local_fallback_attempted = True
     try:
-        authoritative_fallback_result = _resolve_local_authoritative_coordinates(submitted_address)
+        try:
+            authoritative_fallback_result = _resolve_local_authoritative_coordinates(
+                submitted_address,
+                required_state=submitted_state_hint,
+                preferred_postal=submitted_postal_hint or None,
+                preferred_locality=submitted_locality_hint,
+            )
+        except TypeError as exc:
+            # Backward compatibility for tests/overrides that stub this helper with a single-arg callable.
+            if "unexpected keyword" not in str(exc):
+                raise
+            authoritative_fallback_result = _resolve_local_authoritative_coordinates(submitted_address)
     except Exception as exc:  # pragma: no cover
         authoritative_fallback_result = {
             "matched": False,
@@ -11223,7 +11307,15 @@ def _resolve_trusted_geocode(
             source_type = str(local_best.get("source_type") or "")
             stage_label = "county_address_points" if source_type == "county_address_dataset" else "local_authoritative_fallback"
             confidence = str((authoritative_fallback_result or {}).get("confidence") or local_best.get("confidence_tier") or "low")
-            accepted = _confidence_allows_auto_use(confidence)
+            if local_best.get("address_source_valid") is False and confidence == "high":
+                confidence = "medium"
+            local_source_auto_allowed = bool(local_best.get("address_source_valid", True))
+            if (
+                source_type in {"county_address_dataset", "prepared_region_address_dataset", "prepared_region_parcel_address_dataset"}
+                and local_best.get("point_geometry") is False
+            ):
+                local_source_auto_allowed = False
+            accepted = _confidence_allows_auto_use(confidence) and local_source_auto_allowed
             _upsert_stage_status(stage_label, "accepted" if accepted else "low_confidence")
             provider_attempts.append(
                 _build_provider_attempt(
@@ -11259,6 +11351,10 @@ def _resolve_trusted_geocode(
                 "geocode_precision": "parcel_or_address_point",
                 "match_method": (authoritative_fallback_result or {}).get("match_method") or local_best.get("match_type"),
                 "diagnostics": list((authoritative_fallback_result or {}).get("diagnostics") or []),
+                "address_source_valid": local_best.get("address_source_valid"),
+                "address_source_fallback_mode": local_best.get("address_source_fallback_mode"),
+                "point_geometry": local_best.get("point_geometry"),
+                "geometry_type": local_best.get("geometry_type"),
             }
             _register_candidate(
                 stage=stage_label,
@@ -11286,7 +11382,18 @@ def _resolve_trusted_geocode(
 
     # Stage D: statewide parcels / parcel-centric fallback
     try:
-        statewide_parcel_result = _resolve_statewide_parcel_coordinates(submitted_address)
+        try:
+            statewide_parcel_result = _resolve_statewide_parcel_coordinates(
+                submitted_address,
+                required_state=submitted_state_hint,
+                preferred_postal=submitted_postal_hint or None,
+                preferred_locality=submitted_locality_hint,
+            )
+        except TypeError as exc:
+            # Backward compatibility for tests/overrides that stub this helper with a single-arg callable.
+            if "unexpected keyword" not in str(exc):
+                raise
+            statewide_parcel_result = _resolve_statewide_parcel_coordinates(submitted_address)
     except Exception as exc:  # pragma: no cover
         statewide_parcel_result = {
             "matched": False,
@@ -11309,7 +11416,7 @@ def _resolve_trusted_geocode(
             lon = None  # type: ignore[assignment]
         if lat is not None and lon is not None:
             confidence = str((statewide_parcel_result or {}).get("confidence") or parcel_best.get("confidence_tier") or "low")
-            accepted = _confidence_allows_auto_use(confidence)
+            accepted = _confidence_allows_auto_use(confidence) and bool(parcel_best.get("address_source_valid", True))
             _upsert_stage_status("statewide_parcel_lookup", "accepted" if accepted else "low_confidence")
             provider_attempts.append(
                 _build_provider_attempt(
@@ -11341,6 +11448,10 @@ def _resolve_trusted_geocode(
                 "geocode_precision": "parcel",
                 "match_method": (statewide_parcel_result or {}).get("match_method") or parcel_best.get("match_type"),
                 "diagnostics": list((statewide_parcel_result or {}).get("diagnostics") or []),
+                "address_source_valid": parcel_best.get("address_source_valid"),
+                "address_source_fallback_mode": parcel_best.get("address_source_fallback_mode"),
+                "point_geometry": parcel_best.get("point_geometry"),
+                "geometry_type": parcel_best.get("geometry_type"),
             }
             _register_candidate(
                 stage="statewide_parcel_lookup",
@@ -11628,6 +11739,9 @@ def _resolve_trusted_geocode(
     in_region_medium_candidates = [
         row for row in resolver_candidates if bool(row.get("coverage_available")) and _candidate_allows_medium_auto(row)
     ]
+    in_region_medium_geocoder_candidates = [
+        row for row in in_region_medium_candidates if _candidate_is_geocoder_stage(row)
+    ]
 
     auto_candidates = [row for row in resolver_candidates if bool(row.get("auto_eligible"))]
     in_region_auto = [row for row in auto_candidates if bool(row.get("coverage_available"))]
@@ -11691,6 +11805,18 @@ def _resolve_trusted_geocode(
             in_region_best["auto_gate_reason"] = "in_region_preference_override"
             selected_candidate = in_region_best
 
+    # If an out-of-region degraded local source currently wins, prefer in-region geocoder candidates.
+    if (
+        selected_candidate is not None
+        and _candidate_is_degraded_local_source(selected_candidate)
+        and not bool(selected_candidate.get("coverage_available"))
+        and in_region_medium_geocoder_candidates
+    ):
+        geocoder_best = in_region_medium_geocoder_candidates[0]
+        geocoder_best["auto_eligible"] = True
+        geocoder_best["auto_gate_reason"] = "in_region_geocoder_preferred_over_invalid_local_source"
+        selected_candidate = geocoder_best
+
     # Emergency guardrail: prevent blanket "needs map confirmation" regressions for clearly best in-region medium candidates.
     if selected_candidate is None and emergency_in_region_guardrail and in_region_medium_candidates:
         fallback_candidate = in_region_medium_candidates[0]
@@ -11700,6 +11826,14 @@ def _resolve_trusted_geocode(
             fallback_candidate["auto_eligible"] = True
             fallback_candidate["auto_gate_reason"] = "emergency_in_region_medium_autoresolve"
             selected_candidate = fallback_candidate
+
+    if (
+        selected_candidate is not None
+        and _candidate_is_degraded_local_source(selected_candidate)
+        and not bool(selected_candidate.get("coverage_available"))
+    ):
+        # Never auto-select degraded local-source coordinates outside prepared regions.
+        selected_candidate = None
 
     ambiguous_conflict = False
     conflict_reason: str | None = None
@@ -11806,6 +11940,8 @@ def _resolve_trusted_geocode(
             "longitude": row.get("longitude"),
             "precision_type": row.get("precision_type"),
             "match_method": row.get("match_method"),
+            "geometry_type": row.get("geometry_type"),
+            "point_geometry": row.get("point_geometry"),
             "raw_score": row.get("raw_score"),
             "normalized_score": row.get("normalized_score"),
             "source_bonus": row.get("source_bonus"),
@@ -11829,6 +11965,8 @@ def _resolve_trusted_geocode(
             "distance_to_nearest_prepared_region_m": row.get("region_distance_to_boundary_m"),
             "nearest_region_id": row.get("nearest_region_id"),
             "disagreement_distance_to_other_strong_candidates_m": row.get("nearest_strong_candidate_distance_m"),
+            "address_source_valid": row.get("address_source_valid"),
+            "address_source_fallback_mode": row.get("address_source_fallback_mode"),
             "rejection_reason": row.get("rejection_reason"),
         }
 
@@ -12671,7 +12809,7 @@ def search_manual_address_candidates(
         address=str(payload.address or "").strip(),
         zip_code=payload.zip_code,
         locality=payload.locality,
-        state=payload.state or "WA",
+        state=payload.state,
         limit=int(payload.limit or 8),
     )
     if _is_dev_mode():

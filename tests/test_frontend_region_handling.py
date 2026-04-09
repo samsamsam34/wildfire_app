@@ -61,6 +61,8 @@ def test_frontend_verification_modal_supports_manual_address_candidate_selection
     assert 'id="verifySearchCandidatesBtn"' in html
     assert "/risk/address-candidates" in html
     assert "runManualAddressCandidateSearch" in html
+    assert "inferStateFromAddressText" in html
+    assert 'state: "WA"' not in html
     assert "manual_address_selection" in html
     assert "Can’t find it? Click your home on the map" in html
 

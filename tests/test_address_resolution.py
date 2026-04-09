@@ -271,7 +271,7 @@ def test_validate_address_point_source_rejects_low_address_completeness(tmp_path
     assert any("complete-address ratio" in err for err in report["errors"])
 
 
-def test_invalid_address_point_source_can_fallback_for_exact_match(
+def test_invalid_address_point_source_only_surfaces_suggestions_for_exact_match(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -311,11 +311,12 @@ def test_invalid_address_point_source_can_fallback_for_exact_match(
         include_alias_sources=False,
         include_authoritative_sources=True,
     )
-    assert result["matched"] is True
-    assert result["best_match"] is not None
-    assert result["best_match"]["address_source_fallback_mode"] == "invalid_address_point_parcel_fallback"
-    assert result["best_match"]["address_source_valid"] is False
-    assert result["best_match"]["confidence_tier"] in {"medium", "high"}
+    assert result["matched"] is False
+    assert result["best_candidate"] is not None
+    assert result["best_candidate"]["address_source_fallback_mode"] == "invalid_address_point_parcel_fallback"
+    assert result["best_candidate"]["address_source_valid"] is False
+    assert result["best_candidate"]["auto_usable"] is False
+    assert result["best_candidate"]["confidence_tier"] in {"medium", "low"}
     assert any("fallback mode was used" in note for note in result["diagnostics"])
 
 

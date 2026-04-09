@@ -710,8 +710,27 @@ def _source_type_allowed(source_type: str, allowed_source_types: set[str] | None
     return str(source_type or "") in allowed_source_types
 
 
+def _has_regional_alignment(input_components: dict[str, str], candidate_components: dict[str, str]) -> bool:
+    city_match = bool(
+        input_components.get("city")
+        and candidate_components.get("city")
+        and input_components["city"] == candidate_components["city"]
+    )
+    state_match = bool(
+        input_components.get("state")
+        and candidate_components.get("state")
+        and input_components["state"] == candidate_components["state"]
+    )
+    postal_match = bool(
+        input_components.get("postal")
+        and candidate_components.get("postal")
+        and input_components["postal"] == candidate_components["postal"]
+    )
+    return city_match or state_match or postal_match
+
+
 def _allow_invalid_address_point_parcel_fallback() -> bool:
-    return _env_flag("WF_ALLOW_INVALID_ADDRESS_POINT_PARCEL_FALLBACK", True)
+    return _env_flag("WF_ALLOW_INVALID_ADDRESS_POINT_PARCEL_FALLBACK", False)
 
 
 def _normalize_locality_preferences(values: list[str] | tuple[str, ...] | None) -> set[str]:
@@ -871,19 +890,29 @@ def resolve_local_address_candidate(
                     confidence = str(match_eval["confidence_tier"])
                     if not _candidate_is_relevant(str(match_eval["match_type"]), float(score)):
                         continue
+                    regional_alignment = _has_regional_alignment(address_components, components)
+                    address_geometry_auto_blocked = False
                     if invalid_address_source:
                         if confidence == "high":
                             confidence = "medium"
-                        if str(match_eval.get("match_type") or "") not in {
+                        if (
+                            not regional_alignment
+                            or str(match_eval.get("match_type") or "") not in {
                             "exact_normalized_address",
                             "address_component_match",
-                        }:
+                            }
+                        ):
                             confidence = "low"
-                            auto_usable = False
-                        else:
-                            auto_usable = bool(match_eval["auto_usable"]) and _CONFIDENCE_RANK.get(confidence, -1) >= required_rank
+                        # Invalid address-point sources are suggestion-only.
+                        auto_usable = False
                     else:
                         auto_usable = bool(match_eval["auto_usable"]) and _CONFIDENCE_RANK.get(confidence, -1) >= required_rank
+                        if layer_key in {"address_points", "parcel_address_points"} and not point_geometry:
+                            # Address-point layers with non-point geometry must not auto-resolve.
+                            address_geometry_auto_blocked = True
+                            auto_usable = False
+                            if confidence == "high":
+                                confidence = "medium"
                     candidates.append(
                         {
                             "latitude": float(lon_lat[1]),
@@ -903,6 +932,8 @@ def resolve_local_address_candidate(
                             "candidate_components": components,
                             "geometry_type": geometry_type or None,
                             "point_geometry": point_geometry,
+                            "regional_alignment": regional_alignment,
+                            "address_geometry_auto_blocked": address_geometry_auto_blocked,
                             "address_source_valid": not invalid_address_source,
                             "address_source_fallback_mode": (
                                 "invalid_address_point_parcel_fallback"
@@ -956,19 +987,29 @@ def resolve_local_address_candidate(
                 confidence = str(match_eval["confidence_tier"])
                 if not _candidate_is_relevant(str(match_eval["match_type"]), float(score)):
                     continue
+                regional_alignment = _has_regional_alignment(address_components, components)
+                address_geometry_auto_blocked = False
                 if invalid_address_source:
                     if confidence == "high":
                         confidence = "medium"
-                    if str(match_eval.get("match_type") or "") not in {
+                    if (
+                        not regional_alignment
+                        or str(match_eval.get("match_type") or "") not in {
                         "exact_normalized_address",
                         "address_component_match",
-                    }:
+                        }
+                    ):
                         confidence = "low"
-                        auto_usable = False
-                    else:
-                        auto_usable = bool(match_eval["auto_usable"]) and _CONFIDENCE_RANK.get(confidence, -1) >= required_rank
+                    # Invalid address-point sources are suggestion-only.
+                    auto_usable = False
                 else:
                     auto_usable = bool(match_eval["auto_usable"]) and _CONFIDENCE_RANK.get(confidence, -1) >= required_rank
+                    if is_address_like_source and not point_geometry:
+                        # Address-point layers with non-point geometry must not auto-resolve.
+                        address_geometry_auto_blocked = True
+                        auto_usable = False
+                        if confidence == "high":
+                            confidence = "medium"
                 candidates.append(
                     {
                         "latitude": float(lon_lat[1]),
@@ -988,6 +1029,8 @@ def resolve_local_address_candidate(
                         "candidate_components": components,
                         "geometry_type": geometry_type or None,
                         "point_geometry": point_geometry,
+                        "regional_alignment": regional_alignment,
+                        "address_geometry_auto_blocked": address_geometry_auto_blocked,
                         "address_source_valid": (not invalid_address_source) if is_address_like_source else True,
                         "address_source_fallback_mode": (
                             "invalid_address_point_parcel_fallback"
@@ -1042,6 +1085,8 @@ def resolve_local_address_candidate(
                 ranking_score -= 0.03
         if row.get("address_source_valid") is False:
             ranking_score -= 0.06
+        if row.get("address_source_valid") is False and row.get("regional_alignment") is False:
+            ranking_score -= 0.12
 
         row["ranking_score"] = round(max(0.0, min(1.0, ranking_score)), 4)
 
@@ -1074,7 +1119,11 @@ def resolve_local_address_candidate(
             diagnostics.append(error)
     if any(row.get("address_source_fallback_mode") == "invalid_address_point_parcel_fallback" for row in candidates):
         diagnostics.append(
-            "Invalid address-point dataset fallback mode was used; automatic acceptance is limited to exact house/street matches."
+            "Invalid address-point dataset fallback mode was used; candidates are suggestion-only and require manual location confirmation."
+        )
+    if any(bool(row.get("address_geometry_auto_blocked")) for row in candidates):
+        diagnostics.append(
+            "Address-point candidates with non-point geometry were blocked from automatic acceptance."
         )
 
     if not searched_sources:
