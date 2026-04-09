@@ -801,7 +801,10 @@ def resolve_local_address_candidate(
                 if not _source_type_allowed(source_type, allowed_source_types):
                     continue
                 if layer_key in {"address_points", "parcel_address_points"}:
-                    source_validations.append(validate_address_point_source(path_obj, f"{region_id}:{layer_key}"))
+                    source_validation = validate_address_point_source(path_obj, f"{region_id}:{layer_key}")
+                    source_validations.append(source_validation)
+                    if not bool(source_validation.get("valid")):
+                        continue
                 for feature in _load_geojson_features(path_obj):
                     lon_lat = _feature_lon_lat(feature)
                     if lon_lat is None:
@@ -859,8 +862,12 @@ def resolve_local_address_candidate(
             source_type = str(source_entry.get("source_type") or "local_authoritative_dataset")
             searched_sources.append(str(path_obj))
             attempted_sources.append(source_name)
-            if "address" in source_type or "address" in source_name.lower():
-                source_validations.append(validate_address_point_source(path_obj, source_name))
+            is_address_like_source = "address" in source_type or "address" in source_name.lower()
+            if is_address_like_source:
+                source_validation = validate_address_point_source(path_obj, source_name)
+                source_validations.append(source_validation)
+                if not bool(source_validation.get("valid")):
+                    continue
             if not _source_type_allowed(source_type, allowed_source_types):
                 continue
             for feature in _load_geojson_features(path_obj):
@@ -1068,6 +1075,10 @@ def _iter_authoritative_source_paths(regions_root: str) -> list[tuple[str, Path,
                 source_type = "prepared_region_parcel_address_dataset"
             else:
                 source_type = "prepared_region_parcel_dataset"
+            if layer_key in {"address_points", "parcel_address_points"}:
+                source_validation = validate_address_point_source(path_obj, f"{region_id}:{layer_key}")
+                if not bool(source_validation.get("valid")):
+                    continue
             paths.append((f"{region_id}:{layer_key}", path_obj, source_type))
 
     configured_sources = _load_location_resolution_source_config()
@@ -1078,6 +1089,10 @@ def _iter_authoritative_source_paths(regions_root: str) -> list[tuple[str, Path,
             continue
         source_name = str(source_entry.get("name") or path_obj.stem)
         source_type = str(source_entry.get("source_type") or "local_authoritative_dataset")
+        if "address" in source_type or "address" in source_name.lower():
+            source_validation = validate_address_point_source(path_obj, source_name)
+            if not bool(source_validation.get("valid")):
+                continue
         paths.append((source_name, path_obj, source_type))
     return paths
 

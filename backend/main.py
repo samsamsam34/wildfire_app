@@ -12254,6 +12254,118 @@ def _resolve_location_for_route(
     return geocode_resolution, coverage_resolution, float(lat), float(lon)
 
 
+def _extract_coordinates_from_coverage_detail(detail: dict[str, Any]) -> tuple[float, float] | None:
+    if not isinstance(detail, dict):
+        return None
+    direct_candidate = {
+        "latitude": detail.get("latitude"),
+        "longitude": detail.get("longitude"),
+    }
+    direct_coords = _extract_lat_lon_from_candidate(direct_candidate)
+    if direct_coords is not None:
+        return direct_coords
+
+    for key in ("final_coordinates_used", "final_candidate_selected", "candidate_needs_confirmation"):
+        candidate = detail.get(key)
+        if isinstance(candidate, dict):
+            coords = _extract_lat_lon_from_candidate(candidate)
+            if coords is not None:
+                return coords
+
+    resolver_candidates = detail.get("resolver_candidates")
+    if isinstance(resolver_candidates, list):
+        for candidate in resolver_candidates[:5]:
+            if not isinstance(candidate, dict):
+                continue
+            coords = _extract_lat_lon_from_candidate(candidate)
+            if coords is not None:
+                return coords
+
+    fallback_result = detail.get("authoritative_fallback_result")
+    if isinstance(fallback_result, dict):
+        best_candidate = fallback_result.get("best_candidate")
+        if isinstance(best_candidate, dict):
+            coords = _extract_lat_lon_from_candidate(best_candidate)
+            if coords is not None:
+                return coords
+        top_candidates = fallback_result.get("top_candidates")
+        if isinstance(top_candidates, list):
+            for candidate in top_candidates[:3]:
+                if not isinstance(candidate, dict):
+                    continue
+                coords = _extract_lat_lon_from_candidate(candidate)
+                if coords is not None:
+                    return coords
+
+    top_candidate_pair = _extract_lat_lon_from_candidate(
+        {
+            "latitude": detail.get("top_candidate_lat"),
+            "longitude": detail.get("top_candidate_lng"),
+        }
+    )
+    if top_candidate_pair is not None:
+        return top_candidate_pair
+    return None
+
+
+def _apply_geocode_payload_to_coverage(coverage: dict[str, Any], geocode_payload: dict[str, Any]) -> None:
+    coverage["geocode_status"] = geocode_payload.get("geocode_status")
+    coverage["geocode_outcome"] = geocode_payload.get("geocode_outcome")
+    coverage["geocode_decision"] = geocode_payload.get("geocode_decision")
+    coverage["geocode_trust_tier"] = geocode_payload.get("geocode_trust_tier")
+    coverage["trusted_match_status"] = geocode_payload.get("trusted_match_status")
+    coverage["trusted_match_failure_reason"] = geocode_payload.get("trusted_match_failure_reason")
+    coverage["fallback_eligibility"] = geocode_payload.get("fallback_eligibility")
+    coverage["normalized_address"] = geocode_payload.get("normalized_address")
+    coverage["geocode_source"] = geocode_payload.get("geocode_source")
+    coverage["geocode_precision"] = geocode_payload.get("geocode_precision")
+    coverage["geocode_location_type"] = geocode_payload.get("geocode_location_type")
+    coverage["resolution_status"] = geocode_payload.get("resolution_status")
+    coverage["resolution_method"] = geocode_payload.get("resolution_method")
+    coverage["fallback_used"] = geocode_payload.get("fallback_used")
+    coverage["final_location_confidence"] = geocode_payload.get("final_location_confidence")
+    coverage["provider_attempts"] = geocode_payload.get("provider_attempts")
+    coverage["provider_statuses"] = geocode_payload.get("provider_statuses")
+    coverage["candidate_sources_attempted"] = geocode_payload.get("candidate_sources_attempted")
+    coverage["candidates_found"] = geocode_payload.get("candidates_found")
+    coverage["coordinate_source"] = geocode_payload.get("coordinate_source")
+    coverage["final_coordinate_source"] = geocode_payload.get("final_coordinate_source")
+    coverage["final_coordinates_used"] = geocode_payload.get("final_coordinates_used")
+    coverage["match_confidence"] = geocode_payload.get("match_confidence")
+    coverage["match_method"] = geocode_payload.get("match_method")
+    coverage["unsupported_location_reason"] = geocode_payload.get("unsupported_location_reason")
+    coverage["local_fallback_attempted"] = geocode_payload.get("local_fallback_attempted")
+    coverage["authoritative_fallback_result"] = geocode_payload.get("authoritative_fallback_result")
+    coverage["local_fallback_result"] = geocode_payload.get("local_fallback_result")
+    coverage["address_exists"] = geocode_payload.get("address_exists")
+    coverage["address_confidence"] = geocode_payload.get("address_confidence")
+    coverage["address_validation_sources"] = geocode_payload.get("address_validation_sources")
+    coverage["coordinate_confidence"] = geocode_payload.get("coordinate_confidence")
+    coverage["needs_user_confirmation"] = geocode_payload.get("needs_user_confirmation")
+    coverage["final_status"] = geocode_payload.get("final_status")
+    coverage["resolver_candidates"] = geocode_payload.get("resolver_candidates")
+    coverage["candidate_disagreement_distances"] = geocode_payload.get("candidate_disagreement_distances")
+    coverage["candidate_needs_confirmation"] = geocode_payload.get("candidate_needs_confirmation")
+    coverage["final_candidate_selected"] = geocode_payload.get("final_candidate_selected")
+    coverage["resolver_settings"] = geocode_payload.get("resolver_settings")
+    coverage["acceptance_threshold"] = geocode_payload.get("acceptance_threshold")
+    coverage["medium_confidence_threshold"] = geocode_payload.get("medium_confidence_threshold")
+    coverage["top_margin_threshold"] = geocode_payload.get("top_margin_threshold")
+    coverage["top_candidate_score"] = geocode_payload.get("top_candidate_score")
+    coverage["second_candidate_score"] = geocode_payload.get("second_candidate_score")
+    coverage["final_acceptance_decision"] = geocode_payload.get("final_acceptance_decision")
+    coverage["failure_reason"] = geocode_payload.get("failure_reason")
+    coverage["error_class"] = (
+        geocode_payload.get("error_class")
+        if bool(coverage.get("coverage_available"))
+        else "outside_prepared_region"
+    )
+    coverage["candidate_regions_containing_point"] = coverage.get("candidate_regions_containing_point")
+    coverage["trusted_match_subchecks"] = coverage.get("trusted_match_subchecks") or geocode_payload.get(
+        "trusted_match_subchecks"
+    )
+
+
 def _build_geocode_debug_payload(address: str) -> dict[str, Any]:
     submitted_address = str(address or "")
     normalized = normalize_address(submitted_address)
@@ -13211,72 +13323,32 @@ def check_region_coverage(
     lon = payload.longitude
     if (lat is None or lon is None) and (not payload.address or len(payload.address.strip()) < 5):
         raise HTTPException(status_code=400, detail="Provide either latitude/longitude or a valid address.")
+    try:
+        geocode_resolution, coverage_resolution, lat, lon = _resolve_location_for_route(
+            route_name="/regions/coverage-check",
+            purpose="region_coverage_check",
+            address_input=str(payload.address or ""),
+            latitude=(float(lat) if lat is not None else None),
+            longitude=(float(lon) if lon is not None else None),
+        )
+    except HTTPException as exc:
+        detail = exc.detail if isinstance(exc.detail, dict) else None
+        if not detail:
+            raise
+        fallback_coords = _extract_coordinates_from_coverage_detail(detail)
+        if fallback_coords is None:
+            raise
+        fallback_lat, fallback_lon = fallback_coords
+        coverage = _region_coverage_for_coordinates(lat=float(fallback_lat), lon=float(fallback_lon))
+        coverage["message"] = str(detail.get("message") or coverage.get("message") or "")
+        _apply_geocode_payload_to_coverage(coverage, detail)
+        if not coverage.get("normalized_address") and payload.address:
+            coverage["normalized_address"] = normalize_address(payload.address)
+        return RegionCoverageStatus.model_validate(coverage)
 
-    geocode_resolution, coverage_resolution, lat, lon = _resolve_location_for_route(
-        route_name="/regions/coverage-check",
-        purpose="region_coverage_check",
-        address_input=str(payload.address or ""),
-        latitude=(float(lat) if lat is not None else None),
-        longitude=(float(lon) if lon is not None else None),
-    )
     coverage = dict(coverage_resolution.coverage)
     if geocode_resolution:
-        geocode_meta = geocode_resolution.geocode_meta
-        coverage["geocode_status"] = geocode_meta.get("geocode_status")
-        coverage["geocode_outcome"] = geocode_meta.get("geocode_outcome")
-        coverage["geocode_decision"] = geocode_meta.get("geocode_decision")
-        coverage["geocode_trust_tier"] = geocode_meta.get("geocode_trust_tier")
-        coverage["trusted_match_status"] = geocode_meta.get("trusted_match_status")
-        coverage["trusted_match_failure_reason"] = geocode_meta.get("trusted_match_failure_reason")
-        coverage["fallback_eligibility"] = geocode_meta.get("fallback_eligibility")
-        coverage["normalized_address"] = geocode_meta.get("normalized_address")
-        coverage["geocode_source"] = geocode_meta.get("geocode_source")
-        coverage["geocode_precision"] = geocode_meta.get("geocode_precision")
-        coverage["geocode_location_type"] = geocode_meta.get("geocode_location_type")
-        coverage["resolution_status"] = geocode_meta.get("resolution_status")
-        coverage["resolution_method"] = geocode_meta.get("resolution_method")
-        coverage["fallback_used"] = geocode_meta.get("fallback_used")
-        coverage["final_location_confidence"] = geocode_meta.get("final_location_confidence")
-        coverage["provider_attempts"] = geocode_meta.get("provider_attempts")
-        coverage["provider_statuses"] = geocode_meta.get("provider_statuses")
-        coverage["candidate_sources_attempted"] = geocode_meta.get("candidate_sources_attempted")
-        coverage["candidates_found"] = geocode_meta.get("candidates_found")
-        coverage["coordinate_source"] = geocode_meta.get("coordinate_source")
-        coverage["final_coordinate_source"] = geocode_meta.get("final_coordinate_source")
-        coverage["final_coordinates_used"] = geocode_meta.get("final_coordinates_used")
-        coverage["match_confidence"] = geocode_meta.get("match_confidence")
-        coverage["match_method"] = geocode_meta.get("match_method")
-        coverage["unsupported_location_reason"] = geocode_meta.get("unsupported_location_reason")
-        coverage["local_fallback_attempted"] = geocode_meta.get("local_fallback_attempted")
-        coverage["authoritative_fallback_result"] = geocode_meta.get("authoritative_fallback_result")
-        coverage["local_fallback_result"] = geocode_meta.get("local_fallback_result")
-        coverage["address_exists"] = geocode_meta.get("address_exists")
-        coverage["address_confidence"] = geocode_meta.get("address_confidence")
-        coverage["address_validation_sources"] = geocode_meta.get("address_validation_sources")
-        coverage["coordinate_confidence"] = geocode_meta.get("coordinate_confidence")
-        coverage["needs_user_confirmation"] = geocode_meta.get("needs_user_confirmation")
-        coverage["final_status"] = geocode_meta.get("final_status")
-        coverage["resolver_candidates"] = geocode_meta.get("resolver_candidates")
-        coverage["candidate_disagreement_distances"] = geocode_meta.get("candidate_disagreement_distances")
-        coverage["candidate_needs_confirmation"] = geocode_meta.get("candidate_needs_confirmation")
-        coverage["final_candidate_selected"] = geocode_meta.get("final_candidate_selected")
-        coverage["resolver_settings"] = geocode_meta.get("resolver_settings")
-        coverage["acceptance_threshold"] = geocode_meta.get("acceptance_threshold")
-        coverage["medium_confidence_threshold"] = geocode_meta.get("medium_confidence_threshold")
-        coverage["top_margin_threshold"] = geocode_meta.get("top_margin_threshold")
-        coverage["top_candidate_score"] = geocode_meta.get("top_candidate_score")
-        coverage["second_candidate_score"] = geocode_meta.get("second_candidate_score")
-        coverage["final_acceptance_decision"] = geocode_meta.get("final_acceptance_decision")
-        coverage["failure_reason"] = geocode_meta.get("failure_reason")
-        coverage["error_class"] = (
-            geocode_meta.get("error_class")
-            if bool(coverage.get("coverage_available"))
-            else "outside_prepared_region"
-        )
-        coverage["candidate_regions_containing_point"] = coverage.get("candidate_regions_containing_point")
-        coverage["trusted_match_subchecks"] = coverage.get("trusted_match_subchecks") or geocode_meta.get(
-            "trusted_match_subchecks"
-        )
+        _apply_geocode_payload_to_coverage(coverage, geocode_resolution.geocode_meta)
     return RegionCoverageStatus.model_validate(coverage)
 
 

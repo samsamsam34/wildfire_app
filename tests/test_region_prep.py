@@ -793,6 +793,67 @@ def test_feature_service_geojson_fallback_to_json(monkeypatch, tmp_path):
     assert len(payload.get("features", [])) == 1
 
 
+def test_feature_service_json_paginates(monkeypatch, tmp_path):
+    page0 = {
+        "features": [
+            {"attributes": {"id": 1}, "geometry": {"x": -111.0, "y": 45.6}},
+            {"attributes": {"id": 2}, "geometry": {"x": -110.99, "y": 45.61}},
+        ],
+        "exceededTransferLimit": True,
+    }
+    page1 = {
+        "features": [
+            {"attributes": {"id": 3}, "geometry": {"x": -110.98, "y": 45.62}},
+        ],
+        "exceededTransferLimit": False,
+    }
+
+    def fake_urlopen(url, timeout=0):
+        text = str(url)
+        if "resultOffset=0" in text and "resultRecordCount=2" in text:
+            return _FakeHTTPResponseWithHeaders(
+                json.dumps(page0).encode("utf-8"),
+                status=200,
+                content_type="application/json",
+            )
+        if "resultOffset=2" in text and "resultRecordCount=2" in text:
+            return _FakeHTTPResponseWithHeaders(
+                json.dumps(page1).encode("utf-8"),
+                status=200,
+                content_type="application/json",
+            )
+        raise AssertionError(f"unexpected url: {text}")
+
+    monkeypatch.setenv("WF_ARCGIS_FEATURE_QUERY_PAGE_SIZE", "2")
+    monkeypatch.setattr(source_acq.urllib.request, "urlopen", fake_urlopen)
+    result = source_acq.acquire_layer_from_config(
+        layer_key="fire_perimeters",
+        layer_type="vector",
+        layer_config={
+            "provider_type": "arcgis_feature_service",
+            "source_endpoint": "https://example.test/FeatureServer/0",
+            "supports_geojson_direct": False,
+            "query_format": "json",
+        },
+        bounds={"min_lon": -111.2, "min_lat": 45.5, "max_lon": -110.9, "max_lat": 45.8},
+        cache_root=tmp_path / "cache",
+        prefer_bbox_downloads=True,
+        allow_full_download_fallback=True,
+        target_resolution=None,
+        timeout_seconds=10.0,
+        retries=0,
+        backoff_seconds=0.0,
+    )
+    assert result is not None
+    assert result.acquisition_method == "bbox_export_json_fallback"
+    assert "json_exceeded_transfer_limit_detected" in result.warnings
+    assert "json_pagination_requests=2" in result.warnings
+    out = Path(str(result.local_path))
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    assert payload.get("type") == "FeatureCollection"
+    assert len(payload.get("features", [])) == 3
+
+
 def test_acquisition_url_sanitize_preserves_valid_https_url():
     url = "https://example.test/FeatureServer/0/query?where=1%3D1&f=json"
     assert source_acq._sanitize_url(url) == url

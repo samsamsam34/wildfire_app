@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import time
 import urllib.error
@@ -520,6 +521,101 @@ class ArcGISFeatureServiceProvider:
             raise ValueError(f"output_write_failure: unable to write converted GeoJSON: {exc}") from exc
         return len(out_features)
 
+    @staticmethod
+    def _query_page_size() -> int:
+        raw_value = str(os.getenv("WF_ARCGIS_FEATURE_QUERY_PAGE_SIZE", "2000")).strip()
+        try:
+            return max(250, min(5000, int(raw_value)))
+        except ValueError:
+            return 2000
+
+    @staticmethod
+    def _query_max_pages() -> int:
+        raw_value = str(os.getenv("WF_ARCGIS_FEATURE_QUERY_MAX_PAGES", "100")).strip()
+        try:
+            return max(1, min(1000, int(raw_value)))
+        except ValueError:
+            return 100
+
+    def _download_paginated_esri_json(
+        self,
+        *,
+        bounds: BoundingBox,
+        timeout_seconds: float,
+        retries: int,
+        backoff_seconds: float,
+    ) -> tuple[dict[str, Any], dict[str, Any], list[str], str]:
+        page_size = self._query_page_size()
+        max_pages = self._query_max_pages()
+        all_features: list[dict[str, Any]] = []
+        total_bytes = 0
+        request_count = 0
+        offset = 0
+        request_url = self._build_query_url(
+            bounds=bounds,
+            response_format="json",
+            return_geometry=self.require_return_geometry,
+            result_offset=0,
+            result_record_count=page_size,
+        )
+        response_content_type: str | None = None
+        http_status: int | None = None
+        saw_transfer_limit = False
+
+        for _ in range(max_pages):
+            page_url = self._build_query_url(
+                bounds=bounds,
+                response_format="json",
+                return_geometry=self.require_return_geometry,
+                result_offset=offset,
+                result_record_count=page_size,
+            )
+            payload, page_meta = _download_json_with_retry(
+                url=page_url,
+                timeout_seconds=timeout_seconds,
+                retries=retries,
+                backoff_seconds=backoff_seconds,
+            )
+            request_count += 1
+            request_url = page_url
+            total_bytes += int(page_meta.get("bytes_downloaded") or 0)
+            response_content_type = page_meta.get("response_content_type")
+            http_status = page_meta.get("http_status")
+            features = payload.get("features")
+            if not isinstance(features, list):
+                raise ValueError("esri_json_parse_error: provider json response missing features array")
+            all_features.extend([feature for feature in features if isinstance(feature, dict)])
+            current_count = len(features)
+            exceeded_transfer_limit = bool(payload.get("exceededTransferLimit"))
+            saw_transfer_limit = saw_transfer_limit or exceeded_transfer_limit
+
+            if current_count <= 0:
+                break
+            if not exceeded_transfer_limit and current_count < page_size:
+                break
+            offset += current_count
+        else:
+            raise ValueError(
+                "provider_pagination_limit_reached: ArcGIS feature pagination exceeded "
+                f"{max_pages} pages (page_size={page_size})"
+            )
+
+        if not all_features:
+            raise ValueError("empty_result: provider json response returned empty feature set")
+
+        warnings: list[str] = []
+        if request_count > 1:
+            warnings.append(f"json_pagination_requests={request_count}")
+        if saw_transfer_limit:
+            warnings.append("json_exceeded_transfer_limit_detected")
+
+        combined_payload = {"features": all_features}
+        return combined_payload, {
+            "http_status": int(http_status) if http_status is not None else None,
+            "response_content_type": response_content_type,
+            "bytes_downloaded": total_bytes,
+        }, warnings, request_url
+
     def fetch_bbox(
         self,
         *,
@@ -601,16 +697,16 @@ class ArcGISFeatureServiceProvider:
                     result_record_count=2000,
                 )
                 attempted_urls.append(json_url)
-                payload, json_meta = _download_json_with_retry(
-                    url=json_url,
+                payload, json_meta, pagination_warnings, request_url = self._download_paginated_esri_json(
+                    bounds=bounds,
                     timeout_seconds=timeout_seconds,
                     retries=retries,
                     backoff_seconds=backoff_seconds,
                 )
                 self._write_geojson_from_esri_json(payload=payload, out_path=out_path)
-                request_url = json_url
                 acquisition_method = "bbox_export_json_fallback"
                 meta = json_meta
+                warnings.extend(pagination_warnings)
                 if any(
                     "geojson_query_failed" in str(w).lower() and "http error 400" in str(w).lower()
                     for w in warnings

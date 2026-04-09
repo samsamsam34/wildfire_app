@@ -149,6 +149,7 @@
         justify-content: center;
         padding: 1rem;
         z-index: 1200;
+        overflow-y: auto;
       }
       .modal-backdrop.open {
         display: flex;
@@ -160,6 +161,8 @@
         border-radius: 14px;
         padding: 1rem;
         box-shadow: 0 12px 28px rgba(0, 0, 0, 0.2);
+        max-height: calc(100dvh - 2rem);
+        overflow-y: auto;
       }
       .modal-title {
         margin-bottom: 0.45rem;
@@ -732,6 +735,7 @@
       let verificationHasUnappliedPending = false;
       let verificationCoverageResult = null;
       let verifyCoverageDebounceTimer = null;
+      let verificationCoverageRequestSeq = 0;
       let verificationManualCandidates = [];
       let verificationSelectedCandidateId = null;
       let verificationInferredLocalities = [];
@@ -2160,6 +2164,10 @@
         }
       }
 
+      function invalidateVerificationCoverageRequests() {
+        verificationCoverageRequestSeq += 1;
+      }
+
       function setAssessmentActionsDisabled(disabled) {
         const assessBtn = document.getElementById("assessBtn");
         const reassessBtn = document.getElementById("reassessBtn");
@@ -2471,7 +2479,15 @@
           coverageEl.textContent = "Coverage status: checking...";
         } else {
           const coverage = verificationCoverageResult;
-          if (coverage.coverage_available === true || coverage.covered === true) {
+          const hasCoverageFlag = (
+            coverage?.coverage_available === true
+            || coverage?.coverage_available === false
+            || coverage?.covered === true
+            || coverage?.covered === false
+          );
+          if (!hasCoverageFlag) {
+            coverageEl.textContent = "Coverage status: unknown (checking...)";
+          } else if (coverage.coverage_available === true || coverage.covered === true) {
             const regionName = coverage.display_name || coverage.selected_region_display_name || coverage.resolved_region_id || "unknown";
             const regionId = coverage.resolved_region_id || coverage.region_id || "";
             coverageEl.textContent = `Coverage status: inside prepared region (${regionName}${regionId ? ` / ${regionId}` : ""})`;
@@ -2613,18 +2629,31 @@
         }
       }
 
-      async function refreshVerificationCoverageNow() {
+      async function refreshVerificationCoverageNow(requestSeq = null) {
         if (!verificationPendingCoords || !pendingAssessmentPayload) return;
+        const activeSeq = Number.isFinite(Number(requestSeq))
+          ? Number(requestSeq)
+          : (verificationCoverageRequestSeq += 1);
         const lat = Number(verificationPendingCoords.latitude);
         const lon = Number(verificationPendingCoords.longitude);
         if (!isValidCoordinatePair(lat, lon)) return;
 
         try {
-          verificationCoverageResult = await fetchCoverageForCoordinates(lat, lon, pendingAssessmentPayload.address);
+          const coverageResult = await fetchCoverageForCoordinates(lat, lon, pendingAssessmentPayload.address);
+          if (activeSeq !== verificationCoverageRequestSeq) return;
+          verificationCoverageResult = coverageResult;
           const regionEl = document.getElementById("verifyPreparedRegion");
           if (regionEl) {
             const coverage = verificationCoverageResult;
-            if (coverage?.coverage_available === true || coverage?.covered === true) {
+            const hasCoverageFlag = (
+              coverage?.coverage_available === true
+              || coverage?.coverage_available === false
+              || coverage?.covered === true
+              || coverage?.covered === false
+            );
+            if (!hasCoverageFlag) {
+              regionEl.textContent = "Prepared region: checking coverage...";
+            } else if (coverage?.coverage_available === true || coverage?.covered === true) {
               const regionName = coverage.display_name || coverage.selected_region_display_name || coverage.resolved_region_id || "unknown";
               const regionId = coverage.resolved_region_id || coverage.region_id || null;
               regionEl.textContent = `Prepared region: ${regionName}${regionId ? ` (${regionId})` : ""}`;
@@ -2633,8 +2662,10 @@
             }
           }
         } catch (_err) {
+          if (activeSeq !== verificationCoverageRequestSeq) return;
           verificationCoverageResult = null;
         } finally {
+          if (activeSeq !== verificationCoverageRequestSeq) return;
           updateVerificationLiveDetails();
           if (verifiedAddressPayload && pendingAssessmentPayload) {
             renderVerificationWarnings(pendingAssessmentPayload.address, verifiedAddressPayload);
@@ -2644,11 +2675,13 @@
 
       function scheduleVerificationCoverageRefresh() {
         clearVerificationCoverageDebounce();
+        invalidateVerificationCoverageRequests();
         verificationCoverageResult = null;
         updateVerificationLiveDetails();
+        const nextSeq = verificationCoverageRequestSeq;
         verifyCoverageDebounceTimer = setTimeout(() => {
           verifyCoverageDebounceTimer = null;
-          refreshVerificationCoverageNow();
+          refreshVerificationCoverageNow(nextSeq);
         }, 250);
       }
 
@@ -2686,6 +2719,12 @@
           || "unknown";
         const regionName = verification?.display_name || verification?.selected_region_display_name || verification?.resolved_region_id || null;
         const regionId = verification?.resolved_region_id || verification?.region_id || null;
+        const hasCoverageFlag = (
+          verification?.coverage_available === true
+          || verification?.coverage_available === false
+          || verification?.covered === true
+          || verification?.covered === false
+        );
         const hasCoverage = verification?.coverage_available === true || verification?.covered === true;
 
         if (enteredAddressEl) enteredAddressEl.textContent = enteredAddress || "(none)";
@@ -2699,9 +2738,13 @@
           confidenceEl.textContent = `${String(confidence)} (status: ${status})`;
         }
         if (regionEl) {
-          regionEl.textContent = hasCoverage
-            ? `Prepared region: ${regionName || "unknown"}${regionId ? ` (${regionId})` : ""}`
-            : "Location not currently covered by prepared region data";
+          if (!hasCoverageFlag) {
+            regionEl.textContent = "Prepared region: checking coverage...";
+          } else if (hasCoverage) {
+            regionEl.textContent = `Prepared region: ${regionName || "unknown"}${regionId ? ` (${regionId})` : ""}`;
+          } else {
+            regionEl.textContent = "Location not currently covered by prepared region data";
+          }
         }
 
         const fallbackCandidate = verification?.candidate_needs_confirmation || verification?.final_candidate_selected || null;
@@ -2772,6 +2815,9 @@
           }
           setTimeout(() => map.invalidateSize(), 0);
         }
+        if (verificationPendingCoords) {
+          scheduleVerificationCoverageRefresh();
+        }
       }
 
       function closeAddressVerificationModal({ restoreFocus = true } = {}) {
@@ -2781,6 +2827,7 @@
         modal.setAttribute("aria-hidden", "true");
         addressVerificationModalOpen = false;
         clearVerificationCoverageDebounce();
+        invalidateVerificationCoverageRequests();
         syncAssessmentActionState();
         if (restoreFocus && previousFocusElement && typeof previousFocusElement.focus === "function") {
           previousFocusElement.focus();
@@ -2922,6 +2969,7 @@
         verificationAcceptedSelectionSource = "suggested_geocode";
         verificationHasUnappliedPending = false;
         verificationCoverageResult = null;
+        invalidateVerificationCoverageRequests();
         verificationManualCandidates = [];
         verificationSelectedCandidateId = null;
         verificationInferredLocalities = [];
@@ -2938,6 +2986,7 @@
         verificationAcceptedSelectionSource = "suggested_geocode";
         verificationHasUnappliedPending = false;
         verificationCoverageResult = null;
+        invalidateVerificationCoverageRequests();
         verificationManualCandidates = [];
         verificationSelectedCandidateId = null;
         verificationInferredLocalities = [];

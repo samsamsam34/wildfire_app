@@ -178,12 +178,13 @@ def test_address_exists_but_coordinates_not_safe_returns_address_unresolved(monk
     monkeypatch.setenv("WF_GEOCODE_SECONDARY_ENABLED", "false")
 
     resp = client.post("/regions/coverage-check", json={"address": "6 Pineview Rd, Winthrop, WA 98862"})
-    assert resp.status_code == 422
-    detail = resp.json()["detail"]
-    assert detail["error_class"] == "address_unresolved"
-    assert detail["resolution_status"] == "candidates_found_but_not_safe_enough"
-    assert detail["address_exists"] is True
-    assert detail["final_coordinates_used"] is None
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["error_class"] == "address_unresolved"
+    assert body["resolution_status"] == "candidates_found_but_not_safe_enough"
+    assert body["address_exists"] is True
+    assert body["final_coordinates_used"] is None
+    assert body["needs_user_confirmation"] is True
 
 
 def test_invalid_address_returns_address_not_found_not_unsupported_location(monkeypatch) -> None:
