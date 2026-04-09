@@ -40,7 +40,9 @@ _DIRECT_ADDRESS_KEYS = (
     "full_address",
     "formatted_address",
     "site_address",
+    "site_addr",
     "situs_address",
+    "situs_addr",
     "prop_addr",
     "prop_address",
     "addr",
@@ -48,9 +50,9 @@ _DIRECT_ADDRESS_KEYS = (
 )
 _HOUSE_KEYS = ("house_number", "housenumber", "number", "st_num", "addr_num")
 _STREET_KEYS = ("street", "street_name", "road", "rd_name", "street_full", "prop_road", "road_name")
-_CITY_KEYS = ("city", "town", "locality", "municipality", "prop_city")
-_STATE_KEYS = ("state", "st", "province", "prop_st")
-_ZIP_KEYS = ("zip", "zipcode", "postal", "postcode", "prop_zip")
+_CITY_KEYS = ("city", "town", "locality", "municipality", "prop_city", "situs_city_nm", "city_nm")
+_STATE_KEYS = ("state", "st", "province", "prop_st", "situs_state_cd", "state_abbr")
+_ZIP_KEYS = ("zip", "zipcode", "postal", "postcode", "prop_zip", "situs_zip_nr", "zip5")
 _LAT_KEYS = ("latitude", "lat", "y", "lat_dd", "lat_wgs84")
 _LON_KEYS = ("longitude", "lon", "lng", "x", "lon_dd", "lon_wgs84")
 
@@ -131,13 +133,20 @@ def _feature_lon_lat(feature: dict[str, Any]) -> tuple[float, float] | None:
             lat_avg = sum(c[1] for c in all_coords) / float(len(all_coords))
             return float(lon_avg), float(lat_avg)
     props = feature.get("properties") if isinstance(feature.get("properties"), dict) else {}
+    lowered_props = {str(key).lower(): value for key, value in props.items()}
     for lat_key in _LAT_KEYS:
         for lon_key in _LON_KEYS:
-            if lat_key not in props or lon_key not in props:
+            lat_raw = props.get(lat_key)
+            lon_raw = props.get(lon_key)
+            if lat_raw is None:
+                lat_raw = lowered_props.get(lat_key.lower())
+            if lon_raw is None:
+                lon_raw = lowered_props.get(lon_key.lower())
+            if lat_raw is None or lon_raw is None:
                 continue
             try:
-                lat = float(props[lat_key])
-                lon = float(props[lon_key])
+                lat = float(lat_raw)
+                lon = float(lon_raw)
             except (TypeError, ValueError):
                 continue
             if -90.0 <= lat <= 90.0 and -180.0 <= lon <= 180.0:
@@ -146,9 +155,14 @@ def _feature_lon_lat(feature: dict[str, Any]) -> tuple[float, float] | None:
 
 
 def _first_non_empty(props: dict[str, Any], keys: tuple[str, ...]) -> str:
+    lowered_props = {str(key).lower(): value for key, value in props.items()}
     for key in keys:
         if key in props and str(props[key]).strip():
             return str(props[key]).strip()
+    for key in keys:
+        lowered_key = str(key).lower()
+        if lowered_key in lowered_props and str(lowered_props[lowered_key]).strip():
+            return str(lowered_props[lowered_key]).strip()
     return ""
 
 
@@ -434,22 +448,60 @@ def validate_address_point_source(path: str | Path, source_name: str) -> dict[st
     warnings: list[str] = []
     errors: list[str] = []
     normalized_index: dict[str, list[tuple[float, float]]] = {}
+    geometry_type_counts: dict[str, int] = {}
+    point_like_count = 0
+    complete_address_count = 0
+
+    min_point_ratio_raw = str(os.getenv("WF_ADDRESS_POINT_MIN_POINT_RATIO", "0.85")).strip()
+    try:
+        min_point_ratio = max(0.0, min(1.0, float(min_point_ratio_raw)))
+    except ValueError:
+        min_point_ratio = 0.85
+
+    min_complete_ratio_raw = str(os.getenv("WF_ADDRESS_POINT_MIN_COMPLETE_RATIO", "0.1")).strip()
+    try:
+        min_complete_ratio = max(0.0, min(1.0, float(min_complete_ratio_raw)))
+    except ValueError:
+        min_complete_ratio = 0.1
 
     for idx, feature in enumerate(features):
         lon_lat = _feature_lon_lat(feature)
         if lon_lat is None:
             errors.append(f"{source_name}: feature[{idx}] missing valid coordinates.")
             continue
+        geometry = feature.get("geometry") if isinstance(feature.get("geometry"), dict) else {}
+        geom_type = str(geometry.get("type") or "Unknown")
+        geometry_type_counts[geom_type] = geometry_type_counts.get(geom_type, 0) + 1
+        if geom_type in {"Point", "MultiPoint"}:
+            point_like_count += 1
         props = feature.get("properties") if isinstance(feature.get("properties"), dict) else {}
         candidate_addr = _candidate_address(feature)
         components = _extract_address_components(candidate_addr)
         normalized = components["normalized_address"]
-        if not components["house_number"] or not components["street"]:
+        has_complete_address = bool(components["house_number"] and components["street"])
+        if has_complete_address:
+            complete_address_count += 1
+        if not has_complete_address:
             warnings.append(
                 f"{source_name}: feature[{idx}] has incomplete address components (house/street missing)."
             )
             continue
         normalized_index.setdefault(normalized, []).append((float(lon_lat[1]), float(lon_lat[0])))
+
+    total_features = max(1, len(features))
+    point_ratio = float(point_like_count) / float(total_features)
+    complete_ratio = float(complete_address_count) / float(total_features)
+
+    if features and point_ratio < min_point_ratio:
+        errors.append(
+            f"{source_name}: point-geometry ratio {point_ratio:.3f} is below minimum {min_point_ratio:.3f}; "
+            f"this source is not a valid address-point dataset."
+        )
+    if features and complete_ratio < min_complete_ratio:
+        errors.append(
+            f"{source_name}: complete-address ratio {complete_ratio:.3f} is below minimum {min_complete_ratio:.3f}; "
+            "house/street coverage is insufficient for reliable address matching."
+        )
 
     for normalized, rows in normalized_index.items():
         if len(rows) <= 1:
@@ -475,6 +527,9 @@ def validate_address_point_source(path: str | Path, source_name: str) -> dict[st
         "source_name": source_name,
         "path": str(path_obj),
         "record_count": len(features),
+        "point_geometry_ratio": round(point_ratio, 4),
+        "complete_address_ratio": round(complete_ratio, 4),
+        "geometry_type_counts": geometry_type_counts,
         "warnings": warnings,
         "errors": errors,
         "valid": not errors,
@@ -745,12 +800,16 @@ def resolve_local_address_candidate(
                     source_type = "prepared_region_parcel_dataset"
                 if not _source_type_allowed(source_type, allowed_source_types):
                     continue
-                source_validations.append(validate_address_point_source(path_obj, f"{region_id}:{layer_key}"))
+                if layer_key in {"address_points", "parcel_address_points"}:
+                    source_validations.append(validate_address_point_source(path_obj, f"{region_id}:{layer_key}"))
                 for feature in _load_geojson_features(path_obj):
                     lon_lat = _feature_lon_lat(feature)
                     if lon_lat is None:
                         continue
                     props = feature.get("properties") if isinstance(feature.get("properties"), dict) else {}
+                    geometry = feature.get("geometry") if isinstance(feature.get("geometry"), dict) else {}
+                    geometry_type = str(geometry.get("type") or "")
+                    point_geometry = geometry_type in {"Point", "MultiPoint"}
                     addr = _candidate_address(feature)
                     score = _match_score(
                         input_components=address_components,
@@ -785,6 +844,8 @@ def resolve_local_address_candidate(
                             "auto_usable": auto_usable,
                             "street_similarity": match_eval["street_similarity"],
                             "candidate_components": components,
+                            "geometry_type": geometry_type or None,
+                            "point_geometry": point_geometry,
                         }
                     )
 
@@ -798,7 +859,8 @@ def resolve_local_address_candidate(
             source_type = str(source_entry.get("source_type") or "local_authoritative_dataset")
             searched_sources.append(str(path_obj))
             attempted_sources.append(source_name)
-            source_validations.append(validate_address_point_source(path_obj, source_name))
+            if "address" in source_type or "address" in source_name.lower():
+                source_validations.append(validate_address_point_source(path_obj, source_name))
             if not _source_type_allowed(source_type, allowed_source_types):
                 continue
             for feature in _load_geojson_features(path_obj):
@@ -806,6 +868,9 @@ def resolve_local_address_candidate(
                 if lon_lat is None:
                     continue
                 props = feature.get("properties") if isinstance(feature.get("properties"), dict) else {}
+                geometry = feature.get("geometry") if isinstance(feature.get("geometry"), dict) else {}
+                geometry_type = str(geometry.get("type") or "")
+                point_geometry = geometry_type in {"Point", "MultiPoint"}
                 addr = _candidate_address(feature)
                 score = _match_score(
                     input_components=address_components,
@@ -840,6 +905,8 @@ def resolve_local_address_candidate(
                         "auto_usable": auto_usable,
                         "street_similarity": match_eval["street_similarity"],
                         "candidate_components": components,
+                        "geometry_type": geometry_type or None,
+                        "point_geometry": point_geometry,
                         "source_metadata": dict(source_entry.get("metadata") or {}),
                     }
                 )
@@ -876,6 +943,16 @@ def resolve_local_address_candidate(
                 ranking_score += 0.02
             else:
                 ranking_score -= 0.12
+        if not bool(row.get("point_geometry", True)):
+            source_type = str(row.get("source_type") or "")
+            if source_type in {
+                "county_address_dataset",
+                "prepared_region_address_dataset",
+                "prepared_region_parcel_address_dataset",
+            }:
+                ranking_score -= 0.08
+            else:
+                ranking_score -= 0.03
 
         row["ranking_score"] = round(max(0.0, min(1.0, ranking_score)), 4)
 
@@ -885,6 +962,7 @@ def resolve_local_address_candidate(
             -_CONFIDENCE_RANK.get(str(row.get("confidence_tier") or "unknown"), -1),
             -float(row.get("ranking_score") or row.get("match_score") or 0.0),
             _source_priority(row),
+            int(not bool(row.get("point_geometry", True))),
             str(row.get("region_id") or ""),
             str(row.get("matched_address") or ""),
         )

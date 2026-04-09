@@ -34,7 +34,8 @@ def test_frontend_does_not_require_manual_region_selection() -> None:
 
 def test_frontend_trims_address_and_probes_coverage_on_geocode_failures() -> None:
     html = _frontend_html()
-    assert 'address: String(document.getElementById("address").value || "").trim()' in html
+    assert 'const enteredAddress = String(document.getElementById("address").value || "").trim();' in html
+    assert "address: enteredAddress," in html
     assert "fetchCoverageForAddress(submittedAddress)" in html
     assert "String(coverage.geocode_status || \"\").toLowerCase() === \"accepted\"" in html
 
@@ -111,6 +112,17 @@ def test_frontend_includes_assessment_map_panel_and_layer_controls() -> None:
     assert "selectable_structure_footprints" in html
     assert "auto_detected_structure" in html
     assert "user_selected_structure" in html
+
+
+def test_frontend_supports_selectable_structure_popup_apply_action() -> None:
+    html = _frontend_html()
+    assert "Use this structure" in html
+    assert "applySelectedStructureFromMap" in html
+    assert "pendingSelectedStructureId" in html
+    assert "pendingSelectedStructureGeometry" in html
+    assert "selected_structure_id" in html
+    assert "selected_structure_geometry" in html
+    assert 'structure_geometry_source = canReuseSelectedStructure ? "user_selected" : "auto_detected"' in html
 
 
 def test_frontend_keeps_location_selection_in_verification_popup_only() -> None:

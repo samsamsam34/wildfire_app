@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import os
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -84,6 +87,19 @@ ENRICHMENT_LAYER_KEYS = (
     "naip_structure_features",
 )
 REQUIRED_CORE_LAYER_KEYS = tuple(REQUIRED_CORE_RASTER_LAYERS) + tuple(REQUIRED_CORE_VECTOR_LAYERS)
+_ADDRESS_DIRECT_KEYS = (
+    "address",
+    "full_address",
+    "formatted_address",
+    "site_address",
+    "site_addr",
+    "situs_address",
+    "situs_addr",
+    "addr",
+    "addr_full",
+)
+_ADDRESS_HOUSE_KEYS = ("house_number", "housenumber", "number", "st_num", "addr_num")
+_ADDRESS_STREET_KEYS = ("street", "street_name", "road", "rd_name", "street_full", "road_name")
 
 
 def _now() -> str:
@@ -135,7 +151,38 @@ def _validate_raster_layer(path: Path, bounds: tuple[float, float, float, float]
     return errors, warnings
 
 
-def _validate_vector_layer(path: Path, bounds: tuple[float, float, float, float]) -> tuple[list[str], list[str]]:
+def _first_non_empty_casefold(props: dict[str, Any], keys: tuple[str, ...]) -> str:
+    lowered = {str(k).lower(): v for k, v in props.items()}
+    for key in keys:
+        lowered_key = str(key).lower()
+        if lowered_key not in lowered:
+            continue
+        value = lowered.get(lowered_key)
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text:
+            return text
+    return ""
+
+
+def _has_min_address_components(props: dict[str, Any]) -> bool:
+    direct = _first_non_empty_casefold(props, _ADDRESS_DIRECT_KEYS)
+    if direct:
+        direct_norm = re.sub(r"\s+", " ", direct).strip().lower()
+        if re.match(r"^\d+[a-z0-9-]*\s+.+", direct_norm):
+            return True
+    house = _first_non_empty_casefold(props, _ADDRESS_HOUSE_KEYS)
+    street = _first_non_empty_casefold(props, _ADDRESS_STREET_KEYS)
+    return bool(house and street)
+
+
+def _validate_vector_layer(
+    path: Path,
+    bounds: tuple[float, float, float, float],
+    *,
+    layer_key: str | None = None,
+) -> tuple[list[str], list[str]]:
     errors: list[str] = []
     warnings: list[str] = []
     with open(path, "r", encoding="utf-8") as f:
@@ -147,6 +194,45 @@ def _validate_vector_layer(path: Path, bounds: tuple[float, float, float, float]
     if not features:
         errors.append(f"Vector has no features: {path}")
         return errors, warnings
+
+    if layer_key == "parcel_address_points":
+        min_point_ratio_raw = str(os.getenv("WF_VALIDATE_PARCEL_ADDRESS_POINTS_MIN_POINT_RATIO", "0.85")).strip()
+        try:
+            min_point_ratio = max(0.0, min(1.0, float(min_point_ratio_raw)))
+        except ValueError:
+            min_point_ratio = 0.85
+
+        min_complete_ratio_raw = str(os.getenv("WF_VALIDATE_PARCEL_ADDRESS_POINTS_MIN_COMPLETE_RATIO", "0.1")).strip()
+        try:
+            min_complete_ratio = max(0.0, min(1.0, float(min_complete_ratio_raw)))
+        except ValueError:
+            min_complete_ratio = 0.1
+
+        point_like_count = 0
+        complete_count = 0
+        for feat in features:
+            geom = feat.get("geometry") if isinstance(feat, dict) else {}
+            geom_type = str((geom or {}).get("type") or "")
+            if geom_type in {"Point", "MultiPoint"}:
+                point_like_count += 1
+            props = feat.get("properties") if isinstance(feat.get("properties"), dict) else {}
+            if _has_min_address_components(props):
+                complete_count += 1
+
+        total = max(1, len(features))
+        point_ratio = float(point_like_count) / float(total)
+        complete_ratio = float(complete_count) / float(total)
+        if point_ratio < min_point_ratio:
+            errors.append(
+                f"parcel_address_points semantic validation failed: point geometry ratio "
+                f"{point_ratio:.3f} is below minimum {min_point_ratio:.3f}."
+            )
+        if complete_ratio < min_complete_ratio:
+            errors.append(
+                f"parcel_address_points semantic validation failed: complete-address ratio "
+                f"{complete_ratio:.3f} is below minimum {min_complete_ratio:.3f}."
+            )
+
     if box is None or shape is None:
         warnings.append("Vector geometry intersection validation downgraded: shapely not available.")
         return errors, warnings
@@ -190,8 +276,39 @@ def _validate_layer_openable_and_intersects(
         except Exception as exc:
             return [f"Artifact layer could not be read: {layer_path} ({exc})"], []
     if layer_key in VECTOR_KEYS:
-        return _validate_vector_layer(layer_path, bounds)
+        return _validate_vector_layer(layer_path, bounds, layer_key=layer_key)
     return _validate_raster_layer(layer_path, bounds)
+
+
+def _detect_semantic_duplicate_layers(manifest: dict[str, Any], base_dir: str | None) -> list[str]:
+    parcel_address_path = resolve_region_file(manifest, "parcel_address_points", base_dir=base_dir)
+    parcel_polygon_path = resolve_region_file(manifest, "parcel_polygons", base_dir=base_dir)
+    if not parcel_address_path or not parcel_polygon_path:
+        return []
+    parcel_address_file = Path(parcel_address_path)
+    parcel_polygon_file = Path(parcel_polygon_path)
+    if not parcel_address_file.exists() or not parcel_polygon_file.exists():
+        return []
+
+    def _sha256(path: Path) -> str:
+        digest = hashlib.sha256()
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+
+    try:
+        address_hash = _sha256(parcel_address_file)
+        polygon_hash = _sha256(parcel_polygon_file)
+    except Exception as exc:
+        return [f"Could not compute semantic duplicate check for parcel layers: {exc}"]
+
+    if address_hash == polygon_hash:
+        return [
+            "parcel_address_points and parcel_polygons resolve to byte-identical datasets; "
+            "address-point layer appears misconfigured."
+        ]
+    return []
 
 
 def _run_sample_smoke_test(
@@ -604,6 +721,8 @@ def validate_prepared_region(
             layer_errors, layer_warnings = _validate_layer_openable_and_intersects(layer_key, path, bounds)
             errors.extend(layer_errors)
             warnings.extend(layer_warnings)
+
+    errors.extend(_detect_semantic_duplicate_layers(manifest, base_dir=base_dir))
 
     sample_summary: dict[str, Any] | None = None
     if sample_lat is not None or sample_lon is not None:

@@ -51,6 +51,7 @@ Response includes:
 - Layer toggles are generated from backend layer metadata.
 - GeoJSON is rendered directly in `[longitude, latitude]` order until Leaflet consumes it.
 - Building footprint popups include source, matched building id, and match distance metadata.
+- Selectable footprint popups include `Use this structure`, which carries the chosen geometry/id into the next assessment update.
 - Home confirmation supports two paths:
   - polygon selection (`No — Select My Home`)
   - point fallback (`Can’t find your house? Click directly on your home`)

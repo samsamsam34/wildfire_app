@@ -735,6 +735,9 @@
       let verificationManualCandidates = [];
       let verificationSelectedCandidateId = null;
       let verificationInferredLocalities = [];
+      let pendingSelectedStructureId = null;
+      let pendingSelectedStructureGeometry = null;
+      let pendingSelectedStructureAssessmentId = null;
 
       const mapLayerStyle = {
         property_anchor_point: {
@@ -960,6 +963,70 @@
         return null;
       }
 
+      function isPolygonGeometry(geometry) {
+        if (!geometry || typeof geometry !== "object") return false;
+        const type = String(geometry.type || "");
+        if (type !== "Polygon" && type !== "MultiPolygon") return false;
+        return Array.isArray(geometry.coordinates) && geometry.coordinates.length > 0;
+      }
+
+      function cloneGeometry(geometry) {
+        if (!isPolygonGeometry(geometry)) return null;
+        try {
+          return JSON.parse(JSON.stringify(geometry));
+        } catch (_err) {
+          return null;
+        }
+      }
+
+      function selectedStructureStyle(feature) {
+        const styleDef = geoJsonStyle("selectable_structure_footprints");
+        const base = typeof styleDef === "function" ? styleDef(feature) : { ...(styleDef || {}) };
+        const structureId = extractStructureId(feature?.properties || {});
+        if (pendingSelectedStructureId && structureId && structureId === pendingSelectedStructureId) {
+          return {
+            ...base,
+            color: "#0f766e",
+            weight: 3,
+            fillColor: "#14b8a6",
+            fillOpacity: 0.24,
+          };
+        }
+        return base;
+      }
+
+      function refreshSelectableStructureStyles() {
+        const layer = mapLayerInstances["selectable_structure_footprints"];
+        if (!layer || typeof layer.setStyle !== "function") return;
+        layer.setStyle((feature) => selectedStructureStyle(feature));
+      }
+
+      function clearPendingStructureSelection() {
+        pendingSelectedStructureId = null;
+        pendingSelectedStructureGeometry = null;
+        pendingSelectedStructureAssessmentId = null;
+        refreshSelectableStructureStyles();
+      }
+
+      function applySelectedStructureFromMap({ structureId = "", geometry = null, source = "" } = {}) {
+        const normalizedId = String(structureId || "").trim();
+        const clonedGeometry = cloneGeometry(geometry);
+        if (!normalizedId || !clonedGeometry) {
+          setRequestStatus("Could not apply this structure selection. Try another footprint.", "error");
+          return;
+        }
+        pendingSelectedStructureId = normalizedId;
+        pendingSelectedStructureGeometry = clonedGeometry;
+        pendingSelectedStructureAssessmentId = latestAssessment?.assessment_id || null;
+        refreshSelectableStructureStyles();
+        const sourceText = String(source || "").trim();
+        const sourceSuffix = sourceText ? ` (source: ${sourceText})` : "";
+        setRequestStatus(
+          `Selected structure ${normalizedId} will be used on the next assessment update${sourceSuffix}.`,
+          "success"
+        );
+      }
+
       function renderMapDebugPanel(payload) {
         const panel = document.getElementById("mapDebugPanel");
         if (!panel) return;
@@ -1107,20 +1174,33 @@
         if (layerKey === "selectable_structure_footprints") {
           return L.geoJSON(fc, {
             pane: "selectableStructuresPane",
-            style: (feature) => {
-              const styleDef = geoJsonStyle(layerKey);
-              return typeof styleDef === "function" ? styleDef(feature) : styleDef;
-            },
+            style: (feature) => selectedStructureStyle(feature),
             onEachFeature: (feature, layer) => {
               const props = feature?.properties || {};
               const structureId = extractStructureId(props) || `feature_${Math.random().toString(36).slice(2, 8)}`;
+              const applyBtnId = `selectStructureBtn_${Math.random().toString(36).slice(2, 10)}`;
               const popup = [
                 `<strong>Structure footprint</strong>`,
                 `structure_id: ${structureId}`,
                 props?.source ? `source: ${props.source}` : "",
                 Number.isFinite(Number(props?.distance_m)) ? `distance_m: ${Number(props.distance_m).toFixed(2)}` : "",
+                `<button id="${applyBtnId}" type="button" class="secondary" style="margin-top:0.4rem;">Use this structure</button>`,
               ].filter(Boolean).join("<br>");
               layer.bindPopup(popup);
+              layer.on("popupopen", () => {
+                const btn = document.getElementById(applyBtnId);
+                if (!btn) return;
+                btn.onclick = (evt) => {
+                  evt.preventDefault();
+                  evt.stopPropagation();
+                  applySelectedStructureFromMap({
+                    structureId,
+                    geometry: feature?.geometry,
+                    source: props?.source,
+                  });
+                  if (layer.closePopup) layer.closePopup();
+                };
+              });
             },
           });
         }
@@ -1634,6 +1714,12 @@
         }
 
         latestAssessment = data;
+        if (
+          pendingSelectedStructureAssessmentId
+          && pendingSelectedStructureAssessmentId !== data?.assessment_id
+        ) {
+          clearPendingStructureSelection();
+        }
         const homeownerSummary = (data && typeof data.homeowner_summary === "object" && data.homeowner_summary)
           ? data.homeowner_summary
           : {};
@@ -2823,6 +2909,8 @@
           payload.selection_mode = "point";
           payload.user_selected_point = { latitude: lat, longitude: lon };
           payload.structure_geometry_source = "auto_detected";
+          payload.selected_structure_id = null;
+          payload.selected_structure_geometry = null;
         }
         closeAddressVerificationModal({ restoreFocus: false });
         pendingAssessmentPayload = null;
@@ -2859,17 +2947,31 @@
       }
 
       function buildAssessmentPayload() {
+        const enteredAddress = String(document.getElementById("address").value || "").trim();
+        const latestAddress = String(latestAssessment?.address || "").trim();
+        const canReuseSelectedStructure = !!(
+          pendingSelectedStructureId
+          && pendingSelectedStructureGeometry
+          && pendingSelectedStructureAssessmentId
+          && latestAssessment?.assessment_id
+          && pendingSelectedStructureAssessmentId === latestAssessment.assessment_id
+          && enteredAddress
+          && latestAddress
+          && normalizeAddressForComparison(enteredAddress) === normalizeAddressForComparison(latestAddress)
+        );
         const payload = {
-          address: String(document.getElementById("address").value || "").trim(),
+          address: enteredAddress,
           attributes: collectAttributes(""),
           confirmed_fields: parseCSV(document.getElementById("confirmed_fields").value),
           selection_mode: "polygon",
           user_selected_point: null,
           audience: "homeowner"
         };
-        payload.structure_geometry_source = "auto_detected";
-        payload.selected_structure_id = null;
-        payload.selected_structure_geometry = null;
+        payload.structure_geometry_source = canReuseSelectedStructure ? "user_selected" : "auto_detected";
+        payload.selected_structure_id = canReuseSelectedStructure ? pendingSelectedStructureId : null;
+        payload.selected_structure_geometry = canReuseSelectedStructure
+          ? cloneGeometry(pendingSelectedStructureGeometry)
+          : null;
         return payload;
       }
 

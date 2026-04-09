@@ -15,7 +15,7 @@
     {
       "name": "okanogan_county_addressing",
       "source_type": "county_address_dataset",
-      "enabled": false,
+      "enabled": true,
       "priority": 30,
       "path": "data/address_points/okanogan/okanogan_address_points.geojson",
       "metadata": {

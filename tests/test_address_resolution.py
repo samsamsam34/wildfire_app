@@ -8,6 +8,7 @@ import pytest
 from backend.address_resolution import (
     normalize_address_for_matching,
     resolve_local_address_candidate,
+    validate_address_point_source,
     validate_local_fallback_records,
 )
 
@@ -175,3 +176,96 @@ def test_resolve_local_address_candidate_scans_all_prepared_region_features(
     assert result["matched"] is True
     assert result["best_match"] is not None
     assert result["best_match"]["matched_address"] == "6 Pineview Rd, Winthrop, WA 98862"
+
+
+def test_resolve_local_address_candidate_handles_uppercase_county_fields(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_path = tmp_path / "parcel_address_points.geojson"
+    source_path.write_text(
+        json.dumps(
+            {
+                "type": "FeatureCollection",
+                "features": [
+                    {
+                        "type": "Feature",
+                        "properties": {
+                            "SITUS_ADDRESS": "19 E ASPEN LN",
+                            "SITUS_CITY_NM": "WINTHROP",
+                            "SITUS_ZIP_NR": "98862",
+                        },
+                        "geometry": {"type": "Point", "coordinates": [-120.1864, 48.4772]},
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        "backend.address_resolution.list_prepared_regions",
+        lambda base_dir=None: [{"region_id": "unit_test_region", "display_name": "Unit Test Region"}],
+    )
+    monkeypatch.setattr(
+        "backend.address_resolution.resolve_region_file",
+        lambda manifest, layer_key, base_dir=None: str(source_path) if layer_key == "parcel_address_points" else None,
+    )
+
+    result = resolve_local_address_candidate(
+        address="19 E Aspen Ln, Winthrop, WA 98862",
+        regions_root=str(tmp_path / "regions"),
+        include_alias_sources=False,
+        include_authoritative_sources=True,
+        min_auto_confidence_tier="low",
+    )
+    assert result["matched"] is True
+    assert result["best_match"] is not None
+    assert result["best_match"]["match_type"] in {"exact_normalized_address", "address_component_match"}
+
+
+def test_validate_address_point_source_rejects_non_point_geometries(tmp_path: Path) -> None:
+    source_path = tmp_path / "bad_address_points.geojson"
+    source_path.write_text(
+        json.dumps(
+            {
+                "type": "FeatureCollection",
+                "features": [
+                    {
+                        "type": "Feature",
+                        "properties": {"address": "19 E Aspen Ln, Winthrop, WA 98862"},
+                        "geometry": {
+                            "type": "Polygon",
+                            "coordinates": [[[-120.19, 48.47], [-120.18, 48.47], [-120.18, 48.48], [-120.19, 48.48], [-120.19, 48.47]]],
+                        },
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    report = validate_address_point_source(source_path, "unit_test_address_points")
+    assert report["valid"] is False
+    assert any("point-geometry ratio" in err for err in report["errors"])
+
+
+def test_validate_address_point_source_rejects_low_address_completeness(tmp_path: Path) -> None:
+    source_path = tmp_path / "sparse_address_points.geojson"
+    source_path.write_text(
+        json.dumps(
+            {
+                "type": "FeatureCollection",
+                "features": [
+                    {
+                        "type": "Feature",
+                        "properties": {"city": "Winthrop"},
+                        "geometry": {"type": "Point", "coordinates": [-120.18, 48.47]},
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    report = validate_address_point_source(source_path, "unit_test_address_points")
+    assert report["valid"] is False
+    assert any("complete-address ratio" in err for err in report["errors"])

@@ -24,7 +24,12 @@ export WF_DEFAULT_GRIDMET_DRYNESS_FULL_URL="${WF_DEFAULT_GRIDMET_DRYNESS_FULL_UR
 
 # WA-specific optional sources for parcel context.
 export WF_DEFAULT_PARCEL_POLYGONS_ENDPOINT="${WF_DEFAULT_PARCEL_POLYGONS_ENDPOINT:-https://services.arcgis.com/jsIt88o09Q0r1j8h/ArcGIS/rest/services/Current_Parcels/FeatureServer/0}"
-export WF_DEFAULT_PARCEL_ADDRESS_POINTS_ENDPOINT="${WF_DEFAULT_PARCEL_ADDRESS_POINTS_ENDPOINT:-$WF_DEFAULT_PARCEL_POLYGONS_ENDPOINT}"
+# Do not default parcel_address_points to parcel polygons; use a real local address-point dataset when available.
+DEFAULT_OKANOGAN_ADDRESS_POINTS_PATH="${ROOT_DIR}/data/address_points/okanogan/okanogan_address_points.geojson"
+if [[ -z "${WF_DEFAULT_PARCEL_ADDRESS_POINTS_PATH:-}" && -f "$DEFAULT_OKANOGAN_ADDRESS_POINTS_PATH" ]]; then
+  export WF_DEFAULT_PARCEL_ADDRESS_POINTS_PATH="$DEFAULT_OKANOGAN_ADDRESS_POINTS_PATH"
+fi
+export WF_DEFAULT_PARCEL_ADDRESS_POINTS_ENDPOINT="${WF_DEFAULT_PARCEL_ADDRESS_POINTS_ENDPOINT:-}"
 
 # If no Overture source is configured, use the USA structures service as a practical optional fallback.
 export WF_DEFAULT_OVERTURE_BUILDINGS_ENDPOINT="${WF_DEFAULT_OVERTURE_BUILDINGS_ENDPOINT:-https://services2.arcgis.com/FiaPA4ga0iQKduv3/arcgis/rest/services/USA_Structures_View/FeatureServer/0}"
@@ -60,5 +65,7 @@ echo "WHP endpoint: $WF_DEFAULT_WHP_ENDPOINT"
 echo "MTBS endpoint: $WF_DEFAULT_MTBS_SEVERITY_ENDPOINT"
 echo "gridMET URL: $WF_DEFAULT_GRIDMET_DRYNESS_FULL_URL"
 echo "Parcel endpoint: $WF_DEFAULT_PARCEL_POLYGONS_ENDPOINT"
+echo "Parcel address points endpoint: ${WF_DEFAULT_PARCEL_ADDRESS_POINTS_ENDPOINT:-<unset>}"
+echo "Parcel address points path: ${WF_DEFAULT_PARCEL_ADDRESS_POINTS_PATH:-<unset>}"
 echo "Overture fallback endpoint: $WF_DEFAULT_OVERTURE_BUILDINGS_ENDPOINT"
 exec "${cmd[@]}"

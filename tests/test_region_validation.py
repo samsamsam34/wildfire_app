@@ -316,3 +316,63 @@ def test_validate_prepared_region_ring_support_partial_when_sample_not_in_footpr
     else:
         assert result["footprint_ring_support"] == "partial"
         assert any("structure rings may fallback to point-based mode" in w.lower() for w in result["warnings"])
+
+
+def test_validate_vector_layer_rejects_polygon_only_parcel_address_points(tmp_path):
+    path = tmp_path / "parcel_address_points.geojson"
+    path.write_text(
+        json.dumps(
+            {
+                "type": "FeatureCollection",
+                "features": [
+                    {
+                        "type": "Feature",
+                        "properties": {"SITUS_ADDRESS": "19 E ASPEN LN"},
+                        "geometry": {
+                            "type": "Polygon",
+                            "coordinates": [[[-0.1, 0.1], [0.9, 0.1], [0.9, 0.9], [-0.1, 0.9], [-0.1, 0.1]]],
+                        },
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    errors, _warnings = region_validator._validate_vector_layer(
+        path,
+        (0.0, 0.0, 1.0, 1.0),
+        layer_key="parcel_address_points",
+    )
+    assert any("point geometry ratio" in err for err in errors)
+
+
+def test_validate_prepared_region_fails_when_parcel_layers_are_identical(monkeypatch, tmp_path):
+    region_dir, manifest_path = _write_region_fixture(tmp_path)
+    duplicate_payload = {
+        "type": "FeatureCollection",
+        "features": [
+            {
+                "type": "Feature",
+                "properties": {"OBJECTID": 1, "SITUS_ADDRESS": "19 E ASPEN LN"},
+                "geometry": {
+                    "type": "Polygon",
+                    "coordinates": [[[-0.1, 0.1], [0.9, 0.1], [0.9, 0.9], [-0.1, 0.9], [-0.1, 0.1]]],
+                },
+            }
+        ],
+    }
+    (region_dir / "parcel_polygons.geojson").write_text(json.dumps(duplicate_payload), encoding="utf-8")
+    (region_dir / "parcel_address_points.geojson").write_text(json.dumps(duplicate_payload), encoding="utf-8")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest.setdefault("files", {})["parcel_polygons"] = "parcel_polygons.geojson"
+    manifest.setdefault("files", {})["parcel_address_points"] = "parcel_address_points.geojson"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    monkeypatch.setattr(
+        region_validator,
+        "_validate_layer_openable_and_intersects",
+        lambda layer_key, layer_path, bounds: ([], []),
+    )
+    result = validate_prepared_region(region_id="test_region", base_dir=str(tmp_path))
+    assert result["ready_for_runtime"] is False
+    assert any("byte-identical datasets" in blocker for blocker in result["blockers"])
