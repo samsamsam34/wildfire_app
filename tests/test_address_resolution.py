@@ -269,3 +269,142 @@ def test_validate_address_point_source_rejects_low_address_completeness(tmp_path
     report = validate_address_point_source(source_path, "unit_test_address_points")
     assert report["valid"] is False
     assert any("complete-address ratio" in err for err in report["errors"])
+
+
+def test_invalid_address_point_source_can_fallback_for_exact_match(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_path = tmp_path / "invalid_parcel_address_points.geojson"
+    source_path.write_text(
+        json.dumps(
+            {
+                "type": "FeatureCollection",
+                "features": [
+                    {
+                        "type": "Feature",
+                        "properties": {"SITUS_ADDRESS": "6 Pineview Rd, Winthrop, WA 98862"},
+                        "geometry": {
+                            "type": "Polygon",
+                            "coordinates": [[[-120.19, 48.47], [-120.18, 48.47], [-120.18, 48.48], [-120.19, 48.48], [-120.19, 48.47]]],
+                        },
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        "backend.address_resolution.list_prepared_regions",
+        lambda base_dir=None: [{"region_id": "unit_test_region", "display_name": "Unit Test Region"}],
+    )
+    monkeypatch.setattr(
+        "backend.address_resolution.resolve_region_file",
+        lambda manifest, layer_key, base_dir=None: str(source_path) if layer_key == "parcel_address_points" else None,
+    )
+    monkeypatch.setenv("WF_ALLOW_INVALID_ADDRESS_POINT_PARCEL_FALLBACK", "true")
+
+    result = resolve_local_address_candidate(
+        address="6 Pineview Rd, Winthrop, WA 98862",
+        regions_root=str(tmp_path / "regions"),
+        include_alias_sources=False,
+        include_authoritative_sources=True,
+    )
+    assert result["matched"] is True
+    assert result["best_match"] is not None
+    assert result["best_match"]["address_source_fallback_mode"] == "invalid_address_point_parcel_fallback"
+    assert result["best_match"]["address_source_valid"] is False
+    assert result["best_match"]["confidence_tier"] in {"medium", "high"}
+    assert any("fallback mode was used" in note for note in result["diagnostics"])
+
+
+def test_invalid_address_point_source_fallback_requires_exact_house_street(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_path = tmp_path / "invalid_parcel_address_points.geojson"
+    source_path.write_text(
+        json.dumps(
+            {
+                "type": "FeatureCollection",
+                "features": [
+                    {
+                        "type": "Feature",
+                        "properties": {"SITUS_ADDRESS": "Pineview Rd, Winthrop, WA 98862"},
+                        "geometry": {
+                            "type": "Polygon",
+                            "coordinates": [[[-120.19, 48.47], [-120.18, 48.47], [-120.18, 48.48], [-120.19, 48.48], [-120.19, 48.47]]],
+                        },
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        "backend.address_resolution.list_prepared_regions",
+        lambda base_dir=None: [{"region_id": "unit_test_region", "display_name": "Unit Test Region"}],
+    )
+    monkeypatch.setattr(
+        "backend.address_resolution.resolve_region_file",
+        lambda manifest, layer_key, base_dir=None: str(source_path) if layer_key == "parcel_address_points" else None,
+    )
+    monkeypatch.setenv("WF_ALLOW_INVALID_ADDRESS_POINT_PARCEL_FALLBACK", "true")
+
+    result = resolve_local_address_candidate(
+        address="6 Pineview Rd, Winthrop, WA 98862",
+        regions_root=str(tmp_path / "regions"),
+        include_alias_sources=False,
+        include_authoritative_sources=True,
+    )
+    assert result["matched"] is False
+    assert result["best_candidate"] is not None
+    assert result["best_candidate"]["address_source_fallback_mode"] == "invalid_address_point_parcel_fallback"
+    assert result["best_candidate"]["auto_usable"] is False
+    assert result["best_candidate"]["confidence_tier"] == "low"
+
+
+def test_invalid_address_point_source_can_be_disabled(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_path = tmp_path / "invalid_parcel_address_points.geojson"
+    source_path.write_text(
+        json.dumps(
+            {
+                "type": "FeatureCollection",
+                "features": [
+                    {
+                        "type": "Feature",
+                        "properties": {"SITUS_ADDRESS": "6 Pineview Rd, Winthrop, WA 98862"},
+                        "geometry": {
+                            "type": "Polygon",
+                            "coordinates": [[[-120.19, 48.47], [-120.18, 48.47], [-120.18, 48.48], [-120.19, 48.48], [-120.19, 48.47]]],
+                        },
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        "backend.address_resolution.list_prepared_regions",
+        lambda base_dir=None: [{"region_id": "unit_test_region", "display_name": "Unit Test Region"}],
+    )
+    monkeypatch.setattr(
+        "backend.address_resolution.resolve_region_file",
+        lambda manifest, layer_key, base_dir=None: str(source_path) if layer_key == "parcel_address_points" else None,
+    )
+    monkeypatch.setenv("WF_ALLOW_INVALID_ADDRESS_POINT_PARCEL_FALLBACK", "false")
+
+    result = resolve_local_address_candidate(
+        address="6 Pineview Rd, Winthrop, WA 98862",
+        regions_root=str(tmp_path / "regions"),
+        include_alias_sources=False,
+        include_authoritative_sources=True,
+    )
+    assert result["matched"] is False
+    assert result["candidate_count"] == 0

@@ -11,6 +11,11 @@ from typing import Any
 
 from backend.region_registry import list_prepared_regions, resolve_region_file
 
+try:
+    from shapely.geometry import shape as shapely_shape
+except Exception:  # pragma: no cover - optional dependency in constrained environments
+    shapely_shape = None
+
 
 LOGGER = logging.getLogger("wildfire_app.address_resolution")
 DEFAULT_LOCAL_ALIAS_PATH = Path("config") / "local_address_fallbacks.json"
@@ -58,6 +63,13 @@ _LON_KEYS = ("longitude", "lon", "lng", "x", "lon_dd", "lon_wgs84")
 
 _AUTO_USABLE_TIERS = {"high", "medium"}
 _CONFIDENCE_RANK = {"high": 2, "medium": 1, "low": 0, "unknown": -1}
+
+
+def _env_flag(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
 
 
 def normalize_address_for_matching(value: str) -> str:
@@ -118,20 +130,43 @@ def _flatten_coords(values: Any) -> list[tuple[float, float]]:
     return out
 
 
+def _representative_lon_lat_from_geometry(geometry: dict[str, Any]) -> tuple[float, float] | None:
+    if not isinstance(geometry, dict):
+        return None
+    geom_type = str(geometry.get("type") or "")
+    coords = geometry.get("coordinates")
+
+    if geom_type == "Point" and isinstance(coords, (list, tuple)) and len(coords) >= 2:
+        try:
+            return float(coords[0]), float(coords[1])
+        except (TypeError, ValueError):
+            return None
+
+    all_coords = _flatten_coords(coords)
+    if not all_coords:
+        return None
+
+    if geom_type in {"Polygon", "MultiPolygon"} and shapely_shape is not None:
+        try:
+            geom = shapely_shape(geometry)
+            if not geom.is_valid:
+                geom = geom.buffer(0)
+            point = geom.representative_point()
+            return float(point.x), float(point.y)
+        except Exception:
+            pass
+
+    lons = [coord[0] for coord in all_coords]
+    lats = [coord[1] for coord in all_coords]
+    return float((min(lons) + max(lons)) / 2.0), float((min(lats) + max(lats)) / 2.0)
+
+
 def _feature_lon_lat(feature: dict[str, Any]) -> tuple[float, float] | None:
     geometry = feature.get("geometry")
     if isinstance(geometry, dict):
-        coords = geometry.get("coordinates")
-        if geometry.get("type") == "Point" and isinstance(coords, (list, tuple)) and len(coords) >= 2:
-            try:
-                return float(coords[0]), float(coords[1])
-            except (TypeError, ValueError):
-                return None
-        all_coords = _flatten_coords(coords)
-        if all_coords:
-            lon_avg = sum(c[0] for c in all_coords) / float(len(all_coords))
-            lat_avg = sum(c[1] for c in all_coords) / float(len(all_coords))
-            return float(lon_avg), float(lat_avg)
+        representative = _representative_lon_lat_from_geometry(geometry)
+        if representative is not None:
+            return representative
     props = feature.get("properties") if isinstance(feature.get("properties"), dict) else {}
     lowered_props = {str(key).lower(): value for key, value in props.items()}
     for lat_key in _LAT_KEYS:
@@ -675,6 +710,10 @@ def _source_type_allowed(source_type: str, allowed_source_types: set[str] | None
     return str(source_type or "") in allowed_source_types
 
 
+def _allow_invalid_address_point_parcel_fallback() -> bool:
+    return _env_flag("WF_ALLOW_INVALID_ADDRESS_POINT_PARCEL_FALLBACK", True)
+
+
 def _normalize_locality_preferences(values: list[str] | tuple[str, ...] | None) -> set[str]:
     if not values:
         return set()
@@ -712,6 +751,7 @@ def resolve_local_address_candidate(
         chosen_alias_path = Path.cwd() / chosen_alias_path
 
     required_rank = _CONFIDENCE_RANK.get(str(min_auto_confidence_tier).strip().lower(), _CONFIDENCE_RANK["medium"])
+    allow_invalid_address_source_fallback = _allow_invalid_address_point_parcel_fallback()
     preferred_locality_norms = _normalize_locality_preferences(preferred_localities)
     preferred_postal_zip = _zip5(preferred_postal or "")
     required_state_norm = normalize_address_for_matching(required_state or "")
@@ -800,10 +840,12 @@ def resolve_local_address_candidate(
                     source_type = "prepared_region_parcel_dataset"
                 if not _source_type_allowed(source_type, allowed_source_types):
                     continue
+                invalid_address_source = False
                 if layer_key in {"address_points", "parcel_address_points"}:
                     source_validation = validate_address_point_source(path_obj, f"{region_id}:{layer_key}")
                     source_validations.append(source_validation)
-                    if not bool(source_validation.get("valid")):
+                    invalid_address_source = not bool(source_validation.get("valid"))
+                    if invalid_address_source and not allow_invalid_address_source_fallback:
                         continue
                 for feature in _load_geojson_features(path_obj):
                     lon_lat = _feature_lon_lat(feature)
@@ -829,7 +871,19 @@ def resolve_local_address_candidate(
                     confidence = str(match_eval["confidence_tier"])
                     if not _candidate_is_relevant(str(match_eval["match_type"]), float(score)):
                         continue
-                    auto_usable = bool(match_eval["auto_usable"]) and _CONFIDENCE_RANK.get(confidence, -1) >= required_rank
+                    if invalid_address_source:
+                        if confidence == "high":
+                            confidence = "medium"
+                        if str(match_eval.get("match_type") or "") not in {
+                            "exact_normalized_address",
+                            "address_component_match",
+                        }:
+                            confidence = "low"
+                            auto_usable = False
+                        else:
+                            auto_usable = bool(match_eval["auto_usable"]) and _CONFIDENCE_RANK.get(confidence, -1) >= required_rank
+                    else:
+                        auto_usable = bool(match_eval["auto_usable"]) and _CONFIDENCE_RANK.get(confidence, -1) >= required_rank
                     candidates.append(
                         {
                             "latitude": float(lon_lat[1]),
@@ -849,6 +903,12 @@ def resolve_local_address_candidate(
                             "candidate_components": components,
                             "geometry_type": geometry_type or None,
                             "point_geometry": point_geometry,
+                            "address_source_valid": not invalid_address_source,
+                            "address_source_fallback_mode": (
+                                "invalid_address_point_parcel_fallback"
+                                if invalid_address_source
+                                else None
+                            ),
                         }
                     )
 
@@ -863,10 +923,12 @@ def resolve_local_address_candidate(
             searched_sources.append(str(path_obj))
             attempted_sources.append(source_name)
             is_address_like_source = "address" in source_type or "address" in source_name.lower()
+            invalid_address_source = False
             if is_address_like_source:
                 source_validation = validate_address_point_source(path_obj, source_name)
                 source_validations.append(source_validation)
-                if not bool(source_validation.get("valid")):
+                invalid_address_source = not bool(source_validation.get("valid"))
+                if invalid_address_source and not allow_invalid_address_source_fallback:
                     continue
             if not _source_type_allowed(source_type, allowed_source_types):
                 continue
@@ -894,7 +956,19 @@ def resolve_local_address_candidate(
                 confidence = str(match_eval["confidence_tier"])
                 if not _candidate_is_relevant(str(match_eval["match_type"]), float(score)):
                     continue
-                auto_usable = bool(match_eval["auto_usable"]) and _CONFIDENCE_RANK.get(confidence, -1) >= required_rank
+                if invalid_address_source:
+                    if confidence == "high":
+                        confidence = "medium"
+                    if str(match_eval.get("match_type") or "") not in {
+                        "exact_normalized_address",
+                        "address_component_match",
+                    }:
+                        confidence = "low"
+                        auto_usable = False
+                    else:
+                        auto_usable = bool(match_eval["auto_usable"]) and _CONFIDENCE_RANK.get(confidence, -1) >= required_rank
+                else:
+                    auto_usable = bool(match_eval["auto_usable"]) and _CONFIDENCE_RANK.get(confidence, -1) >= required_rank
                 candidates.append(
                     {
                         "latitude": float(lon_lat[1]),
@@ -914,6 +988,12 @@ def resolve_local_address_candidate(
                         "candidate_components": components,
                         "geometry_type": geometry_type or None,
                         "point_geometry": point_geometry,
+                        "address_source_valid": (not invalid_address_source) if is_address_like_source else True,
+                        "address_source_fallback_mode": (
+                            "invalid_address_point_parcel_fallback"
+                            if (is_address_like_source and invalid_address_source)
+                            else None
+                        ),
                         "source_metadata": dict(source_entry.get("metadata") or {}),
                     }
                 )
@@ -960,6 +1040,8 @@ def resolve_local_address_candidate(
                 ranking_score -= 0.08
             else:
                 ranking_score -= 0.03
+        if row.get("address_source_valid") is False:
+            ranking_score -= 0.06
 
         row["ranking_score"] = round(max(0.0, min(1.0, ranking_score)), 4)
 
@@ -990,6 +1072,10 @@ def resolve_local_address_candidate(
             diagnostics.append(warning)
         for error in list(report.get("errors") or [])[:3]:
             diagnostics.append(error)
+    if any(row.get("address_source_fallback_mode") == "invalid_address_point_parcel_fallback" for row in candidates):
+        diagnostics.append(
+            "Invalid address-point dataset fallback mode was used; automatic acceptance is limited to exact house/street matches."
+        )
 
     if not searched_sources:
         diagnostics.append("No local address-point datasets or fallback records were available for local resolution.")
@@ -1059,6 +1145,7 @@ def resolve_local_address_candidate(
 
 def _iter_authoritative_source_paths(regions_root: str) -> list[tuple[str, Path, str]]:
     paths: list[tuple[str, Path, str]] = []
+    allow_invalid_address_source_fallback = _allow_invalid_address_point_parcel_fallback()
     manifests = list_prepared_regions(base_dir=regions_root)
     for manifest in manifests:
         region_id = str(manifest.get("region_id") or "")
@@ -1077,7 +1164,7 @@ def _iter_authoritative_source_paths(regions_root: str) -> list[tuple[str, Path,
                 source_type = "prepared_region_parcel_dataset"
             if layer_key in {"address_points", "parcel_address_points"}:
                 source_validation = validate_address_point_source(path_obj, f"{region_id}:{layer_key}")
-                if not bool(source_validation.get("valid")):
+                if not bool(source_validation.get("valid")) and not allow_invalid_address_source_fallback:
                     continue
             paths.append((f"{region_id}:{layer_key}", path_obj, source_type))
 
@@ -1091,7 +1178,7 @@ def _iter_authoritative_source_paths(regions_root: str) -> list[tuple[str, Path,
         source_type = str(source_entry.get("source_type") or "local_authoritative_dataset")
         if "address" in source_type or "address" in source_name.lower():
             source_validation = validate_address_point_source(path_obj, source_name)
-            if not bool(source_validation.get("valid")):
+            if not bool(source_validation.get("valid")) and not allow_invalid_address_source_fallback:
                 continue
         paths.append((source_name, path_obj, source_type))
     return paths
