@@ -1,158 +1,153 @@
 # WildfireRisk Advisor
-A homeowner-focused wildfire risk and mitigation tool that aims to be property-specific when data supports it, and explicit about limits when it does not.
 
-## What this is
-WildfireRisk Advisor helps homeowners understand wildfire risk at their property and decide what to do next.
+WildfireRisk Advisor is a FastAPI backend plus a lightweight static frontend for deterministic, property-level wildfire assessment.
 
-It uses deterministic scoring logic and open geospatial data, then returns:
-- risk and readiness summaries
-- plain-language drivers and limitations
-- prioritized mitigation actions
-- confidence and specificity signals
+It focuses on three related outputs:
+- `site_hazard_score` (landscape/environment around the property)
+- `home_ignition_vulnerability_score` (home and near-structure susceptibility)
+- `home_hardening_readiness` (rules-based homeowner readiness signal)
 
-## Current status
-### What works
-- Homeowner-first flow: assess, review, improve inputs, and simulate mitigation changes.
-- Action-oriented outputs: top risk drivers, prioritized actions, and improvement guidance.
-- Trust framing: explicit confidence, assumptions, and data-gap limitations.
-- Specificity tiers reflect evidence quality: `property_specific` (strong parcel/footprint/near-structure support), `address_level` (partial property evidence), `regional_estimate` (limited local property evidence).
-- Prepared-region workflow for deterministic runtime scoring on local data snapshots.
+`wildfire_risk_score` is also returned as a blended summary for compatibility.
+Legacy `insurance_readiness_score` remains available as an optional/future-facing compatibility mirror.
 
-### Known limitations
-- Coverage is only as good as prepared regional data.
-- Property-level quality depends heavily on parcel polygons, building footprints, and near-structure context.
-- Some addresses require manual confirmation when candidates conflict or confidence is low.
-- Data quality can vary by county/region, so outputs may be less specific in some locations.
-- This is a decision-support tool, not a guarantee of real-world outcomes.
+## Project Overview
 
-## Core principle
-Be useful without pretending certainty.
+The app geocodes an address, builds wildfire context from prepared regional layers, scores risk/home-hardening readiness, and returns explainable results with assumptions, confidence, and mitigation actions.
 
-If evidence is strong, return property-specific guidance. If evidence is weak, reduce specificity, surface uncertainty clearly, and still provide practical next steps.
+It also supports reassessment, simulation, report retrieval/export, portfolio workflows, and lightweight operational review features (annotations, workflow status, assignments, audit events).
 
-## What users get
-- Overall wildfire risk summary
-- Home hardening readiness summary
-- Top risk drivers
-- Prioritized mitigation actions
-- Confidence and specificity summary
-- Assumptions and unknowns
-- Before/after simulation feedback for mitigation scenarios
+Runtime scoring reads prepared local data. Large GIS download/prep is handled offline by scripts.
 
-## How it works
-1. User submits an address.
-2. The app resolves a location and checks prepared-region coverage.
-3. It pulls available property and regional context (parcel, footprint, vegetation/fuel, hazard, access, etc.).
-4. Deterministic scoring computes risk/readiness outputs.
-5. The app returns scores, drivers, limitations, confidence/specificity tier, and recommended actions.
+## Product Focus
+
+Primary audience right now is homeowners. The default product path is:
+1. assess an address
+2. view the homeowner report
+3. improve the result with missing home details
+4. simulate mitigation upgrades
+
+Insurer/portfolio/internal diagnostics/calibration capabilities remain available for advanced use, but they are secondary/internal surfaces and are not the default homeowner flow.
+
+## What It Does
+
+- Runs factorized wildfire scoring across environmental and structure-focused submodels.
+- Computes home hardening readiness through a separate rules path with blockers and penalties.
+- Supports homeowner inputs (`roof_type`, `vent_type`, `defensible_space_ft`, etc.), reassessment, and what-if simulation.
+- Uses structure-based ring metrics (`0-5 ft`, `5-30 ft`, `30-100 ft`, `100-300 ft`) when footprint data is available.
+- Supports optional NAIP imagery-derived near-structure features (prepared offline):
+  - ring vegetation cover/canopy/high-fuel/continuity proxies
+  - local percentile context within the prepared region
+  - nearest high-fuel patch distance proxy
+- Adds defensible-space zone analysis for near-structure vegetation/fuel context:
+  - `defensible_space_analysis` (zone metrics, basis geometry, quality/limitations, mitigation flags)
+  - `top_near_structure_risk_drivers`
+  - `prioritized_vegetation_actions`
+  - `defensible_space_limitations_summary`
+- Enriches context from open datasets when configured:
+  - USFS WHP for hazard/burn context
+  - MTBS perimeter/severity context for historical fire exposure
+  - gridMET-derived dryness proxy
+  - OpenStreetMap road-network features for access exposure
+- Returns trust-oriented outputs:
+  - score availability flags (distinguish “not scored” from real low scores)
+  - confidence tier and use restriction
+  - score eligibility, blockers, diagnostics, and provenance metadata
+  - per-layer coverage audit (`layer_coverage_audit`) and coverage summary (`coverage_summary`) to explain data gaps vs sampling/config issues
+  - factor-level score evidence ledger (`score_evidence_ledger`) with weight/contribution/evidence status per factor
+  - evidence-quality summary (`evidence_quality_summary`) with observed/inferred/missing/fallback counts and confidence penalties
+- Includes a homeowner-facing assessment map panel in the frontend:
+  - property point and building footprint (when available)
+  - defensible-space rings (`0-5 ft`, `5-30 ft`, `30-100 ft`, `100-300 ft`)
+  - nearby wildfire context overlays (historical fire perimeters and nearby structures when available)
+  - layer toggles, legends, and limitations text for missing/partial geometry
+- Persists assessment/report payloads in SQLite with compatibility handling for older rows.
 
 ## Running Locally
-1. Clone and enter the repo.
+
+1. Clone the repo and enter it.
+
 ```bash
 git clone https://github.com/samsamsam34/wildfire_app.git
 cd wildfire_app
 ```
+
 2. Create a virtual environment and install dependencies.
+
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 ```
-3. Set basic environment variables.
-```bash
-# Optional: set API keys for auth; if omitted, local dev runs open.
-export WILDFIRE_API_KEYS="dev-key-1"
 
-# Optional: override prepared-region directory.
-export WF_REGION_DATA_DIR="data/regions"
+3. Set environment variables (directly or in a local `.env` you source).
+
+```bash
+export WILDFIRE_API_KEYS="dev-key-1"     # optional local auth
+export WF_REGION_DATA_DIR="data/regions" # prepared region root
 ```
-4. Run the backend API.
+
+4. Start the backend.
+
 ```bash
 uvicorn backend.main:app --reload
 ```
-5. Open the app.
-API docs: `http://127.0.0.1:8000/docs`
 
-Static frontend: serve `frontend/public` and open it in a browser:
+5. Access the app.
+- API docs: `http://127.0.0.1:8000/docs`
+- Static frontend:
+
 ```bash
 python3 -m http.server 4173 --directory frontend/public
 ```
+
 Then open `http://127.0.0.1:4173`.
 
 ## Requirements
-- Python: `3.10+`
-- Core runtime libraries: FastAPI, Uvicorn, Pydantic
-- Geo/data libraries: NumPy, Rasterio, PyProj, Shapely
-- Test libraries: Pytest, HTTPX
-- System libraries (commonly needed for geo stack): GDAL, PROJ, GEOS
+
+- Python `3.10+`
+- Key Python packages: FastAPI, Uvicorn, Pydantic, NumPy, Rasterio, PyProj, Shapely
+- Common geospatial system dependencies: GDAL, PROJ, GEOS
 
 ## Data Sources (High-Level)
-- Building footprints (for example Overture, Microsoft, OSM): anchors near-structure context and improves property specificity.
-- Parcel data (county/state parcel polygons and parcel-address points): improves address-to-property matching and boundary-aware feature extraction.
-- Wildfire layers (for example LANDFIRE fuels/canopy, hazard and burn history layers): provides regional hazard context.
-- Imagery (for example NAIP): supports near-structure vegetation/fuel proxies in prepared workflows.
 
-This project uses open data where available. Coverage and quality vary by region, and that directly affects confidence and specificity tier.
+- Building footprints (Overture, Microsoft, OSM): identify structures and near-structure context for property-specific analysis.
+- Parcel data (county/state sources): improve address-to-property matching and property-boundary-aware feature extraction.
+- Wildfire layers (LANDFIRE, USFS WHP, MTBS, gridMET): provide fuels, terrain, burn history, and dryness context.
+- Imagery (NAIP): supports near-structure vegetation and defensible-space feature extraction in prepared workflows.
 
-## Data Pipeline Overview
-- Offline preparation: region data is downloaded/ingested, clipped/validated, and written to prepared region folders (`data/regions/<region_id>`).
-- Runtime assessment: API calls read prepared region files, extract features for the target location, and run deterministic scoring.
-- Practical split: heavy GIS work happens offline; runtime stays fast, deterministic, and transparent about missing/partial evidence.
+Data sources are open/public where available. Coverage and quality vary by region, and missing or weak local data reduces specificity and confidence.
 
-## Data Download / Preparation (Template)
-Use this as a starting point for regional data staging scripts.
+## Data Preparation (Template)
 
 ```bash
-# Example: scripts/download_data.sh
+# scripts/download_data.sh
 
-set -euo pipefail
-
-# Create directories
-mkdir -p data/raw/footprints
-mkdir -p data/raw/parcels
-mkdir -p data/raw/wildfire
+mkdir -p data/raw
 mkdir -p data/processed
 
-# Download building footprints (placeholder)
-# curl -L "<footprint_source_url>" -o data/raw/footprints/footprints.geojson
+# Example: download building footprints
+# wget or curl command here
 
-# Download parcel data (region-specific placeholder)
-# curl -L "<parcel_source_url>" -o data/raw/parcels/parcels.geojson
+# Example: download parcel data
+# region-specific
 
-# Download wildfire layers (placeholder)
-# curl -L "<wildfire_layer_url>" -o data/raw/wildfire/fuel.tif
+# Example: download wildfire layers
+# LANDFIRE / WHP / MTBS
 ```
 
-Then prepare a region with the project script:
+## Limitations
 
-```bash
-python3 scripts/prepare_region_from_catalog_or_sources.py \
-  --region-id my_region \
-  --display-name "My Region" \
-  --bbox min_lon min_lat max_lon max_lat \
-  --validate
-```
+- Scoring and readiness are deterministic heuristics; this is not a carrier-approved underwriting model.
+- Report outputs are decision-support guidance and do not guarantee insurability or wildfire outcomes.
+- Open-data enrichment depends on local prepared layers and configured sources; missing datasets still trigger partial/fallback paths.
 
-## Current focus / next steps
-- Improve property-specific reliability where parcel and footprint quality are inconsistent.
-- Reduce false precision by tightening coordinate and candidate selection safety.
-- Expand regional data quality and validation so more addresses can stay in `property_specific` mode.
-- Keep homeowner guidance clear, practical, and tied to observable evidence.
+## Release Notes
 
-## What this is not
-- Not an underwriting engine.
-- Not a fire spread simulator.
-- Not a probabilistic loss forecast.
-- Not a substitute for local fire officials, defensible space inspections, or code requirements.
+Use `CHANGELOG.md` for structured release notes. Each release should record:
+- versions bumped
+- reason for bump
+- expected output impact
+- interpretation/comparability notes
 
-## Philosophy
-Trust is earned by clarity, not complexity.
-
-The product should:
-- prioritize homeowner decisions over internal platform detail
-- expose assumptions instead of hiding them
-- separate strong evidence from fallback inference
-- make limitations visible at the same level as scores
-
-## Bottom line
-WildfireRisk Advisor is built to give homeowners actionable wildfire guidance with honest confidence boundaries. It should be specific when the data is strong, and transparent when it is not.
+## License
+This project is licensed under the MIT License – see the LICENSE file for details.
