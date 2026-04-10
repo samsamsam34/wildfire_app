@@ -144,8 +144,15 @@ def _bbox_quadkeys(bbox: BoundingBox, zoom: int) -> set[str]:
 
 
 class MicrosoftBuildingFootprintAdapter:
+    # Public catalog CSV published by Microsoft for the US Building Footprints
+    # dataset.  Override with WF_MS_BUILDINGS_INDEX_URL if a mirror or newer
+    # version is preferred.
+    _DEFAULT_INDEX_URL = (
+        "https://minedbuildings.z5.web.core.windows.net/global-buildings/dataset-links.csv"
+    )
+
     def __init__(self) -> None:
-        self.index_url = os.getenv("WF_MS_BUILDINGS_INDEX_URL", "")
+        self.index_url = os.getenv("WF_MS_BUILDINGS_INDEX_URL", self._DEFAULT_INDEX_URL)
         self.zoom = int(os.getenv("WF_MS_BUILDINGS_TILE_ZOOM", "9"))
         self.timeout = float(os.getenv("WF_SOURCE_DISCOVERY_TIMEOUT", "30"))
 

@@ -205,11 +205,16 @@ def _build_enrichment_runtime_status(
     access_context = property_level_context.get("access_context")
     naip_source = str(property_level_context.get("naip_feature_source") or "").strip().lower()
 
+    # wildfire_data.py sets hazard_context["status"] = "observed" and
+    # moisture_context["status"] = "observed" when sampling succeeds, while
+    # mtbs and roads adapters use "ok".  Accept both so the enrichment layer
+    # is not falsely reported as "present_but_not_consumed".
+    _consumed_statuses = {"ok", "observed"}
     consumed_map = {
-        "whp": isinstance(hazard_context, dict) and str(hazard_context.get("status") or "") == "ok",
-        "mtbs_severity": isinstance(historical_fire_context, dict) and str(historical_fire_context.get("status") or "") == "ok",
-        "gridmet_dryness": isinstance(moisture_context, dict) and str(moisture_context.get("status") or "") == "ok",
-        "roads": isinstance(access_context, dict) and str(access_context.get("status") or "") == "ok",
+        "whp": isinstance(hazard_context, dict) and str(hazard_context.get("status") or "") in _consumed_statuses,
+        "mtbs_severity": isinstance(historical_fire_context, dict) and str(historical_fire_context.get("status") or "") in _consumed_statuses,
+        "gridmet_dryness": isinstance(moisture_context, dict) and str(moisture_context.get("status") or "") in _consumed_statuses,
+        "roads": isinstance(access_context, dict) and str(access_context.get("status") or "") in _consumed_statuses,
         "naip_structure_features": naip_source == "prepared_region_naip",
     }
 

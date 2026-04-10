@@ -177,6 +177,40 @@ def test_build_feature_bundle_summary_reports_enrichment_consumption_status():
     assert metrics["enrichment_layers_present_not_consumed_count"] >= 1
 
 
+def test_build_feature_bundle_summary_treats_observed_status_as_consumed():
+    # wildfire_data.py sets hazard_context["status"] = "observed" (not "ok")
+    # when WHP sampling succeeds.  This test ensures that "observed" is treated
+    # as consumed so WHP is not falsely reported as "present_but_not_consumed".
+    summary = build_feature_bundle_summary(
+        lat=46.87,
+        lon=-113.99,
+        region_context={"region_id": "missoula_pilot", "region_status": "prepared"},
+        property_level_context={
+            "footprint_used": False,
+            "hazard_context": {"status": "observed"},
+            "moisture_context": {"status": "observed"},
+            "historical_fire_context": {"status": "missing"},
+            "access_context": {"status": "missing"},
+            "naip_feature_source": None,
+            "feature_sampling": {},
+        },
+        source_status={},
+        runtime_paths={},
+        environmental_layer_status={},
+        layer_coverage_audit=[
+            {"layer_key": "whp", "coverage_status": "observed"},
+            {"layer_key": "gridmet_dryness", "coverage_status": "observed"},
+        ],
+    )
+    statuses = summary["enrichment_runtime_status"]
+    assert statuses["whp"] == "present_and_consumed", (
+        "WHP with hazard_context status='observed' must be treated as consumed"
+    )
+    assert statuses["gridmet_dryness"] == "present_and_consumed", (
+        "gridmet_dryness with moisture_context status='observed' must be treated as consumed"
+    )
+
+
 def test_feature_bundle_cache_roundtrip(tmp_path):
     cache = FeatureBundleCache(cache_dir=str(tmp_path), enabled=True, ttl_seconds=3600)
     layer_path = _touch(tmp_path / "fuel.tif", content="dummy")

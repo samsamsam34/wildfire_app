@@ -13,6 +13,7 @@ MAX_LAT="${WF_BBOX_MAX_LAT:-47.10}"
 DOWNLOAD_TIMEOUT="${WF_DOWNLOAD_TIMEOUT:-90}"
 DOWNLOAD_RETRIES="${WF_DOWNLOAD_RETRIES:-3}"
 VALIDATE_AFTER_PREP="${WF_VALIDATE_AFTER_PREP:-0}"
+SOURCE_CONFIG="${WF_SOURCE_CONFIG:-config/regions/missoula_pilot_sources.json}"
 
 cmd=(
   "$PYTHON_BIN"
@@ -26,6 +27,7 @@ cmd=(
   --overwrite
   --download-timeout "$DOWNLOAD_TIMEOUT"
   --download-retries "$DOWNLOAD_RETRIES"
+  --source-config "$SOURCE_CONFIG"
 )
 
 case "$VALIDATE_AFTER_PREP" in

@@ -1,0 +1,46 @@
+{
+  "version": 1,
+  "name": "missoula-pilot-source-registry",
+  "description": "Missoula Pilot region source overrides. Pass as --source-config when re-running Missoula prep to acquire parcel, address-point, and Microsoft building-footprint layers.",
+  "layers": {
+    "parcel_polygons": {
+      "provider_type": "arcgis_feature_service",
+      "source_endpoint": "${WF_DEFAULT_PARCEL_POLYGONS_ENDPOINT:-https://geoinfo.msl.mt.gov/arcgis/rest/services/MSDI_Cadastral/MT_Cadastral/FeatureServer/0}",
+      "source_path": "${WF_DEFAULT_PARCEL_POLYGONS_PATH:-}",
+      "source_url": "${WF_DEFAULT_PARCEL_POLYGONS_URL:-}",
+      "supports_bbox_export": true,
+      "allow_full_download_fallback": false,
+      "query_format": "json",
+      "supports_geojson_direct": false,
+      "require_return_geometry": true,
+      "expected_output_format": "geojson",
+      "notes": "Montana State Library MSDI Cadastral FeatureServer. Raises parcel-source confidence from 0.28 (nearest-parcel fallback) to 0.92 and enables property-boundary-aware footprint matching. Override WF_DEFAULT_PARCEL_POLYGONS_ENDPOINT if the MSL endpoint changes or a county-level source is preferred."
+    },
+    "parcel_address_points": {
+      "provider_type": "arcgis_feature_service",
+      "source_endpoint": "${WF_DEFAULT_PARCEL_ADDRESS_POINTS_ENDPOINT:-https://geoinfo.msl.mt.gov/arcgis/rest/services/MSDI_Addresses/MT_Addresses/FeatureServer/0}",
+      "source_path": "${WF_DEFAULT_PARCEL_ADDRESS_POINTS_PATH:-}",
+      "source_url": "${WF_DEFAULT_PARCEL_ADDRESS_POINTS_URL:-}",
+      "supports_bbox_export": true,
+      "allow_full_download_fallback": false,
+      "query_format": "json",
+      "supports_geojson_direct": false,
+      "require_return_geometry": true,
+      "expected_output_format": "geojson",
+      "notes": "Montana State Library MSDI address points (E911-derived). Snaps geocoded results from road-centerline to parcel-centroid precision, improving adjacent-property differentiation. Override WF_DEFAULT_PARCEL_ADDRESS_POINTS_ENDPOINT if a county-level E911 source is available."
+    },
+    "building_footprints_microsoft": {
+      "provider_type": "arcgis_feature_service",
+      "source_path": "${WF_DEFAULT_MICROSOFT_BUILDINGS_PATH:-}",
+      "source_endpoint": "${WF_DEFAULT_MICROSOFT_BUILDINGS_ENDPOINT:-}",
+      "source_url": "${WF_DEFAULT_MICROSOFT_BUILDINGS_URL:-}",
+      "supports_bbox_export": true,
+      "allow_full_download_fallback": true,
+      "query_format": "json",
+      "supports_geojson_direct": false,
+      "require_return_geometry": true,
+      "expected_output_format": "geojson",
+      "notes": "Microsoft US Building Footprints supplemental coverage (confidence weight 0.80). The MicrosoftBuildingFootprintAdapter auto-discovers tile URLs from the public catalog index when WF_MS_BUILDINGS_INDEX_URL is set (default now hardwired in adapters.py). No explicit source_endpoint needed here; the adapter populates discovered assets at prep time."
+    }
+  }
+}

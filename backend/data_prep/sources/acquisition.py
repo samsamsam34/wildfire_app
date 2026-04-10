@@ -561,6 +561,11 @@ class ArcGISFeatureServiceProvider:
         response_content_type: str | None = None
         http_status: int | None = None
         saw_transfer_limit = False
+        # Detected after the first page: the server's actual max-record-count cap,
+        # which may be smaller than our requested page_size.  Using the actual
+        # returned count as the threshold lets the loop terminate correctly
+        # regardless of which cap (1 000 / 2 000 / 10 000) the server enforces.
+        effective_batch_size: int | None = None
 
         for _ in range(max_pages):
             page_url = self._build_query_url(
@@ -589,9 +594,20 @@ class ArcGISFeatureServiceProvider:
             exceeded_transfer_limit = bool(payload.get("exceededTransferLimit"))
             saw_transfer_limit = saw_transfer_limit or exceeded_transfer_limit
 
+            # On the first page with results, record how many features the
+            # server actually returned.  Some servers cap at a maxRecordCount
+            # that is smaller than our requested page_size without setting
+            # exceededTransferLimit, so we cannot rely on the flag alone.
+            # Using the actual returned count as the reference lets the loop
+            # terminate correctly regardless of the server's cap value.
+            if effective_batch_size is None and current_count > 0:
+                effective_batch_size = current_count
+
             if current_count <= 0:
                 break
-            if not exceeded_transfer_limit and current_count < page_size:
+            # Stop when fewer features than the effective batch size were
+            # returned — this is the reliable cross-server termination signal.
+            if current_count < (effective_batch_size or page_size):
                 break
             offset += current_count
         else:
@@ -694,7 +710,7 @@ class ArcGISFeatureServiceProvider:
                     response_format="json",
                     return_geometry=self.require_return_geometry,
                     result_offset=0,
-                    result_record_count=2000,
+                    result_record_count=self._query_page_size(),
                 )
                 attempted_urls.append(json_url)
                 payload, json_meta, pagination_warnings, request_url = self._download_paginated_esri_json(
