@@ -16,6 +16,16 @@ from typing import Any, Protocol
 
 BoundingBox = dict[str, float]
 
+# Some county/municipal ArcGIS servers sit behind Cloudflare and reject the
+# default Python-urllib User-Agent with a 403 (CF error code 1010).  Using a
+# plausible browser UA bypasses the block without requiring auth.
+_BROWSER_UA = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/124.0.0.0 Safari/537.36"
+)
+_BROWSER_HEADERS = {"User-Agent": _BROWSER_UA}
+
 
 @dataclass
 class SourceProviderCapabilities:
@@ -162,7 +172,8 @@ def _download_with_retry(
     for attempt in range(max(0, retries) + 1):
         try:
             bytes_downloaded = 0
-            with urllib.request.urlopen(url, timeout=timeout_seconds) as response, open(out_path, "wb") as out:
+            req = urllib.request.Request(url, headers=_BROWSER_HEADERS)
+            with urllib.request.urlopen(req, timeout=timeout_seconds) as response, open(out_path, "wb") as out:
                 status = getattr(response, "status", None)
                 content_type = response.headers.get("Content-Type") if getattr(response, "headers", None) else None
                 while True:
@@ -221,7 +232,8 @@ def _download_json_with_retry(
     last_body_snippet: str | None = None
     for attempt in range(max(0, retries) + 1):
         try:
-            with urllib.request.urlopen(url, timeout=timeout_seconds) as response:
+            req = urllib.request.Request(url, headers=_BROWSER_HEADERS)
+            with urllib.request.urlopen(req, timeout=timeout_seconds) as response:
                 status = getattr(response, "status", None)
                 content_type = response.headers.get("Content-Type") if getattr(response, "headers", None) else None
                 raw = response.read()
