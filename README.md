@@ -119,20 +119,44 @@ Data sources are open/public where available. Coverage and quality vary by regio
 
 ## Data Preparation (Template)
 
+Use the built-in prep scripts so users can copy/paste and fetch prepared data directly.
+
+Tested example (Missoula):
+
 ```bash
-# scripts/download_data.sh
+# From repo root
+bash scripts/download_landfire_missoula.sh
+```
 
-mkdir -p data/raw
-mkdir -p data/processed
+Equivalent direct command (same behavior as the helper script defaults):
 
-# Example: download building footprints
-# wget or curl command here
+```bash
+python3 scripts/prepare_region_from_catalog_or_sources.py \
+  --region-id missoula_pilot \
+  --display-name "Missoula Pilot" \
+  --bbox -114.30 46.70 -113.70 47.10 \
+  --prefer-bbox-downloads \
+  --allow-full-download-fallback \
+  --allow-partial-coverage-fill \
+  --overwrite
+```
 
-# Example: download parcel data
-# region-specific
+Optional: include validation in the same run.
 
-# Example: download wildfire layers
-# LANDFIRE / WHP / MTBS
+```bash
+WF_VALIDATE_AFTER_PREP=1 bash scripts/download_landfire_missoula.sh
+```
+
+Optional Winthrop/WA layer bootstrap:
+
+```bash
+bash scripts/download_optional_winthrop_wa.sh
+```
+
+Quick verify that region data was written:
+
+```bash
+ls -lah data/regions/missoula_pilot
 ```
 
 ## Limitations
