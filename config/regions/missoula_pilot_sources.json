@@ -1,11 +1,99 @@
 {
   "version": 1,
   "name": "missoula-pilot-source-registry",
-  "description": "Missoula Pilot region source overrides. Pass as --source-config when re-running Missoula prep to acquire parcel, address-point, and Microsoft building-footprint layers.",
+  "description": "Missoula Pilot region source registry. Extends the default source_registry.json with Missoula County-specific endpoints for parcels, address points, and supplemental building footprints. Pass as --source-config when running Missoula prep.",
   "layers": {
+    "dem": {
+      "provider_type": "arcgis_image_service",
+      "source_endpoint": "${WF_DEFAULT_DEM_ENDPOINT:-https://elevation.nationalmap.gov/arcgis/rest/services/3DEPElevation/ImageServer}",
+      "full_download_url": "${WF_DEFAULT_DEM_FULL_URL:-}",
+      "supports_bbox_export": true,
+      "allow_full_download_fallback": true,
+      "target_resolution": 30.0,
+      "expected_output_format": "tif"
+    },
+    "fuel": {
+      "provider_type": "arcgis_image_service",
+      "source_endpoint": "${WF_DEFAULT_FUEL_ENDPOINT:-https://lfps.usgs.gov/arcgis/rest/services/Landfire_LF240/US_240FBFM40/ImageServer}",
+      "full_download_url": "${WF_DEFAULT_FUEL_FULL_URL:-}",
+      "supports_bbox_export": true,
+      "allow_full_download_fallback": true,
+      "target_resolution": 30.0,
+      "expected_output_format": "tif"
+    },
+    "canopy": {
+      "provider_type": "arcgis_image_service",
+      "source_endpoint": "${WF_DEFAULT_CANOPY_ENDPOINT:-https://lfps.usgs.gov/arcgis/rest/services/Landfire_LF240/US_240CC/ImageServer}",
+      "full_download_url": "${WF_DEFAULT_CANOPY_FULL_URL:-}",
+      "supports_bbox_export": true,
+      "allow_full_download_fallback": true,
+      "target_resolution": 30.0,
+      "expected_output_format": "tif"
+    },
+    "fire_perimeters": {
+      "provider_type": "arcgis_feature_service",
+      "source_endpoint": "${WF_DEFAULT_FIRE_PERIMETERS_ENDPOINT:-https://services3.arcgis.com/T4QMspbfLg3qTGWY/arcgis/rest/services/InterAgencyFirePerimeterHistory_All_Years_View/FeatureServer/0}",
+      "full_download_url": "${WF_DEFAULT_FIRE_PERIMETERS_FULL_URL:-}",
+      "supports_bbox_export": true,
+      "allow_full_download_fallback": true,
+      "query_format": "json",
+      "supports_geojson_direct": false,
+      "require_return_geometry": true,
+      "expected_output_format": "geojson"
+    },
+    "building_footprints": {
+      "provider_type": "arcgis_feature_service",
+      "source_endpoint": "${WF_DEFAULT_BUILDING_FOOTPRINTS_ENDPOINT:-https://services2.arcgis.com/FiaPA4ga0iQKduv3/arcgis/rest/services/USA_Structures_View/FeatureServer/0}",
+      "full_download_url": "${WF_DEFAULT_BUILDING_FOOTPRINTS_FULL_URL:-}",
+      "supports_bbox_export": true,
+      "allow_full_download_fallback": true,
+      "query_format": "json",
+      "supports_geojson_direct": false,
+      "require_return_geometry": true,
+      "expected_output_format": "geojson",
+      "notes": "USA Structures View — paginated JSON path ensures all buildings are fetched across the full Missoula bbox."
+    },
+    "roads": {
+      "provider_type": "arcgis_feature_service",
+      "source_endpoint": "${WF_DEFAULT_ROADS_ENDPOINT:-https://services.arcgis.com/xOi1kZaI0eWDREZv/ArcGIS/rest/services/NTAD_North_American_Roads/FeatureServer/0}",
+      "full_download_url": "${WF_DEFAULT_ROADS_FULL_URL:-}",
+      "supports_bbox_export": true,
+      "allow_full_download_fallback": true,
+      "query_format": "json",
+      "supports_geojson_direct": false,
+      "require_return_geometry": true,
+      "expected_output_format": "geojson"
+    },
+    "whp": {
+      "provider_type": "arcgis_image_service",
+      "source_endpoint": "${WF_DEFAULT_WHP_ENDPOINT:-https://imagery.geoplatform.gov/iipp/rest/services/Fire_Aviation/USFS_EDW_RMRS_WildfireHazardPotentialClassified/ImageServer}",
+      "full_download_url": "${WF_DEFAULT_WHP_FULL_URL:-}",
+      "supports_bbox_export": true,
+      "allow_full_download_fallback": true,
+      "target_resolution": 30.0,
+      "expected_output_format": "tif"
+    },
+    "mtbs_severity": {
+      "provider_type": "arcgis_image_service",
+      "source_endpoint": "${WF_DEFAULT_MTBS_SEVERITY_ENDPOINT:-https://imagery.geoplatform.gov/iipp/rest/services/Fire_Aviation/USFS_EDW_MTBS_CONUS/ImageServer}",
+      "full_download_url": "${WF_DEFAULT_MTBS_SEVERITY_FULL_URL:-}",
+      "supports_bbox_export": true,
+      "allow_full_download_fallback": true,
+      "target_resolution": 30.0,
+      "expected_output_format": "tif"
+    },
+    "gridmet_dryness": {
+      "provider_type": "file_download",
+      "source_endpoint": "${WF_DEFAULT_GRIDMET_DRYNESS_ENDPOINT:-}",
+      "full_download_url": "${WF_DEFAULT_GRIDMET_DRYNESS_FULL_URL:-https://www.northwestknowledge.net/metdata/data/fm1000_2026.nc}",
+      "supports_bbox_export": false,
+      "allow_full_download_fallback": true,
+      "target_resolution": 4000.0,
+      "expected_output_format": "tif"
+    },
     "parcel_polygons": {
       "provider_type": "arcgis_feature_service",
-      "source_endpoint": "${WF_DEFAULT_PARCEL_POLYGONS_ENDPOINT:-https://geoinfo.msl.mt.gov/arcgis/rest/services/MSDI_Cadastral/MT_Cadastral/FeatureServer/0}",
+      "source_endpoint": "${WF_DEFAULT_PARCEL_POLYGONS_ENDPOINT:-https://gis.missoulacounty.us/arcgis/rest/services/Base/Cadastral/MapServer/23}",
       "source_path": "${WF_DEFAULT_PARCEL_POLYGONS_PATH:-}",
       "source_url": "${WF_DEFAULT_PARCEL_POLYGONS_URL:-}",
       "supports_bbox_export": true,
@@ -14,11 +102,11 @@
       "supports_geojson_direct": false,
       "require_return_geometry": true,
       "expected_output_format": "geojson",
-      "notes": "Montana State Library MSDI Cadastral FeatureServer. Raises parcel-source confidence from 0.28 (nearest-parcel fallback) to 0.92 and enables property-boundary-aware footprint matching. Override WF_DEFAULT_PARCEL_POLYGONS_ENDPOINT if the MSL endpoint changes or a county-level source is preferred."
+      "notes": "Missoula County GIS — Base/Cadastral MapServer layer 23 (Parcel Labels). Raises parcel-source confidence from 0.28 (nearest-parcel fallback) to 0.92 and enables property-boundary-aware footprint matching. Override WF_DEFAULT_PARCEL_POLYGONS_ENDPOINT to use a different source."
     },
     "parcel_address_points": {
       "provider_type": "arcgis_feature_service",
-      "source_endpoint": "${WF_DEFAULT_PARCEL_ADDRESS_POINTS_ENDPOINT:-https://geoinfo.msl.mt.gov/arcgis/rest/services/MSDI_Addresses/MT_Addresses/FeatureServer/0}",
+      "source_endpoint": "${WF_DEFAULT_PARCEL_ADDRESS_POINTS_ENDPOINT:-https://gis.missoulacounty.us/arcgis/rest/services/OEM/ng911/FeatureServer/6}",
       "source_path": "${WF_DEFAULT_PARCEL_ADDRESS_POINTS_PATH:-}",
       "source_url": "${WF_DEFAULT_PARCEL_ADDRESS_POINTS_URL:-}",
       "supports_bbox_export": true,
@@ -27,7 +115,7 @@
       "supports_geojson_direct": false,
       "require_return_geometry": true,
       "expected_output_format": "geojson",
-      "notes": "Montana State Library MSDI address points (E911-derived). Snaps geocoded results from road-centerline to parcel-centroid precision, improving adjacent-property differentiation. Override WF_DEFAULT_PARCEL_ADDRESS_POINTS_ENDPOINT if a county-level E911 source is available."
+      "notes": "Missoula County OEM NG911 SiteStructureAddressPoint (layer 6). Snaps geocoded results from road-centerline to structure-level precision, improving adjacent-property differentiation. Override WF_DEFAULT_PARCEL_ADDRESS_POINTS_ENDPOINT if needed."
     },
     "building_footprints_microsoft": {
       "provider_type": "arcgis_feature_service",
@@ -40,7 +128,7 @@
       "supports_geojson_direct": false,
       "require_return_geometry": true,
       "expected_output_format": "geojson",
-      "notes": "Microsoft US Building Footprints supplemental coverage (confidence weight 0.80). The MicrosoftBuildingFootprintAdapter auto-discovers tile URLs from the public catalog index when WF_MS_BUILDINGS_INDEX_URL is set (default now hardwired in adapters.py). No explicit source_endpoint needed here; the adapter populates discovered assets at prep time."
+      "notes": "Microsoft US Building Footprints supplemental coverage (confidence weight 0.80). MicrosoftBuildingFootprintAdapter auto-discovers tile URLs from the public catalog index (WF_MS_BUILDINGS_INDEX_URL, default wired in adapters.py). No explicit source_endpoint needed; the adapter populates discovered assets at prep time."
     }
   }
 }
