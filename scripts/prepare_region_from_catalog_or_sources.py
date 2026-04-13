@@ -22,6 +22,7 @@ from backend.data_prep.catalog import (
     ingest_catalog_raster,
     ingest_catalog_vector,
 )
+from backend.data_prep.sources.acquisition import _boolish
 from backend.data_prep.prepare_region import parse_bbox
 from backend.data_prep.validate_region import summarize_property_specific_readiness, validate_prepared_region
 from backend.region_registry import load_region_manifest
@@ -44,6 +45,10 @@ SUPPORTED_PROVIDER_TYPES = {
     "overture_buildings",
     "local_file",
 }
+
+# Layers whose source is discovered at prep-time by an adapter (e.g. MicrosoftBuildingFootprintAdapter).
+# They may have no explicit endpoint/url in the registry — that is expected and valid.
+_ADAPTER_SOURCED_LAYERS: frozenset[str] = frozenset({"building_footprints_microsoft"})
 
 PREFERRED_FEATURE_SERVICE_ENDPOINT_PREFIXES: dict[str, tuple[str, ...]] = {
     "building_footprints": (
@@ -458,7 +463,7 @@ def _validate_layer_source_config(*, layer_key: str, layer_cfg: dict[str, Any]) 
 
     missing_required_fields: list[str] = []
     if provider_type in {"arcgis_image_service", "arcgis_feature_service"}:
-        if not (has_local_path or has_endpoint or has_url):
+        if not (has_local_path or has_endpoint or has_url) and layer_key not in _ADAPTER_SOURCED_LAYERS:
             missing_required_fields.append("source_endpoint|source_url|source_path")
     elif provider_type in {"file_download", "vector_service", "overture_buildings"}:
         if not (has_local_path or has_url):
@@ -650,6 +655,11 @@ def _ingest_layer_for_bbox(
     source_url = layer_cfg.get("source_url") or layer_cfg.get("full_download_url")
     source_endpoint = layer_cfg.get("source_endpoint")
     per_layer_resolution = layer_cfg.get("target_resolution", target_resolution)
+    raw_sgd = layer_cfg.get("supports_geojson_direct")
+    supports_geojson_direct: bool | None = None
+    if raw_sgd is not None:
+        supports_geojson_direct = _boolish(raw_sgd, True)
+    preferred_response_format: str | None = str(layer_cfg.get("query_format") or "").strip().lower() or None
 
     def _run_ingest(bounds_override: dict[str, float] | None) -> dict[str, Any]:
         if layer_type == "raster":
@@ -685,6 +695,8 @@ def _ingest_layer_for_bbox(
             retries=retries,
             backoff_seconds=backoff_seconds,
             force=force,
+            supports_geojson_direct=supports_geojson_direct,
+            preferred_response_format=preferred_response_format,
         )
 
     try:

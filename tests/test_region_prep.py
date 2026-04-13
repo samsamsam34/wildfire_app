@@ -612,7 +612,7 @@ def test_arcgis_bbox_export_url_and_request(monkeypatch, tmp_path):
     dem_bytes = _raster_bytes(tmp_path, "bbox_dem.tif")
 
     def fake_urlopen(url, timeout=0):
-        captured["url"] = url
+        captured["url"] = url.full_url if hasattr(url, "full_url") else str(url)
         return _FakeHTTPResponse(dem_bytes)
 
     monkeypatch.setattr(source_acq.urllib.request, "urlopen", fake_urlopen)
@@ -636,9 +636,9 @@ def test_arcgis_bbox_export_url_and_request(monkeypatch, tmp_path):
     assert result.acquisition_method == "bbox_export"
     assert result.local_path and Path(result.local_path).exists()
     assert captured["url"] is not None
-    assert "exportImage" in str(captured["url"])
-    assert "bbox=" in str(captured["url"])
-    assert "format=tiff" in str(captured["url"])
+    assert "exportImage" in captured["url"]
+    assert "bbox=" in captured["url"]
+    assert "format=tiff" in captured["url"]
 
 
 def test_arcgis_bbox_export_cache_reuse(monkeypatch, tmp_path):
@@ -752,14 +752,15 @@ def test_feature_service_geojson_fallback_to_json(monkeypatch, tmp_path):
     }
 
     def fake_urlopen(url, timeout=0):
-        if "f=geojson" in str(url):
+        url_str = url.full_url if hasattr(url, "full_url") else str(url)
+        if "f=geojson" in url_str:
             body = io.BytesIO(b'{"error":{"message":"Format geojson not supported"}}')
-            raise urllib.error.HTTPError(str(url), 400, "Bad Request", {"Content-Type": "application/json"}, body)
-        if "f=json" in str(url):
+            raise urllib.error.HTTPError(url_str, 400, "Bad Request", {"Content-Type": "application/json"}, body)
+        if "f=json" in url_str:
             # A real server returns an empty features list once offset exceeds
             # the total feature count.  The adaptive pagination loop relies on
             # this to terminate when the server does not set exceededTransferLimit.
-            if "resultOffset=0" in str(url):
+            if "resultOffset=0" in url_str:
                 return _FakeHTTPResponseWithHeaders(
                     json.dumps(esri_json).encode("utf-8"),
                     status=200,
@@ -818,7 +819,7 @@ def test_feature_service_json_paginates(monkeypatch, tmp_path):
     }
 
     def fake_urlopen(url, timeout=0):
-        text = str(url)
+        text = url.full_url if hasattr(url, "full_url") else str(url)
         if "resultOffset=0" in text and "resultRecordCount=2" in text:
             return _FakeHTTPResponseWithHeaders(
                 json.dumps(page0).encode("utf-8"),
@@ -885,7 +886,7 @@ def test_feature_service_paginates_when_server_caps_below_page_size(monkeypatch,
     call_count = {"n": 0}
 
     def fake_urlopen(url, timeout=0):
-        text = str(url)
+        text = url.full_url if hasattr(url, "full_url") else str(url)
         n = call_count["n"]
         call_count["n"] += 1
         if "resultOffset=0" in text:
@@ -1025,3 +1026,74 @@ def test_require_core_layers_flag_controls_blockers(tmp_path):
     assert manifest["final_status"] == "success"
     assert manifest["required_blockers"] == []
     assert manifest["minimum_required_missing"] == []
+
+
+def test_ingest_catalog_vector_forwards_query_format_to_provider(monkeypatch, tmp_path):
+    # Regression: _resolve_ingest_input was building a minimal layer_config without
+    # supports_geojson_direct or query_format, causing geojson to always be tried first
+    # and returning only maxRecordCount features even when query_format="json" was configured.
+    calls: list[str] = []
+
+    def fake_urlopen(req_or_url, timeout=0):
+        url = req_or_url.full_url if hasattr(req_or_url, "full_url") else str(req_or_url)
+        calls.append(url)
+        # First page: 1 feature. Second page: empty (signals end of results).
+        if len(calls) == 1:
+            page = {
+                "features": [{"attributes": {"id": 1}, "geometry": {"x": -113.9, "y": 46.87}}],
+                "exceededTransferLimit": False,
+            }
+        else:
+            page = {"features": [], "exceededTransferLimit": False}
+        return _FakeHTTPResponseWithHeaders(
+            json.dumps(page).encode("utf-8"),
+            status=200,
+            content_type="application/json",
+        )
+
+    monkeypatch.setenv("WF_ARCGIS_FEATURE_QUERY_PAGE_SIZE", "1")
+    monkeypatch.setattr(source_acq.urllib.request, "urlopen", fake_urlopen)
+
+    from backend.data_prep.catalog import ingest_catalog_vector
+
+    ingest_catalog_vector(
+        layer_name="fire_perimeters",
+        source_endpoint="https://example.test/FeatureServer/0",
+        provider_type="arcgis_feature_service",
+        bounds={"min_lon": -114.0, "min_lat": 46.7, "max_lon": -113.7, "max_lat": 47.1},
+        cache_root=tmp_path / "cache",
+        prefer_bbox_downloads=True,
+        allow_full_download_fallback=False,
+        supports_geojson_direct=False,
+        preferred_response_format="json",
+        timeout_seconds=5.0,
+        retries=0,
+        backoff_seconds=0.0,
+    )
+
+    # All URLs called must use f=json — no f=geojson call should appear.
+    assert all("f=json" in url for url in calls), f"Expected json-only URLs, got: {calls}"
+    assert all("f=geojson" not in url for url in calls), f"geojson was called despite supports_geojson_direct=False: {calls}"
+
+
+def test_adapter_sourced_layer_passes_config_validation():
+    # building_footprints_microsoft has no explicit source_endpoint — it is discovered
+    # at prep time by MicrosoftBuildingFootprintAdapter.  Config validation must not
+    # reject it as missing_source_details.
+    import importlib, sys
+    # Import the script as a module to access _validate_layer_source_config
+    spec = importlib.util.spec_from_file_location(
+        "prep_script",
+        Path(__file__).parents[1] / "scripts" / "prepare_region_from_catalog_or_sources.py",
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    result = mod._validate_layer_source_config(
+        layer_key="building_footprints_microsoft",
+        layer_cfg={"provider_type": "arcgis_feature_service"},
+    )
+    assert result["config_valid"] is True, (
+        f"building_footprints_microsoft with empty endpoint must be config_valid=True; got: {result}"
+    )
+    assert result["config_status"] == "configured"

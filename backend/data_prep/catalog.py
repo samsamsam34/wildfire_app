@@ -416,6 +416,8 @@ def _resolve_ingest_input(
     timeout_seconds: float,
     retries: int,
     backoff_seconds: float,
+    supports_geojson_direct: bool | None = None,
+    preferred_response_format: str | None = None,
 ) -> tuple[Path, dict[str, Any]]:
     warnings: list[str] = []
     source_url = _sanitize_url(source_url)
@@ -444,16 +446,21 @@ def _resolve_ingest_input(
 
     if source_endpoint and bounds:
         prefer_bbox_for_endpoint = bool(prefer_bbox_downloads or not source_url)
+        layer_config: dict[str, Any] = {
+            "provider_type": provider_type or ("arcgis_image_service" if layer_type == "raster" else "arcgis_feature_service"),
+            "source_endpoint": source_endpoint,
+            "source_url": source_url,
+            "full_download_url": source_url,
+            "supports_bbox_export": True,
+        }
+        if supports_geojson_direct is not None:
+            layer_config["supports_geojson_direct"] = supports_geojson_direct
+        if preferred_response_format is not None:
+            layer_config["query_format"] = preferred_response_format
         result = acquire_layer_from_config(
             layer_key=layer_name,
             layer_type=layer_type,
-            layer_config={
-                "provider_type": provider_type or ("arcgis_image_service" if layer_type == "raster" else "arcgis_feature_service"),
-                "source_endpoint": source_endpoint,
-                "source_url": source_url,
-                "full_download_url": source_url,
-                "supports_bbox_export": True,
-            },
+            layer_config=layer_config,
             bounds=bounds,
             cache_root=cache_root,
             prefer_bbox_downloads=prefer_bbox_for_endpoint,
@@ -668,6 +675,8 @@ def ingest_catalog_vector(
     retries: int = 2,
     backoff_seconds: float = 1.5,
     force: bool = False,
+    supports_geojson_direct: bool | None = None,
+    preferred_response_format: str | None = None,
 ) -> dict[str, Any]:
     if LAYER_TYPES.get(layer_name, "vector") != "vector":
         raise ValueError(f"{layer_name} is not configured as a vector layer.")
@@ -690,6 +699,8 @@ def ingest_catalog_vector(
         timeout_seconds=timeout_seconds,
         retries=retries,
         backoff_seconds=backoff_seconds,
+        supports_geojson_direct=supports_geojson_direct,
+        preferred_response_format=preferred_response_format,
     )
     source_ref = source_url or source_endpoint or str(ingest_path.resolve())
     item_id = _build_item_id(

@@ -174,14 +174,16 @@ def test_arcgis_feature_service_json_query_ingest_writes_catalog_and_bounds(monk
             {
                 "attributes": {"id": 1, "name": "perimeter"},
                 "geometry": {
-                    "rings": [[[-111.0, 45.6], [-110.9, 45.6], [-110.9, 45.7], [-111.0, 45.7], [-111.0, 45.6]]]
+                    # Polygon fully covering the request bbox so catalog entry
+                    # bounds contain the request bbox → coverage_status == "full"
+                    "rings": [[[-111.2, 45.5], [-110.8, 45.5], [-110.8, 45.9], [-111.2, 45.9], [-111.2, 45.5]]]
                 },
             }
         ]
     }
 
     def fake_urlopen(url, timeout=0):
-        text = str(url)
+        text = url.full_url if hasattr(url, "full_url") else str(url)
         assert "/query?" in text
         assert "f=json" in text
         return _FakeHTTPResponse(json.dumps(esri_json).encode("utf-8"))
@@ -229,7 +231,7 @@ def test_arcgis_feature_service_geojson_fallback_to_json_ingest(monkeypatch, tmp
     }
 
     def fake_urlopen(url, timeout=0):
-        text = str(url)
+        text = url.full_url if hasattr(url, "full_url") else str(url)
         if "f=geojson" in text:
             body = io.BytesIO(b'{"error":{"message":"Format geojson not supported"}}')
             raise urllib.error.HTTPError(text, 400, "Bad Request", {"Content-Type": "application/json"}, body)

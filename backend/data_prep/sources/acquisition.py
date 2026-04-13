@@ -621,6 +621,9 @@ class ArcGISFeatureServiceProvider:
             # returned — this is the reliable cross-server termination signal.
             if current_count < (effective_batch_size or page_size):
                 break
+            # Server explicitly signalled no more pages.
+            if not exceeded_transfer_limit:
+                break
             offset += current_count
         else:
             raise ValueError(
@@ -663,7 +666,7 @@ class ArcGISFeatureServiceProvider:
             "endpoint": self.endpoint,
             "layer_key": layer_key,
             "bbox": bbox,
-            "version": "1",
+            "version": "2",
         }
         digest = hashlib.sha256(json.dumps(key_payload, sort_keys=True).encode("utf-8")).hexdigest()
         out_path = cache_dir / f"{digest}_{layer_key}.geojson"
