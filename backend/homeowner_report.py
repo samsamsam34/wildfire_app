@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import timezone
+import json
+import os
 import re
 import textwrap
 from typing import Any, Literal
@@ -997,6 +999,10 @@ def build_homeowner_report(
     empirical_loss_prob = (
         result.empirical_loss_likelihood_proxy if calibration_metadata_requested else None
     )
+    try:
+        homeowner_explanations = generate_homeowner_explanations(result)
+    except Exception:
+        homeowner_explanations = _template_homeowner_explanations(result)
 
     return HomeownerReport(
         assessment_id=result.assessment_id,
@@ -1120,6 +1126,7 @@ def build_homeowner_report(
             "model_version": result.model_version,
             "product_version": result.product_version,
             "api_version": result.api_version,
+            "homeowner_explanations": homeowner_explanations,
             "model_governance": _dump_value(result.model_governance),
             "region_data_version": result.region_data_version,
             "data_bundle_version": result.data_bundle_version,
@@ -1288,6 +1295,334 @@ def _escape_pdf_text(text: str) -> str:
     return encoded.decode("latin-1")
 
 
+def _split_sentences(text: str) -> list[str]:
+    normalized = _normalize_line(text)
+    if not normalized:
+        return []
+    parts = re.split(r"(?<=[.!?])\s+", normalized)
+    return [str(p).strip() for p in parts if str(p).strip()]
+
+
+def _sanitize_explanation_text(
+    text: Any,
+    *,
+    fallback: str,
+    max_sentences: int = 2,
+    max_chars: int = 240,
+) -> str:
+    candidate = _normalize_line(text)
+    if not candidate:
+        candidate = _normalize_line(fallback)
+    # Keep phrasing directional; avoid hard percentages in homeowner narrative.
+    candidate = re.sub(r"\b\d+(?:\.\d+)?\s*%", "a meaningful amount", candidate, flags=re.I)
+    candidate = re.sub(
+        r"\b\d+(?:\.\d+)?\s*percent(?:age)?\b",
+        "a meaningful amount",
+        candidate,
+        flags=re.I,
+    )
+    jargon_map = {
+        "topography": "terrain",
+        "submodel": "risk factor",
+        "mitigation": "risk reduction action",
+        "ignition vulnerability": "home ignition risk",
+    }
+    lowered = candidate.lower()
+    for src, dst in jargon_map.items():
+        if src in lowered:
+            lowered = lowered.replace(src, dst)
+    if lowered:
+        candidate = lowered[0].upper() + lowered[1:]
+    sentences = _split_sentences(candidate)[: max(1, int(max_sentences))]
+    merged = " ".join(sentences).strip()
+    if not merged:
+        merged = _normalize_line(fallback)
+    if len(merged) > max_chars:
+        merged = merged[: max_chars - 1].rstrip() + "…"
+    if merged and merged[-1] not in ".!?":
+        merged += "."
+    return merged
+
+
+def _sanitize_explanation_list(
+    values: Any,
+    *,
+    fallback: list[str],
+    limit: int = 3,
+) -> list[str]:
+    raw_items = list(values) if isinstance(values, list) else []
+    out: list[str] = []
+    fallback_idx = 0
+    while len(out) < max(1, int(limit)):
+        raw = raw_items[len(out)] if len(out) < len(raw_items) else ""
+        if fallback:
+            fallback_text = fallback[min(fallback_idx, len(fallback) - 1)]
+            fallback_idx += 1
+        else:
+            fallback_text = "Use this guidance as directional planning support."
+        cleaned = _sanitize_explanation_text(raw, fallback=fallback_text)
+        if cleaned:
+            out.append(cleaned)
+        if len(raw_items) <= len(out) and len(out) >= min(len(fallback), max(1, int(limit))):
+            break
+    return out[: max(1, int(limit))]
+
+
+def _extract_assessment_actions(assessment: AssessmentResult, *, limit: int = 3) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+
+    for row in list(assessment.prioritized_mitigation_actions or [])[: max(1, int(limit))]:
+        action = _normalize_line(getattr(row, "action", ""))
+        if not action:
+            continue
+        explanation = _normalize_line(
+            getattr(row, "why_this_matters", "")
+            or getattr(row, "explanation", "")
+        )
+        rows.append({"action": action, "explanation": explanation})
+
+    if not rows:
+        for action in list(assessment.top_recommended_actions or [])[: max(1, int(limit))]:
+            text = _normalize_line(action)
+            if text:
+                rows.append({"action": text, "explanation": ""})
+
+    if not rows:
+        for row in list(assessment.mitigation_plan or [])[: max(1, int(limit))]:
+            action = _normalize_line(getattr(row, "title", "") or getattr(row, "action", ""))
+            if not action:
+                continue
+            explanation = _normalize_line(getattr(row, "reason", "") or getattr(row, "impact_statement", ""))
+            rows.append({"action": action, "explanation": explanation})
+
+    return rows[: max(1, int(limit))]
+
+
+def _template_homeowner_explanations(assessment: AssessmentResult) -> dict[str, object]:
+    confidence_tier = str(assessment.confidence_tier or "preliminary").strip().lower()
+    missing_count = len(list(assessment.confidence_summary.missing_data or []))
+    estimated_count = len(list(assessment.confidence_summary.estimated_data or []))
+    fallback_count = len(list(assessment.confidence_summary.fallback_assumptions or []))
+    fallback_count += len(list((assessment.assessment_diagnostics.fallback_decisions or [])))
+    tone_profile = _pdf_tone_profile(
+        confidence_tier,
+        missing_count=missing_count,
+        fallback_count=fallback_count,
+        estimated_count=estimated_count,
+    )
+
+    risk_score = (
+        assessment.overall_wildfire_risk
+        if assessment.overall_wildfire_risk is not None
+        else assessment.wildfire_risk_score
+    )
+    risk_band = _section_band_label(_risk_band(_to_float(risk_score)))
+    if tone_profile == "direct":
+        headline = f"Your home has {risk_band.lower()} wildfire risk based on strong local evidence."
+    elif tone_profile == "balanced":
+        headline = f"Your home appears to have {risk_band.lower()} wildfire risk based on available property and regional evidence."
+    else:
+        headline = f"Your home may have {risk_band.lower()} wildfire risk, but some details were estimated."
+
+    driver_rows = [str(v).strip() for v in list(assessment.top_risk_drivers or []) if str(v).strip()]
+    if not driver_rows and assessment.top_risk_drivers_detailed:
+        driver_rows = [
+            _normalize_line(getattr(row, "explanation", "") or getattr(row, "factor", ""))
+            for row in list(assessment.top_risk_drivers_detailed or [])
+            if _normalize_line(getattr(row, "explanation", "") or getattr(row, "factor", ""))
+        ]
+    if not driver_rows:
+        driver_rows = ["Nearby vegetation and terrain conditions are increasing wildfire exposure."]
+    driver_rows = driver_rows[:3]
+
+    driver_explanations: list[str] = []
+    for row in driver_rows:
+        base = _normalize_line(_plain_driver(row) or row)
+        if tone_profile == "cautious":
+            driver_explanations.append(
+                f"{base} This may be contributing to risk, but some details were estimated."
+            )
+        elif tone_profile == "balanced":
+            driver_explanations.append(f"{base} This likely matters for home ignition pressure.")
+        else:
+            driver_explanations.append(f"{base} This is a major risk factor.")
+
+    action_rows = _extract_assessment_actions(assessment, limit=3)
+    action_explanations: list[str] = []
+    for row in action_rows:
+        action = row.get("action") or "This action"
+        why = _normalize_line(row.get("explanation") or "")
+        if tone_profile == "direct":
+            sentence = f"{action} helps lower risk and improve readiness."
+        elif tone_profile == "balanced":
+            sentence = f"{action} can help lower risk and improve readiness."
+        else:
+            sentence = f"{action} could help lower risk and improve readiness."
+        if why:
+            sentence = f"{sentence} {why}"
+        action_explanations.append(sentence)
+    if not action_explanations:
+        action_explanations = ["Prioritized actions could help reduce wildfire risk and improve home hardening readiness."]
+
+    if tone_profile == "direct":
+        confidence_line = "Confidence is strong for this assessment because key property details were observed directly."
+    elif tone_profile == "balanced":
+        confidence_line = "Confidence is moderate: most important inputs were observed, with some estimated details."
+    else:
+        confidence_line = (
+            "Confidence is lower: some details were estimated or missing, so treat this report as planning guidance."
+        )
+
+    return {
+        "source": "template",
+        "headline_summary": headline,
+        "risk_driver_explanations": driver_explanations[:3],
+        "recommended_action_explanations": action_explanations[:3],
+        "confidence_limitations_explanation": confidence_line,
+    }
+
+
+def _generate_homeowner_explanations_with_llm(
+    payload: dict[str, Any],
+    *,
+    llm_client: Any | None = None,
+) -> dict[str, Any] | None:
+    client = llm_client
+    if client is None:
+        api_key = str(os.getenv("OPENAI_API_KEY") or "").strip()
+        if not api_key:
+            return None
+        try:
+            from openai import OpenAI  # type: ignore
+        except Exception:
+            return None
+        try:
+            client = OpenAI(api_key=api_key)
+        except Exception:
+            return None
+
+    model = str(os.getenv("WF_HOMEOWNER_EXPLANATION_MODEL") or "gpt-4o-mini").strip()
+    if not model:
+        model = "gpt-4o-mini"
+
+    system_prompt = (
+        "You write homeowner-facing wildfire explanations. Return strict JSON with keys: "
+        "headline_summary, risk_driver_explanations, recommended_action_explanations, "
+        "confidence_limitations_explanation. Max 1-2 sentences per item, no jargon, no percentages "
+        "unless very certain, explain why each item matters."
+    )
+    user_prompt = (
+        "Generate concise homeowner explanations from this assessment summary JSON.\n"
+        f"{json.dumps(payload, ensure_ascii=True)}"
+    )
+
+    text_output = ""
+    try:
+        if hasattr(client, "responses"):
+            response = client.responses.create(
+                model=model,
+                temperature=0.2,
+                max_output_tokens=700,
+                input=[
+                    {"role": "system", "content": [{"type": "text", "text": system_prompt}]},
+                    {"role": "user", "content": [{"type": "text", "text": user_prompt}]},
+                ],
+            )
+            text_output = str(getattr(response, "output_text", "") or "")
+        elif hasattr(client, "chat") and hasattr(client.chat, "completions"):
+            response = client.chat.completions.create(
+                model=model,
+                temperature=0.2,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+            )
+            choices = getattr(response, "choices", None) or []
+            if choices:
+                message = getattr(choices[0], "message", None)
+                text_output = str(getattr(message, "content", "") or "")
+    except Exception:
+        return None
+
+    if not text_output:
+        return None
+    match = re.search(r"\{.*\}", text_output, flags=re.S)
+    payload_text = match.group(0) if match else text_output.strip()
+    try:
+        parsed = json.loads(payload_text)
+    except Exception:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def generate_homeowner_explanations(
+    assessment: AssessmentResult,
+    *,
+    llm_client: Any | None = None,
+) -> dict[str, object]:
+    template = _template_homeowner_explanations(assessment)
+
+    llm_payload = {
+        "address": assessment.address,
+        "confidence_tier": str(assessment.confidence_tier or "preliminary"),
+        "missing_data": list(assessment.confidence_summary.missing_data or [])[:6],
+        "fallback_assumptions": list(assessment.confidence_summary.fallback_assumptions or [])[:6],
+        "risk_band": _section_band_label(
+            _risk_band(
+                _to_float(
+                    assessment.overall_wildfire_risk
+                    if assessment.overall_wildfire_risk is not None
+                    else assessment.wildfire_risk_score
+                )
+            )
+        ),
+        "top_risk_drivers": list(assessment.top_risk_drivers or [])[:3],
+        "top_actions": _extract_assessment_actions(assessment, limit=3),
+    }
+
+    llm_generated = _generate_homeowner_explanations_with_llm(llm_payload, llm_client=llm_client)
+    source = "template"
+    merged = dict(template)
+    if isinstance(llm_generated, dict):
+        source = "llm"
+        for key in (
+            "headline_summary",
+            "risk_driver_explanations",
+            "recommended_action_explanations",
+            "confidence_limitations_explanation",
+        ):
+            if key in llm_generated:
+                merged[key] = llm_generated.get(key)
+
+    headline = _sanitize_explanation_text(
+        merged.get("headline_summary"),
+        fallback=str(template.get("headline_summary") or ""),
+    )
+    driver_explanations = _sanitize_explanation_list(
+        merged.get("risk_driver_explanations"),
+        fallback=[str(v) for v in list(template.get("risk_driver_explanations") or [])],
+        limit=3,
+    )
+    action_explanations = _sanitize_explanation_list(
+        merged.get("recommended_action_explanations"),
+        fallback=[str(v) for v in list(template.get("recommended_action_explanations") or [])],
+        limit=3,
+    )
+    confidence_line = _sanitize_explanation_text(
+        merged.get("confidence_limitations_explanation"),
+        fallback=str(template.get("confidence_limitations_explanation") or ""),
+    )
+
+    return {
+        "source": source,
+        "headline_summary": headline,
+        "risk_driver_explanations": driver_explanations,
+        "recommended_action_explanations": action_explanations,
+        "confidence_limitations_explanation": confidence_line,
+    }
+
+
 @dataclass(frozen=True)
 class _PdfEntry:
     text: str = ""
@@ -1295,15 +1630,46 @@ class _PdfEntry:
 
 
 _PDF_TEXT_STYLES: dict[str, dict[str, float | str]] = {
-    "title": {"font": "F2", "size": 22.0, "leading": 30.0, "indent": 50.0, "width": 68.0, "gray": 0.0},
-    "meta": {"font": "F1", "size": 10.0, "leading": 14.0, "indent": 50.0, "width": 96.0, "gray": 0.0},
-    "section": {"font": "F2", "size": 14.0, "leading": 21.0, "indent": 50.0, "width": 88.0, "gray": 0.0},
-    "body": {"font": "F1", "size": 10.4, "leading": 14.0, "indent": 50.0, "width": 94.0, "gray": 0.0},
-    "bullet": {"font": "F1", "size": 10.4, "leading": 14.0, "indent": 62.0, "width": 86.0, "gray": 0.0},
-    "callout_label": {"font": "F2", "size": 11.0, "leading": 16.0, "indent": 50.0, "width": 88.0, "gray": 0.0},
-    "callout_action": {"font": "F2", "size": 13.5, "leading": 19.0, "indent": 56.0, "width": 80.0, "gray": 0.0},
-    "technical_header": {"font": "F2", "size": 11.0, "leading": 16.0, "indent": 50.0, "width": 88.0, "gray": 0.22},
-    "technical_body": {"font": "F1", "size": 9.2, "leading": 12.6, "indent": 58.0, "width": 84.0, "gray": 0.34},
+    "title": {"font": "F2", "size": 22.0, "leading": 30.0, "indent": 52.0, "width": 68.0, "gray": 0.0},
+    "meta": {"font": "F1", "size": 10.2, "leading": 14.6, "indent": 52.0, "width": 96.0, "gray": 0.0},
+    "section": {"font": "F2", "size": 14.2, "leading": 22.0, "indent": 52.0, "width": 88.0, "gray": 0.0},
+    "risk_label": {"font": "F2", "size": 11.0, "leading": 15.0, "indent": 52.0, "width": 90.0, "gray": 0.08},
+    "risk_level": {"font": "F2", "size": 21.5, "leading": 25.0, "indent": 52.0, "width": 84.0, "gray": 0.0},
+    "body": {"font": "F1", "size": 10.4, "leading": 14.6, "indent": 52.0, "width": 94.0, "gray": 0.0},
+    "bullet": {"font": "F1", "size": 10.4, "leading": 14.6, "indent": 64.0, "width": 86.0, "gray": 0.0},
+    "callout_label": {
+        "font": "F2",
+        "size": 11.0,
+        "leading": 16.0,
+        "indent": 58.0,
+        "width": 86.0,
+        "gray": 0.0,
+        "box_fill": 0.96,
+        "box_stroke": 0.82,
+        "box_left": 52.0,
+        "box_right": 560.0,
+        "box_height": 20.0,
+    },
+    "callout_action": {
+        "font": "F2",
+        "size": 13.5,
+        "leading": 19.0,
+        "indent": 60.0,
+        "width": 80.0,
+        "gray": 0.0,
+        "box_fill": 0.96,
+        "box_stroke": 0.82,
+        "box_left": 52.0,
+        "box_right": 560.0,
+        "box_height": 24.0,
+    },
+    "technical_header": {"font": "F2", "size": 11.0, "leading": 16.2, "indent": 52.0, "width": 88.0, "gray": 0.22},
+    "technical_body": {"font": "F1", "size": 9.2, "leading": 12.8, "indent": 60.0, "width": 84.0, "gray": 0.34},
+    # Reusable style aliases for consistency with report styling nomenclature.
+    "TitleStyle": {"font": "F2", "size": 22.0, "leading": 30.0, "indent": 52.0, "width": 68.0, "gray": 0.0},
+    "SectionHeaderStyle": {"font": "F2", "size": 14.2, "leading": 22.0, "indent": 52.0, "width": 88.0, "gray": 0.0},
+    "BodyStyle": {"font": "F1", "size": 10.4, "leading": 14.6, "indent": 52.0, "width": 94.0, "gray": 0.0},
+    "HighlightStyle": {"font": "F2", "size": 13.5, "leading": 19.0, "indent": 60.0, "width": 80.0, "gray": 0.0},
 }
 
 _PDF_SPACER_HEIGHTS: dict[str, float] = {
@@ -1311,6 +1677,11 @@ _PDF_SPACER_HEIGHTS: dict[str, float] = {
     "spacer_md": 9.0,
     "spacer_lg": 13.0,
 }
+
+_PDF_PAGE_LEFT = 52.0
+_PDF_PAGE_RIGHT = 560.0
+_PDF_START_Y = 770.0
+_PDF_BOTTOM_Y = 50.0
 
 
 def _normalize_line(value: Any) -> str:
@@ -1534,10 +1905,17 @@ def _build_report_entries(report: HomeownerReport) -> list[_PdfEntry]:
     header = report.report_header or {}
     property_summary = report.property_summary or {}
     score_summary = report.score_summary or {}
+    metadata = report.metadata or {}
     confidence = report.confidence_and_limitations or {}
     first_screen = report.first_screen if isinstance(report.first_screen, dict) else {}
     specificity_summary = _dump_value(report.specificity_summary)
     specificity_summary = specificity_summary if isinstance(specificity_summary, dict) else {}
+    explanation_block = (
+        metadata.get("homeowner_explanations")
+        if isinstance(metadata.get("homeowner_explanations"), dict)
+        else {}
+    )
+    explanation_block = explanation_block if isinstance(explanation_block, dict) else {}
 
     fs_specificity = (
         first_screen.get("specificity_summary")
@@ -1640,29 +2018,54 @@ def _build_report_entries(report: HomeownerReport) -> list[_PdfEntry]:
         deduped_limitations.append(row)
     deduped_limitations = deduped_limitations[:4]
 
+    explanation_headline = _normalize_line(
+        explanation_block.get("headline_summary")
+        or fs_headline
+        or "No summary sentence was available."
+    )
+    explanation_drivers = [
+        _normalize_line(v)
+        for v in list(explanation_block.get("risk_driver_explanations") or [])
+        if _normalize_line(v)
+    ][:3]
+    explanation_actions = [
+        _normalize_line(v)
+        for v in list(explanation_block.get("recommended_action_explanations") or [])
+        if _normalize_line(v)
+    ][:3]
+    explanation_confidence = _normalize_line(
+        explanation_block.get("confidence_limitations_explanation") or ""
+    )
+
     # 1) Header / Title
-    _add_wrapped(entries, "Wildfire Risk Report", style="title")
+    _add_wrapped(entries, "Wildfire Risk Report", style="TitleStyle")
     _add_wrapped(entries, f"Property: {_normalize_line(property_summary.get('address') or 'Unknown address')}", style="meta")
     _add_wrapped(entries, f"Date generated: {_normalize_line(header.get('assessment_generated_at') or report.generated_at)}", style="meta")
     entries.append(_PdfEntry(style="spacer_lg"))
 
     # 2) Summary
-    _add_wrapped(entries, "Summary", style="section")
-    _add_wrapped(entries, f"Risk level: {risk_band_label}{risk_score_suffix}", style="body")
+    _add_wrapped(entries, "Summary", style="SectionHeaderStyle")
+    _add_wrapped(entries, "Risk level", style="risk_label")
+    _add_wrapped(entries, f"{risk_band_label}{risk_score_suffix}", style="risk_level")
     _add_wrapped(entries, f"Home hardening readiness: {readiness_line}", style="body")
-    _add_wrapped(entries, f"Summary sentence: {fs_headline or 'No summary sentence was available.'}", style="body")
+    _add_wrapped(entries, f"Summary sentence: {explanation_headline}", style="body")
     _add_wrapped(entries, _summary_tone_line(tone_profile), style="body")
     entries.append(_PdfEntry(style="spacer_md"))
 
     # 3) What Matters Most
-    _add_wrapped(entries, "What Matters Most", style="section")
+    _add_wrapped(entries, "What Matters Most", style="SectionHeaderStyle")
     if top_drivers:
         driver_why_prefix = _driver_explanation_prefix(tone_profile)
-        for driver in top_drivers[:3]:
+        for idx, driver in enumerate(top_drivers[:3]):
             _add_wrapped(entries, _driver_line_with_tone(driver, tone_profile), style="bullet", prefix="- ")
+            driver_explanation = (
+                explanation_drivers[idx]
+                if idx < len(explanation_drivers) and explanation_drivers[idx]
+                else _driver_explanation(driver, detailed_rows)
+            )
             _add_wrapped(
                 entries,
-                f"{driver_why_prefix}: {_driver_explanation(driver, detailed_rows)}",
+                f"{driver_why_prefix}: {driver_explanation}",
                 style="body",
                 prefix="  ",
             )
@@ -1671,7 +2074,7 @@ def _build_report_entries(report: HomeownerReport) -> list[_PdfEntry]:
     entries.append(_PdfEntry(style="spacer_md"))
 
     # 4) What To Do First
-    _add_wrapped(entries, "What To Do First", style="section")
+    _add_wrapped(entries, "What To Do First", style="SectionHeaderStyle")
     _add_wrapped(entries, "Top priority action", style="callout_label")
     _add_wrapped(entries, first_action_text, style="callout_action")
     if first_action_why:
@@ -1679,15 +2082,18 @@ def _build_report_entries(report: HomeownerReport) -> list[_PdfEntry]:
     entries.append(_PdfEntry(style="spacer_md"))
 
     # 5) Recommended Actions
-    _add_wrapped(entries, "Recommended Actions", style="section")
+    _add_wrapped(entries, "Recommended Actions", style="SectionHeaderStyle")
     if recommended_actions:
         action_why_prefix = _action_rationale_prefix(tone_profile)
-        for row in recommended_actions[:5]:
+        for idx, row in enumerate(recommended_actions[:5]):
             action_name = _normalize_line(row.get("action") or row.get("title") or "Recommended action")
             why = _normalize_line(row.get("why_this_matters") or row.get("explanation") or row.get("why_it_matters") or "")
+            llm_why = explanation_actions[idx] if idx < len(explanation_actions) else ""
             effort = _safe_effort_label(row.get("effort_level") or row.get("estimated_cost_band"))
             _add_wrapped(entries, action_name, style="bullet", prefix="- ")
-            if why:
+            if llm_why:
+                _add_wrapped(entries, f"{action_why_prefix}: {llm_why}", style="body", prefix="  ")
+            elif why:
                 _add_wrapped(entries, f"{action_why_prefix}: {why}", style="body", prefix="  ")
             _add_wrapped(entries, f"Effort level: {effort}", style="body", prefix="  ")
     else:
@@ -1695,7 +2101,7 @@ def _build_report_entries(report: HomeownerReport) -> list[_PdfEntry]:
     entries.append(_PdfEntry(style="spacer_md"))
 
     # 6) How This Could Improve
-    _add_wrapped(entries, "How This Could Improve", style="section")
+    _add_wrapped(entries, "How This Could Improve", style="SectionHeaderStyle")
     improvement_lines = _how_this_could_improve_lines(
         recommended_actions,
         confidence_tier=tone_profile,
@@ -1711,9 +2117,11 @@ def _build_report_entries(report: HomeownerReport) -> list[_PdfEntry]:
     entries.append(_PdfEntry(style="spacer_md"))
 
     # 7) Confidence & Limitations
-    _add_wrapped(entries, "Confidence & Limitations", style="section")
+    _add_wrapped(entries, "Confidence & Limitations", style="SectionHeaderStyle")
     _add_wrapped(entries, f"Data completeness: observed {observed_count}, estimated {estimated_count}, missing {missing_count}.", style="body")
     _add_wrapped(entries, f"Fallback usage: {fallback_count} fallback assumptions or decisions.", style="body")
+    if explanation_confidence:
+        _add_wrapped(entries, explanation_confidence, style="body")
     _add_wrapped(entries, _limitations_tone_line(tone_profile), style="body")
     _add_wrapped(entries, f"Specificity: {specificity_headline} (tier: {specificity_tier}).", style="body")
     if specificity_meaning:
@@ -1729,13 +2137,13 @@ def _build_report_entries(report: HomeownerReport) -> list[_PdfEntry]:
     entries.append(_PdfEntry(style="spacer_md"))
 
     # 8) Property Context
-    _add_wrapped(entries, "Property Context", style="section")
+    _add_wrapped(entries, "Property Context", style="SectionHeaderStyle")
     for line in _property_context_lines(report):
         _add_wrapped(entries, line, style="body", prefix="- ")
     entries.append(_PdfEntry(style="spacer_md"))
 
     # 9) Technical Details (de-emphasized)
-    _add_wrapped(entries, "Technical Details (Secondary)", style="section")
+    _add_wrapped(entries, "Technical Details (Secondary)", style="SectionHeaderStyle")
     _add_wrapped(entries, "Factor breakdown", style="technical_header")
     if detailed_rows:
         for row in detailed_rows[:8]:
@@ -1773,10 +2181,14 @@ def _entry_height(entry: _PdfEntry) -> float:
     if entry.style in _PDF_SPACER_HEIGHTS:
         return _PDF_SPACER_HEIGHTS[entry.style]
     style = _PDF_TEXT_STYLES.get(entry.style) or _PDF_TEXT_STYLES["body"]
-    return float(style.get("leading", 14.0))
+    leading = float(style.get("leading", 14.0))
+    box_height = float(style.get("box_height", 0.0))
+    if box_height > 0.0:
+        return max(leading, box_height + 2.0)
+    return leading
 
 
-def _paginate_entries(entries: list[_PdfEntry], *, start_y: float = 764.0, bottom_y: float = 50.0) -> list[list[_PdfEntry]]:
+def _paginate_entries(entries: list[_PdfEntry], *, start_y: float = _PDF_START_Y, bottom_y: float = _PDF_BOTTOM_Y) -> list[list[_PdfEntry]]:
     pages: list[list[_PdfEntry]] = []
     page: list[_PdfEntry] = []
     remaining = max(80.0, start_y - bottom_y)
@@ -1798,11 +2210,9 @@ def _paginate_entries(entries: list[_PdfEntry], *, start_y: float = 764.0, botto
 
 
 def _build_pdf_content_stream(page_entries: list[_PdfEntry]) -> bytes:
-    commands = ["BT"]
-    y = 764.0
-    current_font = ""
-    current_size = -1.0
-    current_gray = -1.0
+    commands: list[str] = []
+    y = _PDF_START_Y
+    section_counter = 0
 
     for entry in page_entries:
         if entry.style in _PDF_SPACER_HEIGHTS:
@@ -1812,27 +2222,61 @@ def _build_pdf_content_stream(page_entries: list[_PdfEntry]) -> bytes:
         style = _PDF_TEXT_STYLES.get(entry.style) or _PDF_TEXT_STYLES["body"]
         font = str(style.get("font", "F1"))
         size = float(style.get("size", 10.4))
-        leading = float(style.get("leading", 14.0))
-        indent = float(style.get("indent", 50.0))
+        indent = float(style.get("indent", _PDF_PAGE_LEFT))
         gray = float(style.get("gray", 0.0))
+        line_height = _entry_height(entry)
 
-        y -= leading
-        if y < 42.0:
+        y -= line_height
+        if y < (_PDF_BOTTOM_Y - 6.0):
             break
 
-        if font != current_font or abs(size - current_size) > 0.001:
-            commands.append(f"/{font} {size:.2f} Tf")
-            current_font = font
-            current_size = size
-        if abs(gray - current_gray) > 0.001:
-            commands.append(f"{gray:.2f} g")
-            current_gray = gray
+        if entry.style in {"section", "SectionHeaderStyle"}:
+            if section_counter > 0:
+                separator_y = y + line_height - 7.0
+                commands.extend(
+                    [
+                        "q",
+                        "0.84 G",
+                        "0.8 w",
+                        f"{_PDF_PAGE_LEFT:.2f} {separator_y:.2f} m {_PDF_PAGE_RIGHT:.2f} {separator_y:.2f} l S",
+                        "Q",
+                    ]
+                )
+            section_counter += 1
+
+        box_fill = style.get("box_fill")
+        if box_fill is not None:
+            fill_gray = float(box_fill)
+            stroke_gray = float(style.get("box_stroke", 0.82))
+            box_left = float(style.get("box_left", _PDF_PAGE_LEFT))
+            box_right = float(style.get("box_right", _PDF_PAGE_RIGHT))
+            box_width = max(12.0, box_right - box_left)
+            box_height = float(style.get("box_height", max(16.0, line_height)))
+            box_top = y + (line_height * 0.80)
+            box_bottom = box_top - box_height
+            commands.extend(
+                [
+                    "q",
+                    f"{fill_gray:.2f} g",
+                    f"{stroke_gray:.2f} G",
+                    "0.8 w",
+                    f"{box_left:.2f} {box_bottom:.2f} {box_width:.2f} {box_height:.2f} re B",
+                    "Q",
+                ]
+            )
 
         escaped = _escape_pdf_text(entry.text)
-        commands.append(f"1 0 0 1 {indent:.2f} {y:.2f} Tm")
-        commands.append(f"({escaped}) Tj")
+        commands.extend(
+            [
+                "BT",
+                f"/{font} {size:.2f} Tf",
+                f"{gray:.2f} g",
+                f"1 0 0 1 {indent:.2f} {y:.2f} Tm",
+                f"({escaped}) Tj",
+                "ET",
+            ]
+        )
 
-    commands.append("ET")
     return "\n".join(commands).encode("latin-1", errors="replace")
 
 

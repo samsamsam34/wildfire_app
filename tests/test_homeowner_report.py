@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from fastapi.testclient import TestClient
 
 import backend.auth as auth
 import backend.main as app_main
+import backend.homeowner_report as homeowner_report_module
 from backend.database import AssessmentStore
-from backend.homeowner_report import export_homeowner_report
+from backend.homeowner_report import export_homeowner_report, generate_homeowner_explanations
 from backend.models import HomeownerPrioritizedAction, MitigationAction
 from backend.wildfire_data import WildfireContext
 
@@ -338,7 +340,7 @@ def test_homeowner_pdf_includes_structured_sections_and_priority_content(monkeyp
         assert section in pdf_res.content
 
     for key_line in (
-        b"Risk level:",
+        b"Risk level",
         b"Home hardening readiness:",
         b"Summary sentence:",
         b"Top priority action",
@@ -521,6 +523,159 @@ def test_homeowner_pdf_tone_softens_low_confidence_and_is_direct_for_high_confid
     assert b"Potential impact:" in low_pdf
     assert b"This may help reduce risk:" in low_pdf
     assert b"Limitations context: several details were estimated or missing" in low_pdf
+
+
+def test_generate_homeowner_explanations_fallback_without_llm(monkeypatch, tmp_path: Path):
+    context = _ctx(env=54.0, wildland=42.0, historic=28.0)
+    _setup(monkeypatch, tmp_path, context)
+    assessed = _run_assessment("908 Explanation Fallback Ln, Missoula, MT 59802")
+    stored = app_main.store.get(assessed["assessment_id"])
+    assert stored is not None
+
+    monkeypatch.setattr(
+        homeowner_report_module,
+        "_generate_homeowner_explanations_with_llm",
+        lambda payload, llm_client=None: None,
+    )
+    explanations = generate_homeowner_explanations(stored)
+    assert explanations.get("source") == "template"
+
+    texts = [
+        str(explanations.get("headline_summary") or ""),
+        str(explanations.get("confidence_limitations_explanation") or ""),
+        *[str(v or "") for v in list(explanations.get("risk_driver_explanations") or [])],
+        *[str(v or "") for v in list(explanations.get("recommended_action_explanations") or [])],
+    ]
+    for text in texts:
+        assert text.strip()
+        assert len(text) <= 240
+        assert "%" not in text
+
+
+def test_generate_homeowner_explanations_llm_output_is_concise(monkeypatch, tmp_path: Path):
+    context = _ctx(env=59.0, wildland=45.0, historic=31.0)
+    _setup(monkeypatch, tmp_path, context)
+    assessed = _run_assessment("909 Explanation Concision Dr, Missoula, MT 59802")
+    stored = app_main.store.get(assessed["assessment_id"])
+    assert stored is not None
+
+    monkeypatch.setattr(
+        homeowner_report_module,
+        "_generate_homeowner_explanations_with_llm",
+        lambda payload, llm_client=None: {
+            "headline_summary": (
+                "This is sentence one. This is sentence two. This is sentence three with 35% certainty. "
+                "This is sentence four."
+            ),
+            "risk_driver_explanations": [
+                "Driver text one. Second sentence. Third sentence with 40%.",
+                "Driver text two. Another sentence. Extra sentence.",
+                "",
+            ],
+            "recommended_action_explanations": [
+                "Action one explanation. Another sentence. Third sentence.",
+                "Action two explanation with 50% claim. Another sentence.",
+                "",
+            ],
+            "confidence_limitations_explanation": (
+                "Confidence sentence one. Confidence sentence two. Confidence sentence three with 60%."
+            ),
+        },
+    )
+
+    explanations = generate_homeowner_explanations(stored)
+    assert explanations.get("source") == "llm"
+
+    texts = [
+        str(explanations.get("headline_summary") or ""),
+        str(explanations.get("confidence_limitations_explanation") or ""),
+        *[str(v or "") for v in list(explanations.get("risk_driver_explanations") or [])],
+        *[str(v or "") for v in list(explanations.get("recommended_action_explanations") or [])],
+    ]
+    for text in texts:
+        assert text.strip()
+        assert len(text) <= 240
+        assert "%" not in text
+        sentence_count = len(re.findall(r"[.!?]", text))
+        assert 1 <= sentence_count <= 2
+
+
+def test_pdf_uses_generated_homeowner_explanation_layer(monkeypatch, tmp_path: Path):
+    context = _ctx(env=55.0, wildland=40.0, historic=26.0)
+    _setup(monkeypatch, tmp_path, context)
+    assessed = _run_assessment("910 Explanation Layer Integration Ct, Missoula, MT 59802")
+
+    monkeypatch.setattr(
+        homeowner_report_module,
+        "_generate_homeowner_explanations_with_llm",
+        lambda payload, llm_client=None: {
+            "headline_summary": "Custom headline for homeowners.",
+            "risk_driver_explanations": [
+                "Custom driver explanation one.",
+                "Custom driver explanation two.",
+                "Custom driver explanation three.",
+            ],
+            "recommended_action_explanations": [
+                "Custom action explanation one.",
+                "Custom action explanation two.",
+                "Custom action explanation three.",
+            ],
+            "confidence_limitations_explanation": "Custom confidence explanation.",
+        },
+    )
+
+    report_res = client.get(f"/report/{assessed['assessment_id']}/homeowner")
+    assert report_res.status_code == 200
+    report = report_res.json()
+    explanations = (report.get("metadata") or {}).get("homeowner_explanations") or {}
+    assert explanations.get("source") == "llm"
+    assert explanations.get("headline_summary") == "Custom headline for homeowners."
+
+    pdf_res = client.get(f"/report/{assessed['assessment_id']}/homeowner/pdf")
+    assert pdf_res.status_code == 200
+    assert b"Custom headline for homeowners." in pdf_res.content
+    assert b"Custom confidence explanation." in pdf_res.content
+
+
+def test_homeowner_pdf_visual_layout_includes_grouping_and_highlights(monkeypatch, tmp_path: Path):
+    context = _ctx(env=52.0, wildland=38.0, historic=24.0)
+    _setup(monkeypatch, tmp_path, context)
+    assessed = _run_assessment("906 Visual Layout Check Rd, Missoula, MT 59802")
+
+    pdf_res = client.get(f"/report/{assessed['assessment_id']}/homeowner/pdf")
+    assert pdf_res.status_code == 200
+    assert pdf_res.content.startswith(b"%PDF-1.4")
+    # Subtle visual grouping primitives are present (separators + highlight boxes).
+    assert b" re B" in pdf_res.content
+    assert b" l S" in pdf_res.content
+    # Risk level and callout are emphasized with larger bold text styles.
+    assert b"/F2 21.50 Tf" in pdf_res.content
+    assert b"/F2 13.50 Tf" in pdf_res.content
+
+
+def test_homeowner_pdf_text_positions_descend_without_overlap(monkeypatch, tmp_path: Path):
+    context = _ctx(env=60.0, wildland=54.0, historic=47.0)
+    _setup(monkeypatch, tmp_path, context)
+    assessed = _run_assessment("907 No Overlap Check Ct, Missoula, MT 59802")
+
+    stored = app_main.store.get(assessed["assessment_id"])
+    assert stored is not None
+    pdf_bytes = export_homeowner_report(stored, output_format="pdf")
+    assert isinstance(pdf_bytes, bytes)
+    streams = list(re.finditer(rb"stream\n(.*?)\nendstream", pdf_bytes, re.S))
+    assert streams, "Expected at least one PDF content stream."
+
+    for stream_match in streams:
+        stream = stream_match.group(1)
+        y_values = [
+            float(m.group(1))
+            for m in re.finditer(rb"1 0 0 1 [0-9]+\.[0-9]+ ([0-9]+\.[0-9]+) Tm", stream)
+        ]
+        if not y_values:
+            continue
+        assert min(y_values) >= 44.0
+        assert max(y_values) <= 770.0
+        assert all(y_values[i] > y_values[i + 1] for i in range(len(y_values) - 1))
 
 
 def test_homeowner_report_handles_unavailable_scores_and_long_text_deterministically(monkeypatch, tmp_path: Path):
