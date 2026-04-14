@@ -314,6 +314,48 @@
         grid-template-columns: repeat(auto-fit, minmax(145px, 1fr));
         gap: 0.5rem;
       }
+      .next-step-callout {
+        margin-top: 0.68rem;
+        border: 1px solid #f0d2c7;
+        border-left: 4px solid #cf6b4f;
+        border-radius: 11px;
+        background: #fff7f3;
+        padding: 0.56rem 0.64rem;
+      }
+      .next-step-callout span {
+        display: block;
+        font-size: 0.73rem;
+        text-transform: uppercase;
+        letter-spacing: 0.045em;
+        color: #8a4b3a;
+      }
+      .next-step-callout strong {
+        display: block;
+        margin-top: 0.12rem;
+        color: #6f2f1d;
+        font-size: 0.97rem;
+      }
+      .result-divider {
+        border-top: 1px solid var(--line-soft);
+        margin: 0.62rem 0 0.48rem;
+      }
+      .mini-label {
+        font-size: 0.74rem;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: #6e8494;
+        font-weight: 700;
+      }
+      .insight-group {
+        border: 1px solid var(--line-soft);
+        border-radius: 11px;
+        padding: 0.54rem 0.62rem 0.5rem;
+        background: #fbfdff;
+        margin-top: 0.52rem;
+      }
+      .insight-group ul {
+        margin-top: 0.28rem;
+      }
       .summary-item {
         border: 1px solid var(--line-soft);
         background: #fbfdff;
@@ -363,6 +405,48 @@
         padding: 0.2rem 0.5rem;
         margin: 0.15rem 0.2rem 0 0;
         font-size: 0.78rem;
+      }
+      .trust-card {
+        border-color: #cadbe6;
+        background: linear-gradient(180deg, #ffffff 0%, #f8fbfd 100%);
+      }
+      .trust-overview {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+        gap: 0.55rem;
+        margin-top: 0.66rem;
+      }
+      .trust-value {
+        border: 1px solid var(--line-soft);
+        border-radius: 10px;
+        background: #fbfdff;
+        padding: 0.52rem 0.62rem;
+      }
+      .trust-value span {
+        display: block;
+        font-size: 0.74rem;
+        text-transform: uppercase;
+        letter-spacing: 0.035em;
+        color: #748a99;
+      }
+      .trust-value strong {
+        display: block;
+        margin-top: 0.15rem;
+        font-size: 0.96rem;
+        color: #163041;
+      }
+      #confidenceSummaryText {
+        margin-top: 0.62rem;
+      }
+      #flagsPrimary {
+        margin-top: 0.42rem;
+      }
+      .advanced-secondary {
+        border-color: #d8e2e8;
+        background: #fdfefe;
+      }
+      .advanced-secondary details {
+        border-top-color: #e2eaef;
       }
       .sim-box {
         margin-top: 0.65rem;
@@ -716,10 +800,10 @@
               <span>Home Readiness</span>
               <strong id="readinessKpi">Pending</strong>
             </div>
-            <div class="summary-item">
-              <span>What To Do First</span>
-              <strong id="firstActionKpi">Run assessment</strong>
-            </div>
+          </div>
+          <div class="next-step-callout">
+            <span>What To Do First</span>
+            <strong id="firstActionKpi">Run assessment</strong>
           </div>
           <p id="regionDebugInline" class="muted" style="display:none; font-size:0.8rem; margin-top:0.35rem;">Region: unresolved</p>
           <p id="summaryText" style="margin-top:0.6rem;">We'll explain your score in plain language here.</p>
@@ -728,19 +812,45 @@
         <div class="card">
           <h2>4. Why This Home May Be at Risk</h2>
           <p class="section-help">What's driving this result, based on observed local and regional evidence.</p>
-          <h3 style="margin-top:0.8rem;">Around the Home</h3>
-          <ul id="propertyFindings"><li class="muted">No structure-specific findings yet.</li></ul>
-          <ul id="drivers"><li class="muted">No factors yet.</li></ul>
-          <h3 style="margin-top:0.8rem;">What Is Helping Lower Risk</h3>
-          <ul id="protective"><li class="muted">No protective factors yet.</li></ul>
+          <div class="insight-group">
+            <div class="mini-label">Top risk drivers</div>
+            <h3 style="margin-top:0.28rem;">Around the Home</h3>
+            <ul id="propertyFindings"><li class="muted">No structure-specific findings yet.</li></ul>
+            <ul id="drivers"><li class="muted">No factors yet.</li></ul>
+          </div>
+          <div class="insight-group">
+            <div class="mini-label">Protective factors</div>
+            <h3 style="margin-top:0.28rem;">What Is Helping Lower Risk</h3>
+            <ul id="protective"><li class="muted">No protective factors yet.</li></ul>
+          </div>
         </div>
 
         <div class="card">
           <h2>5. Best Next Steps</h2>
           <p class="section-help">What to do first: prioritized actions focused on reduction impact and practical effort.</p>
+          <div class="mini-label">Recommended next steps</div>
           <p id="nextStepsText">Focus on the top actions first.</p>
           <ul id="mitigations"><li class="muted">Recommendations will appear after assessment.</li></ul>
         </div>
+      </section>
+
+      <section class="card trust-card">
+        <h2>Assessment Confidence</h2>
+        <p class="section-help">How reliable this assessment is, and where data limits may affect precision.</p>
+        <div class="trust-overview">
+          <div class="trust-value">
+            <span>Assessment confidence</span>
+            <strong id="confidenceAtGlance">Pending</strong>
+          </div>
+          <div class="trust-value">
+            <span>Specificity level</span>
+            <strong id="specificityAtGlance">Pending</strong>
+          </div>
+        </div>
+        <p id="confidenceSummaryText" class="muted">Run an assessment to see confidence details.</p>
+        <div class="result-divider"></div>
+        <div class="mini-label">Limitations and trust notes</div>
+        <div id="flagsPrimary"><span class="pill">No trust notes yet</span></div>
       </section>
 
       <section class="card">
@@ -750,6 +860,7 @@
         <p id="mapEmptyText" class="map-empty">Run an assessment to load map layers.</p>
         <div id="mapLayerToggles" class="map-toggles"></div>
         <p id="mapLimitationsText" class="muted" style="margin-top:0.5rem;">Map limitations will appear here when needed.</p>
+        <p id="propertyContextMapHint" class="muted" style="margin-top:0.45rem;">Property context summary will appear here after assessment.</p>
         <div id="mapDebugPanel" class="map-debug" style="display:none;"></div>
       </section>
 
@@ -877,7 +988,7 @@
         <div id="simResult" class="sim-box muted">No simulation run yet.</div>
       </section>
 
-      <section class="card">
+      <section class="card advanced-secondary">
         <details>
           <summary>Advanced / Internal Details</summary>
           <p class="section-help">Use this panel for deeper evidence, confidence, and diagnostics beyond the homeowner summary.</p>
@@ -1870,9 +1981,21 @@
         const specificityKpiEl = document.getElementById("specificityKpi");
         const readinessKpiEl = document.getElementById("readinessKpi");
         const firstActionKpiEl = document.getElementById("firstActionKpi");
+        const confidenceAtGlanceEl = document.getElementById("confidenceAtGlance");
+        const specificityAtGlanceEl = document.getElementById("specificityAtGlance");
+        const confidenceSummaryTextEl = document.getElementById("confidenceSummaryText");
+        const flagsPrimaryEl = document.getElementById("flagsPrimary");
         if (specificityKpiEl) specificityKpiEl.textContent = "Pending";
         if (readinessKpiEl) readinessKpiEl.textContent = "Pending";
         if (firstActionKpiEl) firstActionKpiEl.textContent = "Run assessment";
+        if (confidenceAtGlanceEl) confidenceAtGlanceEl.textContent = "Pending";
+        if (specificityAtGlanceEl) specificityAtGlanceEl.textContent = "Pending";
+        if (confidenceSummaryTextEl) confidenceSummaryTextEl.textContent = "Run an assessment to see confidence details.";
+        if (flagsPrimaryEl) flagsPrimaryEl.innerHTML = "<span class='pill'>No trust notes yet</span>";
+        const propertyContextMapHintEl = document.getElementById("propertyContextMapHint");
+        if (propertyContextMapHintEl) {
+          propertyContextMapHintEl.textContent = "Property context summary will appear here after assessment.";
+        }
         renderImproveSectionFromBlock(null);
       }
 
@@ -2047,11 +2170,14 @@
           || ""
         ).trim();
         const specificityKpiEl = document.getElementById("specificityKpi");
+        const specificityAtGlanceEl = document.getElementById("specificityAtGlance");
+        const specificityDisplay = specificityTierRaw
+          ? humanizeToken(specificityTierRaw)
+          : "Pending";
         if (specificityKpiEl) {
-          specificityKpiEl.textContent = specificityTierRaw
-            ? humanizeToken(specificityTierRaw)
-            : "Pending";
+          specificityKpiEl.textContent = specificityDisplay;
         }
+        if (specificityAtGlanceEl) specificityAtGlanceEl.textContent = specificityDisplay;
 
         const scoreEl = document.getElementById("riskScore");
         const riskAvailable = data.wildfire_risk_score_available !== false && data.wildfire_risk_score !== null && data.wildfire_risk_score !== undefined;
@@ -2171,6 +2297,18 @@
             ? `Confidence score: ${fallbackScore.toFixed(1)} / 100.`
             : "Confidence score: not available.";
         }
+        const confidenceAtGlanceEl = document.getElementById("confidenceAtGlance");
+        if (confidenceAtGlanceEl) {
+          if (Number.isFinite(confidenceRaw)) {
+            const confLabel = confidenceLabel || "Confidence";
+            confidenceAtGlanceEl.textContent = `${confLabel} (${confidenceRaw.toFixed(1)}/100)`;
+          } else {
+            const fallbackScore = Number(data?.confidence_score);
+            confidenceAtGlanceEl.textContent = Number.isFinite(fallbackScore)
+              ? `Confidence (${fallbackScore.toFixed(1)}/100)`
+              : (confidenceHeadline || "Confidence unavailable");
+          }
+        }
 
         const estimatedRows = Array.isArray(homeownerSummary?.what_was_estimated) && homeownerSummary.what_was_estimated.length > 0
           ? homeownerSummary.what_was_estimated
@@ -2208,6 +2346,24 @@
             return `<span class='pill' title="${detail}">${chip?.label || ""}</span>`;
           })
           .join("");
+        const flagsPrimaryEl = document.getElementById("flagsPrimary");
+        if (flagsPrimaryEl) {
+          flagsPrimaryEl.innerHTML = chips.length > 0
+            ? chips
+              .map((chip) => {
+                const detail = String(chip?.detail || chip?.label || "").replace(/"/g, "&quot;");
+                return `<span class='pill' title="${detail}">${chip?.label || ""}</span>`;
+              })
+              .join("")
+            : "<span class='pill'>No major limitations flagged</span>";
+        }
+        const confidenceSummaryTextEl = document.getElementById("confidenceSummaryText");
+        if (confidenceSummaryTextEl) {
+          const firstLimitation = chips?.[0]?.detail || chips?.[0]?.label || "";
+          const summary = String(confidenceHeadline || "").trim()
+            || (firstLimitation ? `Assessment confidence is influenced by: ${firstLimitation}` : "");
+          confidenceSummaryTextEl.textContent = summary || "Confidence details are available in the assessment output.";
+        }
 
         const seenFactors = new Set();
         const rows = Object.entries(data.submodel_scores || {})
@@ -2265,7 +2421,12 @@
           contextParts.push("Your selected map point was snapped to a nearby building footprint.");
         }
         if (dsLimitations.length > 0) contextParts.push(dsLimitations[0]);
-        document.getElementById("propertyContextText").textContent = contextParts.filter(Boolean).join(" ");
+        const propertyContextSummary = contextParts.filter(Boolean).join(" ");
+        document.getElementById("propertyContextText").textContent = propertyContextSummary;
+        const propertyContextMapHintEl = document.getElementById("propertyContextMapHint");
+        if (propertyContextMapHintEl) {
+          propertyContextMapHintEl.textContent = propertyContextSummary || "Property context summary will appear here after assessment.";
+        }
         const regionResolutionEl = document.getElementById("regionResolutionText");
         const geocodeDebugEl = document.getElementById("geocodeDebugText");
         if (regionResolutionEl) {
@@ -2336,6 +2497,21 @@
           .slice(0, 3)
           .map(v => `<span class='pill'>${v}</span>`)
           .join("");
+        const confidenceAtGlanceEl = document.getElementById("confidenceAtGlance");
+        const specificityAtGlanceEl = document.getElementById("specificityAtGlance");
+        const confidenceSummaryTextEl = document.getElementById("confidenceSummaryText");
+        const flagsPrimaryEl = document.getElementById("flagsPrimary");
+        if (confidenceAtGlanceEl) confidenceAtGlanceEl.textContent = "Not available";
+        if (specificityAtGlanceEl) specificityAtGlanceEl.textContent = "Regional estimate";
+        if (confidenceSummaryTextEl) {
+          confidenceSummaryTextEl.textContent = "No prepared region currently covers this address, so confidence and specificity are limited.";
+        }
+        if (flagsPrimaryEl) {
+          flagsPrimaryEl.innerHTML = diagnostics
+            .slice(0, 3)
+            .map(v => `<span class='pill'>${v}</span>`)
+            .join("") || "<span class='pill'>Prepared-region coverage missing</span>";
+        }
         const specificityKpiEl = document.getElementById("specificityKpi");
         const readinessKpiEl = document.getElementById("readinessKpi");
         const firstActionKpiEl = document.getElementById("firstActionKpi");
@@ -2345,6 +2521,8 @@
         document.getElementById("submodels").innerHTML = "<tr><td colspan='3' class='muted'>No factor data until region coverage is prepared.</td></tr>";
         document.getElementById("readinessText").textContent = "Insurance readiness score: not computed (location outside prepared coverage)";
         document.getElementById("propertyContextText").textContent = recommendation;
+        const propertyContextMapHintEl = document.getElementById("propertyContextMapHint");
+        if (propertyContextMapHintEl) propertyContextMapHintEl.textContent = recommendation;
         const regionResolutionEl = document.getElementById("regionResolutionText");
         const geocodeDebugEl = document.getElementById("geocodeDebugText");
         if (regionResolutionEl) {
@@ -2408,6 +2586,16 @@
         document.getElementById("confidenceActions").innerHTML =
           "<li>Confirm the address details or click the map to set the home location, then retry.</li>";
         document.getElementById("flags").innerHTML = `<span class='pill'>${geocodeStatus}</span>`;
+        const confidenceAtGlanceEl = document.getElementById("confidenceAtGlance");
+        const specificityAtGlanceEl = document.getElementById("specificityAtGlance");
+        const confidenceSummaryTextEl = document.getElementById("confidenceSummaryText");
+        const flagsPrimaryEl = document.getElementById("flagsPrimary");
+        if (confidenceAtGlanceEl) confidenceAtGlanceEl.textContent = "Unavailable";
+        if (specificityAtGlanceEl) specificityAtGlanceEl.textContent = "Not resolved";
+        if (confidenceSummaryTextEl) {
+          confidenceSummaryTextEl.textContent = "Address resolution did not pass trust checks, so property-specific assessment confidence is unavailable.";
+        }
+        if (flagsPrimaryEl) flagsPrimaryEl.innerHTML = `<span class='pill'>${geocodeStatus}</span>`;
         const specificityKpiEl = document.getElementById("specificityKpi");
         const readinessKpiEl = document.getElementById("readinessKpi");
         const firstActionKpiEl = document.getElementById("firstActionKpi");
@@ -2417,6 +2605,10 @@
         document.getElementById("submodels").innerHTML = "<tr><td colspan='3' class='muted'>No factor data until geocoding succeeds.</td></tr>";
         document.getElementById("readinessText").textContent = "Insurance readiness score: not computed";
         document.getElementById("propertyContextText").textContent = "Region resolution was not attempted because geocoding did not pass trust checks.";
+        const propertyContextMapHintEl = document.getElementById("propertyContextMapHint");
+        if (propertyContextMapHintEl) {
+          propertyContextMapHintEl.textContent = "Region resolution was not attempted because geocoding did not pass trust checks.";
+        }
 
         const regionInlineEl = document.getElementById("regionDebugInline");
         if (regionInlineEl) {
