@@ -305,6 +305,49 @@ def test_homeowner_report_surfaces_address_level_specificity(monkeypatch, tmp_pa
     assert isinstance(specificity.get("comparison_allowed"), bool)
 
 
+def test_homeowner_pdf_includes_structured_sections_and_priority_content(monkeypatch, tmp_path: Path):
+    context = _ctx(
+        env=48.0,
+        wildland=39.0,
+        historic=22.0,
+        ring_metrics={
+            "zone_0_5_ft": {"vegetation_density": 18.0, "coverage_pct": 14.0, "fuel_presence_proxy": 12.0},
+            "zone_5_30_ft": {"vegetation_density": 40.0, "coverage_pct": 36.0, "fuel_presence_proxy": 33.0},
+            "zone_30_100_ft": {"vegetation_density": 53.0, "coverage_pct": 49.0, "fuel_presence_proxy": 47.0},
+        },
+    )
+    _setup(monkeypatch, tmp_path, context)
+    assessed = _run_assessment("902 PDF Layout Way, Missoula, MT 59802")
+
+    pdf_res = client.get(f"/report/{assessed['assessment_id']}/homeowner/pdf")
+    assert pdf_res.status_code == 200
+    assert pdf_res.content.startswith(b"%PDF-1.4")
+
+    required_sections = [
+        b"Wildfire Risk Report",
+        b"Summary",
+        b"What Matters Most",
+        b"What To Do First",
+        b"Recommended Actions",
+        b"Confidence & Limitations",
+        b"Property Context",
+        b"Technical Details",
+    ]
+    for section in required_sections:
+        assert section in pdf_res.content
+
+    for key_line in (
+        b"Risk level:",
+        b"Home hardening readiness:",
+        b"Summary sentence:",
+        b"Top priority action",
+        b"Effort level:",
+        b"Data completeness:",
+        b"Specificity:",
+    ):
+        assert key_line in pdf_res.content
+
+
 def test_homeowner_report_surfaces_fallback_limitations_and_optional_debug_block(monkeypatch, tmp_path: Path):
     context = _ctx(
         env=52.0,
@@ -340,6 +383,52 @@ def test_homeowner_report_surfaces_fallback_limitations_and_optional_debug_block
     assert isinstance(debug_report.get("professional_debug_metadata"), dict)
     assert "coverage_summary" in debug_report["professional_debug_metadata"]
     assert isinstance((debug_report.get("confidence_and_limitations") or {}).get("fallback_decisions"), list)
+
+
+def test_homeowner_pdf_sections_render_in_high_and_low_confidence_scenarios(monkeypatch, tmp_path: Path):
+    context = _ctx(env=55.0, wildland=46.0, historic=34.0)
+    _setup(monkeypatch, tmp_path, context)
+    assessed = _run_assessment("903 PDF Confidence Scenarios Rd, Missoula, MT 59802")
+    original = app_main.store.get(assessed["assessment_id"])
+    assert original is not None
+
+    high = original.model_copy(deep=True)
+    high.confidence_tier = "high"
+    high.confidence_summary.missing_data = []
+    high.confidence_summary.fallback_assumptions = []
+    high.fallback_weight_fraction = 0.0
+    high.assessment_diagnostics.fallback_decisions = []
+
+    low = high.model_copy(deep=True)
+    low.confidence_tier = "low"
+    low.confidence_summary.missing_data = ["roof_type", "vent_type", "structure_geometry"]
+    low.confidence_summary.fallback_assumptions = ["regional proxy", "point fallback"]
+    low.fallback_weight_fraction = 0.8
+    low.assessment_diagnostics.fallback_decisions = [{"fallback_type": "derived_proxy"}]
+    low.assessment_specificity_tier = "regional_estimate"
+    low.assessment_mode = "insufficient_data"
+
+    high_pdf = export_homeowner_report(high, output_format="pdf")
+    low_pdf = export_homeowner_report(low, output_format="pdf")
+    assert high_pdf.startswith(b"%PDF-1.4")
+    assert low_pdf.startswith(b"%PDF-1.4")
+
+    required_sections = [
+        b"Summary",
+        b"What Matters Most",
+        b"What To Do First",
+        b"Recommended Actions",
+        b"Confidence & Limitations",
+        b"Technical Details",
+    ]
+    for section in required_sections:
+        assert section in high_pdf
+        assert section in low_pdf
+
+    assert b"Specificity:" in high_pdf
+    assert b"Specificity: Regional estimate" in low_pdf
+    assert b"Limited-data case" not in high_pdf
+    assert b"Limited-data case" in low_pdf
 
 
 def test_homeowner_report_handles_unavailable_scores_and_long_text_deterministically(monkeypatch, tmp_path: Path):

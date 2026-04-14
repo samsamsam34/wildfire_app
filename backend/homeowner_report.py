@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import timezone
 import re
 import textwrap
@@ -1287,223 +1288,422 @@ def _escape_pdf_text(text: str) -> str:
     return encoded.decode("latin-1")
 
 
-def _build_report_lines(report: HomeownerReport) -> list[str]:
-    lines: list[str] = []
+@dataclass(frozen=True)
+class _PdfEntry:
+    text: str = ""
+    style: str = "body"
 
+
+_PDF_TEXT_STYLES: dict[str, dict[str, float | str]] = {
+    "title": {"font": "F2", "size": 22.0, "leading": 30.0, "indent": 50.0, "width": 68.0, "gray": 0.0},
+    "meta": {"font": "F1", "size": 10.0, "leading": 14.0, "indent": 50.0, "width": 96.0, "gray": 0.0},
+    "section": {"font": "F2", "size": 14.0, "leading": 21.0, "indent": 50.0, "width": 88.0, "gray": 0.0},
+    "body": {"font": "F1", "size": 10.4, "leading": 14.0, "indent": 50.0, "width": 94.0, "gray": 0.0},
+    "bullet": {"font": "F1", "size": 10.4, "leading": 14.0, "indent": 62.0, "width": 86.0, "gray": 0.0},
+    "callout_label": {"font": "F2", "size": 11.0, "leading": 16.0, "indent": 50.0, "width": 88.0, "gray": 0.0},
+    "callout_action": {"font": "F2", "size": 13.5, "leading": 19.0, "indent": 56.0, "width": 80.0, "gray": 0.0},
+    "technical_header": {"font": "F2", "size": 11.0, "leading": 16.0, "indent": 50.0, "width": 88.0, "gray": 0.22},
+    "technical_body": {"font": "F1", "size": 9.2, "leading": 12.6, "indent": 58.0, "width": 84.0, "gray": 0.34},
+}
+
+_PDF_SPACER_HEIGHTS: dict[str, float] = {
+    "spacer_sm": 6.0,
+    "spacer_md": 9.0,
+    "spacer_lg": 13.0,
+}
+
+
+def _normalize_line(value: Any) -> str:
+    return " ".join(str(value or "").replace("\n", " ").split()).strip()
+
+
+def _section_band_label(raw_band: str | None) -> str:
+    band = str(raw_band or "").strip().lower()
+    mapping = {
+        "high": "High",
+        "moderate": "Moderate",
+        "lower": "Low",
+        "low": "Low",
+        "unavailable": "Unavailable",
+    }
+    return mapping.get(band, "Unavailable")
+
+
+def _safe_effort_label(value: Any) -> str:
+    raw = str(value or "medium").strip().lower()
+    if raw not in {"low", "medium", "high"}:
+        raw = "medium"
+    return raw.capitalize()
+
+
+def _driver_fallback_explanation(driver_text: str) -> str:
+    lowered = str(driver_text or "").lower()
+    if "vegetation" in lowered or "fuel" in lowered:
+        return "Nearby vegetation and fuels can increase flame and ember pressure near the home."
+    if "slope" in lowered or "topograph" in lowered:
+        return "Steeper terrain can accelerate fire spread and increase exposure."
+    if "ember" in lowered:
+        return "Wind-blown embers can ignite vulnerable areas around the structure."
+    if "flame" in lowered:
+        return "Direct flame contact risk is elevated in the immediate structure zone."
+    if "historic" in lowered or "fire history" in lowered:
+        return "Past wildfire activity nearby indicates repeated local fire potential."
+    if "defensible" in lowered:
+        return "Limited defensible space can increase structure ignition pathways."
+    return "This factor contributes to wildfire exposure at this property."
+
+
+def _driver_explanation(driver_text: str, detailed_rows: list[dict[str, Any]]) -> str:
+    driver_norm = _normalize_line(driver_text).lower()
+    if not driver_norm:
+        return _driver_fallback_explanation(driver_text)
+
+    for row in detailed_rows:
+        factor = _normalize_line(row.get("factor") or "").replace("_", " ").lower()
+        explanation = _normalize_line(row.get("explanation") or "")
+        if not explanation:
+            continue
+        if factor and (factor in driver_norm or any(token in driver_norm for token in factor.split() if len(token) > 4)):
+            return explanation
+
+    return _driver_fallback_explanation(driver_text)
+
+
+def _select_recommended_actions(report: HomeownerReport, *, limit: int = 5) -> list[dict[str, Any]]:
+    ranked = [row for row in list(report.ranked_actions or []) if isinstance(row, dict)]
+    prioritized = [row for row in list(report.prioritized_actions or []) if isinstance(row, dict)]
+
+    candidates = ranked or prioritized
+    deduped: list[dict[str, Any]] = []
+    seen_actions: set[str] = set()
+    for row in candidates:
+        name = _normalize_line(row.get("action") or row.get("title") or "")
+        if not name:
+            continue
+        key = name.lower()
+        if key in seen_actions:
+            continue
+        seen_actions.add(key)
+        deduped.append(dict(row))
+        if len(deduped) >= limit:
+            break
+    return deduped
+
+
+def _property_context_lines(report: HomeownerReport) -> list[str]:
+    context_lines: list[str] = []
+    defensible_space = report.defensible_space_summary if isinstance(report.defensible_space_summary, dict) else {}
+    ds_summary = _normalize_line(defensible_space.get("summary") or "")
+    if ds_summary:
+        context_lines.append(f"Vegetation: {ds_summary}")
+    else:
+        context_lines.append("Vegetation: No detailed vegetation summary was available for this run.")
+
+    detailed_rows = [
+        _dump_value(row) if not isinstance(row, dict) else row
+        for row in list(report.top_risk_drivers_detailed or [])
+    ]
+    detailed_rows = [row for row in detailed_rows if isinstance(row, dict)]
+
+    slope_line = ""
+    history_line = ""
+    for row in detailed_rows:
+        factor = _normalize_line(row.get("factor") or "").lower()
+        explanation = _normalize_line(row.get("explanation") or "")
+        if not slope_line and ("slope" in factor or "topograph" in factor):
+            slope_line = explanation or "Slope and terrain influence local fire spread conditions."
+        if not history_line and ("historic" in factor or "fire_history" in factor):
+            history_line = explanation or "Historic fire activity contributes to regional context."
+        if slope_line and history_line:
+            break
+
+    if not slope_line:
+        slope_line = "Slope and terrain were considered in this assessment's hazard context."
+    if not history_line:
+        history_line = "Historic fire context did not emerge as a primary differentiator in this run."
+
+    context_lines.append(f"Slope: {slope_line}")
+    context_lines.append(f"Fire history: {history_line}")
+    return context_lines
+
+
+def _add_wrapped(entries: list[_PdfEntry], text: Any, *, style: str, prefix: str = "") -> None:
+    normalized = _normalize_line(text)
+    if not normalized:
+        return
+    style_meta = _PDF_TEXT_STYLES.get(style) or _PDF_TEXT_STYLES["body"]
+    width = int(style_meta.get("width", 94.0))
+    for line in _wrap_text_line(normalized, width=width, prefix=prefix):
+        entries.append(_PdfEntry(line, style))
+
+
+def _build_report_entries(report: HomeownerReport) -> list[_PdfEntry]:
+    entries: list[_PdfEntry] = []
     header = report.report_header or {}
     property_summary = report.property_summary or {}
     score_summary = report.score_summary or {}
     confidence = report.confidence_and_limitations or {}
+    first_screen = report.first_screen if isinstance(report.first_screen, dict) else {}
     specificity_summary = _dump_value(report.specificity_summary)
     specificity_summary = specificity_summary if isinstance(specificity_summary, dict) else {}
-    metadata = report.metadata or {}
-    first_screen = report.first_screen if isinstance(report.first_screen, dict) else {}
 
-    lines.extend(_wrap_text_line(str(header.get("title") or "WildfireRisk Advisor Home Hardening Report")))
-    lines.extend(_wrap_text_line(str(header.get("subtitle") or "")))
-    lines.append("")
-
-    lines.extend(_wrap_text_line(f"Assessment ID: {report.assessment_id}"))
-    lines.extend(_wrap_text_line(f"Address: {property_summary.get('address') or 'Unknown'}"))
-    lines.extend(_wrap_text_line(f"Region: {property_summary.get('resolved_region_id') or 'unknown'}"))
-    lines.extend(_wrap_text_line(f"Assessment Date: {header.get('assessment_generated_at') or report.generated_at}"))
-    lines.append("")
-
-    lines.extend(_wrap_text_line("Homeowner Snapshot"))
-    fs_specificity = first_screen.get("specificity_summary") if isinstance(first_screen.get("specificity_summary"), dict) else specificity_summary
+    fs_specificity = (
+        first_screen.get("specificity_summary")
+        if isinstance(first_screen.get("specificity_summary"), dict)
+        else specificity_summary
+    )
     fs_specificity = fs_specificity if isinstance(fs_specificity, dict) else {}
-    fs_overall = first_screen.get("overall_wildfire_risk") if isinstance(first_screen.get("overall_wildfire_risk"), dict) else {}
+    fs_overall = (
+        first_screen.get("overall_wildfire_risk")
+        if isinstance(first_screen.get("overall_wildfire_risk"), dict)
+        else {}
+    )
     fs_overall = fs_overall if isinstance(fs_overall, dict) else {}
-    fs_headline = str(
+
+    fs_headline = _normalize_line(
         fs_overall.get("headline")
         or first_screen.get("headline_risk_summary")
         or report.headline_risk_summary
         or ""
-    ).strip()
-    fs_overall_band = str(
-        fs_overall.get("risk_band")
-        or (report.score_summary or {}).get("wildfire_risk_band")
-        or "unavailable"
-    ).strip()
-    fs_overall_score = _to_float(
+    )
+    risk_band_label = _section_band_label(
+        fs_overall.get("risk_band") or score_summary.get("wildfire_risk_band")
+    )
+    risk_score = _to_float(
         fs_overall.get("score")
         if fs_overall.get("score") is not None
-        else (report.score_summary or {}).get("overall_wildfire_risk")
+        else score_summary.get("overall_wildfire_risk", score_summary.get("wildfire_risk_score"))
     )
-    fs_drivers = first_screen.get("top_risk_drivers") if isinstance(first_screen.get("top_risk_drivers"), list) else list(report.top_risk_drivers or [])[:3]
-    fs_actions = first_screen.get("top_actions") if isinstance(first_screen.get("top_actions"), list) else [dict(row) for row in list(report.ranked_actions or [])[:3]]
-    fs_first_action = first_screen.get("what_to_do_first") if isinstance(first_screen.get("what_to_do_first"), dict) else dict(report.what_to_do_first or {})
-    fs_limitations = str(first_screen.get("limitations_note") or report.limitations_notice or "").strip()
+    risk_score_suffix = f" ({risk_score:.1f}/100)" if risk_score is not None else ""
 
-    if fs_headline:
-        score_hint = (
-            f" (score={fs_overall_score:.1f}, band={fs_overall_band})"
-            if fs_overall_score is not None
-            else f" (band={fs_overall_band})"
-        )
-        lines.extend(_wrap_text_line(f"Overall Wildfire Risk: {fs_headline}{score_hint}", prefix="- "))
-    if fs_specificity:
-        lines.extend(
-            _wrap_text_line(
-                f"Specificity: {fs_specificity.get('headline', 'Regional estimate')} "
-                f"(tier={fs_specificity.get('specificity_tier', 'regional_estimate')})",
-                prefix="- ",
-            )
-        )
-        what_means = str(fs_specificity.get("what_this_means") or "").strip()
-        if what_means:
-            lines.extend(_wrap_text_line(what_means, prefix="- "))
-    fs_property_confidence = (
-        first_screen.get("property_confidence_summary")
-        if isinstance(first_screen.get("property_confidence_summary"), dict)
-        else {}
-    )
-    if fs_property_confidence:
-        lines.extend(
-            _wrap_text_line(
-                f"Property Confidence: {fs_property_confidence.get('level', 'unknown')} "
-                f"(score={fs_property_confidence.get('score', 'n/a')})",
-                prefix="- ",
-            )
-        )
-        reasons = fs_property_confidence.get("key_reasons")
-        if isinstance(reasons, list):
-            for reason in reasons[:2]:
-                text = str(reason or "").strip()
-                if text:
-                    lines.extend(_wrap_text_line(text, prefix="  - "))
-    lines.extend(_wrap_text_line("Top Risk Drivers:", prefix="- "))
-    for driver in list(fs_drivers or [])[:3]:
-        lines.extend(_wrap_text_line(str(driver), prefix="  - "))
-    lines.extend(_wrap_text_line("Top Actions:", prefix="- "))
-    for action in list(fs_actions or [])[:3]:
-        if not isinstance(action, dict):
-            continue
-        action_title = str(action.get("action") or "").strip()
-        if not action_title:
-            continue
-        effort = str(action.get("effort_level") or "medium")
-        effect = str(action.get("expected_effect") or "moderate")
-        lines.extend(_wrap_text_line(f"{action_title} (effort: {effort}, expected effect: {effect})", prefix="  - "))
-    if fs_first_action:
-        lines.extend(
-            _wrap_text_line(
-                f"What to do first: {fs_first_action.get('action', 'No primary action available')}",
-                prefix="- ",
-            )
-        )
-    if fs_limitations:
-        lines.extend(_wrap_text_line(f"Limitations: {fs_limitations}", prefix="- "))
-    lines.append("")
-
-    lines.extend(_wrap_text_line("More Details (Optional)"))
-    lines.extend(_wrap_text_line("Confidence"))
-    lines.extend(_wrap_text_line(str(confidence.get("confidence_statement") or "Confidence summary unavailable."), prefix="- "))
-    if specificity_summary:
-        lines.extend(
-            _wrap_text_line(
-                f"Comparison guidance: {'Use caution comparing nearby homes' if not specificity_summary.get('comparison_allowed') else 'Nearby-home comparison is generally supported'}",
-                prefix="- ",
-            )
-        )
-    for limitation in list(confidence.get("limitations") or [])[:6]:
-        lines.extend(_wrap_text_line(str(limitation), prefix="- "))
-    lines.extend(
-        _wrap_text_line(
-            str(
-                confidence.get("decision_support_disclaimer")
-                or "This report is decision-support guidance and not a guarantee of insurability or wildfire safety."
-            ),
-            prefix="- ",
-        )
-    )
-    lines.append("")
-
-    lines.extend(_wrap_text_line("Action Details"))
-    prioritized_rows = list(report.prioritized_actions or [])[:3]
-    if prioritized_rows:
-        for action in prioritized_rows:
-            if not isinstance(action, dict):
-                continue
-            title = str(action.get("action") or "").strip()
-            why = str(action.get("why_this_matters") or "").strip()
-            if title:
-                lines.extend(_wrap_text_line(title, prefix="- "))
-            if why:
-                lines.extend(_wrap_text_line(why, prefix="  "))
+    readiness_available = bool(score_summary.get("home_hardening_readiness_score_available"))
+    readiness_score = _to_float(score_summary.get("home_hardening_readiness"))
+    readiness_band = _section_band_label(score_summary.get("home_hardening_readiness_band"))
+    if readiness_available and readiness_score is not None:
+        readiness_line = f"{readiness_score:.1f}/100 ({readiness_band})"
     else:
-        lines.extend(_wrap_text_line("No prioritized actions were generated.", prefix="- "))
+        readiness_line = "Not available"
 
+    top_drivers = first_screen.get("top_risk_drivers") if isinstance(first_screen.get("top_risk_drivers"), list) else list(report.top_risk_drivers or [])
+    top_drivers = [str(v).strip() for v in top_drivers if str(v).strip()][:3]
+    detailed_rows = [
+        _dump_value(row) if not isinstance(row, dict) else row
+        for row in list(report.top_risk_drivers_detailed or [])
+    ]
+    detailed_rows = [row for row in detailed_rows if isinstance(row, dict)]
+
+    first_action = (
+        first_screen.get("what_to_do_first")
+        if isinstance(first_screen.get("what_to_do_first"), dict)
+        else (dict(report.what_to_do_first or {}) if isinstance(report.what_to_do_first, dict) else {})
+    )
+    first_action_text = _normalize_line(first_action.get("action") or "Review the top recommended action.")
+    first_action_why = _normalize_line(
+        first_action.get("why_this_matters")
+        or first_action.get("explanation")
+        or first_action.get("why_it_matters")
+        or ""
+    )
+
+    recommended_actions = _select_recommended_actions(report, limit=5)
+
+    confidence_tier = str(score_summary.get("confidence_tier") or confidence.get("confidence_tier") or "unknown").strip().lower()
+    confidence_score = _to_float(score_summary.get("confidence_score") or confidence.get("confidence_score"))
+    confidence_score_text = f"{confidence_score:.1f}/100" if confidence_score is not None else "n/a"
+    observed_count = len(list(confidence.get("observed_data") or []))
+    estimated_count = len(list(confidence.get("estimated_data") or []))
+    missing_count = len(list(confidence.get("missing_data") or []))
+    specificity_headline = _normalize_line(fs_specificity.get("headline") or "Regional estimate")
+    specificity_tier = _normalize_line(fs_specificity.get("specificity_tier") or "regional_estimate")
+    specificity_meaning = _normalize_line(fs_specificity.get("what_this_means") or "")
+    comparison_allowed = bool(fs_specificity.get("comparison_allowed"))
+
+    limitations: list[str] = []
+    limitations.extend([_normalize_line(v) for v in list(confidence.get("limitations") or []) if _normalize_line(v)])
+    notice = _normalize_line(first_screen.get("limitations_note") or report.limitations_notice or "")
+    if notice:
+        limitations.append(notice)
+    deduped_limitations: list[str] = []
+    seen_limitations: set[str] = set()
+    for row in limitations:
+        key = row.lower()
+        if key in seen_limitations:
+            continue
+        seen_limitations.add(key)
+        deduped_limitations.append(row)
+    deduped_limitations = deduped_limitations[:4]
+
+    # 1) Header / Title
+    _add_wrapped(entries, "Wildfire Risk Report", style="title")
+    _add_wrapped(entries, f"Property: {_normalize_line(property_summary.get('address') or 'Unknown address')}", style="meta")
+    _add_wrapped(entries, f"Date generated: {_normalize_line(header.get('assessment_generated_at') or report.generated_at)}", style="meta")
+    entries.append(_PdfEntry(style="spacer_lg"))
+
+    # 2) Summary
+    _add_wrapped(entries, "Summary", style="section")
+    _add_wrapped(entries, f"Risk level: {risk_band_label}{risk_score_suffix}", style="body")
+    _add_wrapped(entries, f"Home hardening readiness: {readiness_line}", style="body")
+    _add_wrapped(entries, f"Summary sentence: {fs_headline or 'No summary sentence was available.'}", style="body")
+    entries.append(_PdfEntry(style="spacer_md"))
+
+    # 3) What Matters Most
+    _add_wrapped(entries, "What Matters Most", style="section")
+    if top_drivers:
+        for driver in top_drivers[:3]:
+            _add_wrapped(entries, driver, style="bullet", prefix="- ")
+            _add_wrapped(
+                entries,
+                f"Why it matters: {_driver_explanation(driver, detailed_rows)}",
+                style="body",
+                prefix="  ",
+            )
+    else:
+        _add_wrapped(entries, "Top risk drivers were not available for this assessment.", style="body")
+    entries.append(_PdfEntry(style="spacer_md"))
+
+    # 4) What To Do First
+    _add_wrapped(entries, "What To Do First", style="section")
+    _add_wrapped(entries, "Top priority action", style="callout_label")
+    _add_wrapped(entries, first_action_text, style="callout_action")
+    if first_action_why:
+        _add_wrapped(entries, first_action_why, style="body", prefix="  ")
+    entries.append(_PdfEntry(style="spacer_md"))
+
+    # 5) Recommended Actions
+    _add_wrapped(entries, "Recommended Actions", style="section")
+    if recommended_actions:
+        for row in recommended_actions[:5]:
+            action_name = _normalize_line(row.get("action") or row.get("title") or "Recommended action")
+            why = _normalize_line(row.get("why_this_matters") or row.get("explanation") or row.get("why_it_matters") or "")
+            effort = _safe_effort_label(row.get("effort_level") or row.get("estimated_cost_band"))
+            _add_wrapped(entries, action_name, style="bullet", prefix="- ")
+            if why:
+                _add_wrapped(entries, why, style="body", prefix="  ")
+            _add_wrapped(entries, f"Effort level: {effort}", style="body", prefix="  ")
+    else:
+        _add_wrapped(entries, "No prioritized actions were generated for this run.", style="body")
+    entries.append(_PdfEntry(style="spacer_md"))
+
+    # 6) Confidence & Limitations
+    _add_wrapped(entries, "Confidence & Limitations", style="section")
+    _add_wrapped(entries, f"Data completeness: observed {observed_count}, estimated {estimated_count}, missing {missing_count}.", style="body")
+    _add_wrapped(entries, f"Specificity: {specificity_headline} (tier: {specificity_tier}).", style="body")
+    if specificity_meaning:
+        _add_wrapped(entries, specificity_meaning, style="body", prefix="  ")
+    if not comparison_allowed:
+        _add_wrapped(entries, "Nearby-home comparisons should be treated cautiously for this estimate.", style="body", prefix="  ")
+    _add_wrapped(entries, f"Confidence tier: {confidence_tier} ({confidence_score_text}).", style="body")
+    if missing_count > 0:
+        _add_wrapped(entries, "Limited-data case: some fields were estimated or missing, so this result is advisory.", style="body")
+    if deduped_limitations:
+        for limitation in deduped_limitations:
+            _add_wrapped(entries, limitation, style="bullet", prefix="- ")
+    entries.append(_PdfEntry(style="spacer_md"))
+
+    # 7) Property Context
+    _add_wrapped(entries, "Property Context", style="section")
+    for line in _property_context_lines(report):
+        _add_wrapped(entries, line, style="body", prefix="- ")
+    entries.append(_PdfEntry(style="spacer_md"))
+
+    # 8) Technical Details (de-emphasized)
+    _add_wrapped(entries, "Technical Details (Secondary)", style="section")
+    _add_wrapped(entries, "Factor breakdown", style="technical_header")
+    if detailed_rows:
+        for row in detailed_rows[:8]:
+            factor = _normalize_line(row.get("factor") or "factor").replace("_", " ")
+            impact = _normalize_line(row.get("impact") or "unknown")
+            contribution = _to_float(row.get("relative_contribution_pct"))
+            explanation = _normalize_line(row.get("explanation") or "")
+            contribution_part = f", contribution={contribution:.1f}%" if contribution is not None else ""
+            _add_wrapped(entries, f"- {factor} (impact={impact}{contribution_part})", style="technical_body")
+            if explanation:
+                _add_wrapped(entries, f"  {explanation}", style="technical_body")
+    else:
+        _add_wrapped(entries, "- No detailed factor breakdown was available.", style="technical_body")
+
+    _add_wrapped(entries, "Diagnostics", style="technical_header")
+    _add_wrapped(entries, f"- Assessment ID: {report.assessment_id}", style="technical_body")
+    _add_wrapped(entries, f"- Region: {_normalize_line(property_summary.get('resolved_region_id') or 'unknown')}", style="technical_body")
+    _add_wrapped(entries, f"- Confidence tier: {confidence_tier}", style="technical_body")
+    _add_wrapped(entries, f"- Risk band: {risk_band_label.lower()}", style="technical_body")
+
+    _add_wrapped(entries, "Evidence summaries", style="technical_header")
+    observed_preview = ", ".join([_normalize_line(v) for v in list(confidence.get("observed_data") or [])[:4] if _normalize_line(v)])
+    estimated_preview = ", ".join([_normalize_line(v) for v in list(confidence.get("estimated_data") or [])[:4] if _normalize_line(v)])
+    missing_preview = ", ".join([_normalize_line(v) for v in list(confidence.get("missing_data") or [])[:4] if _normalize_line(v)])
+    _add_wrapped(entries, f"- Observed evidence: {observed_preview or 'none listed'}", style="technical_body")
+    _add_wrapped(entries, f"- Estimated evidence: {estimated_preview or 'none listed'}", style="technical_body")
+    _add_wrapped(entries, f"- Missing evidence: {missing_preview or 'none listed'}", style="technical_body")
     if report.professional_debug_metadata:
-        governance = metadata.get("model_governance") if isinstance(metadata.get("model_governance"), dict) else {}
-        calibration_meta = (
-            metadata.get("optional_public_outcome_calibration")
-            if isinstance(metadata.get("optional_public_outcome_calibration"), dict)
-            else {}
-        )
-        lines.append("")
-        lines.extend(_wrap_text_line("Advanced Technical Detail (Internal)"))
-        lines.extend(_wrap_text_line(f"Model Version: {metadata.get('model_version')}", prefix="- "))
-        lines.extend(_wrap_text_line(f"Scoring Model Version: {governance.get('scoring_model_version')}", prefix="- "))
-        lines.extend(_wrap_text_line(f"Ruleset Version: {governance.get('ruleset_version')}", prefix="- "))
-        lines.extend(_wrap_text_line(f"Region Data Version: {metadata.get('region_data_version')}", prefix="- "))
-        if calibration_meta:
-            lines.extend(
-                _wrap_text_line(
-                    "Optional public-outcome calibration metadata is available for internal governance review only.",
-                    prefix="- ",
-                )
-            )
-            lines.extend(
-                _wrap_text_line(
-                    "Governance docs: docs/public_outcome_validation.md | docs/public_outcome_calibration.md",
-                    prefix="- ",
-                )
-            )
-        lines.extend(_wrap_text_line(
-            f"Overall Wildfire Risk: {score_summary.get('overall_wildfire_risk', score_summary.get('wildfire_risk_score'))} "
-            f"({score_summary.get('wildfire_risk_band', 'unavailable')})",
-            prefix="- ",
-        ))
-        lines.extend(_wrap_text_line(
-            f"Home Hardening Readiness: {score_summary.get('home_hardening_readiness')} "
-            f"({score_summary.get('home_hardening_readiness_band', 'unavailable')})",
-            prefix="- ",
-        ))
-        lines.extend(_wrap_text_line(
-            f"Confidence: {score_summary.get('confidence_score')} ({score_summary.get('confidence_tier', 'unknown')})",
-            prefix="- ",
-        ))
+        _add_wrapped(entries, "- Additional internal diagnostics are available in the raw JSON export.", style="technical_body")
 
-    return lines
+    return entries
 
 
-def _paginate_lines(lines: list[str], *, max_lines_per_page: int = 46) -> list[list[str]]:
-    pages: list[list[str]] = []
-    page: list[str] = []
-    for line in lines:
-        page.append(line)
-        if len(page) >= max_lines_per_page:
+def _entry_height(entry: _PdfEntry) -> float:
+    if entry.style in _PDF_SPACER_HEIGHTS:
+        return _PDF_SPACER_HEIGHTS[entry.style]
+    style = _PDF_TEXT_STYLES.get(entry.style) or _PDF_TEXT_STYLES["body"]
+    return float(style.get("leading", 14.0))
+
+
+def _paginate_entries(entries: list[_PdfEntry], *, start_y: float = 764.0, bottom_y: float = 50.0) -> list[list[_PdfEntry]]:
+    pages: list[list[_PdfEntry]] = []
+    page: list[_PdfEntry] = []
+    remaining = max(80.0, start_y - bottom_y)
+
+    for entry in entries:
+        height = _entry_height(entry)
+        if page and height > remaining:
             pages.append(page)
             page = []
+            remaining = max(80.0, start_y - bottom_y)
+        page.append(entry)
+        remaining -= height
+
     if page:
         pages.append(page)
     if not pages:
-        pages.append([""])
+        pages.append([_PdfEntry("Wildfire Risk Report", "title")])
     return pages
 
 
-def _build_pdf_content_stream(page_lines: list[str]) -> bytes:
-    commands = ["BT", "/F1 11 Tf", "14 TL", "50 750 Td"]
-    first = True
-    for line in page_lines:
-        escaped = _escape_pdf_text(line)
-        if first:
-            commands.append(f"({escaped}) Tj")
-            first = False
-        else:
-            commands.append("T*")
-            commands.append(f"({escaped}) Tj")
+def _build_pdf_content_stream(page_entries: list[_PdfEntry]) -> bytes:
+    commands = ["BT"]
+    y = 764.0
+    current_font = ""
+    current_size = -1.0
+    current_gray = -1.0
+
+    for entry in page_entries:
+        if entry.style in _PDF_SPACER_HEIGHTS:
+            y -= _PDF_SPACER_HEIGHTS[entry.style]
+            continue
+
+        style = _PDF_TEXT_STYLES.get(entry.style) or _PDF_TEXT_STYLES["body"]
+        font = str(style.get("font", "F1"))
+        size = float(style.get("size", 10.4))
+        leading = float(style.get("leading", 14.0))
+        indent = float(style.get("indent", 50.0))
+        gray = float(style.get("gray", 0.0))
+
+        y -= leading
+        if y < 42.0:
+            break
+
+        if font != current_font or abs(size - current_size) > 0.001:
+            commands.append(f"/{font} {size:.2f} Tf")
+            current_font = font
+            current_size = size
+        if abs(gray - current_gray) > 0.001:
+            commands.append(f"{gray:.2f} g")
+            current_gray = gray
+
+        escaped = _escape_pdf_text(entry.text)
+        commands.append(f"1 0 0 1 {indent:.2f} {y:.2f} Tm")
+        commands.append(f"({escaped}) Tj")
+
     commands.append("ET")
     return "\n".join(commands).encode("latin-1", errors="replace")
 
@@ -1537,21 +1737,22 @@ def _serialize_pdf(objects: dict[int, bytes]) -> bytes:
 
 
 def render_homeowner_report_pdf(report: HomeownerReport) -> bytes:
-    lines = _build_report_lines(report)
-    pages = _paginate_lines(lines)
+    entries = _build_report_entries(report)
+    pages = _paginate_entries(entries)
 
     objects: dict[int, bytes] = {
         1: b"<< /Type /Catalog /Pages 2 0 R >>",
         3: b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+        4: b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>",
     }
 
     page_ids: list[int] = []
-    for idx, page_lines in enumerate(pages):
-        content_id = 4 + idx * 2
-        page_id = 5 + idx * 2
+    for idx, page_entries in enumerate(pages):
+        content_id = 5 + idx * 2
+        page_id = 6 + idx * 2
         page_ids.append(page_id)
 
-        content_stream = _build_pdf_content_stream(page_lines)
+        content_stream = _build_pdf_content_stream(page_entries)
         objects[content_id] = (
             f"<< /Length {len(content_stream)} >>\nstream\n".encode("ascii")
             + content_stream
@@ -1559,7 +1760,7 @@ def render_homeowner_report_pdf(report: HomeownerReport) -> bytes:
         )
         objects[page_id] = (
             f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
-            f"/Resources << /Font << /F1 3 0 R >> >> /Contents {content_id} 0 R >>"
+            f"/Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents {content_id} 0 R >>"
         ).encode("ascii")
 
     kids = " ".join(f"{pid} 0 R" for pid in page_ids)
