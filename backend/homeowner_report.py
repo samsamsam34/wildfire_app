@@ -1390,6 +1390,41 @@ def _select_recommended_actions(report: HomeownerReport, *, limit: int = 5) -> l
     return deduped
 
 
+def _improvement_prefix(confidence_tier: str) -> str:
+    tier = str(confidence_tier or "").strip().lower()
+    if tier == "high":
+        return "is likely to"
+    if tier in {"moderate", "medium"}:
+        return "can help"
+    return "could help"
+
+
+def _how_this_could_improve_lines(
+    recommended_actions: list[dict[str, Any]],
+    *,
+    confidence_tier: str,
+) -> list[str]:
+    lines: list[str] = []
+    phrase = _improvement_prefix(confidence_tier)
+    for row in list(recommended_actions or [])[:3]:
+        action_name = _normalize_line(row.get("action") or row.get("title") or "")
+        if not action_name:
+            continue
+        direction_line = (
+            f"{action_name} {phrase} lower wildfire risk and improve home hardening readiness."
+        )
+        lines.append(direction_line)
+        why = _normalize_line(
+            row.get("why_this_matters")
+            or row.get("explanation")
+            or row.get("why_it_matters")
+            or ""
+        )
+        if why:
+            lines.append(f"Impact rationale: {why}")
+    return lines
+
+
 def _property_context_lines(report: HomeownerReport) -> list[str]:
     context_lines: list[str] = []
     defensible_space = report.defensible_space_summary if isinstance(report.defensible_space_summary, dict) else {}
@@ -1584,7 +1619,23 @@ def _build_report_entries(report: HomeownerReport) -> list[_PdfEntry]:
         _add_wrapped(entries, "No prioritized actions were generated for this run.", style="body")
     entries.append(_PdfEntry(style="spacer_md"))
 
-    # 6) Confidence & Limitations
+    # 6) How This Could Improve
+    _add_wrapped(entries, "How This Could Improve", style="section")
+    improvement_lines = _how_this_could_improve_lines(
+        recommended_actions,
+        confidence_tier=confidence_tier,
+    )
+    if improvement_lines:
+        for idx, line in enumerate(improvement_lines):
+            if line.startswith("Impact rationale:"):
+                _add_wrapped(entries, line, style="body", prefix="  ")
+            else:
+                _add_wrapped(entries, line, style="bullet", prefix="- ")
+    else:
+        _add_wrapped(entries, "No directional improvement summary is available yet.", style="body")
+    entries.append(_PdfEntry(style="spacer_md"))
+
+    # 7) Confidence & Limitations
     _add_wrapped(entries, "Confidence & Limitations", style="section")
     _add_wrapped(entries, f"Data completeness: observed {observed_count}, estimated {estimated_count}, missing {missing_count}.", style="body")
     _add_wrapped(entries, f"Specificity: {specificity_headline} (tier: {specificity_tier}).", style="body")
@@ -1600,13 +1651,13 @@ def _build_report_entries(report: HomeownerReport) -> list[_PdfEntry]:
             _add_wrapped(entries, limitation, style="bullet", prefix="- ")
     entries.append(_PdfEntry(style="spacer_md"))
 
-    # 7) Property Context
+    # 8) Property Context
     _add_wrapped(entries, "Property Context", style="section")
     for line in _property_context_lines(report):
         _add_wrapped(entries, line, style="body", prefix="- ")
     entries.append(_PdfEntry(style="spacer_md"))
 
-    # 8) Technical Details (de-emphasized)
+    # 9) Technical Details (de-emphasized)
     _add_wrapped(entries, "Technical Details (Secondary)", style="section")
     _add_wrapped(entries, "Factor breakdown", style="technical_header")
     if detailed_rows:

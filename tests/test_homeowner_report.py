@@ -329,6 +329,7 @@ def test_homeowner_pdf_includes_structured_sections_and_priority_content(monkeyp
         b"What Matters Most",
         b"What To Do First",
         b"Recommended Actions",
+        b"How This Could Improve",
         b"Confidence & Limitations",
         b"Property Context",
         b"Technical Details",
@@ -342,6 +343,7 @@ def test_homeowner_pdf_includes_structured_sections_and_priority_content(monkeyp
         b"Summary sentence:",
         b"Top priority action",
         b"Effort level:",
+        b"lower wildfire risk",
         b"Data completeness:",
         b"Specificity:",
     ):
@@ -418,6 +420,7 @@ def test_homeowner_pdf_sections_render_in_high_and_low_confidence_scenarios(monk
         b"What Matters Most",
         b"What To Do First",
         b"Recommended Actions",
+        b"How This Could Improve",
         b"Confidence & Limitations",
         b"Technical Details",
     ]
@@ -429,6 +432,46 @@ def test_homeowner_pdf_sections_render_in_high_and_low_confidence_scenarios(monk
     assert b"Specificity: Regional estimate" in low_pdf
     assert b"Limited-data case" not in high_pdf
     assert b"Limited-data case" in low_pdf
+
+
+def test_homeowner_pdf_how_this_could_improve_language_adapts_to_confidence(monkeypatch, tmp_path: Path):
+    context = _ctx(env=57.0, wildland=41.0, historic=23.0)
+    _setup(monkeypatch, tmp_path, context)
+    assessed = _run_assessment("904 Directional Improvement Ln, Missoula, MT 59802")
+    original = app_main.store.get(assessed["assessment_id"])
+    assert original is not None
+
+    high = original.model_copy(deep=True)
+    high.confidence_tier = "high"
+    high.confidence_summary.missing_data = []
+    high.confidence_summary.fallback_assumptions = []
+    high.fallback_weight_fraction = 0.0
+    high.assessment_diagnostics.fallback_decisions = []
+    high.prioritized_mitigation_actions = [
+        HomeownerPrioritizedAction(
+            action="Clear debris within 5 feet",
+            explanation="Removes immediate ignition pathways near the structure.",
+            impact_level="high",
+            effort_level="low",
+            estimated_cost_band="low",
+            timeline="now",
+            priority=1,
+        )
+    ]
+
+    low = high.model_copy(deep=True)
+    low.confidence_tier = "low"
+    low.confidence_summary.missing_data = ["roof_type", "vent_type", "structure_geometry"]
+    low.confidence_summary.fallback_assumptions = ["regional proxy", "point fallback"]
+    low.fallback_weight_fraction = 0.75
+    low.assessment_diagnostics.fallback_decisions = [{"fallback_type": "derived_proxy"}]
+
+    high_pdf = export_homeowner_report(high, output_format="pdf")
+    low_pdf = export_homeowner_report(low, output_format="pdf")
+    assert b"How This Could Improve" in high_pdf
+    assert b"How This Could Improve" in low_pdf
+    assert b"is likely to lower wildfire risk" in high_pdf
+    assert b"could help lower wildfire risk" in low_pdf
 
 
 def test_homeowner_report_handles_unavailable_scores_and_long_text_deterministically(monkeypatch, tmp_path: Path):
