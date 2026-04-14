@@ -10,74 +10,235 @@
     />
     <style>
       :root {
-        --bg: #f6f3ec;
-        --card: #fffdf8;
-        --line: #e6ddcf;
-        --text: #1f2937;
-        --muted: #6b7280;
-        --accent: #9a3a2a;
+        --bg: #f2f5f7;
+        --card: #ffffff;
+        --line: #d7e0e6;
+        --line-soft: #e8eef2;
+        --text: #1e2b34;
+        --muted: #5f7282;
+        --accent: #ad4b34;
+        --accent-2: #234f63;
+        --accent-soft: #f3e3dc;
         --good: #0f766e;
         --warn: #b45309;
         --bad: #b91c1c;
+        --shadow: 0 6px 20px rgba(19, 39, 54, 0.08);
       }
-      * { box-sizing: border-box; }
+      * {
+        box-sizing: border-box;
+      }
       body {
         margin: 0;
-        font-family: "Avenir Next", "Segoe UI", sans-serif;
+        font-family: "Avenir Next", "Nunito Sans", "Segoe UI", sans-serif;
+        font-size: 16px;
+        line-height: 1.45;
         color: var(--text);
         background:
-          radial-gradient(circle at 15% 0%, #ffe7ca 0%, transparent 40%),
-          radial-gradient(circle at 85% 100%, #f8efd6 0%, transparent 45%),
+          radial-gradient(circle at 12% -8%, #d9ecf8 0%, transparent 34%),
+          radial-gradient(circle at 89% 104%, #f5dfd6 0%, transparent 38%),
           var(--bg);
       }
-      .wrap { max-width: 980px; margin: 0 auto; padding: 1rem; display: grid; gap: 1rem; }
-      .card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 1rem; }
-      h1, h2, h3 { margin: 0 0 0.45rem; }
-      p { margin: 0; color: var(--muted); }
-      .row { display: grid; gap: 0.65rem; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
-      .results { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
-      .facts-card { background: #fffefb; border-color: #e5dbc9; }
-      .facts-head { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; }
+      .wrap {
+        max-width: 1140px;
+        margin: 0 auto;
+        padding: 1.2rem 1rem 1.8rem;
+        display: grid;
+        gap: 0.95rem;
+      }
+      .card {
+        background: var(--card);
+        border: 1px solid var(--line);
+        border-radius: 16px;
+        padding: 1.05rem 1.05rem 1rem;
+        box-shadow: var(--shadow);
+      }
+      .hero-card {
+        position: relative;
+        overflow: hidden;
+        border-color: #cad9e2;
+        background:
+          linear-gradient(160deg, #ffffff 0%, #f6fafc 65%, #fdf8f5 100%);
+      }
+      .hero-card::after {
+        content: "";
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+        background: linear-gradient(120deg, rgba(255, 255, 255, 0.55), rgba(255, 255, 255, 0));
+      }
+      .hero-eyebrow {
+        display: inline-block;
+        font-size: 0.73rem;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        color: #255166;
+        border: 1px solid #c2d8e4;
+        border-radius: 999px;
+        padding: 0.16rem 0.52rem;
+        margin-bottom: 0.5rem;
+        background: #eef7fd;
+      }
+      h1,
+      h2,
+      h3 {
+        margin: 0 0 0.4rem;
+        color: #10212c;
+        line-height: 1.25;
+      }
+      h1 {
+        font-size: clamp(1.5rem, 2vw, 1.9rem);
+        font-weight: 700;
+      }
+      h2 {
+        font-size: clamp(1.06rem, 1.4vw, 1.24rem);
+        font-weight: 700;
+      }
+      h3 {
+        font-size: 0.99rem;
+        font-weight: 700;
+      }
+      p {
+        margin: 0;
+        color: var(--muted);
+      }
+      .section-help {
+        margin-top: 0.2rem;
+        font-size: 0.9rem;
+      }
+      .section-intro {
+        margin-bottom: 0.62rem;
+      }
+      .journey-list {
+        margin: 0;
+        padding-left: 1.15rem;
+        color: var(--text);
+      }
+      .row {
+        display: grid;
+        gap: 0.72rem;
+        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      }
+      .results {
+        display: grid;
+        gap: 0.95rem;
+        grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      }
+      .result-primary {
+        border-color: #c7d6e0;
+        background: linear-gradient(180deg, #ffffff 0%, #f8fbfd 100%);
+      }
+      .facts-card {
+        background: #fffefb;
+        border-color: #d9e3e9;
+      }
+      .facts-head {
+        display: flex;
+        align-items: center;
+        gap: 0.6rem;
+        flex-wrap: wrap;
+      }
       .optional-badge {
         font-size: 0.74rem;
-        color: #7c5e2b;
-        border: 1px solid #e7d8bc;
-        background: #fff4dd;
+        color: #6b5530;
+        border: 1px solid #e8dcc3;
+        background: #fcf4e2;
         padding: 0.18rem 0.5rem;
         border-radius: 999px;
       }
-      .facts-help { margin-top: 0.25rem; }
-      .facts-why { margin-top: 0.45rem; font-size: 0.86rem; color: #8b6d35; }
+      .facts-help {
+        margin-top: 0.1rem;
+      }
+      .facts-why {
+        margin-top: 0.45rem;
+        font-size: 0.86rem;
+        color: #866636;
+      }
       .facts-grid {
         display: grid;
         grid-template-columns: repeat(2, minmax(0, 1fr));
-        gap: 0.9rem;
+        gap: 0.82rem;
         margin-top: 0.8rem;
       }
       .fact-field {
-        border: 1px solid #efe5d7;
+        border: 1px solid #e6ecef;
         border-radius: 12px;
-        padding: 0.72rem;
+        padding: 0.72rem 0.72rem 0.7rem;
         background: #fffdfa;
       }
-      label { display: block; font-size: 0.82rem; color: var(--muted); margin-bottom: 0.2rem; }
-      input, select, button {
+      label {
+        display: block;
+        font-size: 0.81rem;
+        color: #4b5f6f;
+        margin-bottom: 0.26rem;
+        font-weight: 600;
+      }
+      input,
+      select,
+      button {
         width: 100%;
         border-radius: 10px;
-        border: 1px solid #d7ccb9;
-        padding: 0.58rem 0.72rem;
+        border: 1px solid #c4d1d9;
+        padding: 0.58rem 0.72rem 0.56rem;
         font: inherit;
         background: white;
+        color: #10212c;
       }
-      .other-input { margin-top: 0.4rem; display: none; }
-      button { border: none; background: var(--accent); color: white; cursor: pointer; font-weight: 600; }
-      button.secondary { background: #374151; }
-      .actions { display: flex; flex-wrap: wrap; gap: 0.6rem; margin-top: 0.8rem; }
-      .actions button { width: auto; padding-inline: 1rem; }
+      input::placeholder {
+        color: #8293a1;
+      }
+      input:focus,
+      select:focus {
+        outline: none;
+        border-color: #5d879b;
+        box-shadow: 0 0 0 3px rgba(109, 146, 166, 0.2);
+      }
+      .other-input {
+        margin-top: 0.4rem;
+        display: none;
+      }
+      button {
+        border: none;
+        background: var(--accent);
+        color: white;
+        cursor: pointer;
+        font-weight: 700;
+        letter-spacing: 0.01em;
+        transition: transform 120ms ease, opacity 120ms ease, box-shadow 120ms ease;
+      }
+      button:hover {
+        opacity: 0.95;
+        box-shadow: 0 5px 14px rgba(145, 56, 36, 0.28);
+      }
+      button:active {
+        transform: translateY(1px);
+      }
+      button:disabled {
+        opacity: 0.58;
+        cursor: not-allowed;
+        box-shadow: none;
+        transform: none;
+      }
+      button.secondary {
+        background: var(--accent-2);
+      }
+      .actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.6rem;
+        margin-top: 0.8rem;
+      }
+      .actions button {
+        width: auto;
+        padding-inline: 1rem;
+      }
+      #requestStatus {
+        margin-top: 0.55rem !important;
+        font-size: 0.88rem;
+      }
       #assessmentMap {
         height: 360px;
-        border: 1px solid var(--line);
-        border-radius: 10px;
+        border: 1px solid #d5e1e8;
+        border-radius: 12px;
         overflow: hidden;
         margin-top: 0.6rem;
       }
@@ -103,11 +264,11 @@
       .map-debug {
         margin-top: 0.55rem;
         font-size: 0.78rem;
-        color: #6b7280;
-        border: 1px dashed #d1d5db;
+        color: #667785;
+        border: 1px dashed #ccd7df;
         border-radius: 8px;
         padding: 0.5rem 0.65rem;
-        background: #fafaf9;
+        background: #f8fbfd;
         white-space: pre-line;
       }
       .map-confirm {
@@ -128,18 +289,116 @@
         font-size: 0.82rem;
         color: #6b7280;
       }
-      .score { font-size: 2rem; font-weight: 700; line-height: 1; margin: 0.25rem 0; }
-      .score.good { color: var(--good); }
-      .score.warn { color: var(--warn); }
-      .score.bad { color: var(--bad); }
-      ul { margin: 0.35rem 0 0; padding-left: 1.15rem; }
-      .muted { color: var(--muted); }
-      .pill { display: inline-block; border: 1px solid var(--line); border-radius: 999px; padding: 0.2rem 0.5rem; margin: 0.15rem 0.2rem 0 0; font-size: 0.78rem; }
-      .sim-box { margin-top: 0.65rem; color: var(--text); }
-      details { border-top: 1px solid var(--line); padding-top: 0.8rem; }
-      summary { cursor: pointer; font-weight: 600; margin-bottom: 0.65rem; }
-      table { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
-      th, td { border-bottom: 1px solid var(--line); padding: 0.35rem 0.2rem; text-align: left; }
+      .score {
+        font-size: clamp(2rem, 2.7vw, 2.4rem);
+        font-weight: 800;
+        line-height: 1;
+        margin: 0.2rem 0 0.28rem;
+      }
+      .score.good {
+        color: var(--good);
+      }
+      .score.warn {
+        color: var(--warn);
+      }
+      .score.bad {
+        color: var(--bad);
+      }
+      .score-subline {
+        font-size: 0.9rem;
+        margin-top: 0.35rem;
+      }
+      .summary-meta {
+        margin-top: 0.72rem;
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(145px, 1fr));
+        gap: 0.5rem;
+      }
+      .summary-item {
+        border: 1px solid var(--line-soft);
+        background: #fbfdff;
+        border-radius: 10px;
+        padding: 0.52rem 0.62rem;
+      }
+      .summary-item span {
+        display: block;
+        font-size: 0.74rem;
+        text-transform: uppercase;
+        letter-spacing: 0.035em;
+        color: #718696;
+      }
+      .summary-item strong {
+        display: block;
+        margin-top: 0.16rem;
+        font-size: 0.9rem;
+        color: #10212c;
+        font-weight: 700;
+      }
+      ul {
+        margin: 0.35rem 0 0;
+        padding-left: 1.15rem;
+      }
+      #mitigations li,
+      #drivers li,
+      #propertyFindings li {
+        margin-bottom: 0.32rem;
+      }
+      #mitigations li {
+        border: 1px solid #e2e8ed;
+        border-left: 4px solid #de7c5f;
+        border-radius: 10px;
+        background: #fcfefe;
+        list-style-position: inside;
+        padding: 0.5rem 0.55rem;
+      }
+      .muted {
+        color: var(--muted);
+      }
+      .pill {
+        display: inline-block;
+        border: 1px solid #d2dce3;
+        background: #f7fafc;
+        color: #344e60;
+        border-radius: 999px;
+        padding: 0.2rem 0.5rem;
+        margin: 0.15rem 0.2rem 0 0;
+        font-size: 0.78rem;
+      }
+      .sim-box {
+        margin-top: 0.65rem;
+        color: var(--text);
+      }
+      details {
+        border-top: 1px solid var(--line);
+        padding-top: 0.8rem;
+      }
+      summary {
+        cursor: pointer;
+        font-weight: 700;
+        margin-bottom: 0.65rem;
+        color: #1a2d3a;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 0.87rem;
+        border: 1px solid var(--line-soft);
+        border-radius: 10px;
+        overflow: hidden;
+      }
+      thead tr {
+        background: #f4f8fb;
+      }
+      th,
+      td {
+        border-bottom: 1px solid var(--line-soft);
+        padding: 0.42rem 0.45rem;
+        text-align: left;
+      }
+      th {
+        font-weight: 700;
+        color: #335062;
+      }
       .modal-backdrop {
         position: fixed;
         inset: 0;
@@ -157,7 +416,7 @@
       .modal-card {
         width: min(640px, 100%);
         background: var(--card);
-        border: 1px solid var(--line);
+        border: 1px solid #cdd9e1;
         border-radius: 14px;
         padding: 1rem;
         box-shadow: 0 12px 28px rgba(0, 0, 0, 0.2);
@@ -263,11 +522,11 @@
         border-bottom: 0;
       }
       .verify-candidate-item:hover {
-        background: #f8fafc;
+        background: #f3f8fb;
       }
       .verify-candidate-item.selected {
-        background: #ecfeff;
-        outline: 2px solid #14b8a6;
+        background: #edf8fc;
+        outline: 2px solid #2f819f;
         outline-offset: -2px;
       }
       .verify-candidate-title {
@@ -288,8 +547,20 @@
         margin-top: 0.55rem;
       }
       @media (max-width: 640px) {
-        .facts-grid { grid-template-columns: 1fr; }
-        .actions button { width: 100%; }
+        .wrap {
+          padding: 0.88rem 0.72rem 1.2rem;
+          gap: 0.78rem;
+        }
+        .card {
+          padding: 0.92rem 0.88rem 0.9rem;
+          border-radius: 14px;
+        }
+        .facts-grid {
+          grid-template-columns: 1fr;
+        }
+        .actions button {
+          width: 100%;
+        }
         .modal-grid {
           grid-template-columns: 1fr;
           gap: 0.2rem;
@@ -302,15 +573,21 @@
   </head>
   <body>
     <div class="wrap">
-      <section class="card">
+      <section class="card hero-card">
+        <span class="hero-eyebrow">Homeowner Assessment</span>
         <h1>Understand Your Home's Wildfire Risk</h1>
-        <p>Enter your address to see your home's wildfire risk and the most helpful next steps.</p>
+        <p class="section-help">
+          Get a clear view of wildfire risk drivers, home-hardening readiness, and the next actions that can make the biggest difference.
+        </p>
+        <p class="section-help">
+          Assessments are property-specific when local geometry and data coverage are strong, and explicitly marked as estimated when evidence is limited.
+        </p>
       </section>
 
       <section class="card">
         <h2>Homeowner Journey (Primary)</h2>
-        <p style="margin-bottom:0.5rem;">Start here for the main experience.</p>
-        <ol style="margin:0; padding-left:1.15rem; color:var(--text);">
+        <p class="section-intro">Start here for the main experience.</p>
+        <ol class="journey-list">
           <li>Assess your address</li>
           <li>View the homeowner report</li>
           <li>Improve the result with missing home details</li>
@@ -320,6 +597,7 @@
 
       <section class="card">
         <h2>1. Start With Your Address</h2>
+        <p class="section-intro">Use a full street address with city, state, and ZIP for the best match quality.</p>
         <div>
           <label>Address</label>
           <input id="address" placeholder="123 Main St, Boulder, CO" />
@@ -424,17 +702,32 @@
       </section>
 
       <section class="results">
-        <div class="card">
+        <div class="card result-primary">
           <h2>3. Current Risk</h2>
+          <p class="section-help">Risk blends site hazard and home ignition vulnerability when both components are supported by evidence.</p>
           <div id="riskScore" class="score">-</div>
           <div id="riskLabel" class="muted">Run an assessment to see your score.</div>
+          <div class="summary-meta">
+            <div class="summary-item">
+              <span>Assessment Specificity</span>
+              <strong id="specificityKpi">Pending</strong>
+            </div>
+            <div class="summary-item">
+              <span>Home Readiness</span>
+              <strong id="readinessKpi">Pending</strong>
+            </div>
+            <div class="summary-item">
+              <span>What To Do First</span>
+              <strong id="firstActionKpi">Run assessment</strong>
+            </div>
+          </div>
           <p id="regionDebugInline" class="muted" style="display:none; font-size:0.8rem; margin-top:0.35rem;">Region: unresolved</p>
           <p id="summaryText" style="margin-top:0.6rem;">We'll explain your score in plain language here.</p>
         </div>
 
         <div class="card">
           <h2>4. Why This Home May Be at Risk</h2>
-          <p>These are the biggest factors affecting this home.</p>
+          <p class="section-help">What's driving this result, based on observed local and regional evidence.</p>
           <h3 style="margin-top:0.8rem;">Around the Home</h3>
           <ul id="propertyFindings"><li class="muted">No structure-specific findings yet.</li></ul>
           <ul id="drivers"><li class="muted">No factors yet.</li></ul>
@@ -444,6 +737,7 @@
 
         <div class="card">
           <h2>5. Best Next Steps</h2>
+          <p class="section-help">What to do first: prioritized actions focused on reduction impact and practical effort.</p>
           <p id="nextStepsText">Focus on the top actions first.</p>
           <ul id="mitigations"><li class="muted">Recommendations will appear after assessment.</li></ul>
         </div>
@@ -451,7 +745,7 @@
 
       <section class="card">
         <h2>Optional: Property Map</h2>
-        <p class="muted">See your home in geographic context with defensible-space zones and nearby wildfire layers.</p>
+        <p class="muted">See property geometry, defensible-space context, and nearby wildfire layers in one map view.</p>
         <div id="assessmentMap"></div>
         <p id="mapEmptyText" class="map-empty">Run an assessment to load map layers.</p>
         <div id="mapLayerToggles" class="map-toggles"></div>
@@ -586,6 +880,7 @@
       <section class="card">
         <details>
           <summary>Advanced / Internal Details</summary>
+          <p class="section-help">Use this panel for deeper evidence, confidence, and diagnostics beyond the homeowner summary.</p>
           <div class="row">
             <div>
               <label>API Key (local/internal use)</label>
@@ -598,7 +893,7 @@
           </div>
           <div class="row">
             <div>
-              <h3>Confidence</h3>
+              <h3>How Reliable This Assessment Is</h3>
               <p id="confidenceText" class="muted">-</p>
               <div id="flags"></div>
             </div>
@@ -1572,6 +1867,12 @@
         if (moreDetailsEl) {
           moreDetailsEl.open = false;
         }
+        const specificityKpiEl = document.getElementById("specificityKpi");
+        const readinessKpiEl = document.getElementById("readinessKpi");
+        const firstActionKpiEl = document.getElementById("firstActionKpi");
+        if (specificityKpiEl) specificityKpiEl.textContent = "Pending";
+        if (readinessKpiEl) readinessKpiEl.textContent = "Pending";
+        if (firstActionKpiEl) firstActionKpiEl.textContent = "Run assessment";
         renderImproveSectionFromBlock(null);
       }
 
@@ -1738,6 +2039,19 @@
         const computedComponents = Array.isArray(homeownerSummary?.computed_components)
           ? homeownerSummary.computed_components
           : (Array.isArray(data?.computed_components) ? data.computed_components : []);
+        const specificityTierRaw = String(
+          homeownerSummary?.specificity_summary?.specificity_tier
+          || homeownerConfidence?.assessment_type
+          || data?.assessment_specificity_tier
+          || data?.assessment_mode
+          || ""
+        ).trim();
+        const specificityKpiEl = document.getElementById("specificityKpi");
+        if (specificityKpiEl) {
+          specificityKpiEl.textContent = specificityTierRaw
+            ? humanizeToken(specificityTierRaw)
+            : "Pending";
+        }
 
         const scoreEl = document.getElementById("riskScore");
         const riskAvailable = data.wildfire_risk_score_available !== false && data.wildfire_risk_score !== null && data.wildfire_risk_score !== undefined;
@@ -1812,6 +2126,16 @@
         const prioritizedActions = Array.isArray(data?.prioritized_mitigation_actions)
           ? data.prioritized_mitigation_actions
           : [];
+        const topActionLabel = String(
+          prioritizedActions?.[0]?.action
+          || data?.top_recommended_actions?.[0]
+          || data?.mitigation_plan?.[0]?.title
+          || "Review top actions"
+        ).trim();
+        const firstActionKpiEl = document.getElementById("firstActionKpi");
+        if (firstActionKpiEl) {
+          firstActionKpiEl.textContent = topActionLabel || "Review top actions";
+        }
         const mitigationRows = (prioritizedActions.length > 0
           ? prioritizedActions.slice(0, 5).map((m) => {
               return `<li><strong>${m.action}</strong> (${m.impact_level} impact, ${m.effort_level} effort, ${m.estimated_cost_band} cost, ${m.timeline}): ${m.explanation || ""}</li>`;
@@ -1885,9 +2209,25 @@
           })
           .join("");
 
+        const seenFactors = new Set();
         const rows = Object.entries(data.submodel_scores || {})
           .filter(([k]) => k.endsWith("_risk"))
-          .map(([k, v]) => `<tr><td>${k}</td><td>${v.score}</td><td>${v.weighted_contribution}</td></tr>`)
+          .filter(([k]) => {
+            const canonical = String(k)
+              .replace("topography_risk", "slope_topography_risk")
+              .replace("home_hardening_risk", "structure_vulnerability_risk");
+            if (seenFactors.has(canonical)) return false;
+            seenFactors.add(canonical);
+            return true;
+          })
+          .map(([k, v]) => {
+            const factorLabel = humanizeToken(String(k).replace("_risk", ""));
+            const scoreVal = Number(v?.score);
+            const contributionVal = Number(v?.weighted_contribution);
+            const scoreText = Number.isFinite(scoreVal) ? scoreVal.toFixed(1) : "n/a";
+            const contributionText = Number.isFinite(contributionVal) ? contributionVal.toFixed(2) : "n/a";
+            return `<tr><td>${factorLabel}</td><td>${scoreText}</td><td>${contributionText}</td></tr>`;
+          })
           .join("");
         document.getElementById("submodels").innerHTML = rows || "<tr><td colspan='3' class='muted'>No factor data.</td></tr>";
 
@@ -1904,8 +2244,12 @@
         if (readinessAvailable) {
           const readiness = Number(readinessValue).toFixed(1);
           document.getElementById("readinessText").textContent = `Home hardening readiness: ${readiness}`;
+          const readinessKpiEl = document.getElementById("readinessKpi");
+          if (readinessKpiEl) readinessKpiEl.textContent = `${readiness}/100`;
         } else {
           document.getElementById("readinessText").textContent = "Home hardening readiness: not computed (insufficient evidence)";
+          const readinessKpiEl = document.getElementById("readinessKpi");
+          if (readinessKpiEl) readinessKpiEl.textContent = "Not computed";
         }
         const dsSummary = data?.defensible_space_analysis?.summary;
         const dsLimitations = Array.isArray(data?.defensible_space_limitations_summary)
@@ -1992,6 +2336,12 @@
           .slice(0, 3)
           .map(v => `<span class='pill'>${v}</span>`)
           .join("");
+        const specificityKpiEl = document.getElementById("specificityKpi");
+        const readinessKpiEl = document.getElementById("readinessKpi");
+        const firstActionKpiEl = document.getElementById("firstActionKpi");
+        if (specificityKpiEl) specificityKpiEl.textContent = "Regional estimate";
+        if (readinessKpiEl) readinessKpiEl.textContent = "Not available";
+        if (firstActionKpiEl) firstActionKpiEl.textContent = "Prepare region coverage";
         document.getElementById("submodels").innerHTML = "<tr><td colspan='3' class='muted'>No factor data until region coverage is prepared.</td></tr>";
         document.getElementById("readinessText").textContent = "Insurance readiness score: not computed (location outside prepared coverage)";
         document.getElementById("propertyContextText").textContent = recommendation;
@@ -2058,6 +2408,12 @@
         document.getElementById("confidenceActions").innerHTML =
           "<li>Confirm the address details or click the map to set the home location, then retry.</li>";
         document.getElementById("flags").innerHTML = `<span class='pill'>${geocodeStatus}</span>`;
+        const specificityKpiEl = document.getElementById("specificityKpi");
+        const readinessKpiEl = document.getElementById("readinessKpi");
+        const firstActionKpiEl = document.getElementById("firstActionKpi");
+        if (specificityKpiEl) specificityKpiEl.textContent = "Not resolved";
+        if (readinessKpiEl) readinessKpiEl.textContent = "Not available";
+        if (firstActionKpiEl) firstActionKpiEl.textContent = "Fix address match";
         document.getElementById("submodels").innerHTML = "<tr><td colspan='3' class='muted'>No factor data until geocoding succeeds.</td></tr>";
         document.getElementById("readinessText").textContent = "Insurance readiness score: not computed";
         document.getElementById("propertyContextText").textContent = "Region resolution was not attempted because geocoding did not pass trust checks.";
