@@ -1392,11 +1392,68 @@ def _select_recommended_actions(report: HomeownerReport, *, limit: int = 5) -> l
 
 def _improvement_prefix(confidence_tier: str) -> str:
     tier = str(confidence_tier or "").strip().lower()
-    if tier == "high":
+    if tier in {"direct", "high"}:
         return "is likely to"
-    if tier in {"moderate", "medium"}:
+    if tier in {"balanced", "moderate", "medium"}:
         return "can help"
     return "could help"
+
+
+def _pdf_tone_profile(
+    confidence_tier: str,
+    *,
+    missing_count: int,
+    fallback_count: int,
+    estimated_count: int,
+) -> str:
+    tier = str(confidence_tier or "").strip().lower()
+    if tier == "high" and missing_count == 0 and fallback_count == 0 and estimated_count <= 2:
+        return "direct"
+    if tier in {"low", "preliminary"} or missing_count >= 2 or fallback_count >= 1:
+        return "cautious"
+    return "balanced"
+
+
+def _summary_tone_line(tone_profile: str) -> str:
+    if tone_profile == "direct":
+        return "Tone: direct. Evidence coverage is strong for this property."
+    if tone_profile == "balanced":
+        return "Tone: balanced. Most major inputs were observed, with some estimated detail."
+    return "Tone: cautious. Some details were estimated or missing."
+
+
+def _driver_line_with_tone(driver: str, tone_profile: str) -> str:
+    text = _normalize_line(driver)
+    if tone_profile != "cautious":
+        return text
+    lowered = text.lower()
+    if any(token in lowered for token in ("may ", "appears", "estimated")):
+        return text
+    return f"{text} (this may be contributing to risk, but some details were estimated)."
+
+
+def _driver_explanation_prefix(tone_profile: str) -> str:
+    if tone_profile == "direct":
+        return "Why it matters"
+    if tone_profile == "balanced":
+        return "Why it likely matters"
+    return "Potential impact"
+
+
+def _action_rationale_prefix(tone_profile: str) -> str:
+    if tone_profile == "direct":
+        return "This helps reduce risk"
+    if tone_profile == "balanced":
+        return "This can help reduce risk"
+    return "This may help reduce risk"
+
+
+def _limitations_tone_line(tone_profile: str) -> str:
+    if tone_profile == "direct":
+        return "Limitations context: data coverage is strong, so this run supports more direct interpretation."
+    if tone_profile == "balanced":
+        return "Limitations context: some details were estimated, so this run is best used as directional guidance."
+    return "Limitations context: several details were estimated or missing, so this run should be treated as advisory."
 
 
 def _how_this_could_improve_lines(
@@ -1548,6 +1605,21 @@ def _build_report_entries(report: HomeownerReport) -> list[_PdfEntry]:
     observed_count = len(list(confidence.get("observed_data") or []))
     estimated_count = len(list(confidence.get("estimated_data") or []))
     missing_count = len(list(confidence.get("missing_data") or []))
+    confidence_summary = _dump_value(report.confidence_summary)
+    confidence_summary = confidence_summary if isinstance(confidence_summary, dict) else {}
+    fallback_assumptions_count = len(
+        [v for v in list(confidence_summary.get("fallback_assumptions") or []) if _normalize_line(v)]
+    )
+    fallback_decisions_count = len(
+        [v for v in list(confidence.get("fallback_decisions") or []) if v]
+    ) if isinstance(confidence.get("fallback_decisions"), list) else 0
+    fallback_count = fallback_assumptions_count + fallback_decisions_count
+    tone_profile = _pdf_tone_profile(
+        confidence_tier,
+        missing_count=missing_count,
+        fallback_count=fallback_count,
+        estimated_count=estimated_count,
+    )
     specificity_headline = _normalize_line(fs_specificity.get("headline") or "Regional estimate")
     specificity_tier = _normalize_line(fs_specificity.get("specificity_tier") or "regional_estimate")
     specificity_meaning = _normalize_line(fs_specificity.get("what_this_means") or "")
@@ -1579,16 +1651,18 @@ def _build_report_entries(report: HomeownerReport) -> list[_PdfEntry]:
     _add_wrapped(entries, f"Risk level: {risk_band_label}{risk_score_suffix}", style="body")
     _add_wrapped(entries, f"Home hardening readiness: {readiness_line}", style="body")
     _add_wrapped(entries, f"Summary sentence: {fs_headline or 'No summary sentence was available.'}", style="body")
+    _add_wrapped(entries, _summary_tone_line(tone_profile), style="body")
     entries.append(_PdfEntry(style="spacer_md"))
 
     # 3) What Matters Most
     _add_wrapped(entries, "What Matters Most", style="section")
     if top_drivers:
+        driver_why_prefix = _driver_explanation_prefix(tone_profile)
         for driver in top_drivers[:3]:
-            _add_wrapped(entries, driver, style="bullet", prefix="- ")
+            _add_wrapped(entries, _driver_line_with_tone(driver, tone_profile), style="bullet", prefix="- ")
             _add_wrapped(
                 entries,
-                f"Why it matters: {_driver_explanation(driver, detailed_rows)}",
+                f"{driver_why_prefix}: {_driver_explanation(driver, detailed_rows)}",
                 style="body",
                 prefix="  ",
             )
@@ -1607,13 +1681,14 @@ def _build_report_entries(report: HomeownerReport) -> list[_PdfEntry]:
     # 5) Recommended Actions
     _add_wrapped(entries, "Recommended Actions", style="section")
     if recommended_actions:
+        action_why_prefix = _action_rationale_prefix(tone_profile)
         for row in recommended_actions[:5]:
             action_name = _normalize_line(row.get("action") or row.get("title") or "Recommended action")
             why = _normalize_line(row.get("why_this_matters") or row.get("explanation") or row.get("why_it_matters") or "")
             effort = _safe_effort_label(row.get("effort_level") or row.get("estimated_cost_band"))
             _add_wrapped(entries, action_name, style="bullet", prefix="- ")
             if why:
-                _add_wrapped(entries, why, style="body", prefix="  ")
+                _add_wrapped(entries, f"{action_why_prefix}: {why}", style="body", prefix="  ")
             _add_wrapped(entries, f"Effort level: {effort}", style="body", prefix="  ")
     else:
         _add_wrapped(entries, "No prioritized actions were generated for this run.", style="body")
@@ -1623,7 +1698,7 @@ def _build_report_entries(report: HomeownerReport) -> list[_PdfEntry]:
     _add_wrapped(entries, "How This Could Improve", style="section")
     improvement_lines = _how_this_could_improve_lines(
         recommended_actions,
-        confidence_tier=confidence_tier,
+        confidence_tier=tone_profile,
     )
     if improvement_lines:
         for idx, line in enumerate(improvement_lines):
@@ -1638,6 +1713,8 @@ def _build_report_entries(report: HomeownerReport) -> list[_PdfEntry]:
     # 7) Confidence & Limitations
     _add_wrapped(entries, "Confidence & Limitations", style="section")
     _add_wrapped(entries, f"Data completeness: observed {observed_count}, estimated {estimated_count}, missing {missing_count}.", style="body")
+    _add_wrapped(entries, f"Fallback usage: {fallback_count} fallback assumptions or decisions.", style="body")
+    _add_wrapped(entries, _limitations_tone_line(tone_profile), style="body")
     _add_wrapped(entries, f"Specificity: {specificity_headline} (tier: {specificity_tier}).", style="body")
     if specificity_meaning:
         _add_wrapped(entries, specificity_meaning, style="body", prefix="  ")

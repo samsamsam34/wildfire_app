@@ -474,6 +474,55 @@ def test_homeowner_pdf_how_this_could_improve_language_adapts_to_confidence(monk
     assert b"could help lower wildfire risk" in low_pdf
 
 
+def test_homeowner_pdf_tone_softens_low_confidence_and_is_direct_for_high_confidence(monkeypatch, tmp_path: Path):
+    context = _ctx(env=58.0, wildland=43.0, historic=27.0)
+    _setup(monkeypatch, tmp_path, context)
+    assessed = _run_assessment("905 Tone Guardrail Pdf Dr, Missoula, MT 59802")
+    original = app_main.store.get(assessed["assessment_id"])
+    assert original is not None
+
+    high = original.model_copy(deep=True)
+    high.confidence_tier = "high"
+    high.confidence_summary.missing_data = []
+    high.confidence_summary.fallback_assumptions = []
+    high.fallback_weight_fraction = 0.0
+    high.assessment_diagnostics.fallback_decisions = []
+    high.top_risk_drivers = ["Dense vegetation is very close to the structure."]
+    high.prioritized_mitigation_actions = [
+        HomeownerPrioritizedAction(
+            action="Clear debris within 5 feet",
+            explanation="Removes immediate ignition pathways near the structure.",
+            impact_level="high",
+            effort_level="low",
+            estimated_cost_band="low",
+            timeline="now",
+            priority=1,
+        )
+    ]
+
+    low = high.model_copy(deep=True)
+    low.confidence_tier = "low"
+    low.confidence_summary.missing_data = ["roof_type", "vent_type", "structure_geometry"]
+    low.confidence_summary.fallback_assumptions = ["regional proxy", "point fallback"]
+    low.fallback_weight_fraction = 0.85
+    low.assessment_diagnostics.fallback_decisions = [{"fallback_type": "derived_proxy"}]
+    low.assessment_specificity_tier = "regional_estimate"
+    low.assessment_mode = "insufficient_data"
+
+    high_pdf = export_homeowner_report(high, output_format="pdf")
+    low_pdf = export_homeowner_report(low, output_format="pdf")
+
+    assert b"Tone: direct." in high_pdf
+    assert b"Why it matters:" in high_pdf
+    assert b"This helps reduce risk:" in high_pdf
+    assert b"Limitations context: data coverage is strong" in high_pdf
+
+    assert b"Tone: cautious." in low_pdf
+    assert b"Potential impact:" in low_pdf
+    assert b"This may help reduce risk:" in low_pdf
+    assert b"Limitations context: several details were estimated or missing" in low_pdf
+
+
 def test_homeowner_report_handles_unavailable_scores_and_long_text_deterministically(monkeypatch, tmp_path: Path):
     context = _ctx(env=47.0, wildland=50.0, historic=55.0)
     _setup(monkeypatch, tmp_path, context)
