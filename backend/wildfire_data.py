@@ -2265,11 +2265,27 @@ class WildfireDataClient:
                 assumptions.append("Falling back to polygon/auto structure matching.")
                 normalized_selection_mode = "polygon"
 
+        # When selection_mode is polygon (default) but the user provided a corrected
+        # map point, still use it to steer the footprint lookup.  The geocoded address
+        # may land on a road centerline 50–150 m from the actual structure; the user's
+        # click is authoritative for finding the right footprint even when full
+        # point-selection mode was not explicitly requested.
+        _user_override_for_footprint: tuple[float, float] | None = None
+        if normalized_selection_mode != "point" and user_selected_point_coords is None:
+            point_payload = property_anchor_point if isinstance(property_anchor_point, dict) else user_selected_point
+            if point_payload is not None:
+                coords, _ = self._coerce_user_selected_point(point_payload)
+                if coords is not None:
+                    _user_override_for_footprint = coords
+
         query_lat = float(lat)
         query_lon = float(lon)
         if normalized_selection_mode == "point" and user_selected_point_coords is not None:
             query_lat, query_lon = user_selected_point_coords
             assumptions.append("Using user-selected map point for structure lookup and ring analysis.")
+        elif _user_override_for_footprint is not None:
+            query_lat, query_lon = _user_override_for_footprint
+            assumptions.append("User map-point correction applied to footprint lookup (polygon mode).")
 
         geocode_fallback_lat = float(geocoded_lat) if geocoded_lat is not None else float(lat)
         geocode_fallback_lon = float(geocoded_lon) if geocoded_lon is not None else float(lon)
@@ -2671,7 +2687,11 @@ class WildfireDataClient:
                 "fallback_mode": "point_based",
                 "geometry_source": fallback_geometry_source,
                 "geometry_confidence": structure_geometry_confidence,
-                "ring_generation_mode": "point_annulus_fallback",
+                "ring_generation_mode": (
+                    "parcel_centroid_proxy"
+                    if geometry_basis == "parcel"
+                    else "point_annulus_fallback"
+                ),
                 "footprint_resolution": footprint_resolution,
                 "ring_metrics": point_proxy_metrics if point_proxy_metrics else None,
                 "nearest_vegetation_distance_ft": nearest_vegetation_distance_ft,
@@ -4084,6 +4104,10 @@ class WildfireDataClient:
             property_level_context.get("parcel_source_name")
             or property_level_context.get("parcel_source")
         )
+        # Distinguish "parcel layer exists in region" from "a parcel was matched for
+        # this property".  The former is useful for generating actionable diagnostics
+        # (e.g. suggest point correction) vs. "no parcel data available at all".
+        property_level_context["parcel_layer_available"] = bool(runtime_paths.get("parcels"))
         property_level_context["anchor_quality"] = str(property_level_context.get("property_anchor_quality") or "low")
         property_level_context["anchor_quality_score"] = (
             float(property_level_context.get("property_anchor_quality_score"))

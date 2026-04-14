@@ -396,3 +396,130 @@ def test_parcel_resolution_not_found_uses_bounded_approximation(tmp_path: Path) 
     assert isinstance(parcel_resolution.get("bounding_geometry"), dict)
     assert result.parcel_geometry_geojson is None
     assert isinstance(result.parcel_bounding_approximation_geojson, dict)
+
+
+# ---------------------------------------------------------------------------
+# Fix 3: rural expansion factor widens address-point proximity window
+# ---------------------------------------------------------------------------
+
+@pytest.mark.skipif(not _geo_ready(), reason="Property anchor tests require shapely")
+def test_address_point_rural_expansion_factor_allows_match_at_larger_distance(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Address point 90 m away from geocode point should be matched when the
+    rural expansion factor is > 1 but missed with the default factor of 1."""
+    # Place address point ~90 m north of geocode point (≈0.00081 deg latitude)
+    address_points = _write_geojson(
+        tmp_path / "address_points.geojson",
+        [
+            {
+                "type": "Feature",
+                "properties": {"address_id": "ap-rural"},
+                "geometry": {"type": "Point", "coordinates": [-113.9941, 46.8729]},
+            }
+        ],
+    )
+
+    # Default resolver (45 m base, interpolated → ~81 m ceiling): should miss the 90 m point
+    resolver_default = PropertyAnchorResolver(address_points_path=address_points)
+    result_default = resolver_default.resolve(
+        geocoded_lat=46.8721,
+        geocoded_lon=-113.9941,
+        geocode_precision="interpolated",
+    )
+    assert result_default.anchor_source != "authoritative_address_point", (
+        "Default resolver should not match address point that is ~90 m away"
+    )
+
+    # Resolver with expansion factor 3: ceiling raises to ~243 m → should match
+    monkeypatch.setenv("WF_ADDRESS_POINT_RURAL_EXPANSION_FACTOR", "3.0")
+    resolver_expanded = PropertyAnchorResolver(address_points_path=address_points)
+    result_expanded = resolver_expanded.resolve(
+        geocoded_lat=46.8721,
+        geocoded_lon=-113.9941,
+        geocode_precision="interpolated",
+    )
+    assert result_expanded.anchor_source == "authoritative_address_point", (
+        "Expanded resolver should match address point at ~90 m for interpolated precision"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Fix 4: parcel_layer_available flag is set correctly in resolve output
+# ---------------------------------------------------------------------------
+
+@pytest.mark.skipif(not _geo_ready(), reason="Property anchor tests require shapely")
+def test_address_point_matched_when_address_point_within_expanded_window_and_parcel_present(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """When a parcel is present and address point is nearby, anchor_source should
+    be authoritative_address_point (not parcel_polygon_centroid)."""
+    parcels = _write_geojson(
+        tmp_path / "parcels.geojson",
+        [
+            {
+                "type": "Feature",
+                "properties": {"parcel_id": "mt-001"},
+                "geometry": {
+                    "type": "Polygon",
+                    "coordinates": [[
+                        [-113.9945, 46.8725],
+                        [-113.9935, 46.8725],
+                        [-113.9935, 46.8715],
+                        [-113.9945, 46.8715],
+                        [-113.9945, 46.8725],
+                    ]],
+                },
+            }
+        ],
+    )
+    address_points = _write_geojson(
+        tmp_path / "address_points.geojson",
+        [
+            {
+                "type": "Feature",
+                "properties": {"address_id": "ap-1"},
+                "geometry": {"type": "Point", "coordinates": [-113.9941, 46.8721]},
+            }
+        ],
+    )
+    resolver = PropertyAnchorResolver(
+        address_points_path=address_points, parcels_path=parcels
+    )
+    result = resolver.resolve(
+        geocoded_lat=46.8720,
+        geocoded_lon=-113.9940,
+        geocode_precision="interpolated",
+    )
+    # Address point is very close — should win over parcel centroid
+    assert result.anchor_source == "authoritative_address_point"
+    assert result.parcel_polygon is not None  # parcel still matched
+
+
+# ---------------------------------------------------------------------------
+# Fix 3: distance_limits_for_precision applies expansion only on coarse geocodes
+# ---------------------------------------------------------------------------
+
+def test_distance_limits_expansion_only_applies_to_coarse_precision() -> None:
+    from backend.property_anchor import PropertyAnchorResolver as _R
+    # rooftop precision → no expansion even with large factor
+    addr_rooftop, _ = _R._distance_limits_for_precision(
+        geocode_precision="rooftop",
+        geocode_confidence_score=0.95,
+        address_default_m=45.0,
+        parcel_default_m=30.0,
+        override_anchor=False,
+        address_rural_expansion_factor=3.0,
+    )
+    assert addr_rooftop <= 160.0, "Rooftop precision should not be expanded"
+
+    # interpolated precision → expansion applied
+    addr_interp, _ = _R._distance_limits_for_precision(
+        geocode_precision="interpolated",
+        geocode_confidence_score=0.5,
+        address_default_m=45.0,
+        parcel_default_m=30.0,
+        override_anchor=False,
+        address_rural_expansion_factor=3.0,
+    )
+    assert addr_interp > 160.0, "Interpolated precision with factor=3 should exceed default cap"

@@ -668,3 +668,153 @@ class Geocoder:
             "rejection_reason": None,
         }
         return result.latitude, result.longitude, result.source
+
+
+def geocode_from_address_points(
+    address: str,
+    address_points_path: str,
+    *,
+    max_candidates: int = 5,
+) -> GeocodeResult | None:
+    """Match *address* against a local GeoJSON address-point layer.
+
+    Returns a :class:`GeocodeResult` with ``geocode_precision="rooftop"`` when a
+    high-confidence match is found, or ``None`` when no match meets the threshold.
+
+    The match is performed in two stages:
+    1. House-number exact match — candidate features must share the same numeric
+       street number as the query.
+    2. Street-name similarity — the normalised street name tokens are compared
+       against the ``fulladdress``, ``STREETNAME``, or ``street_name`` properties
+       using token-overlap scoring.
+
+    The function is intentionally lightweight (no external deps beyond the stdlib)
+    so it can run inline before falling back to the network geocoder.
+    """
+    import json as _json
+    from pathlib import Path as _Path
+
+    address_str = str(address or "").strip()
+    if not address_str or not address_points_path:
+        return None
+    path = _Path(str(address_points_path).strip())
+    if not path.exists():
+        return None
+
+    # --- parse the query address into number + street tokens ---
+    norm_query = _normalize_for_similarity(address_str)
+    tokens = norm_query.split()
+    house_number: str | None = None
+    street_tokens: list[str] = []
+    for i, tok in enumerate(tokens):
+        if tok.isdigit() and house_number is None:
+            house_number = tok
+            street_tokens = tokens[i + 1 :]
+            break
+    if house_number is None or not street_tokens:
+        return None
+
+    # Drop trailing state/zip tokens (last 1–2 items if they look like state abbrev
+    # or 5-digit zip) to avoid penalising county-level address point records that
+    # omit the full mailing address suffix.
+    filtered_street_tokens: list[str] = []
+    for tok in street_tokens:
+        if re.match(r"^\d{5}$", tok):
+            break
+        if len(tok) == 2 and tok.isalpha():
+            break
+        filtered_street_tokens.append(tok)
+    if filtered_street_tokens:
+        street_tokens = filtered_street_tokens
+
+    street_token_set = set(street_tokens)
+
+    def _candidate_score(props: dict[str, Any]) -> float:
+        """Return a [0, 1] street-name overlap score for a feature's properties."""
+        # Try multiple field names used by different county GIS schemas.
+        candidate_str = " ".join(
+            str(props.get(field) or "")
+            for field in ("fulladdress", "STREETNAME", "street_name", "StreetName", "address")
+        )
+        norm_candidate = _normalize_for_similarity(candidate_str)
+        cand_tokens = set(norm_candidate.split())
+        if not cand_tokens or not street_token_set:
+            return 0.0
+        overlap = len(street_token_set & cand_tokens)
+        return overlap / max(len(street_token_set), 1)
+
+    def _candidate_number(props: dict[str, Any]) -> str | None:
+        for field in ("STREETNUMBER", "streetnumber", "house_number", "AddressNumber", "ADDRNUM"):
+            val = props.get(field)
+            if val is not None:
+                num = re.sub(r"[^0-9]", "", str(val))
+                if num:
+                    return num
+        # Fallback: extract leading digits from fulladdress.
+        full = str(props.get("fulladdress") or props.get("address") or "")
+        m = re.match(r"^\s*(\d+)", full)
+        if m:
+            return m.group(1)
+        return None
+
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            data = _json.load(fh)
+    except Exception:
+        return None
+
+    features = data.get("features", []) if isinstance(data, dict) else []
+    best_score: float = 0.0
+    best_lat: float | None = None
+    best_lon: float | None = None
+    best_matched_address: str | None = None
+    candidates_checked = 0
+
+    for feat in features:
+        if not isinstance(feat, dict):
+            continue
+        props = feat.get("properties") or {}
+        geom = feat.get("geometry") or {}
+        if geom.get("type") != "Point":
+            continue
+        coords = geom.get("coordinates")
+        if not isinstance(coords, (list, tuple)) or len(coords) < 2:
+            continue
+        feat_number = _candidate_number(props)
+        if feat_number != house_number:
+            continue
+        score = _candidate_score(props)
+        if score > best_score:
+            best_score = score
+            try:
+                best_lon = float(coords[0])
+                best_lat = float(coords[1])
+            except (TypeError, ValueError):
+                continue
+            best_matched_address = str(
+                props.get("fulladdress") or props.get("address") or ""
+            ).strip() or None
+        candidates_checked += 1
+        if candidates_checked >= max_candidates * 20:
+            # Safety cap: avoid scanning the entire file for very common street numbers.
+            break
+
+    # Require at least 60 % token overlap to accept the match.
+    if best_score < 0.60 or best_lat is None or best_lon is None:
+        return None
+
+    confidence = min(1.0, round(0.70 + best_score * 0.30, 3))
+    return GeocodeResult(
+        latitude=best_lat,
+        longitude=best_lon,
+        source="parcel_address_point",
+        geocode_status="accepted",
+        submitted_address=address_str,
+        normalized_address=norm_query,
+        provider="parcel_address_points",
+        matched_address=best_matched_address,
+        confidence_score=confidence,
+        candidate_count=candidates_checked,
+        geocode_location_type="address_point",
+        geocode_precision="rooftop",
+    )

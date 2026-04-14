@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 
-from backend.geocoding import Geocoder, GeocodingError
+from backend.geocoding import Geocoder, GeocodingError, geocode_from_address_points
 
 
 class _FakeHTTPResponse:
@@ -352,3 +352,83 @@ def test_geocoder_rejects_conflicting_house_number_even_if_candidate_is_precise(
     assert "house_number_mismatch" in str(exc.value.rejection_reason or "")
     preview = exc.value.raw_response_preview or {}
     assert preview.get("trust_filter_rule") == "house_number_mismatch"
+
+
+# ---------------------------------------------------------------------------
+# Fix 2: address-point string-match geocoder
+# ---------------------------------------------------------------------------
+
+def _write_address_points(path, features):
+    import json
+    path.write_text(json.dumps({"type": "FeatureCollection", "features": features}), encoding="utf-8")
+
+
+def test_geocode_from_address_points_returns_rooftop_match(tmp_path):
+    ap = tmp_path / "address_points.geojson"
+    _write_address_points(ap, [
+        {
+            "type": "Feature",
+            "properties": {
+                "STREETNUMBER": "1355",
+                "STREETNAME": "Pattee Canyon Rd",
+                "fulladdress": "1355 Pattee Canyon Rd",
+            },
+            "geometry": {"type": "Point", "coordinates": [-113.9778, 46.8281]},
+        }
+    ])
+    result = geocode_from_address_points("1355 Pattee Canyon Rd, Missoula, MT", str(ap))
+    assert result is not None
+    assert result.geocode_precision == "rooftop"
+    assert result.source == "parcel_address_point"
+    assert abs(result.latitude - 46.8281) < 0.001
+    assert abs(result.longitude - (-113.9778)) < 0.001
+    assert result.confidence_score is not None and result.confidence_score >= 0.6
+
+
+def test_geocode_from_address_points_rejects_wrong_number(tmp_path):
+    ap = tmp_path / "address_points.geojson"
+    _write_address_points(ap, [
+        {
+            "type": "Feature",
+            "properties": {
+                "STREETNUMBER": "1400",
+                "fulladdress": "1400 Pattee Canyon Rd",
+            },
+            "geometry": {"type": "Point", "coordinates": [-113.9780, 46.8290]},
+        }
+    ])
+    result = geocode_from_address_points("1355 Pattee Canyon Rd, Missoula, MT", str(ap))
+    assert result is None, "Different house number should not match"
+
+
+def test_geocode_from_address_points_returns_none_for_missing_file(tmp_path):
+    result = geocode_from_address_points("1355 Pattee Canyon Rd", str(tmp_path / "nonexistent.geojson"))
+    assert result is None
+
+
+def test_geocode_from_address_points_returns_none_when_no_number_in_query(tmp_path):
+    ap = tmp_path / "address_points.geojson"
+    _write_address_points(ap, [
+        {
+            "type": "Feature",
+            "properties": {"STREETNUMBER": "100", "fulladdress": "100 Main St"},
+            "geometry": {"type": "Point", "coordinates": [-113.0, 46.0]},
+        }
+    ])
+    result = geocode_from_address_points("Main St, Missoula, MT", str(ap))
+    assert result is None, "Address without house number should return None"
+
+
+def test_geocode_from_address_points_uses_fulladdress_number_fallback(tmp_path):
+    """When STREETNUMBER field is absent, house number should be parsed from fulladdress."""
+    ap = tmp_path / "address_points.geojson"
+    _write_address_points(ap, [
+        {
+            "type": "Feature",
+            "properties": {"fulladdress": "1355 Pattee Canyon Rd"},
+            "geometry": {"type": "Point", "coordinates": [-113.9778, 46.8281]},
+        }
+    ])
+    result = geocode_from_address_points("1355 Pattee Canyon Rd, Missoula, MT", str(ap))
+    assert result is not None
+    assert result.geocode_precision == "rooftop"

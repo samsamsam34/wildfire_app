@@ -39,7 +39,7 @@ from backend.database import AssessmentStore, DEFAULT_ORG_ID
 from backend.data_prep.region_lookup import (
     find_region_for_point as lookup_region_for_point,
 )
-from backend.geocoding import Geocoder, GeocodingError, normalize_address
+from backend.geocoding import Geocoder, GeocodingError, geocode_from_address_points, normalize_address
 from backend.homeowner_advisor import (
     build_confidence_summary,
     build_ranked_risk_drivers,
@@ -1176,7 +1176,15 @@ def _build_confidence(
     if not geocode_verified:
         low_confidence_flags.append("Address geocoding was not provider-verified")
     if not property_level_context.get("footprint_used"):
-        low_confidence_flags.append("Building footprint unavailable; point-based property context used")
+        if (
+            property_level_context.get("parcel_layer_available")
+            and not isinstance(property_level_context.get("parcel_geometry"), dict)
+        ):
+            low_confidence_flags.append(
+                "Building footprint unavailable; parcel layer present but no parcel matched — try correcting the map point"
+            )
+        else:
+            low_confidence_flags.append("Building footprint unavailable; point-based property context used")
     if stale_share > 0:
         low_confidence_flags.append("Some inputs are stale relative to freshness policy")
     if critical_unknown_or_stale > 0:
@@ -3791,6 +3799,11 @@ def _build_feature_coverage_preflight(
         if footprint_available and near_structure_ring_available and ring_generation_mode != "point_annulus_parcel_clipped":
             near_structure_data_quality_tier = "footprint_precise"
         elif parcel_polygon_available and near_structure_available:
+            near_structure_data_quality_tier = "parcel_proxy"
+        elif ring_generation_mode == "parcel_centroid_proxy" and near_structure_available:
+            # Parcel geometry was used as the ring origin even though no parcel was
+            # formally matched (e.g. geocode landed on road, parcel inferred from
+            # context).  Treat as parcel_proxy rather than point_proxy.
             near_structure_data_quality_tier = "parcel_proxy"
         elif near_structure_available:
             near_structure_data_quality_tier = "point_proxy"
@@ -7069,12 +7082,46 @@ def _run_assessment(
     include_calibrated_outputs: bool = False,
 ) -> tuple[AssessmentResult, dict]:
     requested_anchor = _coerce_point_payload(payload.property_anchor_point or payload.user_selected_point)
-    geocode_resolution = geocode_resolution or _resolve_trusted_geocode(
-        address_input=payload.address,
-        purpose="assessment",
-        route_name="assessment_core",
-        property_anchor_point=requested_anchor,
-    )
+    if geocode_resolution is None:
+        # Attempt to find the active region's address points file using a fast
+        # region scan keyed on the geocoded point.  We first do a lightweight
+        # primary geocode pass, then look up the region, and inject the address-
+        # point result into the candidate pool for a second resolution attempt.
+        _pre_geo = _resolve_trusted_geocode(
+            address_input=payload.address,
+            purpose="assessment",
+            route_name="assessment_core",
+            property_anchor_point=requested_anchor,
+        )
+        _ap_path: str | None = None
+        try:
+            _region_probe = lookup_region_for_point(
+                lat=float(_pre_geo.latitude),
+                lon=float(_pre_geo.longitude),
+            )
+            if isinstance(_region_probe, dict):
+                from backend.region_registry import resolve_region_file as _rrfile
+                _ap_path = _rrfile(
+                    _region_probe,
+                    "parcel_address_points",
+                    base_dir=str(_region_data_root()),
+                ) or _rrfile(
+                    _region_probe,
+                    "address_points",
+                    base_dir=str(_region_data_root()),
+                )
+        except Exception:
+            _ap_path = None
+        if _ap_path:
+            geocode_resolution = _resolve_trusted_geocode(
+                address_input=payload.address,
+                purpose="assessment",
+                route_name="assessment_core",
+                property_anchor_point=requested_anchor,
+                address_points_path=_ap_path,
+            )
+        else:
+            geocode_resolution = _pre_geo
     lat = float(geocode_resolution.latitude)
     lon = float(geocode_resolution.longitude)
     geocode_source = geocode_resolution.geocode_source
@@ -10757,6 +10804,7 @@ def _resolve_trusted_geocode(
     purpose: str,
     route_name: str,
     property_anchor_point: dict[str, float] | None = None,
+    address_points_path: str | None = None,
 ) -> GeocodeResolution:
     submitted_address = str(address_input or "")
     normalized_address = normalize_address(submitted_address or "")
@@ -11198,6 +11246,57 @@ def _resolve_trusted_geocode(
                 source=str(fallback_meta.get("provider") or provider_name),
             )
         return detail
+
+    # Stage A0: active-region address-point string match (bypasses network geocoder)
+    # Only fires when the caller supplies the region's address_points_path.  A
+    # confirmed match returns precision="rooftop" and routes straight into the
+    # resolver candidate pool with high source_rank.
+    if address_points_path:
+        try:
+            ap_result = geocode_from_address_points(submitted_address, address_points_path)
+            if ap_result is not None:
+                _upsert_stage_status("region_address_points", "accepted")
+                provider_attempts.append(
+                    _build_provider_attempt(
+                        stage="region_address_points",
+                        provider_name="parcel_address_points",
+                        query=submitted_address,
+                        accepted=True,
+                        geocode_status="accepted",
+                        geocode_outcome="geocode_succeeded_trusted",
+                        rejection_reason=None,
+                        candidate_count=ap_result.candidate_count,
+                    )
+                )
+                _register_candidate(
+                    stage="region_address_points",
+                    latitude=ap_result.latitude,
+                    longitude=ap_result.longitude,
+                    geocode_meta={
+                        "geocode_status": "accepted",
+                        "geocode_outcome": "geocode_succeeded_trusted",
+                        "trusted_match_status": "trusted",
+                        "geocode_trust_tier": "high",
+                        "geocode_decision": "address_point_string_match",
+                        "submitted_address": submitted_address,
+                        "normalized_address": ap_result.normalized_address,
+                        "provider": "parcel_address_points",
+                        "geocoded_address": ap_result.matched_address,
+                        "matched_address": ap_result.matched_address,
+                        "confidence_score": ap_result.confidence_score,
+                        "candidate_count": ap_result.candidate_count,
+                        "geocode_precision": ap_result.geocode_precision,
+                        "geocode_location_type": ap_result.geocode_location_type,
+                        "source_type": "prepared_region_parcel_address_dataset",
+                        "point_geometry": True,
+                        "address_source_valid": True,
+                        "match_method": "address_point_string_match",
+                    },
+                    source="parcel_address_point",
+                    source_type="prepared_region_parcel_address_dataset",
+                )
+        except Exception:  # pragma: no cover - defensive; never block geocoding
+            pass
 
     # Stage A: primary geocoder
     try:

@@ -1539,6 +1539,112 @@ def test_wildfire_data_point_selection_unsnapped_falls_back_to_selected_anchor(m
     assert any("could not be snapped" in note.lower() for note in assumptions)
 
 
+# ---------------------------------------------------------------------------
+# Fix 1: user map-point correction steers footprint lookup in polygon mode
+# ---------------------------------------------------------------------------
+
+def test_user_map_point_correction_steers_footprint_lookup_in_polygon_mode(monkeypatch):
+    """When selection_mode='polygon' (the default) but user_selected_point is
+    provided, the footprint lookup should use the user's coordinates, not the
+    raw geocode lat/lon."""
+    _require_shapely()
+    client = WildfireDataClient()
+
+    captured_lat: list[float] = []
+    captured_lon: list[float] = []
+
+    def _mock_footprint(lat, lon, **_kwargs):
+        captured_lat.append(lat)
+        captured_lon.append(lon)
+        class _NoFP:
+            found = False
+            footprint = None
+            source = "fixture"
+            confidence = 0.0
+            assumptions = []
+            match_status = "none"
+            match_method = None
+            match_distance_m = None
+            candidate_count = 0
+            candidate_summaries = []
+        return _NoFP()
+
+    monkeypatch.setattr(client.footprints, "get_building_footprint", _mock_footprint)
+    monkeypatch.setattr(client, "_build_point_proxy_ring_metrics", lambda **_kwargs: {})
+
+    # Geocode lat/lon (road centerline) vs user-corrected point (actual house)
+    geocode_lat, geocode_lon = 46.8700, -113.9950
+    user_lat, user_lon = 46.8721, -113.9778
+
+    client._compute_structure_ring_metrics(
+        geocode_lat,
+        geocode_lon,
+        canopy_path="",
+        fuel_path="",
+        selection_mode="polygon",          # default — NOT "point"
+        user_selected_point={"latitude": user_lat, "longitude": user_lon},
+    )
+
+    assert captured_lat, "get_building_footprint should have been called"
+    # The footprint lookup should have used the user's corrected point, not geocode
+    assert abs(captured_lat[0] - user_lat) < 0.001, (
+        f"Footprint lookup used lat={captured_lat[0]}, expected user lat={user_lat}"
+    )
+    assert abs(captured_lon[0] - user_lon) < 0.001, (
+        f"Footprint lookup used lon={captured_lon[0]}, expected user lon={user_lon}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Fix 5: parcel centroid fallback sets ring_generation_mode=parcel_centroid_proxy
+# ---------------------------------------------------------------------------
+
+def test_parcel_centroid_ring_fallback_sets_correct_generation_mode(monkeypatch):
+    """When no footprint is found but a parcel polygon is available, the ring
+    generation mode should be parcel_centroid_proxy, not point_annulus_fallback."""
+    _require_shapely()
+    from shapely.geometry import Polygon as _Poly
+
+    client = WildfireDataClient()
+
+    parcel = _Poly([
+        (-113.9945, 46.8725),
+        (-113.9935, 46.8725),
+        (-113.9935, 46.8715),
+        (-113.9945, 46.8715),
+        (-113.9945, 46.8725),
+    ])
+
+    class _NoFP:
+        found = False
+        footprint = None
+        source = "fixture"
+        confidence = 0.0
+        assumptions = []
+        match_status = "none"
+        match_method = None
+        match_distance_m = None
+        candidate_count = 0
+        candidate_summaries = []
+
+    monkeypatch.setattr(client.footprints, "get_building_footprint", lambda *a, **kw: _NoFP())
+    monkeypatch.setattr(client, "_build_point_proxy_ring_metrics", lambda **_kwargs: {})
+
+    ring_context, _assumptions, _sources = client._compute_structure_ring_metrics(
+        46.8720,
+        -113.9940,
+        canopy_path="",
+        fuel_path="",
+        parcel_polygon=parcel,
+    )
+
+    assert ring_context["footprint_used"] is False
+    assert ring_context["geometry_basis"] == "parcel"
+    assert ring_context["ring_generation_mode"] == "parcel_centroid_proxy", (
+        f"Expected parcel_centroid_proxy, got {ring_context['ring_generation_mode']!r}"
+    )
+
+
 def test_score_decomposition_and_blended_wildfire_score(monkeypatch, tmp_path):
     ring_metrics = {
         "ring_0_5_ft": {"vegetation_density": 55.0},

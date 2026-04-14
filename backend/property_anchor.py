@@ -118,6 +118,10 @@ class PropertyAnchorResolver:
             45.0,
             min_value=2.0,
         )
+        self.address_point_rural_expansion_factor = max(
+            1.0,
+            self._env_float("WF_ADDRESS_POINT_RURAL_EXPANSION_FACTOR", 1.0, min_value=1.0),
+        )
         self.max_parcel_lookup_distance_m = self._env_float(
             "WF_PARCEL_LOOKUP_MAX_DISTANCE_M",
             30.0,
@@ -370,6 +374,7 @@ class PropertyAnchorResolver:
         address_default_m: float,
         parcel_default_m: float,
         override_anchor: bool,
+        address_rural_expansion_factor: float = 1.0,
     ) -> tuple[float, float]:
         # Lower-precision geocodes are frequently offset from true parcels/addresses;
         # widen lookup tolerances before falling back to weaker anchor modes.
@@ -392,7 +397,15 @@ class PropertyAnchorResolver:
                 parcel_limit = max(parcel_limit + 14.0, parcel_limit * 1.25)
         if override_anchor:
             parcel_limit = max(parcel_limit, parcel_default_m * 2.0)
-        return min(address_limit, 160.0), min(parcel_limit, 220.0)
+        # Apply rural expansion factor for regions with authoritative address-point layers.
+        # Rural roads can place geocoded points 100–300 m from the true parcel address.
+        # The expansion is applied only on coarse-precision geocodes where the risk of
+        # wrong-parcel association is low (address points are sparse on rural roads).
+        expansion = max(1.0, float(address_rural_expansion_factor))
+        if expansion > 1.0 and precision in {"interpolated", "approximate", "unknown", "road", "street"}:
+            address_limit = address_limit * expansion
+        address_cap = 400.0 if expansion > 1.0 else 160.0
+        return min(address_limit, address_cap), min(parcel_limit, 220.0)
 
     @staticmethod
     def _anchor_quality_summary(
@@ -509,6 +522,7 @@ class PropertyAnchorResolver:
             address_default_m=self.max_address_point_distance_m,
             parcel_default_m=self.max_parcel_lookup_distance_m,
             override_anchor=override_anchor is not None,
+            address_rural_expansion_factor=self.address_point_rural_expansion_factor,
         )
         address_feature, address_distance_m = self._best_address_point(
             geocode_point=geocode_point,
