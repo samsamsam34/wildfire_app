@@ -108,6 +108,38 @@
       .section-intro {
         margin-bottom: 0.62rem;
       }
+      .section-help,
+      .section-intro {
+        color: var(--muted);
+      }
+      .mt-sm {
+        margin-top: 0.6rem;
+      }
+      .subsection-title {
+        margin-top: 0.85rem;
+      }
+      .status-line {
+        margin-top: 0.55rem;
+        padding: 0.44rem 0.55rem;
+        border: 1px solid var(--line-soft);
+        border-radius: 10px;
+        background: #f8fbfd;
+        color: var(--muted);
+        font-size: 0.86rem;
+      }
+      .tone-muted {
+        color: var(--muted);
+      }
+      .tone-success {
+        color: var(--good);
+        border-color: #b8ddd7;
+        background: #f1fbf9;
+      }
+      .tone-error {
+        color: var(--bad);
+        border-color: #efc8c8;
+        background: #fff5f5;
+      }
       .journey-list {
         margin: 0;
         padding-left: 1.15rem;
@@ -205,6 +237,10 @@
         letter-spacing: 0.01em;
         transition: transform 120ms ease, opacity 120ms ease, box-shadow 120ms ease;
       }
+      button:focus-visible {
+        outline: none;
+        box-shadow: 0 0 0 3px rgba(54, 96, 118, 0.28);
+      }
       button:hover {
         opacity: 0.95;
         box-shadow: 0 5px 14px rgba(145, 56, 36, 0.28);
@@ -219,7 +255,7 @@
         transform: none;
       }
       button.secondary {
-        background: var(--accent-2);
+        background: #2f6077;
       }
       .actions {
         display: flex;
@@ -230,10 +266,10 @@
       .actions button {
         width: auto;
         padding-inline: 1rem;
+        min-height: 40px;
       }
       #requestStatus {
-        margin-top: 0.55rem !important;
-        font-size: 0.88rem;
+        font-size: 0.86rem;
       }
       #assessmentMap {
         height: 360px;
@@ -288,6 +324,14 @@
         margin-top: 0.5rem;
         font-size: 0.82rem;
         color: #6b7280;
+      }
+      .debug-inline {
+        display: none;
+        font-size: 0.8rem;
+        margin-top: 0.35rem;
+      }
+      .map-note {
+        margin-top: 0.48rem;
       }
       .score {
         font-size: clamp(2rem, 2.7vw, 2.4rem);
@@ -354,6 +398,9 @@
         margin-top: 0.52rem;
       }
       .insight-group ul {
+        margin-top: 0.28rem;
+      }
+      .insight-group h3 {
         margin-top: 0.28rem;
       }
       .summary-item {
@@ -690,7 +737,7 @@
 
       <section class="card facts-card">
         <div class="facts-head">
-          <h2>2. Home details</h2>
+          <h2>2. Home Details</h2>
           <span class="optional-badge">Optional</span>
         </div>
         <p class="facts-help">If you know a few details about your home, they can improve the estimate. It's okay to leave anything as Unsure.</p>
@@ -773,7 +820,7 @@
           </div>
         </div>
 
-        <div style="margin-top:0.6rem;">
+        <div class="mt-sm">
           <label>Confirmed fields (optional, comma separated)</label>
           <input id="confirmed_fields" placeholder="roof_type, vent_type, defensible_space_ft" />
         </div>
@@ -782,7 +829,7 @@
           <button id="assessBtn" type="button">Run Assessment</button>
           <button id="reassessBtn" type="button" class="secondary">Update With New Details</button>
         </div>
-        <p id="requestStatus" class="muted" style="margin-top:0.5rem;">Idle.</p>
+        <p id="requestStatus" class="status-line tone-muted">Idle.</p>
       </section>
 
       <section class="results">
@@ -805,8 +852,8 @@
             <span>What To Do First</span>
             <strong id="firstActionKpi">Run assessment</strong>
           </div>
-          <p id="regionDebugInline" class="muted" style="display:none; font-size:0.8rem; margin-top:0.35rem;">Region: unresolved</p>
-          <p id="summaryText" style="margin-top:0.6rem;">We'll explain your score in plain language here.</p>
+          <p id="regionDebugInline" class="muted debug-inline">Region: unresolved</p>
+          <p id="summaryText" class="mt-sm">We'll explain your score in plain language here.</p>
         </div>
 
         <div class="card">
@@ -814,13 +861,13 @@
           <p class="section-help">What's driving this result, based on observed local and regional evidence.</p>
           <div class="insight-group">
             <div class="mini-label">Top risk drivers</div>
-            <h3 style="margin-top:0.28rem;">Around the Home</h3>
+            <h3>Around the Home</h3>
             <ul id="propertyFindings"><li class="muted">No structure-specific findings yet.</li></ul>
             <ul id="drivers"><li class="muted">No factors yet.</li></ul>
           </div>
           <div class="insight-group">
             <div class="mini-label">Protective factors</div>
-            <h3 style="margin-top:0.28rem;">What Is Helping Lower Risk</h3>
+            <h3>What Is Helping Lower Risk</h3>
             <ul id="protective"><li class="muted">No protective factors yet.</li></ul>
           </div>
         </div>
@@ -859,17 +906,17 @@
         <div id="assessmentMap"></div>
         <p id="mapEmptyText" class="map-empty">Run an assessment to load map layers.</p>
         <div id="mapLayerToggles" class="map-toggles"></div>
-        <p id="mapLimitationsText" class="muted" style="margin-top:0.5rem;">Map limitations will appear here when needed.</p>
-        <p id="propertyContextMapHint" class="muted" style="margin-top:0.45rem;">Property context summary will appear here after assessment.</p>
+        <p id="mapLimitationsText" class="muted map-note">Map limitations will appear here when needed.</p>
+        <p id="propertyContextMapHint" class="muted map-note">Property context summary will appear here after assessment.</p>
         <div id="mapDebugPanel" class="map-debug" style="display:none;"></div>
       </section>
 
       <section class="card">
         <h2>6. View Homeowner Report</h2>
         <p class="muted">See the homeowner-focused summary and shareable report formats.</p>
-        <p id="homeownerReportStatus" style="margin-top:0.55rem;">Run an assessment to load the homeowner report preview.</p>
+        <p id="homeownerReportStatus" class="status-line tone-muted">Run an assessment to load the homeowner report preview.</p>
         <ul id="homeownerReportHighlights"><li class="muted">No homeowner report preview yet.</li></ul>
-        <details id="homeownerReportMoreDetails" style="margin-top:0.6rem;">
+        <details id="homeownerReportMoreDetails" class="mt-sm">
           <summary>More details</summary>
           <ul id="homeownerReportSecondary"><li class="muted">No additional details yet.</li></ul>
         </details>
@@ -882,9 +929,9 @@
       <section class="card">
         <h2>7. Improve This Result</h2>
         <p>Use missing-input suggestions below, update home details above, then click <strong>Update With New Details</strong>.</p>
-        <h3 style="margin-top:0.8rem;">Suggested Improvements</h3>
+        <h3 class="subsection-title">Suggested Improvements</h3>
         <ul id="improveSuggestions"><li class="muted">No suggestions yet.</li></ul>
-        <h3 style="margin-top:0.8rem;">Helpful Follow-Up Inputs</h3>
+        <h3 class="subsection-title">Helpful Follow-Up Inputs</h3>
         <ul id="improveInputs"><li class="muted">No follow-up inputs yet.</li></ul>
         <div class="actions">
           <button id="refreshImproveBtn" type="button" class="secondary">Refresh Suggestions</button>
@@ -895,7 +942,7 @@
         <h2>8. Simulate Mitigation Upgrades</h2>
         <p>Try a few changes to see how they could lower risk.</p>
 
-        <div class="row" style="margin-top:0.6rem;">
+        <div class="row mt-sm">
           <div>
             <label>Scenario name</label>
             <input id="scenario_name" value="home_upgrade_plan" />
@@ -977,7 +1024,7 @@
           </div>
         </div>
 
-        <div style="margin-top:0.6rem;">
+        <div class="mt-sm">
           <label>Scenario confirmed fields (optional, comma separated)</label>
           <input id="scenario_confirmed_fields" placeholder="roof_type, vent_type, defensible_space_ft" />
         </div>
@@ -998,7 +1045,7 @@
               <input id="apiKey" value="dev-key-1" />
             </div>
           </div>
-          <div class="actions" style="margin-top:0.6rem;">
+          <div class="actions">
             <button id="exportReportBtn" type="button" class="secondary">Open Raw Export JSON</button>
             <button id="openInternalDiagnosticsBtn" type="button" class="secondary">Open Internal Diagnostics</button>
           </div>
@@ -1013,19 +1060,19 @@
               <ul id="assumptions"><li class="muted">No estimates shown yet.</li></ul>
             </div>
           </div>
-          <h3 style="margin-top:0.9rem;">How to Improve Confidence</h3>
+          <h3 class="subsection-title">How to Improve Confidence</h3>
           <ul id="confidenceActions"><li class="muted">No confidence guidance yet.</li></ul>
 
-          <h3 style="margin-top:0.9rem;">Technical Factor Breakdown</h3>
+          <h3 class="subsection-title">Technical Factor Breakdown</h3>
           <table>
             <thead><tr><th>Factor</th><th>Score</th><th>Contribution</th></tr></thead>
             <tbody id="submodels"><tr><td colspan="3" class="muted">No data yet.</td></tr></tbody>
           </table>
 
-          <h3 style="margin-top:0.9rem;">Home Hardening Readiness (Primary)</h3>
+          <h3 class="subsection-title">Home Hardening Readiness (Primary)</h3>
           <p id="readinessText" class="muted">-</p>
 
-          <h3 style="margin-top:0.9rem;">Property-Level Context</h3>
+          <h3 class="subsection-title">Property-Level Context</h3>
           <p id="propertyContextText" class="muted">No property-level context available yet.</p>
           <p id="regionResolutionText" class="muted" style="display:none;">Region resolution details unavailable.</p>
           <p id="geocodeDebugText" class="muted" style="display:none;">Geocode details unavailable.</p>
@@ -2063,7 +2110,7 @@
         if (limitations) rows.push(`<li><strong>Limitations:</strong> ${limitations}</li>`);
         highlightsEl.innerHTML = rows.length > 0
           ? rows.join("")
-          : "<li class='muted'>No homeowner report highlights available.</li>";
+          : "<li class='muted'>No homeowner report highlights yet.</li>";
 
         const secondaryRows = [];
         if (Array.isArray(confidence?.why_confidence_is_limited) && confidence.why_confidence_is_limited.length > 0) {
@@ -2076,7 +2123,7 @@
         }
         secondaryEl.innerHTML = secondaryRows.length > 0
           ? secondaryRows.join("")
-          : "<li class='muted'>No additional details available.</li>";
+          : "<li class='muted'>No additional details yet.</li>";
         if (moreDetailsEl) {
           moreDetailsEl.open = false;
         }
@@ -2205,7 +2252,7 @@
           }
         }
 
-        document.getElementById("summaryText").textContent = data.explanation_summary || "No summary available yet.";
+        document.getElementById("summaryText").textContent = data.explanation_summary || "No summary yet.";
         const propertyFindings = getPropertyFindings(data);
         const nearStructureDrivers = Array.isArray(data?.top_near_structure_risk_drivers)
           ? data.top_near_structure_risk_drivers
@@ -2243,9 +2290,9 @@
           document.getElementById("drivers").innerHTML = (data.top_risk_drivers || [])
             .slice(0, 3)
             .map(v => `<li>${toHomeownerDriverText(v)}</li>`)
-            .join("") || "<li class='muted'>No factors listed.</li>";
+            .join("") || "<li class='muted'>No factors available yet.</li>";
         }
-        document.getElementById("protective").innerHTML = (data.top_protective_factors || []).slice(0, 3).map(v => `<li>${v}</li>`).join("") || "<li class='muted'>No factors listed.</li>";
+        document.getElementById("protective").innerHTML = (data.top_protective_factors || []).slice(0, 3).map(v => `<li>${v}</li>`).join("") || "<li class='muted'>No factors available yet.</li>";
 
         document.getElementById("nextStepsText").textContent = buildNextStepsHint(combinedFindings);
 
@@ -2277,7 +2324,7 @@
           );
         });
         document.getElementById("mitigations").innerHTML = mitigationRows
-          .join("") || "<li class='muted'>No recommendations yet.</li>";
+          .join("") || "<li class='muted'>No recommendations available yet.</li>";
 
         const confidenceRaw = Number(homeownerConfidence?.score);
         const confidenceLabel = String(homeownerConfidence?.label || "").trim();
@@ -2519,7 +2566,7 @@
         if (readinessKpiEl) readinessKpiEl.textContent = "Not available";
         if (firstActionKpiEl) firstActionKpiEl.textContent = "Prepare region coverage";
         document.getElementById("submodels").innerHTML = "<tr><td colspan='3' class='muted'>No factor data until region coverage is prepared.</td></tr>";
-        document.getElementById("readinessText").textContent = "Insurance readiness score: not computed (location outside prepared coverage)";
+        document.getElementById("readinessText").textContent = "Home hardening readiness: not computed (location outside prepared coverage)";
         document.getElementById("propertyContextText").textContent = recommendation;
         const propertyContextMapHintEl = document.getElementById("propertyContextMapHint");
         if (propertyContextMapHintEl) propertyContextMapHintEl.textContent = recommendation;
@@ -2603,7 +2650,7 @@
         if (readinessKpiEl) readinessKpiEl.textContent = "Not available";
         if (firstActionKpiEl) firstActionKpiEl.textContent = "Fix address match";
         document.getElementById("submodels").innerHTML = "<tr><td colspan='3' class='muted'>No factor data until geocoding succeeds.</td></tr>";
-        document.getElementById("readinessText").textContent = "Insurance readiness score: not computed";
+        document.getElementById("readinessText").textContent = "Home hardening readiness: not computed";
         document.getElementById("propertyContextText").textContent = "Region resolution was not attempted because geocoding did not pass trust checks.";
         const propertyContextMapHintEl = document.getElementById("propertyContextMapHint");
         if (propertyContextMapHintEl) {
@@ -3597,12 +3644,13 @@
         const el = document.getElementById("requestStatus");
         if (!el) return;
         el.textContent = message;
+        el.classList.remove("tone-error", "tone-success", "tone-muted");
         if (tone === "error") {
-          el.style.color = "var(--bad)";
+          el.classList.add("tone-error");
         } else if (tone === "success") {
-          el.style.color = "var(--good)";
+          el.classList.add("tone-success");
         } else {
-          el.style.color = "var(--muted)";
+          el.classList.add("tone-muted");
         }
       }
 
