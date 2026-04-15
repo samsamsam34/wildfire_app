@@ -327,22 +327,40 @@ def test_homeowner_pdf_includes_structured_sections_and_priority_content(monkeyp
 
     required_sections = [
         b"Wildfire Risk Report",
-        b"Summary",
-        b"What Matters Most",
+        b"Summary Snapshot",
+        b"Why this matters",
+        b"Local Map View",
         b"What To Do First",
-        b"Recommended Actions",
+        b"Top Risk Drivers",
+        b"Recommended Next Steps",
         b"How This Could Improve",
-        b"Confidence & Limitations",
         b"Property Context",
+        b"Confidence & Limitations",
         b"Technical Details",
     ]
     for section in required_sections:
         assert section in pdf_res.content
 
+    ordered_markers = [
+        b"Wildfire Risk Report",
+        b"Summary Snapshot",
+        b"What To Do First",
+        b"Top Risk Drivers",
+        b"Recommended Next Steps",
+    ]
+    marker_positions = [pdf_res.content.find(marker) for marker in ordered_markers]
+    assert all(pos >= 0 for pos in marker_positions)
+    assert marker_positions == sorted(marker_positions)
+
     for key_line in (
-        b"Risk level",
-        b"Home hardening readiness:",
-        b"Summary sentence:",
+        b"Wildfire risk level:",
+        b"Assessment type / specificity:",
+        b"Confidence level:",
+        b"One-sentence explanation:",
+        b"Observed for this report",
+        b"Missing or estimated",
+        b"Ring legend:",
+        b"conditions close to the home",
         b"Top priority action",
         b"Effort level:",
         b"lower wildfire risk",
@@ -418,10 +436,12 @@ def test_homeowner_pdf_sections_render_in_high_and_low_confidence_scenarios(monk
     assert low_pdf.startswith(b"%PDF-1.4")
 
     required_sections = [
-        b"Summary",
-        b"What Matters Most",
+        b"Summary Snapshot",
+        b"Why this matters",
+        b"Local Map View",
         b"What To Do First",
-        b"Recommended Actions",
+        b"Top Risk Drivers",
+        b"Recommended Next Steps",
         b"How This Could Improve",
         b"Confidence & Limitations",
         b"Technical Details",
@@ -431,7 +451,16 @@ def test_homeowner_pdf_sections_render_in_high_and_low_confidence_scenarios(monk
         assert section in low_pdf
 
     assert b"Specificity:" in high_pdf
+    assert b"Assessment type / specificity:" in high_pdf
+    assert b"Confidence level: High" in high_pdf
     assert b"Specificity: Regional estimate" in low_pdf
+    assert b"Confidence level: Low" in low_pdf
+    assert b"Observed for this report" in high_pdf
+    assert b"Missing or estimated" in high_pdf
+    assert b"Observed for this report" in low_pdf
+    assert b"Missing or estimated" in low_pdf
+    assert b"Why this may be broader:" in low_pdf
+    assert b"Low-specificity note: use this as planning guidance" in low_pdf
     assert b"Limited-data case" not in high_pdf
     assert b"Limited-data case" in low_pdf
 
@@ -515,14 +544,14 @@ def test_homeowner_pdf_tone_softens_low_confidence_and_is_direct_for_high_confid
     low_pdf = export_homeowner_report(low, output_format="pdf")
 
     assert b"Tone: direct." in high_pdf
-    assert b"Why it matters:" in high_pdf
-    assert b"This helps reduce risk:" in high_pdf
-    assert b"Limitations context: data coverage is strong" in high_pdf
+    assert b"major contributor to wildfire exposure at the home" in high_pdf
+    assert b"lowers ignition pathways around the home" in high_pdf
+    assert b"Confidence is strong because the assessment used substantial property-level evidence" in high_pdf
 
     assert b"Tone: cautious." in low_pdf
-    assert b"Potential impact:" in low_pdf
-    assert b"This may help reduce risk:" in low_pdf
-    assert b"Limitations context: several details were estimated or missing" in low_pdf
+    assert b"may contribute to wildfire exposure because some inputs were estimated" in low_pdf
+    assert b"could lower ignition pathways around the home" in low_pdf
+    assert b"Confidence is lower because some details were estimated or missing" in low_pdf
 
 
 def test_generate_homeowner_explanations_fallback_without_llm(monkeypatch, tmp_path: Path):
@@ -597,7 +626,82 @@ def test_generate_homeowner_explanations_llm_output_is_concise(monkeypatch, tmp_
         assert len(text) <= 240
         assert "%" not in text
         sentence_count = len(re.findall(r"[.!?]", text))
-        assert 1 <= sentence_count <= 2
+        assert sentence_count == 1
+
+
+def test_generate_homeowner_explanations_maps_actions_to_matching_explanations(monkeypatch, tmp_path: Path):
+    context = _ctx(env=56.0, wildland=44.0, historic=29.0)
+    _setup(monkeypatch, tmp_path, context)
+    assessed = _run_assessment("911 Action Mapping Ln, Missoula, MT 59802")
+    stored = app_main.store.get(assessed["assessment_id"])
+    assert stored is not None
+
+    patched = stored.model_copy(deep=True)
+    patched.confidence_tier = "moderate"
+    patched.prioritized_mitigation_actions = [
+        HomeownerPrioritizedAction(
+            action="Install ember-resistant vents",
+            explanation="Prevents embers from entering attic openings.",
+            impact_level="high",
+            effort_level="medium",
+            estimated_cost_band="medium",
+            timeline="this_season",
+            priority=1,
+        ),
+        HomeownerPrioritizedAction(
+            action="Clear debris within 5 feet",
+            explanation="Removes dry material that can ignite near walls.",
+            impact_level="high",
+            effort_level="low",
+            estimated_cost_band="low",
+            timeline="now",
+            priority=2,
+        ),
+    ]
+
+    monkeypatch.setattr(
+        homeowner_report_module,
+        "_generate_homeowner_explanations_with_llm",
+        lambda payload, llm_client=None: {
+            "headline_summary": "Custom summary sentence.",
+            "risk_driver_explanations": [],
+            "recommended_action_explanations": [
+                {
+                    "action": "Clear debris within 5 feet",
+                    "explanation": "Clearing nearby debris removes easy ignition material next to walls.",
+                },
+                {
+                    "action": "Install ember-resistant vents",
+                    "explanation": "Vent upgrades block ember entry points near attics.",
+                },
+            ],
+            "confidence_limitations_explanation": "Custom confidence sentence.",
+        },
+    )
+
+    explanations = generate_homeowner_explanations(patched)
+    action_map = explanations.get("recommended_action_explanations_by_action")
+    assert isinstance(action_map, dict)
+    assert action_map.get("install ember resistant vents") == "Vent upgrades block ember entry points near attics."
+    assert action_map.get("clear debris within 5 feet") == "Clearing nearby debris removes easy ignition material next to walls."
+
+    pdf = export_homeowner_report(patched, output_format="pdf")
+    action_a = b"Install ember-resistant vents"
+    action_b = b"Clear debris within 5 feet"
+    expl_a = b"Vent upgrades block ember entry points near attics."
+    expl_b = b"Clearing nearby debris removes easy ignition material next to walls."
+
+    idx_action_a = pdf.find(action_a)
+    idx_action_b = pdf.find(action_b)
+    idx_expl_a = pdf.find(expl_a)
+    idx_expl_b = pdf.find(expl_b)
+    assert idx_action_a >= 0 and idx_action_b >= 0 and idx_expl_a >= 0 and idx_expl_b >= 0
+    assert idx_action_a < idx_expl_a
+    assert idx_action_b < idx_expl_b
+    if idx_action_a < idx_action_b:
+        assert idx_expl_a < idx_action_b
+    else:
+        assert idx_expl_b < idx_action_a
 
 
 def test_pdf_uses_generated_homeowner_explanation_layer(monkeypatch, tmp_path: Path):
@@ -649,8 +753,66 @@ def test_homeowner_pdf_visual_layout_includes_grouping_and_highlights(monkeypatc
     assert b" re B" in pdf_res.content
     assert b" l S" in pdf_res.content
     # Risk level and callout are emphasized with larger bold text styles.
-    assert b"/F2 21.50 Tf" in pdf_res.content
+    assert b"/F2 18.00 Tf" in pdf_res.content
     assert b"/F2 13.50 Tf" in pdf_res.content
+
+
+def test_homeowner_pdf_local_map_renders_for_strong_geometry_case(monkeypatch, tmp_path: Path):
+    context = _ctx(
+        env=53.0,
+        wildland=39.0,
+        historic=25.0,
+        ring_metrics={
+            "zone_0_5_ft": {"vegetation_density": 19.0, "coverage_pct": 16.0, "fuel_presence_proxy": 14.0},
+            "zone_5_30_ft": {"vegetation_density": 41.0, "coverage_pct": 37.0, "fuel_presence_proxy": 34.0},
+            "zone_30_100_ft": {"vegetation_density": 54.0, "coverage_pct": 50.0, "fuel_presence_proxy": 48.0},
+        },
+    )
+    _setup(monkeypatch, tmp_path, context)
+    assessed = _run_assessment("912 Map Strong Geometry Rd, Missoula, MT 59802")
+    original = app_main.store.get(assessed["assessment_id"])
+    assert original is not None
+
+    patched = original.model_copy(deep=True)
+    patched.defensible_space_analysis = {
+        "basis_geometry_type": "building_footprint",
+        "data_quality": {"analysis_status": "complete"},
+        "zones": {"zone_0_5_ft": {}, "zone_5_30_ft": {}, "zone_30_100_ft": {}},
+    }
+    patched.confidence_summary.observed_data = ["building_footprint", "parcel_geometry", "roof_type"]
+
+    monkeypatch.setattr(app_main.store, "get", lambda _assessment_id: patched)
+    pdf_res = client.get(f"/report/{assessed['assessment_id']}/homeowner/pdf")
+    assert pdf_res.status_code == 200
+    assert b"Local Map View" in pdf_res.content
+    assert b"Ring legend:" in pdf_res.content
+    assert b"Map note: geometry is anchored to property-level footprint and parcel context" in pdf_res.content
+
+
+def test_homeowner_pdf_local_map_renders_for_approximate_geometry_case(monkeypatch, tmp_path: Path):
+    context = _ctx(env=58.0, wildland=51.0, historic=36.0, ring_metrics={})
+    _setup(monkeypatch, tmp_path, context)
+    assessed = _run_assessment("913 Map Approx Geometry Ln, Missoula, MT 59802")
+    original = app_main.store.get(assessed["assessment_id"])
+    assert original is not None
+
+    patched = original.model_copy(deep=True)
+    patched.assessment_specificity_tier = "regional_estimate"
+    patched.assessment_mode = "insufficient_data"
+    patched.defensible_space_analysis = {
+        "basis_geometry_type": "point_proxy",
+        "data_quality": {"analysis_status": "partial"},
+        "zones": {},
+    }
+    patched.confidence_summary.estimated_data = ["structure_geometry"]
+    patched.confidence_summary.missing_data = ["parcel_geometry", "building_footprint"]
+
+    monkeypatch.setattr(app_main.store, "get", lambda _assessment_id: patched)
+    pdf_res = client.get(f"/report/{assessed['assessment_id']}/homeowner/pdf")
+    assert pdf_res.status_code == 200
+    assert b"Local Map View" in pdf_res.content
+    assert b"Ring legend:" in pdf_res.content
+    assert b"Map note: geometry is approximate" in pdf_res.content
 
 
 def test_homeowner_pdf_text_positions_descend_without_overlap(monkeypatch, tmp_path: Path):

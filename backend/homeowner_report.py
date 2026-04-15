@@ -1321,6 +1321,9 @@ def _sanitize_explanation_text(
         candidate,
         flags=re.I,
     )
+    candidate = re.sub(r"\bthis may help reduce risk\b", "This could reduce wildfire exposure", candidate, flags=re.I)
+    candidate = re.sub(r"\bthis can help reduce risk\b", "This can reduce wildfire exposure", candidate, flags=re.I)
+    candidate = re.sub(r"\bthis helps reduce risk\b", "This reduces wildfire exposure", candidate, flags=re.I)
     jargon_map = {
         "topography": "terrain",
         "submodel": "risk factor",
@@ -1349,6 +1352,8 @@ def _sanitize_explanation_list(
     *,
     fallback: list[str],
     limit: int = 3,
+    max_sentences: int = 2,
+    max_chars: int = 240,
 ) -> list[str]:
     raw_items = list(values) if isinstance(values, list) else []
     out: list[str] = []
@@ -1360,7 +1365,12 @@ def _sanitize_explanation_list(
             fallback_idx += 1
         else:
             fallback_text = "Use this guidance as directional planning support."
-        cleaned = _sanitize_explanation_text(raw, fallback=fallback_text)
+        cleaned = _sanitize_explanation_text(
+            raw,
+            fallback=fallback_text,
+            max_sentences=max_sentences,
+            max_chars=max_chars,
+        )
         if cleaned:
             out.append(cleaned)
         if len(raw_items) <= len(out) and len(out) >= min(len(fallback), max(1, int(limit))):
@@ -1398,6 +1408,78 @@ def _extract_assessment_actions(assessment: AssessmentResult, *, limit: int = 3)
     return rows[: max(1, int(limit))]
 
 
+def _explanation_lookup_key(value: Any) -> str:
+    normalized = _normalize_line(value).lower()
+    if not normalized:
+        return ""
+    return re.sub(r"[^a-z0-9]+", " ", normalized).strip()
+
+
+def _build_headline_summary_template(risk_band: str, tone_profile: str) -> str:
+    band = str(risk_band or "Unavailable").strip().lower()
+    if tone_profile == "direct":
+        return f"Your property shows {band} wildfire risk based on strong local evidence."
+    if tone_profile == "balanced":
+        return f"Your property shows {band} wildfire risk based on available local and regional evidence."
+    return f"Your property may face {band} wildfire risk, though some inputs were estimated."
+
+
+def _build_driver_explanation_template(driver_text: str, tone_profile: str) -> str:
+    base = _normalize_line(_plain_driver(driver_text) or driver_text).rstrip(".")
+    if not base:
+        base = "Nearby conditions"
+    if tone_profile == "direct":
+        return f"{base}, which is a major contributor to wildfire exposure at the home."
+    if tone_profile == "balanced":
+        return f"{base}, which is an important contributor to wildfire exposure at the home."
+    return f"{base}, which may contribute to wildfire exposure because some inputs were estimated."
+
+
+def _build_action_explanation_template(action: str, why: str, tone_profile: str) -> str:
+    action_text = _normalize_line(action).rstrip(".")
+    if not action_text:
+        action_text = "This action"
+    reason = _normalize_line(why).rstrip(".")
+    if tone_profile == "direct":
+        sentence = f"{action_text} lowers ignition pathways around the home."
+    elif tone_profile == "balanced":
+        sentence = f"{action_text} can lower ignition pathways around the home."
+    else:
+        sentence = f"{action_text} could lower ignition pathways around the home, though some inputs were estimated."
+    if reason:
+        sentence = f"{sentence.rstrip('.')} by addressing this issue: {reason}."
+    return sentence
+
+
+def _build_limitation_summary_template(tone_profile: str) -> str:
+    if tone_profile == "direct":
+        return "Confidence is strong because the assessment used substantial property-level evidence."
+    if tone_profile == "balanced":
+        return "Confidence is moderate: key inputs were observed, with some estimated details."
+    return "Confidence is lower because some details were estimated or missing, so use this report as planning guidance."
+
+
+def _extract_action_explanation_candidates(values: Any) -> list[dict[str, str]]:
+    candidates: list[dict[str, str]] = []
+    for row in list(values) if isinstance(values, list) else []:
+        if isinstance(row, dict):
+            candidates.append(
+                {
+                    "action": _normalize_line(row.get("action") or row.get("title") or row.get("label") or ""),
+                    "explanation": _normalize_line(
+                        row.get("explanation")
+                        or row.get("text")
+                        or row.get("summary")
+                        or row.get("reason")
+                        or ""
+                    ),
+                }
+            )
+        else:
+            candidates.append({"action": "", "explanation": _normalize_line(row)})
+    return candidates
+
+
 def _template_homeowner_explanations(assessment: AssessmentResult) -> dict[str, object]:
     confidence_tier = str(assessment.confidence_tier or "preliminary").strip().lower()
     missing_count = len(list(assessment.confidence_summary.missing_data or []))
@@ -1417,12 +1499,7 @@ def _template_homeowner_explanations(assessment: AssessmentResult) -> dict[str, 
         else assessment.wildfire_risk_score
     )
     risk_band = _section_band_label(_risk_band(_to_float(risk_score)))
-    if tone_profile == "direct":
-        headline = f"Your home has {risk_band.lower()} wildfire risk based on strong local evidence."
-    elif tone_profile == "balanced":
-        headline = f"Your home appears to have {risk_band.lower()} wildfire risk based on available property and regional evidence."
-    else:
-        headline = f"Your home may have {risk_band.lower()} wildfire risk, but some details were estimated."
+    headline = _build_headline_summary_template(risk_band, tone_profile)
 
     driver_rows = [str(v).strip() for v in list(assessment.top_risk_drivers or []) if str(v).strip()]
     if not driver_rows and assessment.top_risk_drivers_detailed:
@@ -1437,47 +1514,30 @@ def _template_homeowner_explanations(assessment: AssessmentResult) -> dict[str, 
 
     driver_explanations: list[str] = []
     for row in driver_rows:
-        base = _normalize_line(_plain_driver(row) or row)
-        if tone_profile == "cautious":
-            driver_explanations.append(
-                f"{base} This may be contributing to risk, but some details were estimated."
-            )
-        elif tone_profile == "balanced":
-            driver_explanations.append(f"{base} This likely matters for home ignition pressure.")
-        else:
-            driver_explanations.append(f"{base} This is a major risk factor.")
+        driver_explanations.append(_build_driver_explanation_template(row, tone_profile))
 
     action_rows = _extract_assessment_actions(assessment, limit=3)
     action_explanations: list[str] = []
+    action_explanations_by_action: dict[str, str] = {}
     for row in action_rows:
         action = row.get("action") or "This action"
         why = _normalize_line(row.get("explanation") or "")
-        if tone_profile == "direct":
-            sentence = f"{action} helps lower risk and improve readiness."
-        elif tone_profile == "balanced":
-            sentence = f"{action} can help lower risk and improve readiness."
-        else:
-            sentence = f"{action} could help lower risk and improve readiness."
-        if why:
-            sentence = f"{sentence} {why}"
+        sentence = _build_action_explanation_template(action, why, tone_profile)
         action_explanations.append(sentence)
+        action_key = _explanation_lookup_key(action)
+        if action_key:
+            action_explanations_by_action[action_key] = sentence
     if not action_explanations:
         action_explanations = ["Prioritized actions could help reduce wildfire risk and improve home hardening readiness."]
 
-    if tone_profile == "direct":
-        confidence_line = "Confidence is strong for this assessment because key property details were observed directly."
-    elif tone_profile == "balanced":
-        confidence_line = "Confidence is moderate: most important inputs were observed, with some estimated details."
-    else:
-        confidence_line = (
-            "Confidence is lower: some details were estimated or missing, so treat this report as planning guidance."
-        )
+    confidence_line = _build_limitation_summary_template(tone_profile)
 
     return {
         "source": "template",
         "headline_summary": headline,
         "risk_driver_explanations": driver_explanations[:3],
         "recommended_action_explanations": action_explanations[:3],
+        "recommended_action_explanations_by_action": action_explanations_by_action,
         "confidence_limitations_explanation": confidence_line,
     }
 
@@ -1507,9 +1567,13 @@ def _generate_homeowner_explanations_with_llm(
 
     system_prompt = (
         "You write homeowner-facing wildfire explanations. Return strict JSON with keys: "
-        "headline_summary, risk_driver_explanations, recommended_action_explanations, "
-        "confidence_limitations_explanation. Max 1-2 sentences per item, no jargon, no percentages "
-        "unless very certain, explain why each item matters."
+        "headline_summary (string), "
+        "risk_driver_explanations (array of up to 3 objects with keys driver and explanation), "
+        "recommended_action_explanations (array of up to 3 objects with keys action and explanation), "
+        "confidence_limitations_explanation (string). "
+        "Each explanation must be a single short sentence in plain language, no technical jargon, no percentages, "
+        "and no repeated phrases such as 'may help reduce risk' across multiple items. "
+        "Tie each action explanation to its matching action text."
     )
     user_prompt = (
         "Generate concise homeowner explanations from this assessment summary JSON.\n"
@@ -1562,6 +1626,7 @@ def generate_homeowner_explanations(
     llm_client: Any | None = None,
 ) -> dict[str, object]:
     template = _template_homeowner_explanations(assessment)
+    top_actions = _extract_assessment_actions(assessment, limit=3)
 
     llm_payload = {
         "address": assessment.address,
@@ -1578,18 +1643,21 @@ def generate_homeowner_explanations(
             )
         ),
         "top_risk_drivers": list(assessment.top_risk_drivers or [])[:3],
-        "top_actions": _extract_assessment_actions(assessment, limit=3),
+        "top_actions": top_actions,
     }
 
     llm_generated = _generate_homeowner_explanations_with_llm(llm_payload, llm_client=llm_client)
     source = "template"
+    llm_provided_action_map = False
     merged = dict(template)
     if isinstance(llm_generated, dict):
         source = "llm"
+        llm_provided_action_map = "recommended_action_explanations_by_action" in llm_generated
         for key in (
             "headline_summary",
             "risk_driver_explanations",
             "recommended_action_explanations",
+            "recommended_action_explanations_by_action",
             "confidence_limitations_explanation",
         ):
             if key in llm_generated:
@@ -1598,20 +1666,71 @@ def generate_homeowner_explanations(
     headline = _sanitize_explanation_text(
         merged.get("headline_summary"),
         fallback=str(template.get("headline_summary") or ""),
+        max_sentences=1,
+        max_chars=220,
     )
+
+    raw_driver_values = merged.get("risk_driver_explanations")
+    if isinstance(raw_driver_values, list):
+        driver_inputs = [
+            row.get("explanation") if isinstance(row, dict) else row
+            for row in raw_driver_values
+        ]
+    else:
+        driver_inputs = raw_driver_values
     driver_explanations = _sanitize_explanation_list(
-        merged.get("risk_driver_explanations"),
+        driver_inputs,
         fallback=[str(v) for v in list(template.get("risk_driver_explanations") or [])],
         limit=3,
+        max_sentences=1,
+        max_chars=220,
     )
+
+    fallback_action_explanations = [str(v) for v in list(template.get("recommended_action_explanations") or [])]
+    fallback_action_names = [
+        _normalize_line(row.get("action") or row.get("title") or "")
+        for row in top_actions
+    ]
+    raw_action_candidates = _extract_action_explanation_candidates(merged.get("recommended_action_explanations"))
     action_explanations = _sanitize_explanation_list(
-        merged.get("recommended_action_explanations"),
-        fallback=[str(v) for v in list(template.get("recommended_action_explanations") or [])],
+        [row.get("explanation") or "" for row in raw_action_candidates],
+        fallback=fallback_action_explanations,
         limit=3,
+        max_sentences=1,
+        max_chars=220,
     )
+    action_explanations_by_action: dict[str, str] = {}
+
+    for idx, explanation_text in enumerate(action_explanations):
+        action_hint = ""
+        if idx < len(raw_action_candidates):
+            action_hint = _normalize_line(raw_action_candidates[idx].get("action") or "")
+        if not action_hint and idx < len(fallback_action_names):
+            action_hint = fallback_action_names[idx]
+        action_key = _explanation_lookup_key(action_hint)
+        if action_key:
+            action_explanations_by_action[action_key] = explanation_text
+
+    raw_action_map = merged.get("recommended_action_explanations_by_action")
+    if isinstance(raw_action_map, dict) and (source == "template" or llm_provided_action_map):
+        for action_name, explanation in raw_action_map.items():
+            action_key = _explanation_lookup_key(action_name)
+            if not action_key:
+                continue
+            sanitized = _sanitize_explanation_text(
+                explanation,
+                fallback=action_explanations_by_action.get(action_key, ""),
+                max_sentences=1,
+                max_chars=220,
+            )
+            if sanitized:
+                action_explanations_by_action[action_key] = sanitized
+
     confidence_line = _sanitize_explanation_text(
         merged.get("confidence_limitations_explanation"),
         fallback=str(template.get("confidence_limitations_explanation") or ""),
+        max_sentences=1,
+        max_chars=220,
     )
 
     return {
@@ -1619,6 +1738,7 @@ def generate_homeowner_explanations(
         "headline_summary": headline,
         "risk_driver_explanations": driver_explanations,
         "recommended_action_explanations": action_explanations,
+        "recommended_action_explanations_by_action": action_explanations_by_action,
         "confidence_limitations_explanation": confidence_line,
     }
 
@@ -1630,9 +1750,86 @@ class _PdfEntry:
 
 
 _PDF_TEXT_STYLES: dict[str, dict[str, float | str]] = {
+    "product_name": {"font": "F2", "size": 10.8, "leading": 14.0, "indent": 52.0, "width": 88.0, "gray": 0.22},
     "title": {"font": "F2", "size": 22.0, "leading": 30.0, "indent": 52.0, "width": 68.0, "gray": 0.0},
     "meta": {"font": "F1", "size": 10.2, "leading": 14.6, "indent": 52.0, "width": 96.0, "gray": 0.0},
     "section": {"font": "F2", "size": 14.2, "leading": 22.0, "indent": 52.0, "width": 88.0, "gray": 0.0},
+    "summary_card_header": {
+        "font": "F2",
+        "size": 11.0,
+        "leading": 16.0,
+        "indent": 60.0,
+        "width": 82.0,
+        "gray": 0.0,
+        "box_fill": 0.95,
+        "box_stroke": 0.80,
+        "box_left": 52.0,
+        "box_right": 560.0,
+        "box_height": 20.0,
+    },
+    "summary_card_value": {
+        "font": "F2",
+        "size": 18.0,
+        "leading": 23.0,
+        "indent": 60.0,
+        "width": 82.0,
+        "gray": 0.0,
+        "box_fill": 0.95,
+        "box_stroke": 0.80,
+        "box_left": 52.0,
+        "box_right": 560.0,
+        "box_height": 24.0,
+    },
+    "summary_card_body": {
+        "font": "F1",
+        "size": 10.4,
+        "leading": 14.8,
+        "indent": 60.0,
+        "width": 82.0,
+        "gray": 0.0,
+        "box_fill": 0.95,
+        "box_stroke": 0.80,
+        "box_left": 52.0,
+        "box_right": 560.0,
+        "box_height": 18.0,
+    },
+    "evidence_box_header": {
+        "font": "F2",
+        "size": 10.8,
+        "leading": 15.0,
+        "indent": 60.0,
+        "width": 82.0,
+        "gray": 0.0,
+        "box_fill": 0.97,
+        "box_stroke": 0.84,
+        "box_left": 52.0,
+        "box_right": 560.0,
+        "box_height": 18.0,
+    },
+    "evidence_box_body": {
+        "font": "F1",
+        "size": 10.0,
+        "leading": 14.0,
+        "indent": 60.0,
+        "width": 82.0,
+        "gray": 0.0,
+        "box_fill": 0.97,
+        "box_stroke": 0.84,
+        "box_left": 52.0,
+        "box_right": 560.0,
+        "box_height": 17.0,
+    },
+    "map_canvas": {
+        "font": "F1",
+        "size": 9.0,
+        "leading": 154.0,
+        "indent": 52.0,
+        "width": 90.0,
+        "gray": 0.0,
+        "panel_left": 52.0,
+        "panel_right": 560.0,
+        "panel_height": 146.0,
+    },
     "risk_label": {"font": "F2", "size": 11.0, "leading": 15.0, "indent": 52.0, "width": 90.0, "gray": 0.08},
     "risk_level": {"font": "F2", "size": 21.5, "leading": 25.0, "indent": 52.0, "width": 84.0, "gray": 0.0},
     "body": {"font": "F1", "size": 10.4, "leading": 14.6, "indent": 52.0, "width": 94.0, "gray": 0.0},
@@ -1821,10 +2018,10 @@ def _action_rationale_prefix(tone_profile: str) -> str:
 
 def _limitations_tone_line(tone_profile: str) -> str:
     if tone_profile == "direct":
-        return "Limitations context: data coverage is strong, so this run supports more direct interpretation."
+        return "Limitations summary: data coverage is strong, so this report supports direct planning decisions."
     if tone_profile == "balanced":
-        return "Limitations context: some details were estimated, so this run is best used as directional guidance."
-    return "Limitations context: several details were estimated or missing, so this run should be treated as advisory."
+        return "Limitations summary: some details were estimated, so this report is best used as directional guidance."
+    return "Limitations summary: several details were estimated or missing, so this report should be treated as advisory."
 
 
 def _how_this_could_improve_lines(
@@ -1888,6 +2085,69 @@ def _property_context_lines(report: HomeownerReport) -> list[str]:
     context_lines.append(f"Slope: {slope_line}")
     context_lines.append(f"Fire history: {history_line}")
     return context_lines
+
+
+def _friendly_evidence_label(value: Any) -> str:
+    raw = _normalize_line(value)
+    if not raw:
+        return ""
+    normalized_key = re.sub(r"[^a-z0-9_]+", "_", raw.strip().lower()).strip("_")
+    mapping = {
+        "roof_type": "Roof material details",
+        "roof_material": "Roof material details",
+        "siding_type": "Siding material details",
+        "vent_type": "Vent protection details",
+        "defensible_space_ft": "Defensible-space distance",
+        "structure_geometry": "Structure geometry",
+        "parcel_geometry": "Parcel boundary geometry",
+        "building_footprint": "Building footprint geometry",
+        "near_structure_fuels": "Near-structure vegetation and fuels",
+        "address_point": "Verified address point",
+    }
+    if normalized_key in mapping:
+        return mapping[normalized_key]
+    if re.search(r"\b(fallback|diagnostic|proxy|decision)\b", raw, flags=re.I):
+        return ""
+    cleaned = re.sub(r"[_\-]+", " ", raw).strip()
+    cleaned = cleaned[0].upper() + cleaned[1:] if cleaned else ""
+    return cleaned
+
+
+def _select_evidence_items(values: Any, *, limit: int = 5) -> list[str]:
+    rows = list(values or []) if isinstance(values, list) else []
+    cleaned: list[tuple[int, str]] = []
+    seen: set[str] = set()
+    keywords = (
+        "roof",
+        "vent",
+        "siding",
+        "defensible",
+        "vegetation",
+        "structure",
+        "building",
+        "parcel",
+        "address",
+        "slope",
+        "fuel",
+        "fire history",
+    )
+    for idx, row in enumerate(rows):
+        label = _friendly_evidence_label(row)
+        if not label:
+            continue
+        key = label.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        priority = 10
+        lowered = key
+        for p_idx, token in enumerate(keywords):
+            if token in lowered:
+                priority = p_idx
+                break
+        cleaned.append((priority * 100 + idx, label))
+    cleaned.sort(key=lambda item: item[0])
+    return [row[1] for row in cleaned[: max(1, int(limit))]]
 
 
 def _add_wrapped(entries: list[_PdfEntry], text: Any, *, style: str, prefix: str = "") -> None:
@@ -2023,57 +2283,173 @@ def _build_report_entries(report: HomeownerReport) -> list[_PdfEntry]:
         or fs_headline
         or "No summary sentence was available."
     )
+    raw_driver_explanations = list(explanation_block.get("risk_driver_explanations") or [])
     explanation_drivers = [
-        _normalize_line(v)
-        for v in list(explanation_block.get("risk_driver_explanations") or [])
-        if _normalize_line(v)
+        _normalize_line(row.get("explanation") if isinstance(row, dict) else row)
+        for row in raw_driver_explanations
+        if _normalize_line(row.get("explanation") if isinstance(row, dict) else row)
     ][:3]
+    action_explanation_rows = _extract_action_explanation_candidates(
+        explanation_block.get("recommended_action_explanations")
+    )
     explanation_actions = [
-        _normalize_line(v)
-        for v in list(explanation_block.get("recommended_action_explanations") or [])
-        if _normalize_line(v)
+        _normalize_line(row.get("explanation") or "")
+        for row in action_explanation_rows
+        if _normalize_line(row.get("explanation") or "")
     ][:3]
+    explanation_actions_by_action: dict[str, str] = {}
+    for row in action_explanation_rows[:3]:
+        key = _explanation_lookup_key(row.get("action") or "")
+        text = _normalize_line(row.get("explanation") or "")
+        if key and text:
+            explanation_actions_by_action[key] = text
+    raw_action_map = explanation_block.get("recommended_action_explanations_by_action")
+    if isinstance(raw_action_map, dict):
+        for action_name, explanation in raw_action_map.items():
+            key = _explanation_lookup_key(action_name)
+            text = _normalize_line(explanation)
+            if key and text:
+                explanation_actions_by_action[key] = text
     explanation_confidence = _normalize_line(
         explanation_block.get("confidence_limitations_explanation") or ""
     )
 
+    confidence_level_label = confidence_tier.capitalize() if confidence_tier else "Unknown"
+    defensible_space_summary = report.defensible_space_summary if isinstance(report.defensible_space_summary, dict) else {}
+    basis_geometry_type = _normalize_line(defensible_space_summary.get("basis_geometry_type") or "unknown").lower()
+    analysis_status = _normalize_line(defensible_space_summary.get("analysis_status") or "unknown").lower()
+    zone_findings = defensible_space_summary.get("zone_findings")
+    zone_findings = zone_findings if isinstance(zone_findings, list) else []
+
     # 1) Header / Title
+    _add_wrapped(entries, "WildfireRisk Advisor", style="product_name")
     _add_wrapped(entries, "Wildfire Risk Report", style="TitleStyle")
     _add_wrapped(entries, f"Property: {_normalize_line(property_summary.get('address') or 'Unknown address')}", style="meta")
     _add_wrapped(entries, f"Date generated: {_normalize_line(header.get('assessment_generated_at') or report.generated_at)}", style="meta")
     entries.append(_PdfEntry(style="spacer_lg"))
 
-    # 2) Summary
-    _add_wrapped(entries, "Summary", style="SectionHeaderStyle")
-    _add_wrapped(entries, "Risk level", style="risk_label")
-    _add_wrapped(entries, f"{risk_band_label}{risk_score_suffix}", style="risk_level")
-    _add_wrapped(entries, f"Home hardening readiness: {readiness_line}", style="body")
-    _add_wrapped(entries, f"Summary sentence: {explanation_headline}", style="body")
-    _add_wrapped(entries, _summary_tone_line(tone_profile), style="body")
+    # 2) Top summary card
+    _add_wrapped(entries, "Summary Snapshot", style="SectionHeaderStyle")
+    _add_wrapped(entries, "Quick view for this property", style="summary_card_header")
+    _add_wrapped(entries, f"Wildfire risk level: {risk_band_label}{risk_score_suffix}", style="summary_card_value")
+    _add_wrapped(
+        entries,
+        f"Assessment type / specificity: {specificity_headline} (tier: {specificity_tier}).",
+        style="summary_card_body",
+    )
+    _add_wrapped(entries, f"Confidence level: {confidence_level_label} ({confidence_score_text}).", style="summary_card_body")
+    _add_wrapped(entries, f"One-sentence explanation: {explanation_headline}", style="summary_card_body")
+    _add_wrapped(entries, f"Home hardening readiness: {readiness_line}", style="summary_card_body")
+    _add_wrapped(entries, _summary_tone_line(tone_profile), style="summary_card_body")
     entries.append(_PdfEntry(style="spacer_md"))
 
-    # 3) What Matters Most
-    _add_wrapped(entries, "What Matters Most", style="SectionHeaderStyle")
-    if top_drivers:
-        driver_why_prefix = _driver_explanation_prefix(tone_profile)
-        for idx, driver in enumerate(top_drivers[:3]):
-            _add_wrapped(entries, _driver_line_with_tone(driver, tone_profile), style="bullet", prefix="- ")
-            driver_explanation = (
-                explanation_drivers[idx]
-                if idx < len(explanation_drivers) and explanation_drivers[idx]
-                else _driver_explanation(driver, detailed_rows)
-            )
-            _add_wrapped(
-                entries,
-                f"{driver_why_prefix}: {driver_explanation}",
-                style="body",
-                prefix="  ",
-            )
+    # 3) Why this matters (compact homeowner context)
+    _add_wrapped(entries, "Why this matters", style="SectionHeaderStyle")
+    _add_wrapped(
+        entries,
+        "Wildfire risk is often driven by conditions close to the home.",
+        style="bullet",
+        prefix="- ",
+    )
+    _add_wrapped(
+        entries,
+        "The most effective first steps usually reduce ember exposure and improve home hardening.",
+        style="bullet",
+        prefix="- ",
+    )
+    _add_wrapped(
+        entries,
+        "This report is intended to help prioritize mitigation actions.",
+        style="bullet",
+        prefix="- ",
+    )
+    if specificity_tier in {"regional_estimate", "insufficient_data"}:
+        _add_wrapped(
+            entries,
+            "Low-specificity note: use this as planning guidance rather than precise home-to-home comparison.",
+            style="body",
+        )
+    entries.append(_PdfEntry(style="spacer_md"))
+
+    # 4) Trust evidence box (compact, page 1)
+    observed_items = _select_evidence_items(confidence.get("observed_data"), limit=5)
+    missing_or_estimated_items = _select_evidence_items(
+        list(confidence.get("estimated_data") or []) + list(confidence.get("missing_data") or []),
+        limit=5,
+    )
+    _add_wrapped(entries, "Observed for this report", style="evidence_box_header")
+    if observed_items:
+        for item in observed_items:
+            _add_wrapped(entries, item, style="evidence_box_body", prefix="- ")
     else:
-        _add_wrapped(entries, "Top risk drivers were not available for this assessment.", style="body")
+        _add_wrapped(entries, "No major observed details were listed.", style="evidence_box_body", prefix="- ")
+    _add_wrapped(entries, "Missing or estimated", style="evidence_box_header")
+    if missing_or_estimated_items:
+        for item in missing_or_estimated_items:
+            _add_wrapped(entries, item, style="evidence_box_body", prefix="- ")
+    else:
+        _add_wrapped(entries, "No major missing or estimated details were identified.", style="evidence_box_body", prefix="- ")
+    if specificity_tier in {"regional_estimate", "insufficient_data"}:
+        _add_wrapped(
+            entries,
+            "Why this may be broader: this report relied more on regional conditions because some property details were unavailable.",
+            style="evidence_box_body",
+        )
     entries.append(_PdfEntry(style="spacer_md"))
 
-    # 4) What To Do First
+    # 5) Local map view
+    observed_joined = " ".join(observed_items).lower()
+    has_building_footprint = (
+        ("footprint" in basis_geometry_type)
+        or ("structure" in basis_geometry_type)
+        or ("building footprint" in observed_joined)
+        or ("structure geometry" in observed_joined)
+    )
+    has_parcel_outline = (
+        ("parcel" in basis_geometry_type)
+        or ("parcel" in observed_joined)
+        or ("parcel boundary geometry" in observed_joined)
+    )
+    has_rings = bool(zone_findings) or any("zone_" in str(k) for k in list((defensible_space_summary.get("zone_findings") or [])))
+    wildfire_overlay_signal = " ".join(top_drivers).lower()
+    has_wildfire_overlay = any(
+        token in wildfire_overlay_signal
+        for token in ("historic fire", "fire history", "wildland", "fuel", "vegetation", "ember")
+    )
+    geometry_is_approximate = (
+        specificity_tier in {"regional_estimate", "insufficient_data"}
+        or basis_geometry_type in {"point_proxy", "unknown", "none"}
+        or analysis_status in {"partial", "unavailable"}
+    )
+    map_config = {
+        "has_building_footprint": has_building_footprint,
+        "has_parcel_outline": has_parcel_outline,
+        "has_rings": has_rings,
+        "has_wildfire_overlay": has_wildfire_overlay,
+        "geometry_is_approximate": geometry_is_approximate,
+    }
+    _add_wrapped(entries, "Local Map View", style="SectionHeaderStyle")
+    entries.append(_PdfEntry(text=json.dumps(map_config, ensure_ascii=True), style="map_canvas"))
+    _add_wrapped(
+        entries,
+        "Ring legend: 0-5 ft immediate zone, 5-30 ft extended zone, 30-100 ft surrounding zone.",
+        style="body",
+    )
+    if geometry_is_approximate:
+        _add_wrapped(
+            entries,
+            "Map note: geometry is approximate, so the footprint and rings represent best-available location context.",
+            style="body",
+        )
+    else:
+        _add_wrapped(
+            entries,
+            "Map note: geometry is anchored to property-level footprint and parcel context where available.",
+            style="body",
+        )
+    entries.append(_PdfEntry(style="spacer_md"))
+
+    # 6) What To Do First
     _add_wrapped(entries, "What To Do First", style="SectionHeaderStyle")
     _add_wrapped(entries, "Top priority action", style="callout_label")
     _add_wrapped(entries, first_action_text, style="callout_action")
@@ -2081,26 +2457,52 @@ def _build_report_entries(report: HomeownerReport) -> list[_PdfEntry]:
         _add_wrapped(entries, first_action_why, style="body", prefix="  ")
     entries.append(_PdfEntry(style="spacer_md"))
 
-    # 5) Recommended Actions
-    _add_wrapped(entries, "Recommended Actions", style="SectionHeaderStyle")
+    # 7) Top 3 Risk Drivers
+    _add_wrapped(entries, "Top Risk Drivers", style="SectionHeaderStyle")
+    if top_drivers:
+        for idx, driver in enumerate(top_drivers[:3]):
+            _add_wrapped(entries, _normalize_line(_plain_driver(driver) or driver), style="bullet", prefix="- ")
+            driver_explanation = (
+                explanation_drivers[idx]
+                if idx < len(explanation_drivers) and explanation_drivers[idx]
+                else _build_driver_explanation_template(driver, tone_profile)
+            )
+            _add_wrapped(
+                entries,
+                driver_explanation,
+                style="body",
+                prefix="  ",
+            )
+    else:
+        _add_wrapped(entries, "Top risk drivers were not available for this assessment.", style="body")
+    entries.append(_PdfEntry(style="spacer_md"))
+
+    # 8) Recommended Next Steps
+    _add_wrapped(entries, "Recommended Next Steps", style="SectionHeaderStyle")
     if recommended_actions:
-        action_why_prefix = _action_rationale_prefix(tone_profile)
         for idx, row in enumerate(recommended_actions[:5]):
             action_name = _normalize_line(row.get("action") or row.get("title") or "Recommended action")
             why = _normalize_line(row.get("why_this_matters") or row.get("explanation") or row.get("why_it_matters") or "")
-            llm_why = explanation_actions[idx] if idx < len(explanation_actions) else ""
+            action_key = _explanation_lookup_key(action_name)
+            mapped_explanation = explanation_actions_by_action.get(action_key, "")
+            llm_why = mapped_explanation or (explanation_actions[idx] if idx < len(explanation_actions) else "")
             effort = _safe_effort_label(row.get("effort_level") or row.get("estimated_cost_band"))
             _add_wrapped(entries, action_name, style="bullet", prefix="- ")
             if llm_why:
-                _add_wrapped(entries, f"{action_why_prefix}: {llm_why}", style="body", prefix="  ")
-            elif why:
-                _add_wrapped(entries, f"{action_why_prefix}: {why}", style="body", prefix="  ")
+                _add_wrapped(entries, llm_why, style="body", prefix="  ")
+            else:
+                _add_wrapped(
+                    entries,
+                    _build_action_explanation_template(action_name, why, tone_profile),
+                    style="body",
+                    prefix="  ",
+                )
             _add_wrapped(entries, f"Effort level: {effort}", style="body", prefix="  ")
     else:
         _add_wrapped(entries, "No prioritized actions were generated for this run.", style="body")
     entries.append(_PdfEntry(style="spacer_md"))
 
-    # 6) How This Could Improve
+    # 9) How This Could Improve
     _add_wrapped(entries, "How This Could Improve", style="SectionHeaderStyle")
     improvement_lines = _how_this_could_improve_lines(
         recommended_actions,
@@ -2116,19 +2518,23 @@ def _build_report_entries(report: HomeownerReport) -> list[_PdfEntry]:
         _add_wrapped(entries, "No directional improvement summary is available yet.", style="body")
     entries.append(_PdfEntry(style="spacer_md"))
 
-    # 7) Confidence & Limitations
+    # 10) Property Context
+    _add_wrapped(entries, "Property Context", style="SectionHeaderStyle")
+    for line in _property_context_lines(report):
+        _add_wrapped(entries, line, style="body", prefix="- ")
+    entries.append(_PdfEntry(style="spacer_md"))
+
+    # 11) Confidence & Limitations (lower in report)
     _add_wrapped(entries, "Confidence & Limitations", style="SectionHeaderStyle")
     _add_wrapped(entries, f"Data completeness: observed {observed_count}, estimated {estimated_count}, missing {missing_count}.", style="body")
     _add_wrapped(entries, f"Fallback usage: {fallback_count} fallback assumptions or decisions.", style="body")
-    if explanation_confidence:
-        _add_wrapped(entries, explanation_confidence, style="body")
-    _add_wrapped(entries, _limitations_tone_line(tone_profile), style="body")
+    _add_wrapped(entries, explanation_confidence or _limitations_tone_line(tone_profile), style="body")
     _add_wrapped(entries, f"Specificity: {specificity_headline} (tier: {specificity_tier}).", style="body")
+    _add_wrapped(entries, f"Confidence tier: {confidence_level_label} ({confidence_score_text}).", style="body")
     if specificity_meaning:
         _add_wrapped(entries, specificity_meaning, style="body", prefix="  ")
     if not comparison_allowed:
         _add_wrapped(entries, "Nearby-home comparisons should be treated cautiously for this estimate.", style="body", prefix="  ")
-    _add_wrapped(entries, f"Confidence tier: {confidence_tier} ({confidence_score_text}).", style="body")
     if missing_count > 0:
         _add_wrapped(entries, "Limited-data case: some fields were estimated or missing, so this result is advisory.", style="body")
     if deduped_limitations:
@@ -2136,13 +2542,7 @@ def _build_report_entries(report: HomeownerReport) -> list[_PdfEntry]:
             _add_wrapped(entries, limitation, style="bullet", prefix="- ")
     entries.append(_PdfEntry(style="spacer_md"))
 
-    # 8) Property Context
-    _add_wrapped(entries, "Property Context", style="SectionHeaderStyle")
-    for line in _property_context_lines(report):
-        _add_wrapped(entries, line, style="body", prefix="- ")
-    entries.append(_PdfEntry(style="spacer_md"))
-
-    # 9) Technical Details (de-emphasized)
+    # 12) Technical Details (de-emphasized)
     _add_wrapped(entries, "Technical Details (Secondary)", style="SectionHeaderStyle")
     _add_wrapped(entries, "Factor breakdown", style="technical_header")
     if detailed_rows:
@@ -2209,6 +2609,151 @@ def _paginate_entries(entries: list[_PdfEntry], *, start_y: float = _PDF_START_Y
     return pages
 
 
+def _circle_path_commands(cx: float, cy: float, radius: float) -> list[str]:
+    r = max(0.5, float(radius))
+    k = 0.5522847498
+    ox = r * k
+    oy = r * k
+    return [
+        f"{cx + r:.2f} {cy:.2f} m",
+        f"{cx + r:.2f} {cy + oy:.2f} {cx + ox:.2f} {cy + r:.2f} {cx:.2f} {cy + r:.2f} c",
+        f"{cx - ox:.2f} {cy + r:.2f} {cx - r:.2f} {cy + oy:.2f} {cx - r:.2f} {cy:.2f} c",
+        f"{cx - r:.2f} {cy - oy:.2f} {cx - ox:.2f} {cy - r:.2f} {cx:.2f} {cy - r:.2f} c",
+        f"{cx + ox:.2f} {cy - r:.2f} {cx + r:.2f} {cy - oy:.2f} {cx + r:.2f} {cy:.2f} c",
+    ]
+
+
+def _draw_local_map_panel_commands(
+    config: dict[str, Any],
+    *,
+    left: float,
+    right: float,
+    bottom: float,
+    top: float,
+) -> list[str]:
+    commands: list[str] = []
+    width = max(80.0, right - left)
+    height = max(64.0, top - bottom)
+    center_x = left + (width * 0.42)
+    center_y = bottom + (height * 0.5)
+
+    has_building = bool(config.get("has_building_footprint"))
+    has_parcel = bool(config.get("has_parcel_outline"))
+    has_rings = bool(config.get("has_rings"))
+    has_wildfire_overlay = bool(config.get("has_wildfire_overlay"))
+    approximate = bool(config.get("geometry_is_approximate"))
+
+    commands.extend(
+        [
+            "q",
+            "0.98 g",
+            "0.82 G",
+            "0.8 w",
+            f"{left:.2f} {bottom:.2f} {width:.2f} {height:.2f} re B",
+            "Q",
+        ]
+    )
+
+    # Subtle terrain-like guide lines.
+    for idx in range(1, 4):
+        y = bottom + (height * (idx / 4.0))
+        commands.extend(
+            [
+                "q",
+                "0.92 G",
+                "0.4 w",
+                f"{left + 10.0:.2f} {y:.2f} m {right - 10.0:.2f} {y + (3.0 if idx % 2 == 0 else -2.0):.2f} l S",
+                "Q",
+            ]
+        )
+
+    if has_wildfire_overlay:
+        commands.extend(
+            [
+                "q",
+                "0.90 g",
+                "0.75 G",
+                "0.6 w",
+                f"{left + (width * 0.66):.2f} {bottom + (height * 0.62):.2f} m",
+                f"{left + (width * 0.86):.2f} {bottom + (height * 0.74):.2f} l",
+                f"{left + (width * 0.90):.2f} {bottom + (height * 0.52):.2f} l",
+                f"{left + (width * 0.72):.2f} {bottom + (height * 0.40):.2f} l",
+                "h b",
+                "Q",
+            ]
+        )
+
+    if has_parcel:
+        parcel_left = center_x - (width * 0.18)
+        parcel_bottom = center_y - (height * 0.16)
+        parcel_w = width * 0.36
+        parcel_h = height * 0.32
+        commands.extend(
+            [
+                "q",
+                "0.70 G",
+                "1.0 w",
+                f"{parcel_left:.2f} {parcel_bottom:.2f} {parcel_w:.2f} {parcel_h:.2f} re S",
+                "Q",
+            ]
+        )
+
+    if has_rings:
+        for radius, gray in ((12.0, 0.45), (24.0, 0.55), (40.0, 0.65)):
+            commands.extend(["q", f"{gray:.2f} G", "0.9 w", *_circle_path_commands(center_x, center_y, radius), "S", "Q"])
+    else:
+        commands.extend(["q", "0.60 G", "0.8 w", *_circle_path_commands(center_x, center_y, 28.0), "S", "Q"])
+
+    if has_building:
+        commands.extend(
+            [
+                "q",
+                "0.80 g",
+                "0.30 G",
+                "0.9 w",
+                f"{center_x - 7.0:.2f} {center_y - 5.0:.2f} 14.0 10.0 re B",
+                "Q",
+            ]
+        )
+    else:
+        commands.extend(
+            [
+                "q",
+                "0.30 G",
+                "1.1 w",
+                f"{center_x - 5.0:.2f} {center_y - 5.0:.2f} m {center_x + 5.0:.2f} {center_y + 5.0:.2f} l S",
+                f"{center_x - 5.0:.2f} {center_y + 5.0:.2f} m {center_x + 5.0:.2f} {center_y - 5.0:.2f} l S",
+                "Q",
+            ]
+        )
+
+    # Home marker
+    commands.extend(
+        [
+            "q",
+            "0.18 g",
+            "0.18 G",
+            *_circle_path_commands(center_x, center_y, 2.8),
+            "B",
+            "Q",
+        ]
+    )
+
+    # Approximate-geometry indicator tag bar at bottom edge of panel.
+    if approximate:
+        commands.extend(
+            [
+                "q",
+                "0.93 g",
+                "0.78 G",
+                "0.6 w",
+                f"{left + 8.0:.2f} {bottom + 6.0:.2f} {width - 16.0:.2f} 12.0 re B",
+                "Q",
+            ]
+        )
+    return commands
+
+
 def _build_pdf_content_stream(page_entries: list[_PdfEntry]) -> bytes:
     commands: list[str] = []
     y = _PDF_START_Y
@@ -2229,6 +2774,30 @@ def _build_pdf_content_stream(page_entries: list[_PdfEntry]) -> bytes:
         y -= line_height
         if y < (_PDF_BOTTOM_Y - 6.0):
             break
+
+        if entry.style == "map_canvas":
+            panel_style = _PDF_TEXT_STYLES.get("map_canvas") or {}
+            panel_left = float(panel_style.get("panel_left", _PDF_PAGE_LEFT))
+            panel_right = float(panel_style.get("panel_right", _PDF_PAGE_RIGHT))
+            panel_height = float(panel_style.get("panel_height", max(80.0, line_height - 6.0)))
+            panel_top = y + line_height - 4.0
+            panel_bottom = panel_top - panel_height
+            try:
+                map_config = json.loads(str(entry.text or "{}"))
+            except Exception:
+                map_config = {}
+            if not isinstance(map_config, dict):
+                map_config = {}
+            commands.extend(
+                _draw_local_map_panel_commands(
+                    map_config,
+                    left=panel_left,
+                    right=panel_right,
+                    bottom=panel_bottom,
+                    top=panel_top,
+                )
+            )
+            continue
 
         if entry.style in {"section", "SectionHeaderStyle"}:
             if section_counter > 0:
