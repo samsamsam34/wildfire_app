@@ -1365,7 +1365,7 @@ def test_wildfire_data_point_selection_missing_footprint_prefers_parcel_inferred
     assert sampled["lon"] == pytest.approx(float(inferred_point.x), abs=1e-6)
     assert context_blob["geometry_source"] == "parcel_geometry_inferred_home_location"
     assert context_blob["geometry_basis"] == "parcel"
-    assert context_blob["ring_generation_mode"] == "point_annulus_fallback"
+    assert context_blob["ring_generation_mode"] == "parcel_centroid_proxy"
     assert context_blob["final_structure_geometry_source"] == "parcel_inferred_home_location"
     assert context_blob["structure_selection_method"] == "parcel_inferred_home_location"
     assert any("parcel geometry to infer a home location" in note.lower() for note in assumptions)
