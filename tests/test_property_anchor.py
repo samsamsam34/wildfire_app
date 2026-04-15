@@ -523,3 +523,99 @@ def test_distance_limits_expansion_only_applies_to_coarse_precision() -> None:
         address_rural_expansion_factor=3.0,
     )
     assert addr_interp > 160.0, "Interpolated precision with factor=3 should exceed default cap"
+
+
+# ---------------------------------------------------------------------------
+# Step B: parcel ID extraction from name/geocode fields
+# ---------------------------------------------------------------------------
+
+def test_extract_parcel_id_from_name_field() -> None:
+    from backend.property_anchor import PropertyAnchorResolver as _R
+    assert _R._extract_parcel_id({"name": "04209303301100000"}) == "04209303301100000"
+
+
+def test_extract_parcel_id_from_geocode_field() -> None:
+    from backend.property_anchor import PropertyAnchorResolver as _R
+    assert _R._extract_parcel_id({"geocode": "APN-777"}) == "APN-777"
+
+
+def test_extract_parcel_id_name_not_returned_when_standard_key_present() -> None:
+    """When a standard key like parcel_id is also present, it takes precedence over name."""
+    from backend.property_anchor import PropertyAnchorResolver as _R
+    result = _R._extract_parcel_id({"parcel_id": "OFFICIAL-123", "name": "OTHER-456"})
+    assert result == "OFFICIAL-123"
+
+
+@pytest.mark.skipif(not _geo_ready(), reason="Parcel ID bridge test requires shapely")
+def test_parcel_id_bridge_resolves_parcel_directly(tmp_path: Path) -> None:
+    """_find_parcel_by_id should return a matched result when the parcel file
+    has a feature whose 'name' field equals the target ID."""
+    import json
+    parcel_file = tmp_path / "parcels.geojson"
+    parcel_file.write_text(json.dumps({"type": "FeatureCollection", "features": [
+        {
+            "type": "Feature",
+            "geometry": {
+                "type": "Polygon",
+                "coordinates": [[
+                    [-113.978, 46.827],
+                    [-113.975, 46.827],
+                    [-113.975, 46.825],
+                    [-113.978, 46.825],
+                    [-113.978, 46.827],
+                ]]
+            },
+            "properties": {"name": "04209303301100000", "geocode": "04209303301100000"},
+        }
+    ]}), encoding="utf-8")
+    resolver = PropertyAnchorResolver(parcels_path=str(parcel_file))
+    result = resolver._find_parcel_by_id("04209303301100000")
+    assert result is not None
+    assert result.status == "matched"
+    assert result.parcel_id == "04209303301100000"
+    assert result.parcel_lookup_method == "address_point_parcel_id_bridge"
+    assert result.parcel_polygon is not None
+
+
+@pytest.mark.skipif(not _geo_ready(), reason="Parcel ID bridge integration test requires shapely")
+def test_parcel_id_bridge_used_when_address_point_has_parcelid(tmp_path: Path) -> None:
+    """When address point carries parcelid, the resolver should use the ID
+    bridge and return a non-None parcel_id in its result."""
+    import json
+    address_file = tmp_path / "address_points.geojson"
+    address_file.write_text(json.dumps({"type": "FeatureCollection", "features": [
+        {
+            "type": "Feature",
+            "geometry": {"type": "Point", "coordinates": [-113.97711, 46.82817]},
+            "properties": {"add_number": 1355, "st_name": "Pattee Canyon", "parcelid": "04209303301100000"},
+        }
+    ]}), encoding="utf-8")
+    parcel_file = tmp_path / "parcels.geojson"
+    parcel_file.write_text(json.dumps({"type": "FeatureCollection", "features": [
+        {
+            "type": "Feature",
+            "geometry": {
+                "type": "Polygon",
+                "coordinates": [[
+                    [-113.978, 46.827],
+                    [-113.975, 46.827],
+                    [-113.975, 46.825],
+                    [-113.978, 46.825],
+                    [-113.978, 46.827],
+                ]]
+            },
+            "properties": {"name": "04209303301100000"},
+        }
+    ]}), encoding="utf-8")
+    resolver = PropertyAnchorResolver(
+        address_points_path=str(address_file),
+        parcels_path=str(parcel_file),
+    )
+    result = resolver.resolve(
+        geocoded_lat=46.82805,
+        geocoded_lon=-113.97712,
+        geocode_precision="interpolated",
+    )
+    assert result.parcel_id == "04209303301100000"
+    assert result.parcel_polygon is not None
+    assert result.parcel_lookup_method == "address_point_parcel_id_bridge"

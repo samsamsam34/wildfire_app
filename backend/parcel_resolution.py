@@ -162,6 +162,9 @@ class ParcelResolutionClient:
             "APN",
             "parcel",
             "parcel_number",
+            "name",
+            "geocode",
+            "gid",
         ):
             value = props.get(key)
             if value is not None and str(value).strip():

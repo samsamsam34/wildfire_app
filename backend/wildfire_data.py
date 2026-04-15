@@ -2899,6 +2899,35 @@ class WildfireDataClient:
             fuel_path=fuel_path,
         )
 
+        # Arc-sample backfill: when the polygon-clip path returned no raster values
+        # (sub-pixel rings at 30m LANDFIRE resolution), sample N arc points at the
+        # ring midpoint radius.  Only fires for rings where vegetation_density is
+        # still None after the polygon path.
+        _arc_origin_lat = float(result.centroid[0]) if result.centroid else float(query_lat)
+        _arc_origin_lon = float(result.centroid[1]) if result.centroid else float(query_lon)
+        _arc_ring_radii = {
+            "ring_0_5_ft": 2.5,
+            "ring_5_30_ft": 17.5,
+            "ring_30_100_ft": 65.0,
+            "ring_100_300_ft": 200.0,
+        }
+        for _arc_key, _arc_radius_ft in _arc_ring_radii.items():
+            _existing = ring_metrics.get(_arc_key) or {}
+            if self._coerce_float(_existing.get("vegetation_density")) is not None:
+                continue
+            _arc_result = self._arc_sample_ring_vegetation(
+                origin_lat=_arc_origin_lat,
+                origin_lon=_arc_origin_lon,
+                radius_ft=_arc_radius_ft,
+                canopy_path=canopy_path,
+                fuel_path=fuel_path,
+            )
+            if _arc_result is not None:
+                merged = dict(_existing)
+                merged.update(_arc_result)
+                ring_metrics[_arc_key] = merged
+                ring_metrics[zone_aliases[_arc_key]] = dict(merged)
+
         nearest_vegetation_distance_ft: float | None = None
         for ring_key, approx_ft in [
             ("ring_0_5_ft", 3.0),
@@ -3268,6 +3297,56 @@ class WildfireDataClient:
                 if sample is not None:
                     values.append(sample)
         return values
+
+    def _arc_sample_ring_vegetation(
+        self,
+        *,
+        origin_lat: float,
+        origin_lon: float,
+        radius_ft: float,
+        canopy_path: str,
+        fuel_path: str,
+        n_samples: int = 8,
+    ) -> dict[str, float] | None:
+        """Sample canopy+fuel at N arc points at *radius_ft* from *origin*.
+
+        Used as a fallback when the polygon-clip path returns no raster values
+        (sub-pixel rings at 30 m LANDFIRE resolution).  Returns a minimal
+        metrics dict with ``vegetation_density`` and ``fuel_presence_proxy``,
+        or None when fewer than 4 valid samples are obtained.
+        """
+        radius_m = radius_ft * 0.3048
+        veg_values: list[float] = []
+        fuel_values: list[float] = []
+        for i in range(n_samples):
+            theta = 2.0 * math.pi * i / n_samples
+            d_lat = self._meters_to_lat_deg(radius_m * math.sin(theta))
+            d_lon = self._meters_to_lon_deg(radius_m * math.cos(theta), origin_lat)
+            sample_lat = origin_lat + d_lat
+            sample_lon = origin_lon + d_lon
+            veg = self._sample_combined_vegetation_index(
+                canopy_path=canopy_path,
+                fuel_path=fuel_path,
+                lat=sample_lat,
+                lon=sample_lon,
+            )
+            if veg is not None:
+                veg_values.append(float(veg))
+            raw_fuel = self._sample_raster_point(fuel_path, sample_lat, sample_lon) if self._file_exists(fuel_path) else None
+            if raw_fuel is not None:
+                fuel_values.append(float(raw_fuel))
+        if len(veg_values) < 4:
+            return None
+        veg_mean = round(sum(veg_values) / len(veg_values), 1)
+        fuel_proxy = round(self._fuel_presence_proxy_from_values(fuel_values) or veg_mean, 1)
+        return {
+            "vegetation_density": veg_mean,
+            "coverage_pct": veg_mean,
+            "fuel_presence_proxy": fuel_proxy,
+            "canopy_mean": veg_mean,
+            "canopy_max": round(max(veg_values), 1),
+            "basis": "arc_sample_fallback",
+        }
 
     def _compute_arc_slope_mean_deg(
         self,

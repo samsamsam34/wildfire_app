@@ -1700,6 +1700,148 @@ def test_naip_absent_vegetation_continuity_inverts_distance():
     )
 
 
+# ---------------------------------------------------------------------------
+# Step A: arc-sample ring backfill fills sub-pixel empty rings
+# ---------------------------------------------------------------------------
+
+def test_arc_sample_ring_backfill_fills_empty_ring(monkeypatch):
+    """When _summarize_ring_canopy and _summarize_ring_fuel_presence both return
+    None (sub-pixel ring at 30 m resolution), the arc-sample backfill should
+    populate vegetation_density in ring_metrics."""
+    _require_shapely()
+    from shapely.geometry import Polygon as _Poly
+    from backend.wildfire_data import WildfireDataClient
+    from backend.building_footprints import BuildingFootprintResult
+
+    footprint = _Poly([
+        (-113.9774, 46.8282),
+        (-113.9770, 46.8282),
+        (-113.9770, 46.8278),
+        (-113.9774, 46.8278),
+        (-113.9774, 46.8282),
+    ])
+    centroid = footprint.centroid
+
+    client = WildfireDataClient()
+
+    monkeypatch.setattr(
+        client.footprints,
+        "get_building_footprint",
+        lambda _lat, _lon, **_kw: BuildingFootprintResult(
+            found=True,
+            footprint=footprint,
+            centroid=(float(centroid.y), float(centroid.x)),
+            source="fixture",
+            confidence=0.90,
+            match_status="matched",
+            match_method="nearest_building",
+            matched_structure_id="test-fp",
+            match_distance_m=2.0,
+            candidate_count=1,
+            candidate_summaries=[],
+            assumptions=[],
+        ),
+    )
+    # Polygon-clip path returns nothing (simulates 30 m sub-pixel failure)
+    monkeypatch.setattr(client, "_summarize_ring_canopy", lambda _geom, canopy_path: None)
+    monkeypatch.setattr(client, "_summarize_ring_fuel_presence", lambda _geom, fuel_path: None)
+    # Arc-sample path returns a fixed index
+    monkeypatch.setattr(
+        client,
+        "_arc_sample_ring_vegetation",
+        lambda *, origin_lat, origin_lon, radius_ft, canopy_path, fuel_path, n_samples=8: {
+            "vegetation_density": 42.0,
+            "coverage_pct": 42.0,
+            "fuel_presence_proxy": 38.0,
+            "canopy_mean": 42.0,
+            "canopy_max": 55.0,
+            "basis": "arc_sample_fallback",
+        },
+    )
+
+    ring_context, _assumptions, _sources = client._compute_structure_ring_metrics(
+        float(centroid.y),
+        float(centroid.x),
+        canopy_path="canopy.tif",
+        fuel_path="fuel.tif",
+    )
+
+    for ring_key in ("ring_0_5_ft", "ring_5_30_ft", "ring_30_100_ft", "ring_100_300_ft"):
+        vd = (ring_context.get("ring_metrics") or {}).get(ring_key, {}).get("vegetation_density")
+        assert vd is not None, f"{ring_key} vegetation_density should be filled by arc-sample backfill"
+        assert vd == pytest.approx(42.0)
+
+
+def test_arc_sample_ring_backfill_does_not_overwrite_polygon_result(monkeypatch):
+    """When the polygon-clip path succeeds, the arc-sample backfill must NOT
+    overwrite the existing vegetation_density."""
+    _require_shapely()
+    from shapely.geometry import Polygon as _Poly
+    from backend.wildfire_data import WildfireDataClient
+    from backend.building_footprints import BuildingFootprintResult
+
+    footprint = _Poly([
+        (-113.9774, 46.8282),
+        (-113.9770, 46.8282),
+        (-113.9770, 46.8278),
+        (-113.9774, 46.8278),
+        (-113.9774, 46.8282),
+    ])
+    centroid = footprint.centroid
+
+    client = WildfireDataClient()
+
+    monkeypatch.setattr(
+        client.footprints,
+        "get_building_footprint",
+        lambda _lat, _lon, **_kw: BuildingFootprintResult(
+            found=True,
+            footprint=footprint,
+            centroid=(float(centroid.y), float(centroid.x)),
+            source="fixture",
+            confidence=0.90,
+            match_status="matched",
+            match_method="nearest_building",
+            matched_structure_id="test-fp",
+            match_distance_m=2.0,
+            candidate_count=1,
+            candidate_summaries=[],
+            assumptions=[],
+        ),
+    )
+    # Polygon-clip path returns a real value
+    monkeypatch.setattr(
+        client,
+        "_summarize_ring_canopy",
+        lambda _geom, canopy_path: {
+            "canopy_mean": 61.0,
+            "canopy_max": 72.0,
+            "coverage_pct": 58.0,
+            "vegetation_density": 61.0,
+        },
+    )
+    monkeypatch.setattr(client, "_summarize_ring_fuel_presence", lambda _geom, fuel_path: 55.0)
+    # Arc-sample would return a different value — must NOT be used
+    monkeypatch.setattr(
+        client,
+        "_arc_sample_ring_vegetation",
+        lambda **_kw: {"vegetation_density": 99.0, "coverage_pct": 99.0, "fuel_presence_proxy": 99.0,
+                       "canopy_mean": 99.0, "canopy_max": 99.0, "basis": "arc_sample_fallback"},
+    )
+
+    ring_context, _assumptions, _sources = client._compute_structure_ring_metrics(
+        float(centroid.y),
+        float(centroid.x),
+        canopy_path="canopy.tif",
+        fuel_path="fuel.tif",
+    )
+
+    for ring_key in ("ring_0_5_ft", "ring_5_30_ft", "ring_30_100_ft", "ring_100_300_ft"):
+        vd = (ring_context.get("ring_metrics") or {}).get(ring_key, {}).get("vegetation_density")
+        assert vd is not None
+        assert vd != pytest.approx(99.0), f"{ring_key} arc-sample value should not overwrite polygon result"
+
+
 def test_score_decomposition_and_blended_wildfire_score(monkeypatch, tmp_path):
     ring_metrics = {
         "ring_0_5_ft": {"vegetation_density": 55.0},

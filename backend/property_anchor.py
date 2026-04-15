@@ -190,6 +190,9 @@ class PropertyAnchorResolver:
             "APN",
             "parcel",
             "parcel_number",
+            "name",
+            "geocode",
+            "gid",
         ):
             value = props.get(key)
             if value is not None and str(value).strip():
@@ -269,6 +272,43 @@ class PropertyAnchorResolver:
                 continue
             rows.append(feature)
         return rows
+
+    def _find_parcel_by_id(self, parcel_id: str) -> "ParcelResolutionResult | None":
+        """Direct O(N) scan of parcel source files for a feature whose extracted
+        parcel ID matches *parcel_id*.  Used to bridge an address-point's
+        ``parcelid`` field to the parcel polygon without relying on spatial
+        proximity.  Returns None when no match is found or geo deps missing."""
+        if not self._geo_ready() or not parcel_id:
+            return None
+        target = str(parcel_id).strip()
+        for path in self.parcels_paths:
+            if not self._file_exists(path):
+                continue
+            for feature in self._load_geojson_features(path):
+                props = dict(feature.get("properties") or {})
+                fid = self._extract_parcel_id(props)
+                if fid and str(fid).strip() == target:
+                    try:
+                        geom = shape(feature["geometry"])
+                    except Exception:
+                        continue
+                    if geom.is_empty:
+                        continue
+                    return ParcelResolutionResult(
+                        status="matched",
+                        confidence=96.0,
+                        source=path,
+                        geometry_used="parcel_polygon",
+                        overlap_score=100.0,
+                        parcel_id=target,
+                        parcel_polygon=geom,
+                        parcel_feature=feature,
+                        parcel_lookup_method="address_point_parcel_id_bridge",
+                        parcel_lookup_distance_m=0.0,
+                        candidate_count=1,
+                        diagnostics=["Parcel matched directly via address-point parcelid field."],
+                    )
+        return None
 
     def _best_address_point(
         self,
@@ -534,15 +574,33 @@ class PropertyAnchorResolver:
             if coords is not None:
                 address_point = Point(coords[1], coords[0])
 
+        # Parcel ID bridge: when an address point carries a parcelid field, do a
+        # direct ID lookup before falling back to spatial proximity search.  This
+        # makes parcel resolution deterministic and tolerates geocode offsets.
+        address_point_parcel_id = (
+            self._extract_parcel_id(dict(address_feature.get("properties") or {}))
+            if address_feature is not None
+            else None
+        )
+        id_bridge_result = (
+            self._find_parcel_by_id(address_point_parcel_id)
+            if address_point_parcel_id and override_anchor is None
+            else None
+        )
+
         parcel_candidate_points: list[Any] = []
         if override_anchor is not None:
             parcel_candidate_points.append(requested_anchor_point)
         elif address_point is not None:
             parcel_candidate_points.append(address_point)
         parcel_candidate_points.append(geocode_point)
-        parcel_resolution = self._resolve_parcel_from_candidates(
-            candidate_points=parcel_candidate_points,
-            max_lookup_distance_m=parcel_limit_m,
+        parcel_resolution = (
+            id_bridge_result
+            if id_bridge_result is not None
+            else self._resolve_parcel_from_candidates(
+                candidate_points=parcel_candidate_points,
+                max_lookup_distance_m=parcel_limit_m,
+            )
         )
         parcel_feature = parcel_resolution.parcel_feature
         parcel_geom = parcel_resolution.parcel_polygon
