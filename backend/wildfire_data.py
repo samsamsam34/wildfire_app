@@ -3939,6 +3939,28 @@ class WildfireDataClient:
         ring_assumptions.extend(naip_assumptions)
         ring_sources.extend(naip_sources)
 
+        # Steps 1-3: Promote directional-scan values to fill NAIP-derived signals when
+        # no NAIP artifact exists for the region.  _compute_structure_aware_vegetation_features
+        # always runs (both footprint and no-footprint paths) and produces
+        # nearest_continuous_vegetation_distance_ft and near_structure_vegetation_0_5_pct.
+        _ncvd = self._coerce_float(ring_context.get("nearest_continuous_vegetation_distance_ft"))
+        _ns_0_5 = self._coerce_float(ring_context.get("near_structure_vegetation_0_5_pct"))
+        # Step 1: nearest_high_fuel_patch_distance_ft — semantically identical to
+        # nearest_continuous_vegetation_distance_ft from the directional scan.
+        if ring_context.get("nearest_high_fuel_patch_distance_ft") is None and _ncvd is not None:
+            ring_context["nearest_high_fuel_patch_distance_ft"] = _ncvd
+        # Step 2: canopy_adjacency_proxy_pct — vegetation loading at the 0-5 ft structure
+        # boundary; near_structure_vegetation_0_5_pct is the direct equivalent.
+        if ring_context.get("canopy_adjacency_proxy_pct") is None and _ns_0_5 is not None:
+            ring_context["canopy_adjacency_proxy_pct"] = _ns_0_5
+        # Step 3: vegetation_continuity_proxy_pct — invert distance to a 0-100 index.
+        # 0 ft distance → 100 (vegetation at the structure); ≥30 ft → 0.
+        if ring_context.get("vegetation_continuity_proxy_pct") is None and _ncvd is not None:
+            ring_context["vegetation_continuity_proxy_pct"] = round(
+                max(0.0, min(100.0, 100.0 * max(0.0, 1.0 - _ncvd / 30.0))),
+                1,
+            )
+
         ring_metrics_after_enrichment = ring_context.get("ring_metrics")
         if isinstance(ring_metrics_after_enrichment, dict):
             nearest_veg_ft = None

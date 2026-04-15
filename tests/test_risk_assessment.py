@@ -1645,6 +1645,61 @@ def test_parcel_centroid_ring_fallback_sets_correct_generation_mode(monkeypatch)
     )
 
 
+# ---------------------------------------------------------------------------
+# Steps 1-3: NAIP-absent fallback — directional scan fills missing proxy fields
+# ---------------------------------------------------------------------------
+
+def test_naip_absent_nearest_high_fuel_filled_from_directional_scan():
+    """nearest_high_fuel_patch_distance_ft should come from
+    nearest_continuous_vegetation_distance_ft when no NAIP artifact exists."""
+    client = WildfireDataClient()
+    result = client.collect_context(46.82805, -113.97712)
+    plc = result.property_level_context
+    # The Missoula region has no NAIP artifact; the directional scan should
+    # populate nearest_continuous_vegetation_distance_ft, and the fallback
+    # should promote it to nearest_high_fuel_patch_distance_ft.
+    ncvd = plc.get("nearest_continuous_vegetation_distance_ft")
+    nhfp = plc.get("nearest_high_fuel_patch_distance_ft")
+    assert ncvd is not None, "Directional scan must produce a continuous-vegetation distance"
+    assert nhfp is not None, "nearest_high_fuel_patch_distance_ft must be filled by fallback"
+    assert nhfp == ncvd, (
+        f"nearest_high_fuel_patch_distance_ft ({nhfp}) should equal "
+        f"nearest_continuous_vegetation_distance_ft ({ncvd}) when NAIP absent"
+    )
+
+
+def test_naip_absent_canopy_adjacency_filled_from_near_structure_0_5():
+    """canopy_adjacency_proxy_pct should be promoted from
+    near_structure_vegetation_0_5_pct when no NAIP artifact exists."""
+    client = WildfireDataClient()
+    result = client.collect_context(46.82805, -113.97712)
+    plc = result.property_level_context
+    ns_0_5 = plc.get("near_structure_vegetation_0_5_pct")
+    cap = plc.get("canopy_adjacency_proxy_pct")
+    # near_structure_vegetation_0_5_pct may be 0.0 (sparse near-structure
+    # vegetation) but must be non-None once the directional scan has run.
+    assert ns_0_5 is not None, "near_structure_vegetation_0_5_pct must be set by directional scan"
+    assert cap is not None, "canopy_adjacency_proxy_pct must be filled by fallback"
+    assert cap == ns_0_5
+
+
+def test_naip_absent_vegetation_continuity_inverts_distance():
+    """vegetation_continuity_proxy_pct should equal
+    round(100 * max(0, 1 - ncvd / 30), 1) when no NAIP artifact exists."""
+    client = WildfireDataClient()
+    result = client.collect_context(46.82805, -113.97712)
+    plc = result.property_level_context
+    ncvd = plc.get("nearest_continuous_vegetation_distance_ft")
+    vcp = plc.get("vegetation_continuity_proxy_pct")
+    assert ncvd is not None, "Directional scan must produce a continuous-vegetation distance"
+    assert vcp is not None, "vegetation_continuity_proxy_pct must be filled by fallback"
+    expected = round(max(0.0, min(100.0, 100.0 * max(0.0, 1.0 - ncvd / 30.0))), 1)
+    assert vcp == pytest.approx(expected, abs=0.15), (
+        f"vegetation_continuity_proxy_pct={vcp} does not match expected inversion "
+        f"of ncvd={ncvd} ft → {expected}"
+    )
+
+
 def test_score_decomposition_and_blended_wildfire_score(monkeypatch, tmp_path):
     ring_metrics = {
         "ring_0_5_ft": {"vegetation_density": 55.0},
