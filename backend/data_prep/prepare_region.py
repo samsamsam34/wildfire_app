@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import shutil
 import time
@@ -1240,6 +1241,111 @@ def _cleanup_temp(
         shutil.rmtree(staging_dir, ignore_errors=True)
 
 
+def _enrich_footprints_with_ring_metrics(
+    footprint_path: Path,
+    canopy_path: Path,
+    fuel_path: Path,
+    *,
+    n_samples: int = 8,
+) -> int:
+    """Bake arc-sampled ring vegetation metrics into building_footprints.geojson feature properties.
+
+    Writes ``prep_ring_0_5_veg``, ``prep_ring_5_30_veg``, ``prep_ring_30_100_veg``, and
+    ``prep_ring_100_300_veg`` onto each feature so that assessment-time sampling can use the
+    pre-computed values rather than resampling 30 m LANDFIRE rasters on every request.
+
+    Returns the number of features enriched (0 on failure or no-op).
+    """
+    if rasterio is None or np is None or shape is None:
+        return 0
+    if not footprint_path.exists() or not canopy_path.exists():
+        return 0
+
+    try:
+        with open(footprint_path, "r", encoding="utf-8") as _f:
+            geojson = json.load(_f)
+    except Exception:
+        return 0
+
+    features = geojson.get("features") or []
+    if not features:
+        return 0
+
+    ring_radii = [
+        ("prep_ring_0_5_veg", 2.5),
+        ("prep_ring_5_30_veg", 17.5),
+        ("prep_ring_30_100_veg", 65.0),
+        ("prep_ring_100_300_veg", 200.0),
+    ]
+    _METERS_PER_FT = 0.3048
+
+    try:
+        canopy_ds = rasterio.open(str(canopy_path))
+        fuel_ds = rasterio.open(str(fuel_path)) if fuel_path.exists() else None
+    except Exception:
+        return 0
+
+    enriched = 0
+    try:
+        for feature in features:
+            geom_dict = feature.get("geometry") or {}
+            if geom_dict.get("type") not in ("Polygon", "MultiPolygon"):
+                continue
+            try:
+                s = shape(geom_dict)
+                c = s.centroid
+                cx, cy = float(c.x), float(c.y)  # lon, lat
+            except Exception:
+                continue
+
+            props = dict(feature.get("properties") or {})
+            changed = False
+            for prop_key, radius_ft in ring_radii:
+                if props.get(prop_key) is not None:
+                    continue
+                radius_m = radius_ft * _METERS_PER_FT
+                veg_vals: list[float] = []
+                for i in range(n_samples):
+                    theta = 2.0 * math.pi * i / n_samples
+                    dlat = (radius_m * math.sin(theta)) / 111320.0
+                    dlon = (radius_m * math.cos(theta)) / (
+                        111320.0 * math.cos(math.radians(cy)) if math.cos(math.radians(cy)) != 0 else 111320.0
+                    )
+                    sample_lat = cy + dlat
+                    sample_lon = cx + dlon
+                    try:
+                        row_c, col_c = canopy_ds.index(sample_lon, sample_lat)
+                        win = rasterio.windows.Window(col_c, row_c, 1, 1)
+                        data = canopy_ds.read(1, window=win, masked=False)
+                        if data.size > 0:
+                            v = float(data.flat[0])
+                            nodata = canopy_ds.nodata
+                            if nodata is None or abs(v - float(nodata)) > 1.0:
+                                veg_vals.append(max(0.0, min(100.0, v)))
+                    except Exception:
+                        pass
+                if len(veg_vals) >= max(2, n_samples // 2):
+                    props[prop_key] = round(sum(veg_vals) / len(veg_vals), 1)
+                    changed = True
+
+            if changed:
+                feature["properties"] = props
+                enriched += 1
+    finally:
+        canopy_ds.close()
+        if fuel_ds is not None:
+            fuel_ds.close()
+
+    if enriched > 0:
+        try:
+            with open(footprint_path, "w", encoding="utf-8") as _f:
+                json.dump(geojson, _f)
+        except Exception:
+            return 0
+
+    return enriched
+
+
 def prepare_region_layers(
     *,
     region_id: str,
@@ -1561,6 +1667,23 @@ def prepare_region_layers(
                 }
     else:
         warnings.append("Optional layers skipped by configuration (--skip-optional-layers).")
+
+    # Enrich building footprint features with precomputed ring vegetation metrics so
+    # assessment-time sampling can use the baked values instead of re-sampling rasters.
+    if (
+        not dry_run
+        and "building_footprints" in files
+        and "canopy" in files
+        and "fuel" in files
+    ):
+        try:
+            _enrich_footprints_with_ring_metrics(
+                footprint_path=region_dir / files["building_footprints"],
+                canopy_path=region_dir / files["canopy"],
+                fuel_path=region_dir / files["fuel"],
+            )
+        except Exception as _enrich_exc:
+            warnings.append(f"Footprint ring enrichment skipped: {_enrich_exc}")
 
     requested_layers = set(layer_sources.keys()) | set(layer_urls.keys())
     prepared_layers = sorted([k for k, v in layers_meta.items() if v.get("validation_status") == "ok"])

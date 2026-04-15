@@ -11,7 +11,11 @@ import pytest
 
 import backend.data_prep.prepare_region as prep_region
 import backend.data_prep.sources.acquisition as source_acq
-from backend.data_prep.prepare_region import parse_bbox, prepare_region_layers
+from backend.data_prep.prepare_region import (
+    _enrich_footprints_with_ring_metrics,
+    parse_bbox,
+    prepare_region_layers,
+)
 from backend.data_prep.sources.adapters import (
     LANDFIRECanopyAdapter,
     LANDFIREFuelAdapter,
@@ -1097,3 +1101,85 @@ def test_adapter_sourced_layer_passes_config_validation():
         f"building_footprints_microsoft with empty endpoint must be config_valid=True; got: {result}"
     )
     assert result["config_status"] == "configured"
+
+
+@pytest.mark.skipif(not HAS_RASTER_DEPS, reason="rasterio/numpy required for ring enrichment tests")
+def test_enrich_footprints_writes_prep_ring_veg_properties(tmp_path: Path) -> None:
+    """_enrich_footprints_with_ring_metrics bakes prep_ring_*_veg onto each footprint feature."""
+    # Write a canopy raster covering the footprint centroid area (around lon=0.3, lat=0.5)
+    canopy_path = tmp_path / "canopy.tif"
+    fuel_path = tmp_path / "fuel.tif"
+    _write_raster(canopy_path, value=62.0, width=400, height=400)
+    _write_raster(fuel_path, value=40.0, width=400, height=400)
+
+    footprint_path = tmp_path / "building_footprints.geojson"
+    footprint_path.write_text(
+        json.dumps({
+            "type": "FeatureCollection",
+            "features": [
+                {
+                    "type": "Feature",
+                    "properties": {"id": 1},
+                    "geometry": {
+                        "type": "Polygon",
+                        "coordinates": [[
+                            [-0.2, 0.2], [0.8, 0.2], [0.8, 0.8], [-0.2, 0.8], [-0.2, 0.2]
+                        ]],
+                    },
+                }
+            ],
+        }),
+        encoding="utf-8",
+    )
+
+    count = _enrich_footprints_with_ring_metrics(footprint_path, canopy_path, fuel_path)
+
+    assert count >= 1, "Expected at least one feature to be enriched"
+    updated = json.loads(footprint_path.read_text(encoding="utf-8"))
+    props = updated["features"][0]["properties"]
+    for key in ("prep_ring_0_5_veg", "prep_ring_5_30_veg", "prep_ring_30_100_veg", "prep_ring_100_300_veg"):
+        assert key in props, f"Expected {key} to be baked into feature properties"
+        assert isinstance(props[key], float), f"Expected float for {key}, got {type(props[key])}"
+
+
+@pytest.mark.skipif(not HAS_RASTER_DEPS, reason="rasterio/numpy required for ring enrichment tests")
+def test_enrich_footprints_skips_already_enriched_features(tmp_path: Path) -> None:
+    """_enrich_footprints_with_ring_metrics does not overwrite existing prep_ring_* values."""
+    canopy_path = tmp_path / "canopy.tif"
+    fuel_path = tmp_path / "fuel.tif"
+    _write_raster(canopy_path, value=80.0, width=400, height=400)
+    _write_raster(fuel_path, value=50.0, width=400, height=400)
+
+    footprint_path = tmp_path / "building_footprints.geojson"
+    footprint_path.write_text(
+        json.dumps({
+            "type": "FeatureCollection",
+            "features": [
+                {
+                    "type": "Feature",
+                    "properties": {
+                        "id": 1,
+                        "prep_ring_0_5_veg": 99.0,   # pre-existing — must not be overwritten
+                        "prep_ring_5_30_veg": 98.0,
+                        "prep_ring_30_100_veg": 97.0,
+                        "prep_ring_100_300_veg": 96.0,
+                    },
+                    "geometry": {
+                        "type": "Polygon",
+                        "coordinates": [[
+                            [-0.2, 0.2], [0.8, 0.2], [0.8, 0.8], [-0.2, 0.8], [-0.2, 0.2]
+                        ]],
+                    },
+                }
+            ],
+        }),
+        encoding="utf-8",
+    )
+
+    _enrich_footprints_with_ring_metrics(footprint_path, canopy_path, fuel_path)
+
+    updated = json.loads(footprint_path.read_text(encoding="utf-8"))
+    props = updated["features"][0]["properties"]
+    # Values must be unchanged
+    assert props["prep_ring_0_5_veg"] == pytest.approx(99.0)
+    assert props["prep_ring_5_30_veg"] == pytest.approx(98.0)

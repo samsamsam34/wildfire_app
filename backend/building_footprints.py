@@ -38,6 +38,7 @@ class BuildingFootprintResult:
     candidate_count: int = 0
     candidate_summaries: list[dict[str, Any]] = field(default_factory=list)
     assumptions: list[str] = field(default_factory=list)
+    feature_properties: dict[str, Any] | None = None
 
 
 class BuildingFootprintClient:
@@ -338,6 +339,7 @@ class BuildingFootprintClient:
                 candidate_count=len(ranked),
                 candidate_summaries=candidate_summaries,
                 assumptions=assumptions,
+                feature_properties=dict(top_row.get("properties") or {}),
             )
 
         point_m = shapely_transform(to_3857, point_wgs84)
@@ -387,6 +389,7 @@ class BuildingFootprintClient:
                     "source": source,
                     "source_rank": int(candidate.get("source_rank", 999)),
                     "structure_id": candidate.get("structure_id"),
+                    "properties": dict(candidate.get("properties") or {}),
                     "distance_m": distance,
                     "centroid_distance_m": centroid_distance,
                     "area_score": area_score,
@@ -560,6 +563,7 @@ class BuildingFootprintClient:
             candidate_count=len(candidates),
             candidate_summaries=candidate_summaries,
             assumptions=assumptions,
+            feature_properties=dict(top.get("properties") or {}),
         )
 
     def get_neighbor_structure_metrics(

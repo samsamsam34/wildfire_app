@@ -2902,7 +2902,9 @@ class WildfireDataClient:
         # Arc-sample backfill: when the polygon-clip path returned no raster values
         # (sub-pixel rings at 30m LANDFIRE resolution), sample N arc points at the
         # ring midpoint radius.  Only fires for rings where vegetation_density is
-        # still None after the polygon path.
+        # still None after the polygon path.  Precomputed prep-time values (baked
+        # into building_footprints.geojson by prepare_region_layers) are used first
+        # to avoid re-sampling at every assessment.
         _arc_origin_lat = float(result.centroid[0]) if result.centroid else float(query_lat)
         _arc_origin_lon = float(result.centroid[1]) if result.centroid else float(query_lon)
         _arc_ring_radii = {
@@ -2911,9 +2913,29 @@ class WildfireDataClient:
             "ring_30_100_ft": 65.0,
             "ring_100_300_ft": 200.0,
         }
+        _prep_prop_map = {
+            "ring_0_5_ft": "prep_ring_0_5_veg",
+            "ring_5_30_ft": "prep_ring_5_30_veg",
+            "ring_30_100_ft": "prep_ring_30_100_veg",
+            "ring_100_300_ft": "prep_ring_100_300_veg",
+        }
+        _matched_fp_props = getattr(result, "feature_properties", None) or {}
         for _arc_key, _arc_radius_ft in _arc_ring_radii.items():
             _existing = ring_metrics.get(_arc_key) or {}
             if self._coerce_float(_existing.get("vegetation_density")) is not None:
+                continue
+            # Check baked prep-time value first
+            _prep_veg = self._coerce_float(_matched_fp_props.get(_prep_prop_map.get(_arc_key, "")))
+            if _prep_veg is not None:
+                merged = dict(_existing)
+                merged.update({
+                    "vegetation_density": _prep_veg,
+                    "coverage_pct": _prep_veg,
+                    "canopy_mean": _prep_veg,
+                    "basis": "prep_baked",
+                })
+                ring_metrics[_arc_key] = merged
+                ring_metrics[zone_aliases[_arc_key]] = dict(merged)
                 continue
             _arc_result = self._arc_sample_ring_vegetation(
                 origin_lat=_arc_origin_lat,

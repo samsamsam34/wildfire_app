@@ -456,3 +456,70 @@ def test_neighbor_metrics_use_subject_footprint_distance_when_available(tmp_path
     assert close_metrics["nearest_structure_distance_ft"] is not None
     assert far_metrics["nearest_structure_distance_ft"] is not None
     assert float(close_metrics["nearest_structure_distance_ft"]) < float(far_metrics["nearest_structure_distance_ft"])
+
+
+@pytest.mark.skipif(not _geo_ready(), reason="Building footprint matching tests require shapely")
+def test_feature_properties_populated_on_point_in_polygon_match(tmp_path: Path) -> None:
+    """Matched feature's raw GeoJSON properties are surfaced in BuildingFootprintResult."""
+    footprints_path = _write_geojson(
+        tmp_path / "footprints.geojson",
+        [
+            {
+                "type": "Feature",
+                "properties": {
+                    "id": "subject",
+                    "prep_ring_0_5_veg": 42.5,
+                    "prep_ring_5_30_veg": 38.0,
+                },
+                "geometry": {
+                    "type": "Polygon",
+                    "coordinates": [[
+                        [-105.00020, 40.00020],
+                        [-104.99980, 40.00020],
+                        [-104.99980, 39.99980],
+                        [-105.00020, 39.99980],
+                        [-105.00020, 40.00020],
+                    ]],
+                },
+            }
+        ],
+    )
+    client = BuildingFootprintClient(path=footprints_path)
+    result = client.get_building_footprint(40.0, -105.0)
+
+    assert result.found is True
+    assert result.feature_properties is not None
+    assert result.feature_properties.get("prep_ring_0_5_veg") == pytest.approx(42.5)
+    assert result.feature_properties.get("prep_ring_5_30_veg") == pytest.approx(38.0)
+
+
+@pytest.mark.skipif(not _geo_ready(), reason="Building footprint matching tests require shapely")
+def test_feature_properties_populated_on_nearest_match(tmp_path: Path) -> None:
+    """feature_properties is carried through for nearest-building (non-containing) match."""
+    # Footprint just north of query point (0-5 m away) so nearest-match succeeds
+    footprints_path = _write_geojson(
+        tmp_path / "footprints.geojson",
+        [
+            {
+                "type": "Feature",
+                "properties": {"id": "nearby", "prep_ring_30_100_veg": 55.0},
+                "geometry": {
+                    "type": "Polygon",
+                    "coordinates": [[
+                        [-105.00020, 40.00040],
+                        [-104.99980, 40.00040],
+                        [-104.99980, 40.00025],
+                        [-105.00020, 40.00025],
+                        [-105.00020, 40.00040],
+                    ]],
+                },
+            }
+        ],
+    )
+    client = BuildingFootprintClient(path=footprints_path)
+    # Query point is just outside the polygon (south edge gap ~2-3 m)
+    result = client.get_building_footprint(40.0002, -105.0)
+
+    assert result.found is True
+    assert result.feature_properties is not None
+    assert result.feature_properties.get("prep_ring_30_100_veg") == pytest.approx(55.0)
