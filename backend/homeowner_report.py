@@ -326,7 +326,7 @@ def _risk_driver_from_text(driver_text: str, *, tone_level: str) -> str:
         return f"{base} is a major risk factor."
     if tone_level == "slightly_hedged":
         return f"{base} appears to increase risk."
-    return f"{base} may be contributing to risk, but some details are estimated."
+    return f"{base} may increase wildfire exposure."
 
 
 def _summarize_top_risk_drivers(
@@ -347,12 +347,12 @@ def _estimated_benefit_phrase(impact_level: str, tone_level: str) -> str:
     impact = str(impact_level or "low").lower()
     if tone_level == "advisory":
         if impact == "high":
-            phrase = "May help reduce wildfire risk meaningfully when completed and maintained."
+            phrase = "Can help reduce wildfire risk meaningfully when completed and maintained."
         elif impact == "medium":
-            phrase = "May help reduce wildfire risk over time."
+            phrase = "Can help reduce wildfire risk over time."
         else:
             phrase = "May provide incremental wildfire protection."
-        return phrase + " Benefit estimate is directional because some inputs were estimated."
+        return phrase + " Benefit estimate is directional."
     if tone_level == "slightly_hedged":
         if impact == "high":
             return "Appears likely to reduce wildfire risk meaningfully when completed and maintained."
@@ -404,9 +404,9 @@ def _build_why_this_matters_sentence(*, action_text: str, what_it_reduces: str, 
     if not action:
         action = "This action"
     if tone_level == "advisory":
-        return f"{action} may help reduce {what_it_reduces}, but some details are estimated."
+        return f"{action} could reduce {what_it_reduces}."
     if tone_level == "slightly_hedged":
-        return f"{action} appears to help reduce {what_it_reduces}."
+        return f"{action} can reduce {what_it_reduces}."
     return f"{action} helps reduce {what_it_reduces}."
 
 
@@ -1303,6 +1303,39 @@ def _split_sentences(text: str) -> list[str]:
     return [str(p).strip() for p in parts if str(p).strip()]
 
 
+def _sentence_key(text: Any) -> str:
+    normalized = _normalize_line(text).lower()
+    return re.sub(r"[^a-z0-9]+", " ", normalized).strip()
+
+
+def _dedupe_sentences(sentences: list[str]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for sentence in sentences:
+        key = _sentence_key(sentence)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(sentence)
+    return out
+
+
+def _align_action_explanation(action_name: str, explanation: str) -> str:
+    action = _normalize_line(action_name).rstrip(".")
+    text = _normalize_line(explanation)
+    if not action or not text:
+        return text
+    action_tokens = [token for token in _explanation_lookup_key(action).split() if len(token) >= 4][:3]
+    explanation_key = _explanation_lookup_key(text)
+    if action_tokens and not any(token in explanation_key for token in action_tokens):
+        if len(text) > 1:
+            text = text[0].lower() + text[1:]
+        else:
+            text = text.lower()
+        return f"{action}: {text}"
+    return text
+
+
 def _sanitize_explanation_text(
     text: Any,
     *,
@@ -1313,6 +1346,11 @@ def _sanitize_explanation_text(
     candidate = _normalize_line(text)
     if not candidate:
         candidate = _normalize_line(fallback)
+    candidate = candidate.replace("…", "...").replace("–", "-")
+    candidate = re.sub(r"[^\x20-\x7E]", " ", candidate)
+    candidate = re.sub(r"\b(?:re|st|te|ti|ri|ly)\?(?=\s|$)", "", candidate, flags=re.I)
+    candidate = re.sub(r"\b[a-z]{1,2}\?(?=\s|$)", "", candidate, flags=re.I)
+    candidate = re.sub(r"\s{2,}", " ", candidate).strip()
     # Keep phrasing directional; avoid hard percentages in homeowner narrative.
     candidate = re.sub(r"\b\d+(?:\.\d+)?\s*%", "a meaningful amount", candidate, flags=re.I)
     candidate = re.sub(
@@ -1321,9 +1359,17 @@ def _sanitize_explanation_text(
         candidate,
         flags=re.I,
     )
+    candidate = re.sub(
+        r"\bmay be contributing to risk,?\s*but some details (?:were|are) estimated\b",
+        "may increase wildfire exposure",
+        candidate,
+        flags=re.I,
+    )
     candidate = re.sub(r"\bthis may help reduce risk\b", "This could reduce wildfire exposure", candidate, flags=re.I)
     candidate = re.sub(r"\bthis can help reduce risk\b", "This can reduce wildfire exposure", candidate, flags=re.I)
     candidate = re.sub(r"\bthis helps reduce risk\b", "This reduces wildfire exposure", candidate, flags=re.I)
+    candidate = re.sub(r"\bmay help reduce\b", "could reduce", candidate, flags=re.I)
+    candidate = re.sub(r"\bappears to help reduce\b", "can reduce", candidate, flags=re.I)
     jargon_map = {
         "topography": "terrain",
         "submodel": "risk factor",
@@ -1336,7 +1382,7 @@ def _sanitize_explanation_text(
             lowered = lowered.replace(src, dst)
     if lowered:
         candidate = lowered[0].upper() + lowered[1:]
-    sentences = _split_sentences(candidate)[: max(1, int(max_sentences))]
+    sentences = _dedupe_sentences(_split_sentences(candidate))[: max(1, int(max_sentences))]
     merged = " ".join(sentences).strip()
     if not merged:
         merged = _normalize_line(fallback)
@@ -1357,12 +1403,14 @@ def _sanitize_explanation_list(
 ) -> list[str]:
     raw_items = list(values) if isinstance(values, list) else []
     out: list[str] = []
-    fallback_idx = 0
-    while len(out) < max(1, int(limit)):
-        raw = raw_items[len(out)] if len(out) < len(raw_items) else ""
+    seen: set[str] = set()
+    desired = max(1, int(limit))
+    attempts = 0
+    max_attempts = max(desired * 6, len(raw_items) + len(fallback) + 6)
+    while len(out) < desired and attempts < max_attempts:
+        raw = raw_items[attempts] if attempts < len(raw_items) else ""
         if fallback:
-            fallback_text = fallback[min(fallback_idx, len(fallback) - 1)]
-            fallback_idx += 1
+            fallback_text = fallback[min(attempts, len(fallback) - 1)]
         else:
             fallback_text = "Use this guidance as directional planning support."
         cleaned = _sanitize_explanation_text(
@@ -1371,11 +1419,27 @@ def _sanitize_explanation_list(
             max_sentences=max_sentences,
             max_chars=max_chars,
         )
-        if cleaned:
+        key = _sentence_key(cleaned)
+        if cleaned and key and key not in seen:
+            seen.add(key)
             out.append(cleaned)
-        if len(raw_items) <= len(out) and len(out) >= min(len(fallback), max(1, int(limit))):
-            break
-    return out[: max(1, int(limit))]
+        attempts += 1
+
+    if len(out) < desired:
+        for fallback_text in fallback:
+            cleaned = _sanitize_explanation_text(
+                "",
+                fallback=fallback_text,
+                max_sentences=max_sentences,
+                max_chars=max_chars,
+            )
+            key = _sentence_key(cleaned)
+            if cleaned and key and key not in seen:
+                seen.add(key)
+                out.append(cleaned)
+            if len(out) >= desired:
+                break
+    return out[:desired]
 
 
 def _extract_assessment_actions(assessment: AssessmentResult, *, limit: int = 3) -> list[dict[str, str]]:
@@ -1432,7 +1496,7 @@ def _build_driver_explanation_template(driver_text: str, tone_profile: str) -> s
         return f"{base}, which is a major contributor to wildfire exposure at the home."
     if tone_profile == "balanced":
         return f"{base}, which is an important contributor to wildfire exposure at the home."
-    return f"{base}, which may contribute to wildfire exposure because some inputs were estimated."
+    return f"{base}, and it may increase wildfire exposure."
 
 
 def _build_action_explanation_template(action: str, why: str, tone_profile: str) -> str:
@@ -1445,9 +1509,9 @@ def _build_action_explanation_template(action: str, why: str, tone_profile: str)
     elif tone_profile == "balanced":
         sentence = f"{action_text} can lower ignition pathways around the home."
     else:
-        sentence = f"{action_text} could lower ignition pathways around the home, though some inputs were estimated."
+        sentence = f"{action_text} could lower ignition pathways around the home."
     if reason:
-        sentence = f"{sentence.rstrip('.')} by addressing this issue: {reason}."
+        sentence = f"{sentence.rstrip('.')} by addressing {reason}."
     return sentence
 
 
@@ -1687,10 +1751,6 @@ def generate_homeowner_explanations(
     )
 
     fallback_action_explanations = [str(v) for v in list(template.get("recommended_action_explanations") or [])]
-    fallback_action_names = [
-        _normalize_line(row.get("action") or row.get("title") or "")
-        for row in top_actions
-    ]
     raw_action_candidates = _extract_action_explanation_candidates(merged.get("recommended_action_explanations"))
     action_explanations = _sanitize_explanation_list(
         [row.get("explanation") or "" for row in raw_action_candidates],
@@ -1702,14 +1762,12 @@ def generate_homeowner_explanations(
     action_explanations_by_action: dict[str, str] = {}
 
     for idx, explanation_text in enumerate(action_explanations):
-        action_hint = ""
-        if idx < len(raw_action_candidates):
-            action_hint = _normalize_line(raw_action_candidates[idx].get("action") or "")
-        if not action_hint and idx < len(fallback_action_names):
-            action_hint = fallback_action_names[idx]
+        action_hint = _normalize_line(raw_action_candidates[idx].get("action") or "") if idx < len(raw_action_candidates) else ""
+        aligned_explanation = _align_action_explanation(action_hint, explanation_text) if action_hint else explanation_text
+        action_explanations[idx] = aligned_explanation
         action_key = _explanation_lookup_key(action_hint)
         if action_key:
-            action_explanations_by_action[action_key] = explanation_text
+            action_explanations_by_action[action_key] = aligned_explanation
 
     raw_action_map = merged.get("recommended_action_explanations_by_action")
     if isinstance(raw_action_map, dict) and (source == "template" or llm_provided_action_map):
@@ -1724,7 +1782,7 @@ def generate_homeowner_explanations(
                 max_chars=220,
             )
             if sanitized:
-                action_explanations_by_action[action_key] = sanitized
+                action_explanations_by_action[action_key] = _align_action_explanation(action_name, sanitized)
 
     confidence_line = _sanitize_explanation_text(
         merged.get("confidence_limitations_explanation"),
@@ -1997,7 +2055,7 @@ def _driver_line_with_tone(driver: str, tone_profile: str) -> str:
     lowered = text.lower()
     if any(token in lowered for token in ("may ", "appears", "estimated")):
         return text
-    return f"{text} (this may be contributing to risk, but some details were estimated)."
+    return f"{text} (this may increase wildfire exposure)."
 
 
 def _driver_explanation_prefix(tone_profile: str) -> str:
@@ -2010,10 +2068,10 @@ def _driver_explanation_prefix(tone_profile: str) -> str:
 
 def _action_rationale_prefix(tone_profile: str) -> str:
     if tone_profile == "direct":
-        return "This helps reduce risk"
+        return "This reduces wildfire exposure"
     if tone_profile == "balanced":
-        return "This can help reduce risk"
-    return "This may help reduce risk"
+        return "This can reduce wildfire exposure"
+    return "This could reduce wildfire exposure"
 
 
 def _limitations_tone_line(tone_profile: str) -> str:
@@ -2292,11 +2350,6 @@ def _build_report_entries(report: HomeownerReport) -> list[_PdfEntry]:
     action_explanation_rows = _extract_action_explanation_candidates(
         explanation_block.get("recommended_action_explanations")
     )
-    explanation_actions = [
-        _normalize_line(row.get("explanation") or "")
-        for row in action_explanation_rows
-        if _normalize_line(row.get("explanation") or "")
-    ][:3]
     explanation_actions_by_action: dict[str, str] = {}
     for row in action_explanation_rows[:3]:
         key = _explanation_lookup_key(row.get("action") or "")
@@ -2321,10 +2374,19 @@ def _build_report_entries(report: HomeownerReport) -> list[_PdfEntry]:
     zone_findings = defensible_space_summary.get("zone_findings")
     zone_findings = zone_findings if isinstance(zone_findings, list) else []
 
+    property_address = _normalize_line(property_summary.get("address") or "Unknown address")
+    property_lat = _to_float(property_summary.get("latitude"))
+    property_lon = _to_float(property_summary.get("longitude"))
+    resolved_region_id = _normalize_line(property_summary.get("resolved_region_id") or "")
+
     # 1) Header / Title
     _add_wrapped(entries, "WildfireRisk Advisor", style="product_name")
     _add_wrapped(entries, "Wildfire Risk Report", style="TitleStyle")
-    _add_wrapped(entries, f"Property: {_normalize_line(property_summary.get('address') or 'Unknown address')}", style="meta")
+    _add_wrapped(entries, f"Property Address: {property_address}", style="meta")
+    if property_lat is not None and property_lon is not None:
+        _add_wrapped(entries, f"Location context: {property_lat:.5f}, {property_lon:.5f}", style="meta")
+    if resolved_region_id:
+        _add_wrapped(entries, f"Prepared region context: {resolved_region_id}", style="meta")
     _add_wrapped(entries, f"Date generated: {_normalize_line(header.get('assessment_generated_at') or report.generated_at)}", style="meta")
     entries.append(_PdfEntry(style="spacer_lg"))
 
@@ -2340,6 +2402,7 @@ def _build_report_entries(report: HomeownerReport) -> list[_PdfEntry]:
     _add_wrapped(entries, f"Confidence level: {confidence_level_label} ({confidence_score_text}).", style="summary_card_body")
     _add_wrapped(entries, f"One-sentence explanation: {explanation_headline}", style="summary_card_body")
     _add_wrapped(entries, f"Home hardening readiness: {readiness_line}", style="summary_card_body")
+    _add_wrapped(entries, "This analysis is based on the area immediately surrounding your home.", style="summary_card_body")
     _add_wrapped(entries, _summary_tone_line(tone_profile), style="summary_card_body")
     entries.append(_PdfEntry(style="spacer_md"))
 
@@ -2429,6 +2492,8 @@ def _build_report_entries(report: HomeownerReport) -> list[_PdfEntry]:
         "geometry_is_approximate": geometry_is_approximate,
     }
     _add_wrapped(entries, "Local Map View", style="SectionHeaderStyle")
+    _add_wrapped(entries, "Map centered on this report location:", style="body")
+    _add_wrapped(entries, property_address, style="body")
     entries.append(_PdfEntry(text=json.dumps(map_config, ensure_ascii=True), style="map_canvas"))
     _add_wrapped(
         entries,
@@ -2485,7 +2550,7 @@ def _build_report_entries(report: HomeownerReport) -> list[_PdfEntry]:
             why = _normalize_line(row.get("why_this_matters") or row.get("explanation") or row.get("why_it_matters") or "")
             action_key = _explanation_lookup_key(action_name)
             mapped_explanation = explanation_actions_by_action.get(action_key, "")
-            llm_why = mapped_explanation or (explanation_actions[idx] if idx < len(explanation_actions) else "")
+            llm_why = mapped_explanation
             effort = _safe_effort_label(row.get("effort_level") or row.get("estimated_cost_band"))
             _add_wrapped(entries, action_name, style="bullet", prefix="- ")
             if llm_why:

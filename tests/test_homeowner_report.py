@@ -357,9 +357,13 @@ def test_homeowner_pdf_includes_structured_sections_and_priority_content(monkeyp
         b"Assessment type / specificity:",
         b"Confidence level:",
         b"One-sentence explanation:",
+        b"Property Address:",
+        b"Location context:",
         b"Observed for this report",
         b"Missing or estimated",
         b"Ring legend:",
+        b"Map centered on this report location:",
+        b"This analysis is based on the area immediately surrounding your home",
         b"conditions close to the home",
         b"Top priority action",
         b"Effort level:",
@@ -544,12 +548,12 @@ def test_homeowner_pdf_tone_softens_low_confidence_and_is_direct_for_high_confid
     low_pdf = export_homeowner_report(low, output_format="pdf")
 
     assert b"Tone: direct." in high_pdf
-    assert b"major contributor to wildfire exposure at the home" in high_pdf
+    assert b"Top Risk Drivers" in high_pdf
     assert b"lowers ignition pathways around the home" in high_pdf
     assert b"Confidence is strong because the assessment used substantial property-level evidence" in high_pdf
 
     assert b"Tone: cautious." in low_pdf
-    assert b"may contribute to wildfire exposure because some inputs were estimated" in low_pdf
+    assert b"may increase wildfire exposure" in low_pdf
     assert b"could lower ignition pathways around the home" in low_pdf
     assert b"Confidence is lower because some details were estimated or missing" in low_pdf
 
@@ -629,6 +633,54 @@ def test_generate_homeowner_explanations_llm_output_is_concise(monkeypatch, tmp_
         assert sentence_count == 1
 
 
+def test_generate_homeowner_explanations_removes_broken_text_and_repeated_sentences(monkeypatch, tmp_path: Path):
+    context = _ctx(env=58.0, wildland=44.0, historic=30.0)
+    _setup(monkeypatch, tmp_path, context)
+    assessed = _run_assessment("914 Cleanup Guardrail Rd, Missoula, MT 59802")
+    stored = app_main.store.get(assessed["assessment_id"])
+    assert stored is not None
+
+    monkeypatch.setattr(
+        homeowner_report_module,
+        "_generate_homeowner_explanations_with_llm",
+        lambda payload, llm_client=None: {
+            "headline_summary": "This may help reduce risk. re? st?",
+            "risk_driver_explanations": [
+                "Dense vegetation may be contributing to risk, but some details are estimated.",
+                "Dense vegetation may be contributing to risk, but some details are estimated.",
+                "Ember exposure re? st? can increase ignition pressure.",
+            ],
+            "recommended_action_explanations": [
+                "This may help reduce risk. This may help reduce risk.",
+                "This may help reduce risk.",
+                "This may help reduce risk.",
+            ],
+            "confidence_limitations_explanation": "Confidence is limited. re? st?",
+        },
+    )
+
+    explanations = generate_homeowner_explanations(stored)
+    texts = [
+        str(explanations.get("headline_summary") or ""),
+        str(explanations.get("confidence_limitations_explanation") or ""),
+        *[str(v or "") for v in list(explanations.get("risk_driver_explanations") or [])],
+        *[str(v or "") for v in list(explanations.get("recommended_action_explanations") or [])],
+    ]
+    for text in texts:
+        lowered = text.lower()
+        assert "re?" not in lowered
+        assert "st?" not in lowered
+        assert "may be contributing to risk" not in lowered
+
+    def _sentence_key(value: str) -> str:
+        return re.sub(r"[^a-z0-9]+", " ", str(value or "").lower()).strip()
+
+    driver_keys = [_sentence_key(v) for v in list(explanations.get("risk_driver_explanations") or [])]
+    action_keys = [_sentence_key(v) for v in list(explanations.get("recommended_action_explanations") or [])]
+    assert len(driver_keys) == len(set(driver_keys))
+    assert len(action_keys) == len(set(action_keys))
+
+
 def test_generate_homeowner_explanations_maps_actions_to_matching_explanations(monkeypatch, tmp_path: Path):
     context = _ctx(env=56.0, wildland=44.0, historic=29.0)
     _setup(monkeypatch, tmp_path, context)
@@ -702,6 +754,70 @@ def test_generate_homeowner_explanations_maps_actions_to_matching_explanations(m
         assert idx_expl_a < idx_action_b
     else:
         assert idx_expl_b < idx_action_a
+
+
+def test_pdf_action_explanations_do_not_fallback_to_wrong_index(monkeypatch, tmp_path: Path):
+    context = _ctx(env=56.0, wildland=43.0, historic=29.0)
+    _setup(monkeypatch, tmp_path, context)
+    assessed = _run_assessment("915 Action Alignment Check Rd, Missoula, MT 59802")
+    stored = app_main.store.get(assessed["assessment_id"])
+    assert stored is not None
+
+    patched = stored.model_copy(deep=True)
+    patched.confidence_tier = "high"
+    patched.confidence_summary.missing_data = []
+    patched.confidence_summary.fallback_assumptions = []
+    patched.fallback_weight_fraction = 0.0
+    patched.assessment_diagnostics.fallback_decisions = []
+    patched.prioritized_mitigation_actions = [
+        HomeownerPrioritizedAction(
+            action="Install ember-resistant vents",
+            explanation="Blocks embers from entering attic openings.",
+            impact_level="high",
+            effort_level="medium",
+            estimated_cost_band="medium",
+            timeline="this_season",
+            priority=1,
+        ),
+        HomeownerPrioritizedAction(
+            action="Clear debris within 5 feet",
+            explanation="Removes dry material that ignites near walls.",
+            impact_level="low",
+            effort_level="high",
+            data_confidence="low",
+            estimated_cost_band="low",
+            timeline="now",
+            priority=2,
+        ),
+    ]
+
+    monkeypatch.setattr(
+        homeowner_report_module,
+        "_generate_homeowner_explanations_with_llm",
+        lambda payload, llm_client=None: {
+            "headline_summary": "Custom summary sentence.",
+            "risk_driver_explanations": [],
+            "recommended_action_explanations": [
+                {
+                    "action": "Clear debris within 5 feet",
+                    "explanation": "Clearing nearby debris removes easy ignition material next to walls.",
+                }
+            ],
+            "confidence_limitations_explanation": "Custom confidence sentence.",
+        },
+    )
+
+    pdf = export_homeowner_report(patched, output_format="pdf").lower()
+    first_action = b"install ember-resistant vents"
+    second_action = b"clear debris within 5 feet"
+    second_expl_fragment = b"nearby debris"
+
+    idx_first = pdf.find(first_action)
+    idx_second = pdf.find(second_action)
+    idx_second_expl = pdf.find(second_expl_fragment)
+    assert idx_first >= 0 and idx_second >= 0 and idx_second_expl >= 0
+    assert idx_second < idx_second_expl
+    assert second_expl_fragment not in pdf[idx_first : idx_first + 550]
 
 
 def test_pdf_uses_generated_homeowner_explanation_layer(monkeypatch, tmp_path: Path):
@@ -785,6 +901,7 @@ def test_homeowner_pdf_local_map_renders_for_strong_geometry_case(monkeypatch, t
     pdf_res = client.get(f"/report/{assessed['assessment_id']}/homeowner/pdf")
     assert pdf_res.status_code == 200
     assert b"Local Map View" in pdf_res.content
+    assert b"Map centered on this report location:" in pdf_res.content
     assert b"Ring legend:" in pdf_res.content
     assert b"Map note: geometry is anchored to property-level footprint and parcel context" in pdf_res.content
 
@@ -811,6 +928,7 @@ def test_homeowner_pdf_local_map_renders_for_approximate_geometry_case(monkeypat
     pdf_res = client.get(f"/report/{assessed['assessment_id']}/homeowner/pdf")
     assert pdf_res.status_code == 200
     assert b"Local Map View" in pdf_res.content
+    assert b"Map centered on this report location:" in pdf_res.content
     assert b"Ring legend:" in pdf_res.content
     assert b"Map note: geometry is approximate" in pdf_res.content
 
@@ -989,20 +1107,20 @@ def test_homeowner_report_homeowner_focused_fields_across_confidence_tiers(monke
         if tier in {"low", "preliminary"}:
             assert "may have" in report["headline_risk_summary"].lower()
             assert "estimated" in report["limitations_notice"].lower() or "missing" in report["limitations_notice"].lower()
-            assert "may be contributing to risk" in str((report.get("top_risk_drivers") or [""])[0]).lower()
-            assert "may help reduce" in str(first.get("why_this_matters")).lower()
+            assert "may increase wildfire exposure" in str((report.get("top_risk_drivers") or [""])[0]).lower()
+            assert "could reduce" in str(first.get("why_this_matters")).lower()
         if tier == "moderate":
             assert "appears to have" in report["headline_risk_summary"].lower()
             assert "appears to increase risk" in str((report.get("top_risk_drivers") or [""])[0]).lower()
-            assert "appears to help reduce" in str(first.get("why_this_matters")).lower()
+            assert "can reduce" in str(first.get("why_this_matters")).lower()
         if tier == "high":
             headline = str(report["headline_risk_summary"]).lower()
             assert headline.startswith("your home has ") or headline.startswith("your home appears to have ")
             driver_text = str((report.get("top_risk_drivers") or [""])[0]).lower()
             assert ("is a major risk factor" in driver_text) or ("appears to increase risk" in driver_text)
             why_text = str(first.get("why_this_matters")).lower()
-            assert ("helps reduce" in why_text) or ("appears to help reduce" in why_text)
-            assert "may help reduce" not in why_text
+            assert "helps reduce" in why_text
+            assert "could reduce" not in why_text
 
 
 def test_homeowner_report_degraded_data_produces_more_cautious_tone(monkeypatch, tmp_path: Path):
@@ -1058,11 +1176,11 @@ def test_homeowner_report_degraded_data_produces_more_cautious_tone(monkeypatch,
     high_driver = str((high_report.get("top_risk_drivers") or [""])[0]).lower()
     assert ("is a major risk factor" in high_driver) or ("appears to increase risk" in high_driver)
     high_why = str(((high_report.get("prioritized_actions") or [{}])[0]).get("why_this_matters") or "").lower()
-    assert ("helps reduce" in high_why) or ("appears to help reduce" in high_why)
+    assert "helps reduce" in high_why
 
     assert "your home may have" in str(low_report.get("headline_risk_summary", "")).lower()
-    assert "may be contributing to risk" in str((low_report.get("top_risk_drivers") or [""])[0]).lower()
-    assert "may help reduce" in str(((low_report.get("prioritized_actions") or [{}])[0]).get("why_this_matters") or "").lower()
+    assert "may increase wildfire exposure" in str((low_report.get("top_risk_drivers") or [""])[0]).lower()
+    assert "could reduce" in str(((low_report.get("prioritized_actions") or [{}])[0]).get("why_this_matters") or "").lower()
 
 
 def test_mitigation_ranking_prioritizes_near_structure_actions(monkeypatch, tmp_path: Path):
