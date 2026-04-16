@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import logging
 import math
+import traceback
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
@@ -9,11 +11,12 @@ from typing import Any, Dict, Iterable, List
 
 try:
     import rasterio
-    from pyproj import Transformer
+    from pyproj import CRS, Transformer
     from shapely.geometry import LineString, MultiLineString, Point, mapping, shape
     from shapely.ops import transform as shapely_transform
 except Exception:  # pragma: no cover - optional geo dependency fallback
     rasterio = None
+    CRS = None
     Transformer = None
     LineString = None
     MultiLineString = None
@@ -21,6 +24,8 @@ except Exception:  # pragma: no cover - optional geo dependency fallback
     mapping = None
     shape = None
     shapely_transform = None
+
+logger = logging.getLogger(__name__)
 
 
 def _file_exists(path: str | None) -> bool:
@@ -57,37 +62,216 @@ def _to_dataset_crs(ds, lon: float, lat: float) -> tuple[float, float]:
     return transformer.transform(lon, lat)
 
 
-def _sample_raster_point(path: str, lat: float, lon: float) -> float | None:
+def _axis_info(ds) -> list[Any]:
+    crs = getattr(ds, "crs", None)
+    if crs is None:
+        return []
+    axis = getattr(crs, "axis_info", None)
+    if axis is None and CRS is not None:
+        try:
+            axis = CRS.from_user_input(crs).axis_info
+        except Exception:
+            axis = None
+    if axis is None:
+        return []
+    return list(axis)
+
+
+def _axis_info_strings(ds) -> list[str]:
+    axis_strings: list[str] = []
+    for axis in _axis_info(ds):
+        name = str(getattr(axis, "name", "") or "").strip()
+        direction = str(getattr(axis, "direction", "") or "").strip()
+        unit = str(getattr(axis, "unit_name", "") or "").strip()
+        label = f"{name}:{direction}" if (name or direction) else str(axis)
+        if unit:
+            label = f"{label} ({unit})"
+        axis_strings.append(label)
+    return axis_strings
+
+
+def _is_lat_first_axis(ds) -> bool:
+    axis = _axis_info(ds)
+    if len(axis) < 2:
+        return False
+    first = str(getattr(axis[0], "direction", "") or "").strip().lower()
+    second = str(getattr(axis[1], "direction", "") or "").strip().lower()
+    return first in {"north", "south"} and second in {"east", "west"}
+
+
+def _point_within_bounds(ds, x: float, y: float) -> bool:
+    try:
+        left, bottom, right, top = ds.bounds
+    except Exception:
+        return True
+    return left <= float(x) <= right and bottom <= float(y) <= top
+
+
+def _resolve_sample_coords(ds, x: float, y: float) -> tuple[tuple[float, float], bool]:
+    default_coords = (float(x), float(y))
+    if not (bool(getattr(getattr(ds, "crs", None), "is_geographic", False)) and _is_lat_first_axis(ds)):
+        return default_coords, False
+
+    swapped_coords = (float(y), float(x))
+    default_in_bounds = _point_within_bounds(ds, default_coords[0], default_coords[1])
+    swapped_in_bounds = _point_within_bounds(ds, swapped_coords[0], swapped_coords[1])
+    if swapped_in_bounds and not default_in_bounds:
+        return swapped_coords, True
+    return default_coords, False
+
+
+def _sample_raster_point_detailed(path: str, lat: float, lon: float) -> dict[str, Any]:
     if not (rasterio and _file_exists(path)):
-        return None
+        return {"status": "missing_file", "reason": "Raster source unavailable.", "value": None}
     try:
         ds = _open_raster(path)
         x, y = _to_dataset_crs(ds, lon, lat)
-        sample = next(ds.sample([(x, y)]))[0]
+        sample_coords, swapped = _resolve_sample_coords(ds, x, y)
+        axis_info = _axis_info_strings(ds)
+        within_bounds = _point_within_bounds(ds, sample_coords[0], sample_coords[1])
+        if not within_bounds:
+            return {
+                "status": "no_data",
+                "reason": "Sample coordinate outside raster bounds.",
+                "value": None,
+                "axis_info": axis_info,
+                "sample_coords": sample_coords,
+                "within_bounds": False,
+                "coords_swapped": swapped,
+            }
+
+        sample = next(ds.sample([sample_coords]))[0]
         nodata = ds.nodata
         if nodata is not None and float(sample) == float(nodata):
-            return None
-        return float(sample)
-    except Exception:
+            return {
+                "status": "no_data",
+                "reason": "Raster sample returned nodata.",
+                "value": None,
+                "axis_info": axis_info,
+                "sample_coords": sample_coords,
+                "within_bounds": True,
+                "coords_swapped": swapped,
+            }
+        return {
+            "status": "ok",
+            "reason": None,
+            "value": float(sample),
+            "axis_info": axis_info,
+            "sample_coords": sample_coords,
+            "within_bounds": True,
+            "coords_swapped": swapped,
+        }
+    except Exception as exc:
+        return {
+            "status": "error",
+            "reason": str(exc),
+            "value": None,
+            "axis_info": [],
+            "sample_coords": None,
+            "within_bounds": False,
+            "coords_swapped": False,
+        }
+
+
+def _sample_raster_point(path: str, lat: float, lon: float) -> float | None:
+    detailed = _sample_raster_point_detailed(path, lat, lon)
+    if str(detailed.get("status") or "") != "ok":
         return None
+    value = detailed.get("value")
+    if value is None:
+        return None
+    return float(value)
+
+
+def _sample_raster_circle_detailed(path: str, lat: float, lon: float, radius_m: float, step_m: float = 120.0) -> dict[str, Any]:
+    if not (rasterio and _file_exists(path)):
+        return {"status": "missing_file", "reason": "Raster source unavailable.", "values": []}
+    try:
+        ds = _open_raster(path)
+        axis_info = _axis_info_strings(ds)
+        values: list[float] = []
+        errors: list[str] = []
+        any_within_bounds = False
+        representative_coords: tuple[float, float] | None = None
+        swapped_flag = False
+        rings = max(1, int(radius_m / step_m))
+
+        for ring in range(1, rings + 1):
+            r = ring * step_m
+            points = max(8, int(2 * math.pi * r / step_m))
+            for i in range(points):
+                theta = 2.0 * math.pi * i / points
+                d_lat = _meters_to_lat_deg(r * math.sin(theta))
+                d_lon = _meters_to_lon_deg(r * math.cos(theta), lat)
+                x, y = _to_dataset_crs(ds, lon + d_lon, lat + d_lat)
+                sample_coords, swapped = _resolve_sample_coords(ds, x, y)
+                if representative_coords is None:
+                    representative_coords = sample_coords
+                    swapped_flag = swapped
+                if not _point_within_bounds(ds, sample_coords[0], sample_coords[1]):
+                    continue
+                any_within_bounds = True
+                try:
+                    sample = next(ds.sample([sample_coords]))[0]
+                except Exception as exc:
+                    errors.append(str(exc))
+                    continue
+                nodata = ds.nodata
+                if nodata is not None and float(sample) == float(nodata):
+                    continue
+                values.append(float(sample))
+
+        if values:
+            return {
+                "status": "ok",
+                "reason": None,
+                "values": values,
+                "axis_info": axis_info,
+                "sample_coords": representative_coords,
+                "within_bounds": any_within_bounds,
+                "coords_swapped": swapped_flag,
+            }
+        if errors:
+            return {
+                "status": "error",
+                "reason": "; ".join(errors[:3]),
+                "values": [],
+                "axis_info": axis_info,
+                "sample_coords": representative_coords,
+                "within_bounds": any_within_bounds,
+                "coords_swapped": swapped_flag,
+            }
+        return {
+            "status": "no_data",
+            "reason": (
+                "No valid raster samples within search radius."
+                if any_within_bounds
+                else "All sample coordinates were outside raster bounds."
+            ),
+            "values": [],
+            "axis_info": axis_info,
+            "sample_coords": representative_coords,
+            "within_bounds": any_within_bounds,
+            "coords_swapped": swapped_flag,
+        }
+    except Exception as exc:
+        return {
+            "status": "error",
+            "reason": str(exc),
+            "values": [],
+            "axis_info": [],
+            "sample_coords": None,
+            "within_bounds": False,
+            "coords_swapped": False,
+        }
 
 
 def _sample_raster_circle(path: str, lat: float, lon: float, radius_m: float, step_m: float = 120.0) -> List[float]:
-    if not (rasterio and _file_exists(path)):
+    detailed = _sample_raster_circle_detailed(path, lat, lon, radius_m, step_m=step_m)
+    values = detailed.get("values")
+    if not isinstance(values, list):
         return []
-    values: List[float] = []
-    rings = max(1, int(radius_m / step_m))
-    for ring in range(1, rings + 1):
-        r = ring * step_m
-        points = max(8, int(2 * math.pi * r / step_m))
-        for i in range(points):
-            theta = 2.0 * math.pi * i / points
-            d_lat = _meters_to_lat_deg(r * math.sin(theta))
-            d_lon = _meters_to_lon_deg(r * math.cos(theta), lat)
-            sample = _sample_raster_point(path, lat + d_lat, lon + d_lon)
-            if sample is not None:
-                values.append(sample)
-    return values
+    return [float(value) for value in values]
 
 
 @dataclass
@@ -136,30 +320,46 @@ class OSMAccessSummary:
 
 class WHPAdapter:
     def sample(self, *, lat: float, lon: float, whp_path: str | None) -> WHPObservation:
-        if not _file_exists(whp_path):
-            return WHPObservation(status="missing", notes=["WHP raster source unavailable."])
+        try:
+            if not _file_exists(whp_path):
+                return WHPObservation(status="missing", notes=["WHP raster source unavailable."])
 
-        raw = _sample_raster_point(str(whp_path), lat, lon)
-        if raw is None:
-            return WHPObservation(status="missing", notes=["WHP value unavailable at property location."])
+            sample_result = _sample_raster_point_detailed(str(whp_path), lat, lon)
+            logger.debug(
+                "WHPAdapter axis order: %s, using coords: %s",
+                sample_result.get("axis_info"),
+                sample_result.get("sample_coords"),
+            )
+            status = str(sample_result.get("status") or "")
+            if status == "error":
+                reason = str(sample_result.get("reason") or "Unknown WHP sampling error.")
+                return WHPObservation(status="error", notes=[f"WHP sampling failed: {reason}"])
 
-        value = float(raw)
-        # WHP common encodings: 1..5 classes or 0..100 normalized values.
-        if value <= 5.0:
-            hazard_index = _to_index(value, 1.0, 5.0)
-        else:
-            hazard_index = _to_index(value, 0.0, 100.0)
+            raw = sample_result.get("value")
+            if raw is None:
+                reason = str(sample_result.get("reason") or "WHP value unavailable at property location.")
+                return WHPObservation(status="missing", notes=[reason])
 
-        burn_index = round(max(0.0, min(100.0, hazard_index * 0.9 + 5.0)), 1)
-        cls = "very_high" if hazard_index >= 80 else "high" if hazard_index >= 60 else "moderate" if hazard_index >= 35 else "low"
-        return WHPObservation(
-            status="ok",
-            raw_value=round(value, 3),
-            hazard_class=cls,
-            burn_probability_index=burn_index,
-            hazard_severity_index=hazard_index,
-            notes=["WHP sampled at geocoded property location."],
-        )
+            value = float(raw)
+            # WHP common encodings: 1..5 classes or 0..100 normalized values.
+            if value <= 5.0:
+                hazard_index = _to_index(value, 1.0, 5.0)
+            else:
+                hazard_index = _to_index(value, 0.0, 100.0)
+
+            burn_index = round(max(0.0, min(100.0, hazard_index * 0.9 + 5.0)), 1)
+            cls = "very_high" if hazard_index >= 80 else "high" if hazard_index >= 60 else "moderate" if hazard_index >= 35 else "low"
+            return WHPObservation(
+                status="ok",
+                raw_value=round(value, 3),
+                hazard_class=cls,
+                burn_probability_index=burn_index,
+                hazard_severity_index=hazard_index,
+                notes=["WHP sampled at geocoded property location."],
+            )
+        except Exception as exc:
+            logger.warning("WHPAdapter.sample failed: %s\n%s", exc, traceback.format_exc())
+            return WHPObservation(status="error", notes=[str(exc)])
 
 
 class GridMETAdapter:
@@ -171,22 +371,44 @@ class GridMETAdapter:
         dryness_raster_path: str | None,
         rolling_window_days: int = 14,
     ) -> GridMETDrynessObservation:
-        if not _file_exists(dryness_raster_path):
-            return GridMETDrynessObservation(status="missing", notes=["gridMET dryness source unavailable."])
+        try:
+            if not _file_exists(dryness_raster_path):
+                return GridMETDrynessObservation(status="missing", notes=["gridMET dryness source unavailable."])
 
-        values = _sample_raster_circle(str(dryness_raster_path), lat, lon, radius_m=1000.0, step_m=150.0)
-        if not values:
-            return GridMETDrynessObservation(status="missing", notes=["No gridMET dryness samples available near property."])
+            sample_result = _sample_raster_circle_detailed(
+                str(dryness_raster_path),
+                lat,
+                lon,
+                radius_m=1000.0,
+                step_m=150.0,
+            )
+            logger.debug(
+                "GridMETAdapter axis order: %s, using coords: %s",
+                sample_result.get("axis_info"),
+                sample_result.get("sample_coords"),
+            )
+            status = str(sample_result.get("status") or "")
+            if status == "error":
+                reason = str(sample_result.get("reason") or "Unknown gridMET sampling error.")
+                return GridMETDrynessObservation(status="error", notes=[f"gridMET sampling failed: {reason}"])
 
-        avg = sum(values) / len(values)
-        dryness_index = _to_index(avg, 0.0, 100.0 if max(values) > 5 else 1.0)
-        return GridMETDrynessObservation(
-            status="ok",
-            raw_value=round(avg, 3),
-            dryness_index=dryness_index,
-            rolling_window_days=rolling_window_days,
-            notes=[f"Derived from local gridMET proxy within {rolling_window_days}-day rolling context."],
-        )
+            values = sample_result.get("values")
+            if not isinstance(values, list) or not values:
+                reason = str(sample_result.get("reason") or "No gridMET dryness samples available near property.")
+                return GridMETDrynessObservation(status="missing", notes=[reason])
+
+            avg = sum(float(v) for v in values) / len(values)
+            dryness_index = _to_index(avg, 0.0, 100.0 if max(float(v) for v in values) > 5 else 1.0)
+            return GridMETDrynessObservation(
+                status="ok",
+                raw_value=round(avg, 3),
+                dryness_index=dryness_index,
+                rolling_window_days=rolling_window_days,
+                notes=[f"Derived from local gridMET proxy within {rolling_window_days}-day rolling context."],
+            )
+        except Exception as exc:
+            logger.warning("GridMETAdapter.sample_dryness failed: %s\n%s", exc, traceback.format_exc())
+            return GridMETDrynessObservation(status="error", notes=[str(exc)])
 
 
 @lru_cache(maxsize=8)

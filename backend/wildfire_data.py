@@ -2438,6 +2438,7 @@ class WildfireDataClient:
                     "matched_structure_footprint": None,
                     "fallback_mode": "point_based",
                     "geometry_source": "raw_geocode_point",
+                    "geometry_resolution_path": "point_proxy",
                     "geometry_confidence": 0.0,
                     "ring_generation_mode": "point_annulus_fallback",
                     "footprint_resolution": {
@@ -2686,6 +2687,7 @@ class WildfireDataClient:
                 "display_point_source": "property_anchor_point",
                 "fallback_mode": "point_based",
                 "geometry_source": fallback_geometry_source,
+                "geometry_resolution_path": "point_proxy",
                 "geometry_confidence": structure_geometry_confidence,
                 "ring_generation_mode": (
                     "parcel_centroid_proxy"
@@ -3089,6 +3091,11 @@ class WildfireDataClient:
         geometry_source = "trusted_building_footprint"
         if final_structure_geometry_source == "user_selected_point_snapped":
             geometry_source = "user_selected_map_point_snapped_structure"
+        geometry_resolution_path = (
+            "parcel_intersection"
+            if str(match_method or "") == "parcel_intersection"
+            else "nearest_footprint"
+        )
         geometry_confidence = max(
             float(structure_geometry_confidence or 0.0),
             float(structure_match_confidence or 0.0),
@@ -3161,6 +3168,7 @@ class WildfireDataClient:
             "display_point_source": display_point_source,
             "fallback_mode": "footprint" if ring_metrics else "point_based",
             "geometry_source": geometry_source,
+            "geometry_resolution_path": geometry_resolution_path,
             "geometry_confidence": geometry_confidence,
             "ring_generation_mode": "footprint_aware_rings",
             "footprint_resolution": footprint_resolution,
@@ -3668,6 +3676,7 @@ class WildfireDataClient:
             "display_point_source": "property_anchor_point",
             "fallback_mode": "point_based",
             "geometry_source": "raw_geocode_point",
+            "geometry_resolution_path": "point_proxy",
             "geometry_confidence": 0.0,
             "ring_generation_mode": "point_annulus_fallback",
             "ring_metrics": None,
@@ -3765,6 +3774,24 @@ class WildfireDataClient:
             if sample_status == "sampling_failed":
                 return "error"
             return "missing"
+
+        def _coverage_from_adapter_status(
+            *,
+            adapter_status: str,
+            configured_path: str | None,
+            notes: list[str] | None = None,
+        ) -> str:
+            normalized = str(adapter_status or "").strip().lower()
+            if normalized in {"ok", "observed"}:
+                return "observed"
+            if normalized == "error":
+                return "sampling_failed"
+            if not str(configured_path or "").strip():
+                return "not_configured"
+            joined_notes = " ".join(str(note) for note in (notes or [])).lower()
+            if "source unavailable" in joined_notes or "missing file" in joined_notes:
+                return "missing_file"
+            return "outside_extent"
 
         if not (rasterio and np is not None and Transformer is not None):
             assumptions.append("Geospatial stack unavailable; install rasterio/numpy/pyproj/shapely.")
@@ -4149,6 +4176,17 @@ class WildfireDataClient:
                         else "raw_geocode_point"
                     )
                 ),
+                "geometry_resolution_path": str(
+                    ring_context.get("geometry_resolution_path")
+                    or (
+                        "parcel_intersection"
+                        if (
+                            ring_context.get("footprint_used")
+                            and str(ring_context.get("structure_match_method") or "") == "parcel_intersection"
+                        )
+                        else ("nearest_footprint" if ring_context.get("footprint_used") else "point_proxy")
+                    )
+                ),
                 "geometry_confidence": (
                     float(ring_context.get("geometry_confidence"))
                     if ring_context.get("geometry_confidence") is not None
@@ -4437,10 +4475,10 @@ class WildfireDataClient:
                 "whp",
                 sample_attempted=True,
                 sample_succeeded=whp_obs.status == "ok",
-                coverage_status=(
-                    "observed"
-                    if whp_obs.status == "ok"
-                    else ("missing_file" if runtime_paths.get("whp") else "not_configured")
+                coverage_status=_coverage_from_adapter_status(
+                    adapter_status=whp_obs.status,
+                    configured_path=runtime_paths.get("whp"),
+                    notes=whp_obs.notes,
                 ),
                 raw_value_preview=whp_obs.raw_value,
                 failure_reason=None if whp_obs.status == "ok" else "; ".join(whp_obs.notes[:2]),
@@ -4740,10 +4778,10 @@ class WildfireDataClient:
                 "gridmet_dryness",
                 sample_attempted=True,
                 sample_succeeded=gridmet_obs.status == "ok",
-                coverage_status=(
-                    "observed"
-                    if gridmet_obs.status == "ok"
-                    else ("missing_file" if runtime_paths.get("gridmet_dryness") else "not_configured")
+                coverage_status=_coverage_from_adapter_status(
+                    adapter_status=gridmet_obs.status,
+                    configured_path=runtime_paths.get("gridmet_dryness"),
+                    notes=gridmet_obs.notes,
                 ),
                 raw_value_preview=gridmet_obs.raw_value,
                 failure_reason=None if gridmet_obs.status == "ok" else "; ".join(gridmet_obs.notes[:2]),

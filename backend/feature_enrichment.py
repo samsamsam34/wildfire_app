@@ -177,9 +177,9 @@ def _classify_enrichment_runtime_status(
     coverage_status = str(layer_row.get("coverage_status") or "").strip().lower()
     if coverage_status == "not_configured":
         return "not_configured"
-    if coverage_status in {"missing_file", "sampling_failed"}:
+    if coverage_status in {"missing_file", "sampling_failed", "error"}:
         return "configured_but_fetch_failed"
-    if coverage_status in {"outside_extent", "fallback_used"}:
+    if coverage_status in {"outside_extent", "fallback_used", "no_data"}:
         return "configured_but_no_coverage"
     if coverage_status in {"observed", "partial"}:
         return "present_and_consumed" if consumed else "present_but_not_consumed"
