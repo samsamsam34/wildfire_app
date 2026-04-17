@@ -1,0 +1,46 @@
+# Geocoding provider chain configuration for the wildfire risk platform.
+#
+# Providers are tried in the order listed below. The first successful match
+# wins. Set `enabled: false` to remove a provider from the chain without
+# deleting its config block.
+#
+# Environment variable overrides:
+#   WF_GEOCODING_CONFIG_PATH   — path to this file (default: config/geocoding_config.yaml)
+#   WF_GOOGLE_GEOCODE_API_KEY  — enables the Google provider when set (also requires
+#                                 enabled: true in the google block below)
+
+provider_chain:
+  - name: census_tiger
+    enabled: true
+    timeout_seconds: 5
+    # Free, no API key required. National US coverage. Interpolates addresses
+    # along TIGER/Line road centerlines — not rooftop-level, but substantially
+    # better than Nominatim for standard US residential addresses.
+
+  - name: nominatim
+    enabled: true
+    timeout_seconds: 10
+    # OpenStreetMap Nominatim. Configuration (search URL, importance thresholds,
+    # query variants) is still controlled by the WF_GEOCODE_* env vars on the
+    # Geocoder class in backend/geocoding.py.
+
+  - name: google
+    enabled: false
+    timeout_seconds: 5
+    # Google Maps Geocoding API (rooftop precision, ~$5/1,000 queries).
+    # Stub only — full implementation is Phase 1c.
+    # To enable: set WF_GOOGLE_GEOCODE_API_KEY and change enabled to true.
+
+validation:
+  zip_validation_enabled: true    # cross-check geocoded point vs. input ZIP centroid
+  zip_max_distance_km: 20         # reject if geocoded point is >20 km from ZIP centroid
+
+  # Block assessments when geocode confidence is below this tier.
+  # Options: low | medium | high | null (null = no blocking)
+  require_geocode_confidence: null
+
+fallback_behavior:
+  on_timeout: next_provider   # advance to next provider on network timeout
+  on_no_match: next_provider  # advance to next provider when address not found
+  on_error: next_provider     # advance to next provider on unexpected errors
+  log_level: warning          # log level for provider failures (debug | info | warning | error)

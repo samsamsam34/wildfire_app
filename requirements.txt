@@ -8,6 +8,9 @@ rasterio==1.4.3
 pyproj==3.7.1
 shapely==2.1.1
 
+# YAML config parsing (backend/scoring_config.py, backend/geocoding_fallback_chain.py)
+PyYAML==6.0.2
+
 # Test dependencies (tests/test_risk_assessment.py)
 pytest==8.3.5
 httpx==0.28.1

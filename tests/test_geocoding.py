@@ -3,10 +3,14 @@ from __future__ import annotations
 import json
 import urllib.parse
 from typing import Any
+from unittest.mock import MagicMock, patch
 
 import pytest
 
-from backend.geocoding import Geocoder, GeocodingError, geocode_from_address_points
+from backend.geocoding import Geocoder, GeocodingError, GeocodeResult, geocode_from_address_points
+from backend.geocoding_census import CensusGeocoder
+from backend.geocoding_fallback_chain import GeocodeFallbackChain
+from backend.geocoding_zip_validator import ZipCodeValidator, ZipValidationResult, haversine_km
 
 
 class _FakeHTTPResponse:
@@ -432,3 +436,525 @@ def test_geocode_from_address_points_uses_fulladdress_number_fallback(tmp_path):
     result = geocode_from_address_points("1355 Pattee Canyon Rd, Missoula, MT", str(ap))
     assert result is not None
     assert result.geocode_precision == "rooftop"
+
+
+# ---------------------------------------------------------------------------
+# CensusGeocoder tests
+# ---------------------------------------------------------------------------
+
+# Minimal Census API response shape for a successful match.
+_CENSUS_SUCCESS_PAYLOAD = {
+    "result": {
+        "input": {"address": {"address": "4600 Silver Hill Rd, Suitland, MD"}},
+        "addressMatches": [
+            {
+                "tigerLine": {"side": "L", "tigerLineId": "76355984"},
+                "coordinates": {"x": -76.92743, "y": 38.845985},
+                "addressComponents": {
+                    "zip": "20746",
+                    "streetName": "SILVER HILL",
+                    "preType": "",
+                    "city": "SUITLAND",
+                    "preDirection": "",
+                    "suffixDirection": "",
+                    "fromAddress": "4500",
+                    "state": "MD",
+                    "suffixType": "RD",
+                    "toAddress": "4798",
+                    "suffixQualifier": "",
+                    "preQualifier": "",
+                },
+                "matchedAddress": "4600 SILVER HILL RD, SUITLAND, MD, 20746",
+            }
+        ],
+    }
+}
+
+_CENSUS_NO_MATCH_PAYLOAD = {
+    "result": {
+        "input": {"address": {"address": "1 Nowhere Blvd, Fakeville, XX 00000"}},
+        "addressMatches": [],
+    }
+}
+
+
+class _FakeCensusHTTPResponse:
+    """Minimal urllib response stub for Census API calls."""
+
+    def __init__(self, payload: Any) -> None:
+        self._payload = payload
+
+    def read(self) -> bytes:
+        return json.dumps(self._payload).encode("utf-8")
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+
+def test_census_geocoder_success_returns_correct_precision_and_coordinates(monkeypatch):
+    """Valid Census response → parcel_or_address_point precision and correct lat/lon."""
+    monkeypatch.setattr(
+        "backend.geocoding_census.urllib.request.urlopen",
+        lambda *args, **kwargs: _FakeCensusHTTPResponse(_CENSUS_SUCCESS_PAYLOAD),
+    )
+    geocoder = CensusGeocoder()
+    result = geocoder.geocode("4600 Silver Hill Rd, Suitland, MD 20746")
+
+    assert result is not None
+    assert result.geocode_status == "accepted"
+    assert result.latitude == pytest.approx(38.845985)
+    assert result.longitude == pytest.approx(-76.92743)
+    assert result.geocode_precision == "parcel_or_address_point"
+    assert result.provider == "census_tiger"
+    assert result.matched_address == "4600 SILVER HILL RD, SUITLAND, MD, 20746"
+    assert result.candidate_count == 1
+    # last_result must be populated for the fallback chain to read metadata.
+    assert geocoder.last_result is not None
+    assert geocoder.last_result["geocode_precision"] == "parcel_or_address_point"
+
+
+def test_census_geocoder_empty_address_matches_returns_none(monkeypatch):
+    """Empty addressMatches array → geocode() returns None without raising."""
+    monkeypatch.setattr(
+        "backend.geocoding_census.urllib.request.urlopen",
+        lambda *args, **kwargs: _FakeCensusHTTPResponse(_CENSUS_NO_MATCH_PAYLOAD),
+    )
+    geocoder = CensusGeocoder()
+    result = geocoder.geocode("1 Nowhere Blvd, Fakeville, XX 00000")
+
+    assert result is None
+    assert geocoder.last_result is None
+
+
+def test_census_geocoder_network_timeout_returns_none(monkeypatch):
+    """Network timeout → geocode() returns None without raising."""
+
+    def _raise_timeout(*args, **kwargs):
+        raise TimeoutError("timed out")
+
+    monkeypatch.setattr(
+        "backend.geocoding_census.urllib.request.urlopen",
+        _raise_timeout,
+    )
+    geocoder = CensusGeocoder(timeout_seconds=1.0)
+    result = geocoder.geocode("123 Main St, Missoula, MT 59801")
+
+    assert result is None
+    assert geocoder.last_result is None
+
+
+def test_census_geocoder_interpolated_precision_when_no_city(monkeypatch):
+    """tigerLineId present but city missing → interpolated precision."""
+    payload = {
+        "result": {
+            "addressMatches": [
+                {
+                    "tigerLine": {"side": "R", "tigerLineId": "99999"},
+                    "coordinates": {"x": -113.99, "y": 46.87},
+                    "addressComponents": {
+                        "zip": "59801",
+                        "streetName": "PATTEE CANYON",
+                        "preType": "",
+                        "city": "",        # empty city → incomplete components
+                        "state": "MT",
+                        "suffixType": "RD",
+                    },
+                    "matchedAddress": "1355 PATTEE CANYON RD, MT, 59801",
+                }
+            ]
+        }
+    }
+    monkeypatch.setattr(
+        "backend.geocoding_census.urllib.request.urlopen",
+        lambda *args, **kwargs: _FakeCensusHTTPResponse(payload),
+    )
+    result = CensusGeocoder().geocode("1355 Pattee Canyon Rd, Missoula, MT")
+    assert result is not None
+    assert result.geocode_precision == "interpolated"
+
+
+# ---------------------------------------------------------------------------
+# GeocodeFallbackChain tests
+# ---------------------------------------------------------------------------
+
+def _make_nominatim_result() -> GeocodeResult:
+    return GeocodeResult(
+        latitude=48.4782,
+        longitude=-120.1870,
+        source="OpenStreetMap Nominatim",
+        geocode_status="accepted",
+        submitted_address="12 Twin Lakes Rd, Winthrop, WA",
+        normalized_address="12 twin lakes rd winthrop wa",
+        provider="OpenStreetMap Nominatim",
+        geocode_precision="parcel_or_address_point",
+    )
+
+
+def _mock_census_none() -> MagicMock:
+    m = MagicMock(spec=CensusGeocoder)
+    m.provider_name = "census_tiger"
+    m.geocode.return_value = None
+    m.last_result = None
+    return m
+
+
+def _mock_nominatim_tuple(result: GeocodeResult) -> MagicMock:
+    m = MagicMock()
+    m.provider_name = "OpenStreetMap Nominatim"
+    m.geocode.return_value = (result.latitude, result.longitude, result.source)
+    m.last_result = {
+        "geocode_status": "accepted",
+        "geocode_precision": result.geocode_precision,
+        "provider": result.provider,
+        "submitted_address": result.submitted_address,
+        "normalized_address": result.normalized_address,
+        "matched_address": result.matched_address,
+        "confidence_score": None,
+        "candidate_count": 1,
+        "geocode_location_type": None,
+        "raw_response_preview": None,
+        "rejection_reason": None,
+    }
+    return m
+
+
+def test_fallback_chain_advances_to_nominatim_when_census_returns_none():
+    """Census returns None → chain tries Nominatim and succeeds."""
+    nom_result = _make_nominatim_result()
+    census_mock = _mock_census_none()
+    nom_mock = _mock_nominatim_tuple(nom_result)
+
+    chain = GeocodeFallbackChain([census_mock, nom_mock])
+    lat, lon, source = chain.geocode("12 Twin Lakes Rd, Winthrop, WA")
+
+    assert census_mock.geocode.called
+    assert nom_mock.geocode.called
+    assert lat == pytest.approx(48.4782)
+    assert lon == pytest.approx(-120.1870)
+    assert chain.last_result is not None
+    assert chain.last_result.get("provider_used") == "OpenStreetMap Nominatim"
+
+
+def test_fallback_chain_stops_at_census_when_census_succeeds(monkeypatch):
+    """Census returns a valid result → Nominatim must NOT be called."""
+    census_result = GeocodeResult(
+        latitude=38.845985,
+        longitude=-76.92743,
+        source="census_tiger",
+        geocode_status="accepted",
+        submitted_address="4600 Silver Hill Rd, Suitland, MD",
+        normalized_address="4600 silver hill rd suitland md",
+        provider="census_tiger",
+        geocode_precision="parcel_or_address_point",
+    )
+    census_mock = MagicMock(spec=CensusGeocoder)
+    census_mock.provider_name = "census_tiger"
+    census_mock.geocode.return_value = census_result
+    census_mock.last_result = {
+        "geocode_status": "accepted",
+        "geocode_precision": "parcel_or_address_point",
+        "provider": "census_tiger",
+        "submitted_address": census_result.submitted_address,
+        "normalized_address": census_result.normalized_address,
+        "matched_address": census_result.matched_address,
+        "confidence_score": None,
+        "candidate_count": 1,
+        "geocode_location_type": None,
+        "raw_response_preview": None,
+        "rejection_reason": None,
+    }
+
+    nom_mock = MagicMock()
+    nom_mock.provider_name = "OpenStreetMap Nominatim"
+
+    chain = GeocodeFallbackChain([census_mock, nom_mock])
+    lat, lon, source = chain.geocode("4600 Silver Hill Rd, Suitland, MD")
+
+    assert census_mock.geocode.called
+    assert not nom_mock.geocode.called
+    assert lat == pytest.approx(38.845985)
+    assert chain.last_result is not None
+    assert chain.last_result.get("provider_used") == "census_tiger"
+
+
+def test_fallback_chain_raises_geocoding_error_when_all_providers_fail():
+    """All providers return None or raise → chain raises GeocodingError."""
+    census_mock = _mock_census_none()
+
+    nom_mock = MagicMock()
+    nom_mock.provider_name = "OpenStreetMap Nominatim"
+    nom_mock.geocode.side_effect = GeocodingError(
+        status="no_match",
+        message="No geocoding result found.",
+        submitted_address="1 Nowhere Blvd, XX",
+        normalized_address="1 nowhere blvd xx",
+        provider="OpenStreetMap Nominatim",
+        rejection_reason="provider returned no candidates",
+    )
+
+    chain = GeocodeFallbackChain([census_mock, nom_mock])
+
+    with pytest.raises(GeocodingError) as exc_info:
+        chain.geocode("1 Nowhere Blvd, Fakeville, XX 00000")
+
+    assert exc_info.value.status == "no_match"
+    assert exc_info.value.provider == "geocode_fallback_chain"
+    assert census_mock.geocode.called
+    assert nom_mock.geocode.called
+
+
+# ---------------------------------------------------------------------------
+# ZipCodeValidator tests
+# ---------------------------------------------------------------------------
+
+# Synthetic centroid dict injected directly so no network or file I/O occurs.
+# 98862 → Winthrop WA area centroid (approx)
+# 59803 → Missoula MT area centroid (approx)
+# 84604 → Provo UT area centroid (approx)
+_SYNTHETIC_CENTROIDS: dict[str, tuple[float, float]] = {
+    "98862": (48.4785, -120.1865),   # Winthrop, WA
+    "59803": (46.8302, -113.9803),   # Missoula, MT
+    "84604": (40.2764, -111.6355),   # Provo, UT
+}
+
+
+def _make_validator_with_centroids(
+    centroids: dict[str, tuple[float, float]] | None = None,
+) -> ZipCodeValidator:
+    """Return a ZipCodeValidator with a synthetic centroid dict (no network/file I/O)."""
+    v = ZipCodeValidator.__new__(ZipCodeValidator)
+    v._cache_path = None  # type: ignore[assignment]
+    v._download_url = ""
+    v._timeout = 5.0
+    v._load_failed = centroids is None
+    v._centroids = centroids
+    return v
+
+
+def _make_result(lat: float, lon: float, *, matched_address: str = "", raw: dict | None = None) -> GeocodeResult:
+    return GeocodeResult(
+        latitude=lat,
+        longitude=lon,
+        source="test",
+        geocode_status="accepted",
+        submitted_address="",
+        normalized_address="",
+        provider="test",
+        matched_address=matched_address or None,
+        raw_response_preview=raw,
+    )
+
+
+# --- haversine sanity check ---
+
+def test_haversine_km_same_point_is_zero():
+    assert haversine_km(48.4785, -120.1865, 48.4785, -120.1865) == pytest.approx(0.0, abs=1e-6)
+
+
+def test_haversine_km_winthrop_to_dutchess_county():
+    """WA 98862 centroid to Dutchess County NY should be ~3,660 km."""
+    dist = haversine_km(48.4785, -120.1865, 41.5089, -73.9335)
+    assert 3_500 < dist < 3_800
+
+
+# --- ZipCodeValidator.validate() ---
+
+def test_zip_validator_passes_when_point_near_zip_centroid():
+    """Geocoded point within 20 km of ZIP centroid → PASSES."""
+    v = _make_validator_with_centroids(_SYNTHETIC_CENTROIDS)
+    # Missoula address; returned point within 1 km of 59803 centroid.
+    result = _make_result(46.830, -113.981)
+    vr = v.validate(result, "1355 Pattee Canyon Rd, Missoula, MT 59803", max_distance_km=20.0)
+    assert vr.passed is True
+    assert vr.input_zip == "59803"
+    assert vr.distance_km is not None
+    assert vr.distance_km < 20.0
+
+
+def test_zip_validator_fails_winthrop_wa_returned_as_dutchess_county_ny():
+    """Canonical failure: WA 98862 input, NY coordinates returned → FAILS."""
+    v = _make_validator_with_centroids(_SYNTHETIC_CENTROIDS)
+    # Nominatim returned Dutchess County NY coordinates for a WA address.
+    result = _make_result(41.5089, -73.9335)
+    vr = v.validate(result, "6 Pineview Rd, Winthrop, WA 98862", max_distance_km=20.0)
+    assert vr.passed is False
+    assert vr.input_zip == "98862"
+    assert vr.distance_km is not None
+    assert vr.distance_km > 3_000
+    assert "98862" in (vr.reason or "")
+    assert "km" in (vr.reason or "")
+
+
+def test_zip_validator_passes_when_state_matches_and_no_zip():
+    """No ZIP in input, geocoder returns matching state → PASSES."""
+    v = _make_validator_with_centroids(_SYNTHETIC_CENTROIDS)
+    result = _make_result(
+        48.47, -120.19,
+        raw={
+            "top_candidate": {
+                "address": {"state": "Washington", "postcode": None}
+            }
+        },
+    )
+    vr = v.validate(result, "6 Pineview Rd, Winthrop, WA", max_distance_km=20.0)
+    assert vr.passed is True
+    assert vr.input_zip is None
+    assert vr.input_state == "WA"
+
+
+def test_zip_validator_fails_when_state_mismatches_and_no_zip():
+    """No ZIP in input, geocoder returns mismatched state → FAILS."""
+    v = _make_validator_with_centroids(_SYNTHETIC_CENTROIDS)
+    result = _make_result(
+        41.508, -73.934,
+        raw={
+            "top_candidate": {
+                "address": {"state": "New York", "postcode": None}
+            }
+        },
+    )
+    vr = v.validate(result, "6 Pineview Rd, Winthrop, WA", max_distance_km=20.0)
+    assert vr.passed is False
+    assert vr.input_state == "WA"
+    assert "NY" in (vr.reason or "") or "New York" in (vr.reason or "")
+
+
+def test_zip_validator_passes_when_no_zip_and_no_state_in_input():
+    """Input with no ZIP and no recognisable state abbreviation → PASSES (cannot validate)."""
+    v = _make_validator_with_centroids(_SYNTHETIC_CENTROIDS)
+    result = _make_result(41.508, -73.934)
+    vr = v.validate(result, "6 Pineview Road", max_distance_km=20.0)
+    assert vr.passed is True
+    assert vr.input_zip is None
+    assert vr.input_state is None
+    assert "cannot validate" in (vr.reason or "")
+
+
+def test_zip_validator_passes_when_zip_not_in_centroid_dataset():
+    """ZIP present in input but not in the centroid dict → PASSES with a note."""
+    v = _make_validator_with_centroids({"99999": (48.0, -122.0)})  # only 99999 loaded
+    result = _make_result(41.508, -73.934)
+    vr = v.validate(result, "100 Main St, Somewhere, WA 00001", max_distance_km=20.0)
+    assert vr.passed is True
+    assert vr.input_zip == "00001"
+    assert "not_in_centroid_dataset" in (vr.reason or "")
+
+
+def test_zip_validator_disabled_when_load_failed():
+    """Centroid data load failure → validator disables; all calls return PASSES."""
+    v = _make_validator_with_centroids(None)  # _load_failed=True, _centroids=None
+    result = _make_result(41.508, -73.934)  # obviously wrong coordinates for WA
+    vr = v.validate(result, "6 Pineview Rd, Winthrop, WA 98862", max_distance_km=20.0)
+    assert vr.passed is True
+    assert "unavailable" in (vr.reason or "")
+
+
+# --- Chain integration tests with ZIP validation ---
+
+def _make_geocode_result_obj(lat: float, lon: float, zip_centroid_close: bool) -> GeocodeResult:
+    """Helper: build a GeocodeResult with a matched_address hinting at WA or NY."""
+    state_str = "Washington" if zip_centroid_close else "New York"
+    return GeocodeResult(
+        latitude=lat,
+        longitude=lon,
+        source="test_provider",
+        geocode_status="accepted",
+        submitted_address="6 Pineview Rd, Winthrop, WA 98862",
+        normalized_address="6 pineview rd winthrop wa 98862",
+        provider="test_provider",
+        matched_address=f"6 Pineview Rd, {state_str}",
+        raw_response_preview={
+            "top_candidate": {
+                "address": {"state": state_str, "postcode": "98862" if zip_centroid_close else "12508"}
+            }
+        },
+    )
+
+
+def test_chain_with_zip_validation_discards_failing_provider_advances_to_next():
+    """First provider fails ZIP validation → chain tries second provider and returns it."""
+    validator = _make_validator_with_centroids(_SYNTHETIC_CENTROIDS)
+
+    # Provider 1: returns NY coordinates for a WA address → validation fails.
+    bad_result = _make_geocode_result_obj(41.5089, -73.9335, zip_centroid_close=False)
+    p1 = MagicMock()
+    p1.provider_name = "bad_provider"
+    p1.geocode.return_value = bad_result
+    p1.last_result = {
+        "geocode_status": "accepted", "geocode_precision": "interpolated",
+        "provider": "bad_provider", "matched_address": bad_result.matched_address,
+        "submitted_address": bad_result.submitted_address,
+        "normalized_address": bad_result.normalized_address,
+        "confidence_score": None, "candidate_count": 1,
+        "geocode_location_type": None, "raw_response_preview": bad_result.raw_response_preview,
+        "rejection_reason": None,
+    }
+
+    # Provider 2: returns WA coordinates → validation passes.
+    good_result = _make_geocode_result_obj(48.4772, -120.1864, zip_centroid_close=True)
+    p2 = MagicMock()
+    p2.provider_name = "good_provider"
+    p2.geocode.return_value = good_result
+    p2.last_result = {
+        "geocode_status": "accepted", "geocode_precision": "parcel_or_address_point",
+        "provider": "good_provider", "matched_address": good_result.matched_address,
+        "submitted_address": good_result.submitted_address,
+        "normalized_address": good_result.normalized_address,
+        "confidence_score": None, "candidate_count": 1,
+        "geocode_location_type": None, "raw_response_preview": good_result.raw_response_preview,
+        "rejection_reason": None,
+    }
+
+    chain = GeocodeFallbackChain(
+        [p1, p2],
+        zip_validator=validator,
+        zip_validation_enabled=True,
+        zip_max_distance_km=20.0,
+    )
+    lat, lon, source = chain.geocode("6 Pineview Rd, Winthrop, WA 98862")
+
+    assert p1.geocode.called
+    assert p2.geocode.called
+    assert lat == pytest.approx(48.4772)
+    assert lon == pytest.approx(-120.1864)
+    assert chain.last_result is not None
+    assert chain.last_result.get("provider_used") == "good_provider"
+    assert chain.last_result.get("zip_validation_passed") is True
+
+
+def test_chain_with_zip_validation_all_fail_returns_last_result_not_none():
+    """All providers fail ZIP validation → chain returns last result with zip_validation_passed=False."""
+    validator = _make_validator_with_centroids(_SYNTHETIC_CENTROIDS)
+
+    bad_result = _make_geocode_result_obj(41.5089, -73.9335, zip_centroid_close=False)
+    bad_meta = {
+        "geocode_status": "accepted", "geocode_precision": "interpolated",
+        "provider": "bad_provider", "matched_address": bad_result.matched_address,
+        "submitted_address": bad_result.submitted_address,
+        "normalized_address": bad_result.normalized_address,
+        "confidence_score": None, "candidate_count": 1,
+        "geocode_location_type": None, "raw_response_preview": bad_result.raw_response_preview,
+        "rejection_reason": None,
+    }
+    p1 = MagicMock()
+    p1.provider_name = "bad_provider"
+    p1.geocode.return_value = bad_result
+    p1.last_result = bad_meta
+
+    chain = GeocodeFallbackChain(
+        [p1],
+        zip_validator=validator,
+        zip_validation_enabled=True,
+        zip_max_distance_km=20.0,
+    )
+    lat, lon, source = chain.geocode("6 Pineview Rd, Winthrop, WA 98862")
+
+    # Must return coordinates, not raise.
+    assert lat == pytest.approx(41.5089)
+    assert lon == pytest.approx(-73.9335)
+    assert chain.last_result is not None
+    assert chain.last_result.get("zip_validation_passed") is False
+    assert chain.last_result.get("zip_validation_reason") is not None

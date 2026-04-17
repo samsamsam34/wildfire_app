@@ -46,6 +46,7 @@ from backend.geocoding import (
     normalize_address,
     snap_geocode_to_address_points,
 )
+from backend.geocoding_fallback_chain import GeocodeFallbackChain
 from backend.homeowner_advisor import (
     build_confidence_summary,
     build_ranked_risk_drivers,
@@ -202,9 +203,10 @@ app.add_middleware(
 
 scoring_config = load_scoring_config()
 risk_engine = RiskEngine(scoring_config)
-geocoder = Geocoder()
+_nominatim_geocoder = Geocoder()
+geocoder = GeocodeFallbackChain.from_config(nominatim_instance=_nominatim_geocoder)
 secondary_geocoder = Geocoder(
-    user_agent=os.getenv("WF_GEOCODE_SECONDARY_USER_AGENT", geocoder.user_agent),
+    user_agent=os.getenv("WF_GEOCODE_SECONDARY_USER_AGENT", _nominatim_geocoder.user_agent),
     provider_name=os.getenv("WF_GEOCODE_SECONDARY_PROVIDER_NAME", "Secondary Geocoder"),
     search_url=os.getenv("WF_GEOCODE_SECONDARY_SEARCH_URL", ""),
 )
@@ -10211,7 +10213,7 @@ def _geocode_address_or_raise(
     *,
     address: str,
     purpose: str,
-    geocoder_client: Geocoder | None = None,
+    geocoder_client: Geocoder | GeocodeFallbackChain | None = None,
     provider_override: str | None = None,
 ) -> tuple[float, float, str, dict[str, Any]]:
     submitted_address = str(address or "")
