@@ -45,6 +45,18 @@
         display: grid;
         gap: 0.95rem;
       }
+      #heroSection { order: 1; }
+      #journeySection { order: 2; }
+      #addressSection { order: 3; }
+      #homeDetailsSection { order: 4; }
+      #homeownerSummarySection { order: 5; }
+      #simulationPlannerSection { order: 6; }
+      #reportShareSection { order: 7; }
+      #supportingInsightsSection { order: 8; }
+      #confidenceSection { order: 9; }
+      #improveSection { order: 10; }
+      #mapSection { order: 11; }
+      #advancedSection { order: 12; }
       .card {
         background: var(--card);
         border: 1px solid var(--line);
@@ -274,6 +286,11 @@
         margin-top: 0.42rem;
         font-size: 0.88rem;
       }
+      .action-priority-note {
+        margin-top: 0.45rem;
+        font-size: 0.83rem;
+        color: #6d8290;
+      }
       .result-primary {
         border-color: #c7d6e0;
         background: linear-gradient(180deg, #ffffff 0%, #f8fbfd 100%);
@@ -405,6 +422,13 @@
         width: auto;
         padding-inline: 1rem;
         min-height: 40px;
+      }
+      .actions.actions-low-emphasis button {
+        opacity: 0.92;
+        box-shadow: none;
+      }
+      .actions.actions-low-emphasis button:hover {
+        box-shadow: none;
       }
       #requestStatus {
         font-size: 0.86rem;
@@ -900,7 +924,7 @@
   </head>
   <body>
     <div class="wrap">
-      <section class="card hero-card">
+      <section id="heroSection" class="card hero-card">
         <span class="hero-eyebrow">Homeowner Assessment</span>
         <h1>Understand Your Home's Wildfire Risk</h1>
         <p class="section-help">
@@ -911,19 +935,19 @@
         </p>
       </section>
 
-      <section class="card">
-        <h2>Homeowner Journey (Primary)</h2>
+      <section id="journeySection" class="card">
+        <h2>How This Page Works</h2>
         <p class="section-intro">Start here for the main experience.</p>
         <ol class="journey-list">
           <li>Assess your address</li>
-          <li>View the homeowner report</li>
-          <li>Improve the result with missing home details</li>
-          <li>Simulate mitigation upgrades</li>
+          <li>Review your homeowner summary and recommended next step</li>
+          <li>Run a before/after simulation</li>
+          <li>Open optional report and deeper details</li>
         </ol>
       </section>
 
-      <section class="card">
-        <h2>1. Start With Your Address</h2>
+      <section id="addressSection" class="card">
+        <h2>Step 1: Enter Your Address</h2>
         <p class="section-intro">Use a full street address with city, state, and ZIP for the best match quality.</p>
         <div>
           <label>Address</label>
@@ -931,9 +955,9 @@
         </div>
       </section>
 
-      <section class="card facts-card">
+      <section id="homeDetailsSection" class="card facts-card">
         <div class="facts-head">
-          <h2>2. Home Details</h2>
+          <h2>Step 2: Add Home Details</h2>
           <span class="optional-badge">Optional</span>
         </div>
         <p class="facts-help">If you know a few details about your home, they can improve the estimate. It's okay to leave anything as Unsure.</p>
@@ -1028,10 +1052,10 @@
         <p id="requestStatus" class="status-line tone-muted">Idle.</p>
       </section>
 
-      <section class="card homeowner-first-card">
+      <section id="homeownerSummarySection" class="card homeowner-first-card">
         <div class="homeowner-first-head">
           <div>
-            <h2>3. Homeowner Decision Snapshot</h2>
+            <h2>Step 3: Homeowner Summary</h2>
             <p class="section-help">Quick answer first: your status, why it matters, and what to do next.</p>
           </div>
           <span id="homeownerStatusBadge" class="status-badge status-pending">Status pending</span>
@@ -1064,6 +1088,7 @@
           <p class="decision-cta-label">Recommended next step</p>
           <button id="primaryDecisionCtaBtn" type="button" class="decision-cta-btn">Run assessment to plan mitigation</button>
           <p id="primaryDecisionCtaHint" class="decision-cta-hint muted">Complete an assessment first, then run a before/after mitigation simulation.</p>
+          <p class="action-priority-note">This is the primary action. Additional report and diagnostic tools are available below.</p>
         </div>
         <details id="homeownerDecisionAdvancedDetails" class="mt-sm">
           <summary>Advanced details</summary>
@@ -1073,7 +1098,7 @@
         </details>
       </section>
 
-      <section class="card secondary-panel">
+      <section id="supportingInsightsSection" class="card secondary-panel">
         <details id="supportingInsightsPanel">
           <summary>Supporting Risk Insights (Optional)</summary>
           <p class="section-help">Expanded score, drivers, and action context for homeowners who want more detail.</p>
@@ -1128,7 +1153,7 @@
         </details>
       </section>
 
-      <section class="card trust-card secondary-panel">
+      <section id="confidenceSection" class="card trust-card secondary-panel">
         <details id="confidenceDeepDivePanel">
           <summary>Confidence Deep Dive (Optional)</summary>
           <p class="section-help">How reliable this assessment is, and where data limits may affect precision.</p>
@@ -1154,7 +1179,7 @@
 
       <section id="simulationPlannerSection" class="card secondary-panel">
         <details id="simulationPlannerPanel">
-          <summary>Mitigation Simulation Planner</summary>
+          <summary>Before/After Simulation</summary>
           <p class="section-help">Run a quick preset to estimate before vs after impact, or customize a full scenario below.</p>
 
           <div class="mini-label">Quick scenario presets</div>
@@ -1278,7 +1303,7 @@
         </details>
       </section>
 
-      <section class="card secondary-panel">
+      <section id="improveSection" class="card secondary-panel">
         <details id="improvePanel">
           <summary>Improve This Result (Optional Inputs)</summary>
           <p>Use missing-input suggestions below, update home details above, then click <strong>Update With New Details</strong>.</p>
@@ -1286,14 +1311,14 @@
           <ul id="improveSuggestions"><li class="muted">No suggestions yet.</li></ul>
           <h3 class="subsection-title">Helpful Follow-Up Inputs</h3>
           <ul id="improveInputs"><li class="muted">No follow-up inputs yet.</li></ul>
-          <div class="actions">
+          <div class="actions actions-low-emphasis">
             <button id="refreshImproveBtn" type="button" class="secondary">Refresh Suggestions</button>
           </div>
           <p id="improveStatus" class="status-line tone-muted">Optional input suggestions are ready when you need them.</p>
         </details>
       </section>
 
-      <section class="card secondary-panel">
+      <section id="reportShareSection" class="card secondary-panel">
         <details id="reportSharePanel">
           <summary>Report & Share (Optional)</summary>
           <p class="muted">See the homeowner-focused summary and shareable report formats.</p>
@@ -1306,7 +1331,7 @@
               <ul id="homeownerReportSecondary"><li class="muted">No additional details yet.</li></ul>
             </details>
           </details>
-          <div class="actions">
+          <div class="actions actions-low-emphasis">
             <button id="openReportBtn" type="button" class="secondary">Open Printable Report</button>
             <button id="downloadPdfBtn" type="button" class="secondary">Download Homeowner PDF</button>
           </div>
@@ -1314,7 +1339,7 @@
         </details>
       </section>
 
-      <section class="card secondary-panel">
+      <section id="mapSection" class="card secondary-panel">
         <details id="mapPanel">
           <summary>Property Map (Optional)</summary>
           <p class="muted">See property geometry, defensible-space context, and nearby wildfire layers in one map view.</p>
@@ -1327,7 +1352,7 @@
         </details>
       </section>
 
-      <section class="card advanced-secondary secondary-panel">
+      <section id="advancedSection" class="card advanced-secondary secondary-panel">
         <details id="advancedInternalDetailsPanel">
           <summary>Advanced / Internal Details</summary>
           <p class="section-help">Use this panel for technical outputs beyond homeowner-first guidance.</p>
@@ -1881,7 +1906,7 @@
 
       function syncSimulationActionState() {
         const hasAssessment = !!(latestAssessment && latestAssessment.assessment_id);
-        const shouldDisable = isSimulationSubmitting || !hasAssessment;
+        const shouldDisable = isSimulationSubmitting || isAddressVerificationPending || isAssessmentSubmitting || !hasAssessment;
         const simulateBtn = document.getElementById("simulateBtn");
         const presetRunBtn = document.getElementById("simulatePresetBtn");
         if (simulateBtn) simulateBtn.disabled = shouldDisable;
@@ -3121,7 +3146,7 @@
         }
         setPanelOpen("simulationAdvancedPanel", false);
         setSimulationRunStatus("Run an assessment, pick a preset, then run simulation.", "muted");
-        syncSimulationActionState();
+        syncAssessmentActionState();
         setImproveStatus("Optional input suggestions are ready when you need them.", "muted");
         setReportActionStatus("Report actions will appear here after you run an assessment.", "muted");
         showHomeownerToast("", "muted", { autoHideMs: 0 });
@@ -3463,7 +3488,7 @@
         }
         setSimulationRunStatus("Choose a quick preset or customize a scenario, then run simulation.", "muted");
         setSimulationPresetSelection(selectedSimulationPresetId, { prefill: true });
-        syncSimulationActionState();
+        syncAssessmentActionState();
         setImproveStatus("Review suggested follow-up inputs or refresh this list.", "muted");
         setReportActionStatus("Open the printable report or download the homeowner PDF.", "muted");
         if (
@@ -4131,17 +4156,34 @@
         verificationCoverageRequestSeq += 1;
       }
 
-      function setAssessmentActionsDisabled(disabled) {
+      function setAssessmentActionsDisabled(disabled, reassessDisabledOverride = null) {
         const assessBtn = document.getElementById("assessBtn");
         const reassessBtn = document.getElementById("reassessBtn");
         if (assessBtn) assessBtn.disabled = !!disabled;
-        if (reassessBtn) reassessBtn.disabled = !!disabled;
+        if (reassessBtn) {
+          reassessBtn.disabled = reassessDisabledOverride === null
+            ? !!disabled
+            : !!reassessDisabledOverride;
+        }
+      }
+
+      function syncSecondaryActionState() {
+        const hasAssessment = !!(latestAssessment && latestAssessment.assessment_id);
+        const busy = isAddressVerificationPending || isAssessmentSubmitting || isSimulationSubmitting;
+        const disableOptionalActions = busy || !hasAssessment;
+        ["refreshImproveBtn", "openReportBtn", "downloadPdfBtn", "exportReportBtn"].forEach((id) => {
+          const el = document.getElementById(id);
+          if (!el) return;
+          el.disabled = disableOptionalActions;
+        });
       }
 
       function syncAssessmentActionState() {
-        setAssessmentActionsDisabled(
-          isAddressVerificationPending || isAssessmentSubmitting || addressVerificationModalOpen
-        );
+        const busy = isAddressVerificationPending || isAssessmentSubmitting || addressVerificationModalOpen;
+        const hasAssessment = !!(latestAssessment && latestAssessment.assessment_id);
+        setAssessmentActionsDisabled(busy, busy || !hasAssessment);
+        syncSecondaryActionState();
+        syncSimulationActionState();
       }
 
       function formatCoordinate(value) {
@@ -5134,6 +5176,7 @@
 
         isSimulationSubmitting = true;
         syncSimulationActionState();
+        syncSecondaryActionState();
 
         const simResultEl = document.getElementById("simResult");
         const scenarioName = String(document.getElementById("scenario_name")?.value || "what_if").trim() || "what_if";
@@ -5353,6 +5396,7 @@
         } finally {
           isSimulationSubmitting = false;
           syncSimulationActionState();
+          syncSecondaryActionState();
         }
       }
 
@@ -5505,7 +5549,7 @@
       updatePrimaryDecisionCta("");
       setSimulationPresetSelection("apply_top_actions", { prefill: true });
       setPanelOpen("simulationAdvancedPanel", false);
-      syncSimulationActionState();
+      syncAssessmentActionState();
       setSimulationRunStatus("Run an assessment, pick a preset, then run simulation.", "muted");
       setImproveStatus("Optional input suggestions are ready when you need them.", "muted");
       setReportActionStatus("Report actions will appear here after you run an assessment.", "muted");
