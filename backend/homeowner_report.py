@@ -8,6 +8,7 @@ import re
 import textwrap
 from typing import Any, Literal
 
+from backend.insurability import derive_insurability_status
 from backend.models import (
     AssessmentResult,
     HomeownerReport,
@@ -132,15 +133,15 @@ def _headline_risk_summary(result: AssessmentResult, risk_score: float | None, *
     risk_band = _risk_band(risk_score)
     risk_label = "unknown" if risk_band == "unavailable" else ("low" if risk_band == "lower" else risk_band)
     if risk_label == "unknown":
-        return "We could not determine a reliable wildfire risk level from current data."
+        return "We could not produce a reliable wildfire risk estimate from the available data."
     if tone_level == "advisory":
         return (
-            f"Your home may have {risk_label} wildfire risk, but this estimate is uncertain because "
-            "some property details were estimated or missing."
+            f"Your property appears to have {risk_label} wildfire risk, but some details were estimated, "
+            "so treat this as a screening assessment."
         )
     if tone_level == "slightly_hedged":
-        return f"Your home appears to have {risk_label} wildfire risk based on available property and regional evidence."
-    return f"Your home has {risk_label} wildfire risk."
+        return f"Your property appears to have {risk_label} wildfire risk based on available property and area conditions."
+    return f"Your property shows {risk_label} wildfire risk in this assessment."
 
 
 def _specificity_summary(result: AssessmentResult, homeowner_trust_summary: dict[str, Any]) -> dict[str, Any]:
@@ -248,6 +249,108 @@ def _simplify_homeowner_action(action_row: dict[str, object]) -> dict[str, objec
     return simple
 
 
+def _clean_homeowner_line(value: Any) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    normalized = raw.replace("_", " ").strip()
+    normalized = re.sub(r"\s+", " ", normalized)
+    friendly_map = {
+        "defensible_space_ft": "defensible space clearance distance",
+        "roof_type": "roof material/type",
+        "vent_type": "vent protection type",
+        "window_type": "window protection/type",
+        "construction_year": "home construction year",
+        "siding_type": "siding material/type",
+        "structure_geometry": "building footprint/location geometry",
+        "parcel_geometry": "parcel boundary geometry",
+    }
+    lowered = normalized.lower()
+    if lowered in friendly_map:
+        normalized = friendly_map[lowered]
+    if not normalized:
+        return ""
+    return normalized[0].upper() + normalized[1:]
+
+
+def _dedupe_nonempty_lines(values: list[Any], *, limit: int = 3) -> list[str]:
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for row in values:
+        line = _clean_homeowner_line(row)
+        if not line:
+            continue
+        key = line.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        cleaned.append(line)
+        if len(cleaned) >= max(1, int(limit)):
+            break
+    return cleaned
+
+
+def _build_homeowner_limitations_snapshot(
+    *,
+    result: AssessmentResult,
+    homeowner_improve_your_result: dict[str, Any],
+) -> dict[str, object]:
+    observed = _dedupe_nonempty_lines(
+        list(result.confidence_summary.observed_data or []) + list(result.what_was_observed or []),
+        limit=3,
+    )
+    estimated = _dedupe_nonempty_lines(
+        list(result.confidence_summary.estimated_data or [])
+        + list(result.confidence_summary.fallback_assumptions or [])
+        + list(result.what_was_estimated or []),
+        limit=3,
+    )
+    missing = _dedupe_nonempty_lines(
+        list(result.confidence_summary.missing_data or []) + list(result.what_was_missing or []),
+        limit=3,
+    )
+
+    optional_follow_up_inputs = (
+        homeowner_improve_your_result.get("optional_follow_up_inputs")
+        if isinstance(homeowner_improve_your_result.get("optional_follow_up_inputs"), list)
+        else []
+    )
+    follow_up_lines: list[str] = []
+    for row in optional_follow_up_inputs:
+        if not isinstance(row, dict):
+            continue
+        label = _clean_homeowner_line(row.get("label") or row.get("input_key") or "")
+        prompt = str(row.get("prompt") or "").strip()
+        if label and prompt:
+            follow_up_lines.append(f"{label}: {prompt}")
+        elif label:
+            follow_up_lines.append(label)
+    inputs_to_improve = _dedupe_nonempty_lines(
+        follow_up_lines
+        + list(result.confidence_summary.accuracy_improvements or [])
+        + list(result.recommended_data_improvements or []),
+        limit=3,
+    )
+
+    observed_count = len(list(result.confidence_summary.observed_data or []))
+    estimated_count = len(list(result.confidence_summary.estimated_data or []))
+    missing_count = len(list(result.confidence_summary.missing_data or []))
+    headline = (
+        "Measured vs estimated snapshot: "
+        f"{observed_count} observed, {estimated_count} estimated, {missing_count} missing inputs."
+    )
+
+    return {
+        "headline": headline,
+        "directly_observed": observed or ["No major property-specific details were directly observed yet."],
+        "estimated_or_inferred": estimated or ["No major estimated assumptions were highlighted."],
+        "missing_or_unknown": missing or ["No major missing fields were highlighted."],
+        "inputs_to_improve": inputs_to_improve or [
+            "Confirm roof type, vent protection, and defensible-space details to improve confidence."
+        ],
+    }
+
+
 def _build_first_screen_payload(
     *,
     specificity_summary: dict[str, Any],
@@ -273,6 +376,276 @@ def _build_first_screen_payload(
         "limitations_note": limitation_line,
         # Backward-compatible alias for existing consumers.
         "headline_risk_summary": str(headline_risk_summary or "").strip(),
+    }
+
+
+def _insurance_outlook_status(
+    *,
+    wildfire_risk_score: float | None,
+    home_hardening_readiness: float | None,
+    confidence_tier: str | None,
+) -> str:
+    risk = _to_float(wildfire_risk_score)
+    readiness = _to_float(home_hardening_readiness)
+    tier = str(confidence_tier or "").strip().lower()
+
+    if risk is not None and (risk >= 70.0 or (risk >= 60.0 and (readiness is not None and readiness < 45.0))):
+        return "High Risk of Insurance Issues"
+    if readiness is not None and readiness < 30.0:
+        return "High Risk of Insurance Issues"
+    if (risk is not None and risk >= 45.0) or (readiness is not None and readiness < 60.0):
+        return "At Risk"
+    if tier in {"low", "preliminary"} and risk is not None and risk >= 40.0:
+        return "At Risk"
+    return "Likely Insurable"
+
+
+def _status_one_sentence_summary(
+    *,
+    status_label: str,
+    headline_risk_summary: str,
+    tone_level: str,
+) -> str:
+    headline = str(headline_risk_summary or "").strip().rstrip(".")
+    if status_label == "Likely Insurable":
+        base = (
+            "Your property appears likely insurable based on observable wildfire risk factors and current property conditions"
+        )
+    elif status_label == "High Risk of Insurance Issues":
+        base = (
+            "Your property appears at high risk of insurance issues due to strong wildfire exposure and limited protective conditions"
+        )
+    else:
+        if status_label:
+            base = "Your property appears at elevated risk of insurance issues due to wildfire exposure and remaining hardening gaps"
+        elif headline:
+            return f"{headline}."
+        else:
+            return "This report provides a screening view of wildfire-related insurance risk and next steps."
+    if tone_level == "advisory":
+        return f"{base}, and some details were estimated, so treat this as a screening assessment."
+    return f"{base}."
+
+
+def _brief_confidence_limitations(
+    *,
+    confidence_tier: str | None,
+    limitations: list[str],
+) -> str:
+    tier = str(confidence_tier or "preliminary").strip().lower()
+    if tier == "high":
+        prefix = "Most key inputs were directly observed."
+    elif tier in {"moderate", "medium"}:
+        prefix = "Some key inputs were directly observed, and some were estimated."
+    else:
+        prefix = "Some key inputs were estimated or missing, so treat this as a screening assessment."
+    first_limitation = str((limitations or [""])[0] or "").strip()
+    if not first_limitation:
+        return prefix
+    return f"{prefix} Main limitation: {first_limitation}"
+
+
+def _before_after_snapshot(
+    *,
+    simulation_overview: dict[str, Any] | None,
+) -> dict[str, object] | None:
+    if not isinstance(simulation_overview, dict) or not simulation_overview:
+        return None
+    embedded = (
+        simulation_overview.get("homeowner_before_after_summary")
+        if isinstance(simulation_overview.get("homeowner_before_after_summary"), dict)
+        else {}
+    )
+    embedded = dict(embedded) if isinstance(embedded, dict) else {}
+    scenario_name = str(simulation_overview.get("scenario_name") or "").strip() or "what-if"
+    wildfire_delta = _to_float(
+        embedded.get("wildfire_risk_score_delta")
+        if embedded.get("wildfire_risk_score_delta") is not None
+        else simulation_overview.get("wildfire_risk_score_delta")
+    )
+    hardening_delta = _to_float(
+        (
+            embedded.get("home_hardening_readiness_delta")
+            if embedded.get("home_hardening_readiness_delta") is not None
+            else (
+                simulation_overview.get("home_hardening_readiness_delta")
+                if simulation_overview.get("home_hardening_readiness_delta") is not None
+                else simulation_overview.get("insurance_readiness_score_delta")
+            )
+        )
+    )
+    current_status = str(embedded.get("current_insurability_status") or "").strip()
+    projected_status = str(embedded.get("projected_insurability_status") or "").strip()
+    status_shift = str(embedded.get("status_shift") or "").strip()
+    action_rows = [
+        row
+        for row in list(embedded.get("top_actions_driving_change") or [])
+        if isinstance(row, dict) and str(row.get("action") or "").strip()
+    ][:3]
+    if wildfire_delta is None and hardening_delta is None and not embedded:
+        return None
+    parts: list[str] = []
+    if current_status and projected_status:
+        if current_status != projected_status:
+            parts.append(f"status shifted from {current_status} to {projected_status}")
+        else:
+            parts.append(f"status remained {projected_status}")
+    if wildfire_delta is not None:
+        direction = (
+            "decreased"
+            if wildfire_delta < 0
+            else ("increased" if wildfire_delta > 0 else "did not change")
+        )
+        parts.append(f"wildfire risk score {direction} ({wildfire_delta:+.1f})")
+    if hardening_delta is not None:
+        direction = (
+            "increased"
+            if hardening_delta > 0
+            else ("decreased" if hardening_delta < 0 else "did not change")
+        )
+        parts.append(f"home hardening readiness score {direction} ({hardening_delta:+.1f})")
+    if action_rows:
+        lead_action = str(action_rows[0].get("action") or "").strip()
+        if lead_action:
+            parts.append(f"top driver: {lead_action}")
+    summary = str(embedded.get("summary") or "").strip() or (f"What-if scenario ({scenario_name}): " + (
+        "; ".join(parts) if parts else "no measurable score change was recorded."
+    ))
+    return {
+        "available": True,
+        "scenario_name": scenario_name,
+        "wildfire_risk_score_delta": wildfire_delta,
+        "home_hardening_readiness_delta": hardening_delta,
+        "current_insurability_status": current_status,
+        "projected_insurability_status": projected_status,
+        "status_shift": status_shift,
+        "top_actions_driving_change": action_rows,
+        "summary": summary,
+        "technical_summary": {
+            "wildfire_risk_score_before": _to_float(embedded.get("wildfire_risk_score_before")),
+            "wildfire_risk_score_after": _to_float(embedded.get("wildfire_risk_score_after")),
+            "home_hardening_readiness_before": _to_float(embedded.get("home_hardening_readiness_before")),
+            "home_hardening_readiness_after": _to_float(embedded.get("home_hardening_readiness_after")),
+            "confidence_tier_before": str(embedded.get("confidence_tier_before") or "").strip(),
+            "confidence_tier_after": str(embedded.get("confidence_tier_after") or "").strip(),
+        },
+    }
+
+
+def _build_homeowner_focus_summary(
+    *,
+    insurability_status: str,
+    insurability_status_reasons: list[str],
+    insurability_status_methodology_note: str,
+    confidence_tier: str | None,
+    headline_risk_summary: str,
+    top_risk_drivers: list[str],
+    ranked_actions: list[dict[str, object]],
+    limitations: list[str],
+    limitations_snapshot: dict[str, object],
+    tone_level: str,
+    simulation_overview: dict[str, Any] | None = None,
+) -> dict[str, object]:
+    status_label = str(insurability_status or "").strip()
+    top_actions = [_simplify_homeowner_action(row) for row in list(ranked_actions or [])[:3]]
+    return {
+        "insurability_status": status_label,
+        "insurability_status_reasons": [str(v).strip() for v in list(insurability_status_reasons or []) if str(v).strip()][:3],
+        "insurability_status_methodology_note": str(insurability_status_methodology_note or "").strip(),
+        # Backward-compatible alias retained for existing consumers.
+        "status_label": status_label,
+        "question_answer": (
+            f"{status_label}: this report summarizes your wildfire-related insurance risk and the most practical next steps."
+        ),
+        "one_sentence_summary": _status_one_sentence_summary(
+            status_label=status_label,
+            headline_risk_summary=headline_risk_summary,
+            tone_level=tone_level,
+        ),
+        "top_risk_drivers": [str(row).strip() for row in list(top_risk_drivers or [])[:3] if str(row).strip()],
+        "top_recommended_actions": top_actions,
+        "before_after_summary": _before_after_snapshot(simulation_overview=simulation_overview),
+        "limitations_snapshot": dict(limitations_snapshot or {}),
+        "confidence_limitations_summary": _brief_confidence_limitations(
+            confidence_tier=confidence_tier,
+            limitations=limitations,
+        ),
+        "advanced_details_hint": (
+            "Technical subscores, diagnostics, evidence ledgers, and calibration metadata are available in internal details."
+        ),
+    }
+
+
+def _build_internal_calibration_debug_block(
+    result: AssessmentResult,
+    *,
+    calibration_metadata_requested: bool,
+    optional_calibration: dict[str, object] | None,
+    calibration_prob: float | None,
+    empirical_damage_prob: float | None,
+    empirical_loss_prob: float | None,
+) -> dict[str, object]:
+    return {
+        "subscores": {
+            "wildfire_risk_score": result.wildfire_risk_score,
+            "overall_wildfire_risk": result.overall_wildfire_risk,
+            "site_hazard_score": result.site_hazard_score,
+            "home_ignition_vulnerability_score": result.home_ignition_vulnerability_score,
+            "home_hardening_readiness": result.home_hardening_readiness,
+            "insurance_readiness_score": result.insurance_readiness_score,
+            "score_summaries": _dump_value(result.score_summaries),
+            "site_hazard_section": _dump_value(result.site_hazard_section),
+            "home_ignition_vulnerability_section": _dump_value(result.home_ignition_vulnerability_section),
+            "insurance_readiness_section": _dump_value(result.insurance_readiness_section),
+            "weighted_contributions": {
+                str(key): _dump_value(value)
+                for key, value in dict(result.weighted_contributions or {}).items()
+            },
+            "factor_breakdown": _dump_value(result.factor_breakdown),
+        },
+        "diagnostics": {
+            "assessment_status": result.assessment_status,
+            "assessment_blockers": list(result.assessment_blockers or []),
+            "assessment_limitations_summary": list(result.assessment_limitations_summary or []),
+            "assessment_diagnostics": _dump_value(result.assessment_diagnostics),
+            "coverage_summary": _dump_value(result.coverage_summary),
+            "layer_coverage_audit": [_dump_value(row) for row in list(result.layer_coverage_audit or [])],
+            "specificity_summary": _dump_value(result.specificity_summary),
+            "confidence_summary": _dump_value(result.confidence_summary),
+        },
+        "evidence_ledgers": {
+            "score_evidence_ledger": _dump_value(result.score_evidence_ledger),
+            "evidence_quality_summary": _dump_value(result.evidence_quality_summary),
+        },
+        "calibration_fields": {
+            "calibration_metadata_requested": bool(calibration_metadata_requested),
+            "calibration_applied": result.calibration_applied,
+            "calibration_status": result.calibration_status,
+            "calibration_version": result.calibration_version,
+            "calibration_method": result.calibration_method,
+            "calibration_limitations": list(result.calibration_limitations or []),
+            "calibration_scope_warning": result.calibration_scope_warning,
+            "optional_public_outcome_calibration": optional_calibration,
+            "calibrated_damage_likelihood": calibration_prob,
+            "empirical_damage_likelihood_proxy": empirical_damage_prob,
+            "empirical_loss_likelihood_proxy": empirical_loss_prob,
+        },
+        "compatibility_outputs": {
+            "insurance_readiness_summary": {
+                "insurance_readiness_score": result.insurance_readiness_score,
+                "insurance_readiness_score_available": result.insurance_readiness_score_available,
+                "readiness_summary": result.readiness_summary,
+                "readiness_blockers": list(result.readiness_blockers or []),
+                "readiness_factors": [_dump_value(row) for row in list(result.readiness_factors or [])[:8]],
+            },
+            "legacy_weighted_wildfire_risk_score": result.legacy_weighted_wildfire_risk_score,
+            "model_governance": _dump_value(result.model_governance),
+            "ruleset": {
+                "ruleset_id": result.ruleset_id,
+                "ruleset_name": result.ruleset_name,
+                "ruleset_version": result.ruleset_version,
+            },
+        },
     }
 
 
@@ -308,25 +681,25 @@ def _optional_public_outcome_calibration_metadata(result: AssessmentResult) -> d
 def _risk_driver_from_text(driver_text: str, *, tone_level: str) -> str:
     text = str(driver_text or "").strip().lower()
     if not text:
-        base = "This condition near your home"
+        base = "Nearby conditions around the home"
     elif any(token in text for token in ("vegetation", "fuel", "tree cover", "brush", "wildland")):
-        base = "Vegetation near your home"
+        base = "Vegetation close to the home"
     elif any(token in text for token in ("slope", "terrain", "topography")):
-        base = "Terrain near your home"
+        base = "Terrain near the home"
     elif "defensible space" in text:
-        base = "Defensible space near your home"
+        base = "Defensible space in the closest zones"
     elif "ember" in text:
         base = "Wind-blown ember exposure"
     elif any(token in text for token in ("hardening", "vulnerability", "structure")):
-        base = "Home hardening details"
+        base = "Home hardening conditions"
     else:
-        base = "This condition near your home"
+        base = "Nearby conditions around the home"
 
     if tone_level == "direct":
-        return f"{base} is a major risk factor."
+        return f"{base} is increasing wildfire exposure."
     if tone_level == "slightly_hedged":
-        return f"{base} appears to increase risk."
-    return f"{base} may increase wildfire exposure."
+        return f"{base} appears to be increasing wildfire exposure."
+    return f"{base} may be increasing wildfire exposure."
 
 
 def _summarize_top_risk_drivers(
@@ -340,30 +713,30 @@ def _summarize_top_risk_drivers(
     unique = list(dict.fromkeys([_risk_driver_from_text(row, tone_level=tone_level) for row in cleaned if row]))
     if unique:
         return unique[: max(1, int(limit))]
-    return ["We could not confirm property-specific risk drivers from current data."]
+    return ["Key property-level risk drivers were not clearly observed, so this result leans on broader area conditions."]
 
 
 def _estimated_benefit_phrase(impact_level: str, tone_level: str) -> str:
     impact = str(impact_level or "low").lower()
     if tone_level == "advisory":
         if impact == "high":
-            phrase = "Can help reduce wildfire risk meaningfully when completed and maintained."
+            phrase = "Directional estimate: could provide meaningful risk reduction."
         elif impact == "medium":
-            phrase = "Can help reduce wildfire risk over time."
+            phrase = "Directional estimate: could provide moderate risk reduction."
         else:
-            phrase = "May provide incremental wildfire protection."
-        return phrase + " Benefit estimate is directional."
+            phrase = "Directional estimate: likely incremental risk reduction."
+        return phrase
     if tone_level == "slightly_hedged":
         if impact == "high":
-            return "Appears likely to reduce wildfire risk meaningfully when completed and maintained."
+            return "Expected to provide meaningful risk reduction."
         if impact == "medium":
-            return "Appears likely to reduce wildfire risk over time."
-        return "May provide incremental wildfire protection."
+            return "Expected to provide moderate risk reduction."
+        return "Expected to provide incremental risk reduction."
     if impact == "high":
-        return "Likely to reduce wildfire risk meaningfully when completed and maintained."
+        return "Likely meaningful risk reduction if completed and maintained."
     if impact == "medium":
-        return "Likely to reduce wildfire risk over time."
-    return "May provide incremental wildfire protection."
+        return "Likely moderate risk reduction if completed and maintained."
+    return "Likely incremental risk reduction."
 
 
 def _expected_effect_from_impact(impact_level: str | None) -> str:
@@ -617,26 +990,26 @@ def _summarize_prioritized_actions(
 
 def _limitations_notice(result: AssessmentResult, combined_limitations: list[str]) -> str:
     if combined_limitations:
-        prefix = "Some results are estimated because: "
+        prefix = "Screening note: some results were estimated because "
         return prefix + "; ".join(combined_limitations[:2])
     if result.confidence_tier in {"low", "preliminary"}:
-        return "Some key property details were estimated or missing, so use this report as planning guidance."
+        return "Some key property details were estimated or missing, so use this as a screening assessment."
     if result.confidence_tier == "moderate":
-        return "Most major inputs are available, but some details were estimated."
-    return "Most high-impact inputs were observed directly for this property."
+        return "Most major inputs were available, with some estimated details."
+    return "Most key inputs were directly observed for this property."
 
 
 def _confidence_summary(result: AssessmentResult) -> str:
     tier = str(result.confidence_tier or "preliminary")
     restriction = str(result.use_restriction or "review_required")
     if tier == "high":
-        return "High confidence: most high-impact inputs were observed directly from prepared data and confirmed facts."
+        return "High confidence: most key inputs were directly observed from prepared data and confirmed property details."
     if tier == "moderate":
-        return "Moderate confidence: major location context is available, with some inferred inputs and assumptions."
+        return "Moderate confidence: major location context is available, with some estimated property details."
     if tier == "low":
-        return "Low confidence: significant assumptions or fallback data were required for one or more score components."
+        return "Lower confidence: significant assumptions or fallback data were required for one or more score components."
     return (
-        "Preliminary confidence: this result is useful for homeowner planning, but additional data is needed before high-stakes decisions."
+        "Preliminary confidence: this result is useful for screening and planning, but more data is needed before high-stakes decisions."
     ) + f" Use restriction: {restriction}."
 
 
@@ -793,6 +1166,7 @@ def build_homeowner_report(
     *,
     include_professional_debug_metadata: bool = False,
     include_optional_calibration_metadata: bool = False,
+    simulation_overview: dict[str, Any] | None = None,
 ) -> HomeownerReport:
     resolved_region_id = result.resolved_region_id or str(result.property_level_context.get("region_id") or "") or None
     report_generated_at = result.generated_at.astimezone(timezone.utc).isoformat()
@@ -890,6 +1264,10 @@ def build_homeowner_report(
         else {}
     )
     homeowner_improve_your_result = homeowner_improve_your_result if isinstance(homeowner_improve_your_result, dict) else {}
+    limitations_snapshot = _build_homeowner_limitations_snapshot(
+        result=result,
+        homeowner_improve_your_result=homeowner_improve_your_result,
+    )
     confidence_headline = str(homeowner_confidence.get("headline") or "").strip() or _confidence_summary(result)
     confidence_limitations = [
         str(item).strip()
@@ -1004,9 +1382,85 @@ def build_homeowner_report(
     except Exception:
         homeowner_explanations = _template_homeowner_explanations(result)
 
+    fallback_insurability = derive_insurability_status(
+        wildfire_risk_score=overall_risk_score,
+        home_hardening_readiness=home_hardening_score,
+        confidence_tier=result.confidence_tier,
+        assessment_specificity_tier=result.assessment_specificity_tier,
+        top_near_structure_risk_drivers=result.top_near_structure_risk_drivers,
+        top_risk_drivers=result.top_risk_drivers,
+        defensible_space_analysis=result.defensible_space_analysis,
+        defensible_space_limitations_summary=result.defensible_space_limitations_summary,
+        readiness_blockers=result.readiness_blockers,
+        scoring_status=result.scoring_status,
+    )
+    insurability_status = str(
+        result.insurability_status or fallback_insurability.insurability_status
+    ).strip()
+    insurability_status_reasons = [
+        str(v).strip()
+        for v in (
+            list(result.insurability_status_reasons or [])
+            if list(result.insurability_status_reasons or [])
+            else list(fallback_insurability.insurability_status_reasons)
+        )
+        if str(v).strip()
+    ][:3]
+    insurability_status_methodology_note = str(
+        result.insurability_status_methodology_note
+        or fallback_insurability.insurability_status_methodology_note
+    ).strip()
+
+    homeowner_focus_summary = _build_homeowner_focus_summary(
+        insurability_status=insurability_status,
+        insurability_status_reasons=insurability_status_reasons,
+        insurability_status_methodology_note=insurability_status_methodology_note,
+        confidence_tier=result.confidence_tier,
+        headline_risk_summary=headline_risk_summary,
+        top_risk_drivers=top_risk_drivers,
+        ranked_actions=ranked_actions,
+        limitations=combined_limitations,
+        limitations_snapshot=limitations_snapshot,
+        tone_level=tone_level,
+        simulation_overview=simulation_overview,
+    )
+    internal_calibration_debug = _build_internal_calibration_debug_block(
+        result,
+        calibration_metadata_requested=calibration_metadata_requested,
+        optional_calibration=optional_calibration,
+        calibration_prob=calibration_prob,
+        empirical_damage_prob=empirical_damage_prob,
+        empirical_loss_prob=empirical_loss_prob,
+    )
+    advanced_details: dict[str, object] = {
+        "default_visibility": "collapsed",
+        "calibration_and_diagnostics": internal_calibration_debug,
+        "sections": {
+            "calibration_and_diagnostics": "Technical subscores, diagnostics, evidence ledgers, compatibility outputs, and calibration metadata.",
+            "professional_debug_metadata": "Additional internal diagnostics and audit metadata when explicitly requested.",
+        },
+        "legacy_aliases": {
+            "internal_calibration_debug": "advanced_details.calibration_and_diagnostics",
+        },
+        "professional_debug_metadata_available": bool(professional_debug_metadata),
+        "professional_debug_metadata": (
+            professional_debug_metadata if professional_debug_metadata is not None else {}
+        ),
+        "note": (
+            "Advanced details are retained for model-calibration and internal review workflows; "
+            "homeowner-first guidance appears in summary sections above."
+        ),
+    }
+
     return HomeownerReport(
         assessment_id=result.assessment_id,
         generated_at=report_generated_at,
+        insurability_status=insurability_status,
+        insurability_status_reasons=insurability_status_reasons,
+        insurability_status_methodology_note=insurability_status_methodology_note,
+        homeowner_focus_summary=homeowner_focus_summary,
+        internal_calibration_debug=internal_calibration_debug,
+        advanced_details=advanced_details,
         first_screen=first_screen,
         headline_risk_summary=headline_risk_summary,
         top_risk_drivers=top_risk_drivers,
@@ -1164,11 +1618,11 @@ def _export_confidence_summary(report: HomeownerReport) -> dict[str, object]:
     score = _to_float(score_summary.get("confidence_score"))
 
     if tier == "high":
-        summary = "High confidence: key property and location inputs were observed directly."
+        summary = "High confidence: key property and location inputs were directly observed."
     elif tier in {"moderate", "medium"}:
-        summary = "Moderate confidence: most major inputs are available, with some estimated details."
+        summary = "Moderate confidence: key inputs were mostly available, with some estimated details."
     else:
-        summary = "Lower confidence: several details were estimated or missing, so this report is advisory."
+        summary = "Lower confidence: several details were estimated or missing, so treat this as a screening assessment."
 
     limitations = [
         str(row).strip()
@@ -1244,6 +1698,11 @@ def export_homeowner_report(
         "assessment_id": report.assessment_id,
         "generated_at": report.generated_at,
         "address": str(property_summary.get("address") or ""),
+        "homeowner_focus_summary": (
+            dict(report.homeowner_focus_summary)
+            if isinstance(report.homeowner_focus_summary, dict)
+            else {}
+        ),
         "first_screen": first_screen,
         "headline_risk_summary": str(report.headline_risk_summary or ""),
         "top_risk_drivers": list(report.top_risk_drivers or [])[:3],
@@ -1482,10 +1941,10 @@ def _explanation_lookup_key(value: Any) -> str:
 def _build_headline_summary_template(risk_band: str, tone_profile: str) -> str:
     band = str(risk_band or "Unavailable").strip().lower()
     if tone_profile == "direct":
-        return f"Your property shows {band} wildfire risk based on strong local evidence."
+        return f"Verdict: this property shows {band} wildfire risk in this assessment."
     if tone_profile == "balanced":
-        return f"Your property shows {band} wildfire risk based on available local and regional evidence."
-    return f"Your property may face {band} wildfire risk, though some inputs were estimated."
+        return f"Verdict: this property appears {band} risk based on available property and area data."
+    return f"Verdict: this property may have {band} wildfire risk, and some details were estimated."
 
 
 def _build_driver_explanation_template(driver_text: str, tone_profile: str) -> str:
@@ -1493,10 +1952,10 @@ def _build_driver_explanation_template(driver_text: str, tone_profile: str) -> s
     if not base:
         base = "Nearby conditions"
     if tone_profile == "direct":
-        return f"{base}, which is a major contributor to wildfire exposure at the home."
+        return f"{base} is one of the main reasons this property scores higher for wildfire exposure."
     if tone_profile == "balanced":
-        return f"{base}, which is an important contributor to wildfire exposure at the home."
-    return f"{base}, and it may increase wildfire exposure."
+        return f"{base} is an important reason this property scores higher for wildfire exposure."
+    return f"{base} may be increasing wildfire exposure."
 
 
 def _build_action_explanation_template(action: str, why: str, tone_profile: str) -> str:
@@ -1505,11 +1964,11 @@ def _build_action_explanation_template(action: str, why: str, tone_profile: str)
         action_text = "This action"
     reason = _normalize_line(why).rstrip(".")
     if tone_profile == "direct":
-        sentence = f"{action_text} lowers ignition pathways around the home."
+        sentence = f"{action_text} helps lower ignition pressure around the home."
     elif tone_profile == "balanced":
-        sentence = f"{action_text} can lower ignition pathways around the home."
+        sentence = f"{action_text} can lower ignition pressure around the home."
     else:
-        sentence = f"{action_text} could lower ignition pathways around the home."
+        sentence = f"{action_text} could lower ignition pressure around the home."
     if reason:
         sentence = f"{sentence.rstrip('.')} by addressing {reason}."
     return sentence
@@ -1517,10 +1976,10 @@ def _build_action_explanation_template(action: str, why: str, tone_profile: str)
 
 def _build_limitation_summary_template(tone_profile: str) -> str:
     if tone_profile == "direct":
-        return "Confidence is strong because the assessment used substantial property-level evidence."
+        return "Most key inputs were directly observed for this report."
     if tone_profile == "balanced":
-        return "Confidence is moderate: key inputs were observed, with some estimated details."
-    return "Confidence is lower because some details were estimated or missing, so use this report as planning guidance."
+        return "Some key inputs were directly observed, and some were estimated."
+    return "Several details were estimated or missing, so treat this as a screening assessment."
 
 
 def _extract_action_explanation_candidates(values: Any) -> list[dict[str, str]]:
@@ -1931,6 +2390,7 @@ _PDF_SPACER_HEIGHTS: dict[str, float] = {
     "spacer_sm": 6.0,
     "spacer_md": 9.0,
     "spacer_lg": 13.0,
+    "page_break": 0.0,
 }
 
 _PDF_PAGE_LEFT = 52.0
@@ -2042,10 +2502,10 @@ def _pdf_tone_profile(
 
 def _summary_tone_line(tone_profile: str) -> str:
     if tone_profile == "direct":
-        return "Tone: direct. Evidence coverage is strong for this property."
+        return "This summary is based mostly on directly observed property details."
     if tone_profile == "balanced":
-        return "Tone: balanced. Most major inputs were observed, with some estimated detail."
-    return "Tone: cautious. Some details were estimated or missing."
+        return "This summary combines observed property details with some estimated inputs."
+    return "This summary uses several estimated or missing details and should be treated as screening guidance."
 
 
 def _driver_line_with_tone(driver: str, tone_profile: str) -> str:
@@ -2076,10 +2536,10 @@ def _action_rationale_prefix(tone_profile: str) -> str:
 
 def _limitations_tone_line(tone_profile: str) -> str:
     if tone_profile == "direct":
-        return "Limitations summary: data coverage is strong, so this report supports direct planning decisions."
+        return "Confidence is stronger because key property details were directly observed."
     if tone_profile == "balanced":
-        return "Limitations summary: some details were estimated, so this report is best used as directional guidance."
-    return "Limitations summary: several details were estimated or missing, so this report should be treated as advisory."
+        return "Confidence is moderate because some details were estimated."
+    return "Confidence is lower because several details were estimated or missing."
 
 
 def _how_this_could_improve_lines(
@@ -2094,7 +2554,7 @@ def _how_this_could_improve_lines(
         if not action_name:
             continue
         direction_line = (
-            f"{action_name} {phrase} lower wildfire risk and improve home hardening readiness."
+            f"{action_name} {phrase} lower wildfire exposure and strengthen your insurance profile."
         )
         lines.append(direction_line)
         why = _normalize_line(
@@ -2225,6 +2685,11 @@ def _build_report_entries(report: HomeownerReport) -> list[_PdfEntry]:
     score_summary = report.score_summary or {}
     metadata = report.metadata or {}
     confidence = report.confidence_and_limitations or {}
+    homeowner_focus = (
+        report.homeowner_focus_summary
+        if isinstance(report.homeowner_focus_summary, dict)
+        else {}
+    )
     first_screen = report.first_screen if isinstance(report.first_screen, dict) else {}
     specificity_summary = _dump_value(report.specificity_summary)
     specificity_summary = specificity_summary if isinstance(specificity_summary, dict) else {}
@@ -2251,9 +2716,67 @@ def _build_report_entries(report: HomeownerReport) -> list[_PdfEntry]:
     fs_headline = _normalize_line(
         fs_overall.get("headline")
         or first_screen.get("headline_risk_summary")
+        or homeowner_focus.get("one_sentence_summary")
         or report.headline_risk_summary
         or ""
     )
+    focus_status_label = _normalize_line(
+        homeowner_focus.get("insurability_status")
+        or report.insurability_status
+        or homeowner_focus.get("status_label")
+        or ""
+    )
+    focus_status_reasons = [
+        _normalize_line(v)
+        for v in list(
+            homeowner_focus.get("insurability_status_reasons")
+            if isinstance(homeowner_focus.get("insurability_status_reasons"), list)
+            else report.insurability_status_reasons
+        )
+        if _normalize_line(v)
+    ][:3]
+    focus_status_note = _normalize_line(
+        homeowner_focus.get("insurability_status_methodology_note")
+        or report.insurability_status_methodology_note
+        or ""
+    )
+    focus_confidence_summary = _normalize_line(
+        homeowner_focus.get("confidence_limitations_summary") or ""
+    )
+    focus_before_after_obj = (
+        homeowner_focus.get("before_after_summary")
+        if isinstance(homeowner_focus.get("before_after_summary"), dict)
+        else {}
+    )
+    focus_before_after_obj = focus_before_after_obj if isinstance(focus_before_after_obj, dict) else {}
+    focus_before_after_summary = _normalize_line(
+        focus_before_after_obj.get("summary")
+    )
+    focus_before_after_status_before = _normalize_line(
+        focus_before_after_obj.get("current_insurability_status") or ""
+    )
+    focus_before_after_status_after = _normalize_line(
+        focus_before_after_obj.get("projected_insurability_status") or ""
+    )
+    focus_before_after_actions = [
+        row
+        for row in list(focus_before_after_obj.get("top_actions_driving_change") or [])
+        if isinstance(row, dict) and _normalize_line(row.get("action") or "")
+    ][:3]
+    limitations_snapshot = (
+        homeowner_focus.get("limitations_snapshot")
+        if isinstance(homeowner_focus.get("limitations_snapshot"), dict)
+        else {}
+    )
+    limitations_snapshot = limitations_snapshot if isinstance(limitations_snapshot, dict) else {}
+    snapshot_observed = _dedupe_nonempty_lines(list(limitations_snapshot.get("directly_observed") or []), limit=3)
+    snapshot_estimated = _dedupe_nonempty_lines(
+        list(limitations_snapshot.get("estimated_or_inferred") or [])
+        + list(limitations_snapshot.get("missing_or_unknown") or []),
+        limit=3,
+    )
+    snapshot_improve = _dedupe_nonempty_lines(list(limitations_snapshot.get("inputs_to_improve") or []), limit=3)
+    snapshot_headline = _normalize_line(limitations_snapshot.get("headline") or "")
     risk_band_label = _section_band_label(
         fs_overall.get("risk_band") or score_summary.get("wildfire_risk_band")
     )
@@ -2379,88 +2902,11 @@ def _build_report_entries(report: HomeownerReport) -> list[_PdfEntry]:
     property_lon = _to_float(property_summary.get("longitude"))
     resolved_region_id = _normalize_line(property_summary.get("resolved_region_id") or "")
 
-    # 1) Header / Title
-    _add_wrapped(entries, "WildfireRisk Advisor", style="product_name")
-    _add_wrapped(entries, "Wildfire Risk Report", style="TitleStyle")
-    _add_wrapped(entries, f"Property Address: {property_address}", style="meta")
-    if property_lat is not None and property_lon is not None:
-        _add_wrapped(entries, f"Location context: {property_lat:.5f}, {property_lon:.5f}", style="meta")
-    if resolved_region_id:
-        _add_wrapped(entries, f"Prepared region context: {resolved_region_id}", style="meta")
-    _add_wrapped(entries, f"Date generated: {_normalize_line(header.get('assessment_generated_at') or report.generated_at)}", style="meta")
-    entries.append(_PdfEntry(style="spacer_lg"))
-
-    # 2) Top summary card
-    _add_wrapped(entries, "Summary Snapshot", style="SectionHeaderStyle")
-    _add_wrapped(entries, "Quick view for this property", style="summary_card_header")
-    _add_wrapped(entries, f"Wildfire risk level: {risk_band_label}{risk_score_suffix}", style="summary_card_value")
-    _add_wrapped(
-        entries,
-        f"Assessment type / specificity: {specificity_headline} (tier: {specificity_tier}).",
-        style="summary_card_body",
-    )
-    _add_wrapped(entries, f"Confidence level: {confidence_level_label} ({confidence_score_text}).", style="summary_card_body")
-    _add_wrapped(entries, f"One-sentence explanation: {explanation_headline}", style="summary_card_body")
-    _add_wrapped(entries, f"Home hardening readiness: {readiness_line}", style="summary_card_body")
-    _add_wrapped(entries, "This analysis is based on the area immediately surrounding your home.", style="summary_card_body")
-    _add_wrapped(entries, _summary_tone_line(tone_profile), style="summary_card_body")
-    entries.append(_PdfEntry(style="spacer_md"))
-
-    # 3) Why this matters (compact homeowner context)
-    _add_wrapped(entries, "Why this matters", style="SectionHeaderStyle")
-    _add_wrapped(
-        entries,
-        "Wildfire risk is often driven by conditions close to the home.",
-        style="bullet",
-        prefix="- ",
-    )
-    _add_wrapped(
-        entries,
-        "The most effective first steps usually reduce ember exposure and improve home hardening.",
-        style="bullet",
-        prefix="- ",
-    )
-    _add_wrapped(
-        entries,
-        "This report is intended to help prioritize mitigation actions.",
-        style="bullet",
-        prefix="- ",
-    )
-    if specificity_tier in {"regional_estimate", "insufficient_data"}:
-        _add_wrapped(
-            entries,
-            "Low-specificity note: use this as planning guidance rather than precise home-to-home comparison.",
-            style="body",
-        )
-    entries.append(_PdfEntry(style="spacer_md"))
-
-    # 4) Trust evidence box (compact, page 1)
     observed_items = _select_evidence_items(confidence.get("observed_data"), limit=5)
     missing_or_estimated_items = _select_evidence_items(
         list(confidence.get("estimated_data") or []) + list(confidence.get("missing_data") or []),
         limit=5,
     )
-    _add_wrapped(entries, "Observed for this report", style="evidence_box_header")
-    if observed_items:
-        for item in observed_items:
-            _add_wrapped(entries, item, style="evidence_box_body", prefix="- ")
-    else:
-        _add_wrapped(entries, "No major observed details were listed.", style="evidence_box_body", prefix="- ")
-    _add_wrapped(entries, "Missing or estimated", style="evidence_box_header")
-    if missing_or_estimated_items:
-        for item in missing_or_estimated_items:
-            _add_wrapped(entries, item, style="evidence_box_body", prefix="- ")
-    else:
-        _add_wrapped(entries, "No major missing or estimated details were identified.", style="evidence_box_body", prefix="- ")
-    if specificity_tier in {"regional_estimate", "insufficient_data"}:
-        _add_wrapped(
-            entries,
-            "Why this may be broader: this report relied more on regional conditions because some property details were unavailable.",
-            style="evidence_box_body",
-        )
-    entries.append(_PdfEntry(style="spacer_md"))
-
-    # 5) Local map view
     observed_joined = " ".join(observed_items).lower()
     has_building_footprint = (
         ("footprint" in basis_geometry_type)
@@ -2491,6 +2937,136 @@ def _build_report_entries(report: HomeownerReport) -> list[_PdfEntry]:
         "has_wildfire_overlay": has_wildfire_overlay,
         "geometry_is_approximate": geometry_is_approximate,
     }
+    internal_debug = report.internal_calibration_debug if isinstance(report.internal_calibration_debug, dict) else {}
+    debug_subscores = internal_debug.get("subscores") if isinstance(internal_debug.get("subscores"), dict) else {}
+
+    def _fmt_score(value: Any) -> str:
+        num = _to_float(value)
+        return f"{num:.1f}" if num is not None else "n/a"
+
+    # 1) Header / Title
+    _add_wrapped(entries, "WildfireRisk Advisor", style="product_name")
+    _add_wrapped(entries, "Wildfire Risk Report", style="TitleStyle")
+    _add_wrapped(entries, f"Property Address: {property_address}", style="meta")
+    if property_lat is not None and property_lon is not None:
+        _add_wrapped(entries, f"Location context: {property_lat:.5f}, {property_lon:.5f}", style="meta")
+    if resolved_region_id:
+        _add_wrapped(entries, f"Prepared region context: {resolved_region_id}", style="meta")
+    _add_wrapped(entries, f"Date generated: {_normalize_line(header.get('assessment_generated_at') or report.generated_at)}", style="meta")
+    entries.append(_PdfEntry(style="spacer_lg"))
+
+    # 2) PAGE 1: Decision-first homeowner snapshot
+    _add_wrapped(entries, "Homeowner Decision Snapshot", style="SectionHeaderStyle")
+    _add_wrapped(entries, "Insurability status", style="summary_card_header")
+    _add_wrapped(entries, focus_status_label or "Status unavailable", style="summary_card_value")
+    _add_wrapped(entries, f"One-sentence summary: {explanation_headline}", style="summary_card_body")
+    _add_wrapped(entries, f"Wildfire risk level: {risk_band_label}{risk_score_suffix}", style="summary_card_body")
+    if focus_status_reasons:
+        _add_wrapped(entries, "Why this status:", style="summary_card_body")
+        for reason in focus_status_reasons[:3]:
+            _add_wrapped(entries, reason, style="summary_card_body", prefix="- ")
+    if focus_status_note:
+        _add_wrapped(entries, focus_status_note, style="summary_card_body")
+    entries.append(_PdfEntry(style="spacer_md"))
+
+    # 3) PAGE 1: Top risk drivers
+    _add_wrapped(entries, "Top 3 Risk Drivers", style="SectionHeaderStyle")
+    if top_drivers:
+        for idx, driver in enumerate(top_drivers[:3]):
+            driver_text = _normalize_line(_plain_driver(driver) or driver)
+            _add_wrapped(entries, driver_text, style="bullet", prefix="- ")
+            driver_explanation = (
+                explanation_drivers[idx]
+                if idx < len(explanation_drivers) and explanation_drivers[idx]
+                else _build_driver_explanation_template(driver, tone_profile)
+            )
+            _add_wrapped(entries, driver_explanation, style="body", prefix="  ")
+    else:
+        _add_wrapped(entries, "Top risk drivers were not available for this assessment.", style="body")
+    entries.append(_PdfEntry(style="spacer_md"))
+
+    # 4) PAGE 1: Top recommended actions
+    _add_wrapped(entries, "Top 3 Recommended Actions", style="SectionHeaderStyle")
+    if recommended_actions:
+        for row in recommended_actions[:3]:
+            action_name = _normalize_line(row.get("action") or row.get("title") or "Recommended action")
+            why = _normalize_line(row.get("why_this_matters") or row.get("explanation") or row.get("why_it_matters") or "")
+            action_key = _explanation_lookup_key(action_name)
+            mapped_explanation = explanation_actions_by_action.get(action_key, "")
+            _add_wrapped(entries, action_name, style="bullet", prefix="- ")
+            if mapped_explanation:
+                _add_wrapped(entries, mapped_explanation, style="body", prefix="  ")
+            elif why:
+                _add_wrapped(entries, _build_action_explanation_template(action_name, why, tone_profile), style="body", prefix="  ")
+    else:
+        _add_wrapped(entries, "No prioritized actions were generated for this run.", style="body")
+    entries.append(_PdfEntry(style="spacer_md"))
+
+    # 5) PAGE 1: Before vs after callout (if simulation/improvement exists)
+    _add_wrapped(entries, "Before vs After Snapshot", style="SectionHeaderStyle")
+    if focus_before_after_summary or focus_before_after_status_before or focus_before_after_status_after:
+        if focus_before_after_status_before and focus_before_after_status_after:
+            _add_wrapped(
+                entries,
+                f"Status shift: {focus_before_after_status_before} -> {focus_before_after_status_after}",
+                style="callout_label",
+            )
+        _add_wrapped(
+            entries,
+            focus_before_after_summary or "No score change summary was available for the latest simulation/improvement run.",
+            style="callout_action",
+        )
+        if focus_before_after_actions:
+            _add_wrapped(entries, "Actions driving change:", style="body")
+            for row in focus_before_after_actions:
+                action_label = _normalize_line(row.get("action") or "")
+                action_why = _normalize_line(row.get("why_this_matters") or "")
+                if action_label:
+                    _add_wrapped(
+                        entries,
+                        f"{action_label}{': ' + action_why if action_why else ''}",
+                        style="bullet",
+                        prefix="- ",
+                    )
+    else:
+        _add_wrapped(entries, "No simulation or improvement run is available yet for before/after comparison.", style="body")
+    entries.append(_PdfEntry(style="spacer_md"))
+
+    # 6) PAGE 1: Short confidence/limitations note
+    _add_wrapped(entries, "Confidence Note", style="SectionHeaderStyle")
+    _add_wrapped(
+        entries,
+        f"Confidence level: {confidence_level_label} ({confidence_score_text}).",
+        style="body",
+    )
+    _add_wrapped(
+        entries,
+        focus_confidence_summary or explanation_confidence or _limitations_tone_line(tone_profile),
+        style="body",
+    )
+    if deduped_limitations:
+        _add_wrapped(entries, deduped_limitations[0], style="body", prefix="- ")
+    entries.append(_PdfEntry(style="page_break"))
+
+    # 7) PAGE 2+: Risk breakdown / subscores
+    _add_wrapped(entries, "Risk Breakdown and Subscores", style="SectionHeaderStyle")
+    _add_wrapped(entries, f"Overall wildfire risk: {_fmt_score(score_summary.get('overall_wildfire_risk'))}/100 ({risk_band_label}).", style="body")
+    _add_wrapped(entries, f"Wildfire risk score: {_fmt_score(score_summary.get('wildfire_risk_score'))}/100.", style="body")
+    _add_wrapped(entries, f"Home hardening readiness: {_fmt_score(score_summary.get('home_hardening_readiness'))}/100 ({readiness_band}).", style="body")
+    _add_wrapped(entries, f"Insurance readiness (compatibility): {_fmt_score(score_summary.get('insurance_readiness_score'))}/100.", style="body")
+    _add_wrapped(entries, f"Confidence score: {_fmt_score(score_summary.get('confidence_score'))}/100 ({confidence_level_label}).", style="body")
+    if debug_subscores:
+        _add_wrapped(entries, "Subscores", style="technical_header")
+        _add_wrapped(entries, f"- Site hazard score: {_fmt_score(debug_subscores.get('site_hazard_score'))}/100", style="technical_body")
+        _add_wrapped(entries, f"- Home ignition vulnerability score: {_fmt_score(debug_subscores.get('home_ignition_vulnerability_score'))}/100", style="technical_body")
+        _add_wrapped(entries, f"- Home hardening readiness score: {_fmt_score(debug_subscores.get('home_hardening_readiness'))}/100", style="technical_body")
+        _add_wrapped(entries, f"- Insurance readiness score: {_fmt_score(debug_subscores.get('insurance_readiness_score'))}/100", style="technical_body")
+    entries.append(_PdfEntry(style="spacer_md"))
+
+    # 8) PAGE 2+: Property context and map
+    _add_wrapped(entries, "Property Context and Map", style="SectionHeaderStyle")
+    for line in _property_context_lines(report):
+        _add_wrapped(entries, line, style="body", prefix="- ")
     _add_wrapped(entries, "Local Map View", style="SectionHeaderStyle")
     _add_wrapped(entries, "Map centered on this report location:", style="body")
     _add_wrapped(entries, property_address, style="body")
@@ -2514,83 +3090,39 @@ def _build_report_entries(report: HomeownerReport) -> list[_PdfEntry]:
         )
     entries.append(_PdfEntry(style="spacer_md"))
 
-    # 6) What To Do First
-    _add_wrapped(entries, "What To Do First", style="SectionHeaderStyle")
-    _add_wrapped(entries, "Top priority action", style="callout_label")
+    # 9) PAGE 2+: Mitigation details (expanded)
+    _add_wrapped(entries, "Mitigation Details", style="SectionHeaderStyle")
+    _add_wrapped(entries, "Most Important Next Step", style="callout_label")
     _add_wrapped(entries, first_action_text, style="callout_action")
     if first_action_why:
         _add_wrapped(entries, first_action_why, style="body", prefix="  ")
-    entries.append(_PdfEntry(style="spacer_md"))
-
-    # 7) Top 3 Risk Drivers
-    _add_wrapped(entries, "Top Risk Drivers", style="SectionHeaderStyle")
-    if top_drivers:
-        for idx, driver in enumerate(top_drivers[:3]):
-            _add_wrapped(entries, _normalize_line(_plain_driver(driver) or driver), style="bullet", prefix="- ")
-            driver_explanation = (
-                explanation_drivers[idx]
-                if idx < len(explanation_drivers) and explanation_drivers[idx]
-                else _build_driver_explanation_template(driver, tone_profile)
-            )
-            _add_wrapped(
-                entries,
-                driver_explanation,
-                style="body",
-                prefix="  ",
-            )
-    else:
-        _add_wrapped(entries, "Top risk drivers were not available for this assessment.", style="body")
-    entries.append(_PdfEntry(style="spacer_md"))
-
-    # 8) Recommended Next Steps
-    _add_wrapped(entries, "Recommended Next Steps", style="SectionHeaderStyle")
-    if recommended_actions:
-        for idx, row in enumerate(recommended_actions[:5]):
-            action_name = _normalize_line(row.get("action") or row.get("title") or "Recommended action")
-            why = _normalize_line(row.get("why_this_matters") or row.get("explanation") or row.get("why_it_matters") or "")
-            action_key = _explanation_lookup_key(action_name)
-            mapped_explanation = explanation_actions_by_action.get(action_key, "")
-            llm_why = mapped_explanation
-            effort = _safe_effort_label(row.get("effort_level") or row.get("estimated_cost_band"))
-            _add_wrapped(entries, action_name, style="bullet", prefix="- ")
-            if llm_why:
-                _add_wrapped(entries, llm_why, style="body", prefix="  ")
-            else:
-                _add_wrapped(
-                    entries,
-                    _build_action_explanation_template(action_name, why, tone_profile),
-                    style="body",
-                    prefix="  ",
-                )
-            _add_wrapped(entries, f"Effort level: {effort}", style="body", prefix="  ")
-    else:
-        _add_wrapped(entries, "No prioritized actions were generated for this run.", style="body")
-    entries.append(_PdfEntry(style="spacer_md"))
-
-    # 9) How This Could Improve
-    _add_wrapped(entries, "How This Could Improve", style="SectionHeaderStyle")
+    for row in recommended_actions[:5]:
+        action_name = _normalize_line(row.get("action") or row.get("title") or "Recommended action")
+        why = _normalize_line(row.get("why_this_matters") or row.get("explanation") or row.get("why_it_matters") or "")
+        action_key = _explanation_lookup_key(action_name)
+        mapped_explanation = explanation_actions_by_action.get(action_key, "")
+        effort = _safe_effort_label(row.get("effort_level") or row.get("estimated_cost_band"))
+        _add_wrapped(entries, action_name, style="bullet", prefix="- ")
+        if mapped_explanation:
+            _add_wrapped(entries, mapped_explanation, style="body", prefix="  ")
+        elif why:
+            _add_wrapped(entries, _build_action_explanation_template(action_name, why, tone_profile), style="body", prefix="  ")
+        _add_wrapped(entries, f"Effort level: {effort}", style="body", prefix="  ")
     improvement_lines = _how_this_could_improve_lines(
         recommended_actions,
         confidence_tier=tone_profile,
     )
     if improvement_lines:
-        for idx, line in enumerate(improvement_lines):
+        _add_wrapped(entries, "If You Complete These Actions", style="SectionHeaderStyle")
+        for line in improvement_lines:
             if line.startswith("Impact rationale:"):
                 _add_wrapped(entries, line, style="body", prefix="  ")
             else:
                 _add_wrapped(entries, line, style="bullet", prefix="- ")
-    else:
-        _add_wrapped(entries, "No directional improvement summary is available yet.", style="body")
     entries.append(_PdfEntry(style="spacer_md"))
 
-    # 10) Property Context
-    _add_wrapped(entries, "Property Context", style="SectionHeaderStyle")
-    for line in _property_context_lines(report):
-        _add_wrapped(entries, line, style="body", prefix="- ")
-    entries.append(_PdfEntry(style="spacer_md"))
-
-    # 11) Confidence & Limitations (lower in report)
-    _add_wrapped(entries, "Confidence & Limitations", style="SectionHeaderStyle")
+    # 10) PAGE 2+: Detailed confidence and limitations
+    _add_wrapped(entries, "Confidence and Limitations", style="SectionHeaderStyle")
     _add_wrapped(entries, f"Data completeness: observed {observed_count}, estimated {estimated_count}, missing {missing_count}.", style="body")
     _add_wrapped(entries, f"Fallback usage: {fallback_count} fallback assumptions or decisions.", style="body")
     _add_wrapped(entries, explanation_confidence or _limitations_tone_line(tone_profile), style="body")
@@ -2605,10 +3137,50 @@ def _build_report_entries(report: HomeownerReport) -> list[_PdfEntry]:
     if deduped_limitations:
         for limitation in deduped_limitations:
             _add_wrapped(entries, limitation, style="bullet", prefix="- ")
+    if snapshot_headline:
+        _add_wrapped(entries, snapshot_headline, style="body")
+    _add_wrapped(
+        entries,
+        "Directly observed: " + ("; ".join(snapshot_observed) if snapshot_observed else "Limited direct observations."),
+        style="body",
+    )
+    _add_wrapped(
+        entries,
+        "Estimated or inferred: " + ("; ".join(snapshot_estimated) if snapshot_estimated else "No major estimated signals were listed."),
+        style="body",
+    )
+    _add_wrapped(
+        entries,
+        "To improve this result: " + ("; ".join(snapshot_improve) if snapshot_improve else "Add more confirmed home details."),
+        style="body",
+    )
+    _add_wrapped(entries, "Observed for this report", style="evidence_box_header")
+    if observed_items:
+        for item in observed_items:
+            _add_wrapped(entries, item, style="evidence_box_body", prefix="- ")
+    else:
+        _add_wrapped(entries, "No major observed details were listed.", style="evidence_box_body", prefix="- ")
+    _add_wrapped(entries, "Missing or estimated", style="evidence_box_header")
+    if missing_or_estimated_items:
+        for item in missing_or_estimated_items:
+            _add_wrapped(entries, item, style="evidence_box_body", prefix="- ")
+    else:
+        _add_wrapped(entries, "No major missing or estimated details were identified.", style="evidence_box_body", prefix="- ")
+    if specificity_tier in {"regional_estimate", "insufficient_data"}:
+        _add_wrapped(
+            entries,
+            "Why this may be broader: this report relied more on regional conditions because some property details were unavailable.",
+            style="evidence_box_body",
+        )
     entries.append(_PdfEntry(style="spacer_md"))
 
-    # 12) Technical Details (de-emphasized)
-    _add_wrapped(entries, "Technical Details (Secondary)", style="SectionHeaderStyle")
+    # 13) Advanced Details (de-emphasized)
+    _add_wrapped(entries, "Advanced Details (Optional / Technical Details)", style="SectionHeaderStyle")
+    _add_wrapped(
+        entries,
+        "This section is included for advanced users and internal calibration review.",
+        style="technical_body",
+    )
     _add_wrapped(entries, "Factor breakdown", style="technical_header")
     if detailed_rows:
         for row in detailed_rows[:8]:
@@ -2659,6 +3231,12 @@ def _paginate_entries(entries: list[_PdfEntry], *, start_y: float = _PDF_START_Y
     remaining = max(80.0, start_y - bottom_y)
 
     for entry in entries:
+        if entry.style == "page_break":
+            if page:
+                pages.append(page)
+                page = []
+            remaining = max(80.0, start_y - bottom_y)
+            continue
         height = _entry_height(entry)
         if page and height > remaining:
             pages.append(page)

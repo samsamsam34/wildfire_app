@@ -790,6 +790,7 @@ class HomeownerImprovementRunResponse(BaseModel):
     improve_your_result_before: HomeownerImprovementOptions
     improve_your_result_after: HomeownerImprovementOptions
     change_notes: List[str] = Field(default_factory=list)
+    homeowner_before_after_summary: Dict[str, Any] = Field(default_factory=dict)
 
 
 class TrustDiagnosticsConfidence(BaseModel):
@@ -1157,6 +1158,9 @@ class AssessmentResult(BaseModel):
     why_this_result_is_limited: Optional[str] = None
     developer_diagnostics: Dict[str, Any] = Field(default_factory=dict)
     homeowner_summary: Dict[str, Any] = Field(default_factory=dict)
+    insurability_status: str = ""
+    insurability_status_reasons: List[str] = Field(default_factory=list)
+    insurability_status_methodology_note: str = ""
     layer_coverage_audit: List[LayerCoverageAuditItem] = Field(default_factory=list)
     coverage_summary: LayerCoverageSummary = Field(default_factory=LayerCoverageSummary)
     region_resolution: RegionResolution = Field(default_factory=RegionResolution)
@@ -1262,6 +1266,7 @@ class SimulationResult(BaseModel):
     simulated_assumptions: Optional[AssumptionsBlock] = None
     simulator_explanations: Dict[str, object] = Field(default_factory=dict)
     summary: str = ""
+    homeowner_before_after_summary: Dict[str, object] = Field(default_factory=dict)
 
 
 class AssessmentListItem(BaseModel):
@@ -1290,6 +1295,7 @@ class SimulationScenarioItem(BaseModel):
     created_at: str
     wildfire_risk_score_delta: float
     insurance_readiness_score_delta: float
+    homeowner_before_after_summary: Dict[str, object] = Field(default_factory=dict)
 
 
 class ReportExport(BaseModel):
@@ -1348,6 +1354,12 @@ class HomeownerReport(BaseModel):
     assessment_id: str
     report_format_version: str = "1.1.0"
     generated_at: str
+    insurability_status: str = ""
+    insurability_status_reasons: List[str] = Field(default_factory=list)
+    insurability_status_methodology_note: str = ""
+    homeowner_focus_summary: Dict[str, object] = Field(default_factory=dict)
+    internal_calibration_debug: Dict[str, object] = Field(default_factory=dict)
+    advanced_details: Dict[str, object] = Field(default_factory=dict)
     first_screen: Dict[str, object] = Field(default_factory=dict)
     headline_risk_summary: str = ""
     top_risk_drivers: List[str] = Field(default_factory=list)

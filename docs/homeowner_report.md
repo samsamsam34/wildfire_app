@@ -32,6 +32,14 @@ The structured export intentionally focuses on homeowner-facing sections and omi
 
 The report JSON includes:
 
+- `homeowner_focus_summary`
+  - `status_label` (`Likely Insurable` | `At Risk` | `High Risk of Insurance Issues`)
+  - `one_sentence_summary`
+  - `top_risk_drivers` (top 3)
+  - `top_recommended_actions` (top 3)
+  - `before_after_summary` (when simulation context exists)
+  - `confidence_limitations_summary`
+- `internal_calibration_debug` (grouped technical/internal block; additive and compatibility-safe)
 - `headline_risk_summary`
 - `top_risk_drivers` (plain-language, top 3)
 - `prioritized_actions` (top 3 composed from existing mitigation recommendations)
