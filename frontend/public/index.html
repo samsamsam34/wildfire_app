@@ -1483,10 +1483,127 @@
         el.textContent = items.slice(0, 4).join(" ");
       }
 
+      function clearNode(node) {
+        if (!node) return;
+        while (node.firstChild) {
+          node.removeChild(node.firstChild);
+        }
+      }
+
+      function setListItems(
+        listEl,
+        items,
+        {
+          fallbackText = "",
+          fallbackMuted = true,
+          limit = null,
+          renderItem = null,
+        } = {}
+      ) {
+        if (!listEl) return;
+        clearNode(listEl);
+        let rows = Array.isArray(items) ? items : [];
+        if (Number.isFinite(Number(limit)) && Number(limit) >= 0) {
+          rows = rows.slice(0, Number(limit));
+        }
+        let appended = 0;
+        rows.forEach((item, index) => {
+          const li = document.createElement("li");
+          if (typeof renderItem === "function") {
+            renderItem(li, item, index);
+          } else {
+            li.textContent = String(item ?? "").trim();
+          }
+          const text = String(li.textContent || "").trim();
+          if (!text && li.childNodes.length === 0) return;
+          listEl.appendChild(li);
+          appended += 1;
+        });
+        if (appended === 0 && fallbackText) {
+          const li = document.createElement("li");
+          if (fallbackMuted) li.className = "muted";
+          li.textContent = fallbackText;
+          listEl.appendChild(li);
+        }
+      }
+
+      function setPillSpans(container, chips, fallbackText = "") {
+        if (!container) return;
+        clearNode(container);
+        const rows = Array.isArray(chips) ? chips : [];
+        if (rows.length === 0) {
+          if (fallbackText) {
+            const span = document.createElement("span");
+            span.className = "pill";
+            span.textContent = fallbackText;
+            container.appendChild(span);
+          }
+          return;
+        }
+        rows.forEach((chip) => {
+          const label = String(chip?.label || "").trim();
+          if (!label) return;
+          const detail = String(chip?.detail || label).trim();
+          const span = document.createElement("span");
+          span.className = "pill";
+          span.textContent = label;
+          if (detail) span.title = detail;
+          container.appendChild(span);
+        });
+      }
+
+      function setSubmodelTableRows(tbodyEl, rows, fallbackText = "No factor data.") {
+        if (!tbodyEl) return;
+        clearNode(tbodyEl);
+        const normalizedRows = Array.isArray(rows) ? rows : [];
+        if (normalizedRows.length === 0) {
+          const tr = document.createElement("tr");
+          const td = document.createElement("td");
+          td.colSpan = 3;
+          td.className = "muted";
+          td.textContent = fallbackText;
+          tr.appendChild(td);
+          tbodyEl.appendChild(tr);
+          return;
+        }
+        normalizedRows.forEach((row) => {
+          const tr = document.createElement("tr");
+          const factorTd = document.createElement("td");
+          factorTd.textContent = String(row?.factor || "");
+          const scoreTd = document.createElement("td");
+          scoreTd.textContent = String(row?.score || "");
+          const contributionTd = document.createElement("td");
+          contributionTd.textContent = String(row?.contribution || "");
+          tr.appendChild(factorTd);
+          tr.appendChild(scoreTd);
+          tr.appendChild(contributionTd);
+          tbodyEl.appendChild(tr);
+        });
+      }
+
+      function buildPopupContent({ title = "", lines = [] } = {}) {
+        const container = document.createElement("div");
+        const titleText = String(title || "").trim();
+        if (titleText) {
+          const strong = document.createElement("strong");
+          strong.textContent = titleText;
+          container.appendChild(strong);
+        }
+        (Array.isArray(lines) ? lines : []).forEach((line) => {
+          const text = String(line || "").trim();
+          if (!text) return;
+          if (container.childNodes.length > 0) {
+            container.appendChild(document.createElement("br"));
+          }
+          container.appendChild(document.createTextNode(text));
+        });
+        return container;
+      }
+
       function renderMapLayerToggles(layerDefs) {
         const root = document.getElementById("mapLayerToggles");
         if (!root) return;
-        root.innerHTML = "";
+        clearNode(root);
         (layerDefs || []).forEach(layer => {
           const row = document.createElement("label");
           row.className = "map-toggle";
@@ -1501,7 +1618,13 @@
           const unavailable = !layer.available && layer.reason_unavailable
             ? ` (${layer.reason_unavailable})`
             : "";
-          text.innerHTML = `<strong>${layer.display_name}</strong><br>${layer.description || ""}${unavailable}`;
+          const strong = document.createElement("strong");
+          strong.textContent = String(layer.display_name || "");
+          text.appendChild(strong);
+          text.appendChild(document.createElement("br"));
+          text.appendChild(
+            document.createTextNode(`${String(layer.description || "")}${unavailable}`)
+          );
 
           input.addEventListener("change", () => {
             const layerKey = input.dataset.layerKey;
@@ -1760,8 +1883,13 @@
             pointToLayer: (_feature, latlng) => L.circleMarker(latlng, pointStyle),
             onEachFeature: (feature, layer) => {
               const label = feature?.properties?.label || layerKey;
-              const source = feature?.properties?.source ? `<br>source: ${feature.properties.source}` : "";
-              layer.bindPopup(`${label}${source}`);
+              const source = String(feature?.properties?.source || "").trim();
+              layer.bindPopup(
+                buildPopupContent({
+                  title: String(label || layerKey),
+                  lines: source ? [`source: ${source}`] : [],
+                })
+              );
             },
           });
         }
@@ -1772,29 +1900,34 @@
             onEachFeature: (feature, layer) => {
               const props = feature?.properties || {};
               const structureId = extractStructureId(props) || `feature_${Math.random().toString(36).slice(2, 8)}`;
-              const applyBtnId = `selectStructureBtn_${Math.random().toString(36).slice(2, 10)}`;
-              const popup = [
-                `<strong>Structure footprint</strong>`,
-                `structure_id: ${structureId}`,
-                props?.source ? `source: ${props.source}` : "",
-                Number.isFinite(Number(props?.distance_m)) ? `distance_m: ${Number(props.distance_m).toFixed(2)}` : "",
-                `<button id="${applyBtnId}" type="button" class="secondary" style="margin-top:0.4rem;">Use this structure</button>`,
-              ].filter(Boolean).join("<br>");
-              layer.bindPopup(popup);
-              layer.on("popupopen", () => {
-                const btn = document.getElementById(applyBtnId);
-                if (!btn) return;
-                btn.onclick = (evt) => {
-                  evt.preventDefault();
-                  evt.stopPropagation();
-                  applySelectedStructureFromMap({
-                    structureId,
-                    geometry: feature?.geometry,
-                    source: props?.source,
-                  });
-                  if (layer.closePopup) layer.closePopup();
-                };
+              const popupContent = buildPopupContent({
+                title: "Structure footprint",
+                lines: [
+                  `structure_id: ${structureId}`,
+                  props?.source ? `source: ${String(props.source)}` : "",
+                  Number.isFinite(Number(props?.distance_m))
+                    ? `distance_m: ${Number(props.distance_m).toFixed(2)}`
+                    : "",
+                ],
               });
+              const button = document.createElement("button");
+              button.type = "button";
+              button.className = "secondary";
+              button.style.marginTop = "0.4rem";
+              button.textContent = "Use this structure";
+              button.addEventListener("click", (evt) => {
+                evt.preventDefault();
+                evt.stopPropagation();
+                applySelectedStructureFromMap({
+                  structureId,
+                  geometry: feature?.geometry,
+                  source: props?.source,
+                });
+                if (layer.closePopup) layer.closePopup();
+              });
+              popupContent.appendChild(document.createElement("br"));
+              popupContent.appendChild(button);
+              layer.bindPopup(popupContent);
             },
           });
         }
@@ -1807,17 +1940,19 @@
             const label = feature?.properties?.label
               || feature?.properties?.distance_band_ft
               || layerKey;
-            const source = feature?.properties?.source ? `<br>source: ${feature.properties.source}` : "";
-            const buildingSource = feature?.properties?.building_source
-              ? `<br>building_source: ${feature.properties.building_source}`
-              : "";
-            const buildingId = feature?.properties?.matched_structure_id
-              ? `<br>building_id: ${feature.properties.matched_structure_id}`
-              : "";
+            const source = String(feature?.properties?.source || "").trim();
+            const buildingSource = String(feature?.properties?.building_source || "").trim();
+            const buildingId = String(feature?.properties?.matched_structure_id || "").trim();
             const matchDistance = Number.isFinite(Number(feature?.properties?.match_distance_m))
-              ? `<br>match_distance_m: ${Number(feature.properties.match_distance_m).toFixed(2)}`
+              ? `match_distance_m: ${Number(feature.properties.match_distance_m).toFixed(2)}`
               : "";
-            layer.bindPopup(`${label}${source}${buildingSource}${buildingId}${matchDistance}`);
+            const lines = [
+              source ? `source: ${source}` : "",
+              buildingSource ? `building_source: ${buildingSource}` : "",
+              buildingId ? `building_id: ${buildingId}` : "",
+              matchDistance,
+            ].filter(Boolean);
+            layer.bindPopup(buildPopupContent({ title: String(label || layerKey), lines }));
           },
         });
       }
@@ -2148,17 +2283,28 @@
           : (Array.isArray(block?.improve_your_result_suggestions) ? block.improve_your_result_suggestions : []);
         const followUps = Array.isArray(block?.optional_follow_up_inputs) ? block.optional_follow_up_inputs : [];
 
-        improveSuggestionsEl.innerHTML = suggestions.length > 0
-          ? suggestions.slice(0, 6).map((item) => `<li>${item}</li>`).join("")
-          : "<li class='muted'>No improvement suggestions available yet.</li>";
+        setListItems(improveSuggestionsEl, suggestions, {
+          limit: 6,
+          fallbackText: "No improvement suggestions available yet.",
+          renderItem: (li, item) => {
+            li.textContent = String(item || "").trim();
+          },
+        });
 
-        improveInputsEl.innerHTML = followUps.length > 0
-          ? followUps.slice(0, 6).map((item) => {
-              const label = String(item?.label || item?.input_key || "Input detail");
-              const prompt = String(item?.prompt || "");
-              return `<li><strong>${label}</strong>${prompt ? `: ${prompt}` : ""}</li>`;
-            }).join("")
-          : "<li class='muted'>No additional follow-up inputs suggested.</li>";
+        setListItems(improveInputsEl, followUps, {
+          limit: 6,
+          fallbackText: "No additional follow-up inputs suggested.",
+          renderItem: (li, item) => {
+            const label = String(item?.label || item?.input_key || "Input detail").trim();
+            const prompt = String(item?.prompt || "").trim();
+            const strong = document.createElement("strong");
+            strong.textContent = label;
+            li.appendChild(strong);
+            if (prompt) {
+              li.appendChild(document.createTextNode(`: ${prompt}`));
+            }
+          },
+        });
       }
 
       function renderHomeownerLimitationsBlock({
@@ -2189,11 +2335,22 @@
           ? improve.join("; ")
           : "Confirm roof, vent, and defensible-space details to improve confidence.";
 
-        el.innerHTML = [
-          `<li><strong>Directly observed:</strong> ${observedText}</li>`,
-          `<li><strong>Estimated or inferred:</strong> ${estimatedText}</li>`,
-          `<li><strong>Best homeowner inputs to improve this result:</strong> ${improveText}</li>`,
-        ].join("");
+        setListItems(
+          el,
+          [
+            { label: "Directly observed", text: observedText },
+            { label: "Estimated or inferred", text: estimatedText },
+            { label: "Best homeowner inputs to improve this result", text: improveText },
+          ],
+          {
+            renderItem: (li, item) => {
+              const strong = document.createElement("strong");
+              strong.textContent = `${String(item?.label || "").trim()}:`;
+              li.appendChild(strong);
+              li.appendChild(document.createTextNode(` ${String(item?.text || "").trim()}`));
+            },
+          }
+        );
       }
 
       function homeownerStatusBadgeClass(statusLabel) {
@@ -2262,14 +2419,14 @@
           || "Run an assessment to see your homeowner status summary.";
 
         const reasonLines = topNonEmptyLines(reasons, 3);
-        reasonsEl.innerHTML = reasonLines.length > 0
-          ? reasonLines.map((line) => `<li>${line}</li>`).join("")
-          : "<li class='muted'>Reasons will appear after assessment.</li>";
+        setListItems(reasonsEl, reasonLines, {
+          fallbackText: "Reasons will appear after assessment.",
+        });
 
         const driverLines = topNonEmptyLines(drivers, 3);
-        driversEl.innerHTML = driverLines.length > 0
-          ? driverLines.map((line) => `<li>${line}</li>`).join("")
-          : "<li class='muted'>Top drivers will appear after assessment.</li>";
+        setListItems(driversEl, driverLines, {
+          fallbackText: "Top drivers will appear after assessment.",
+        });
 
         const actionLines = (Array.isArray(actions) ? actions : [])
           .slice(0, 3)
@@ -2282,26 +2439,42 @@
             return String(row || "").trim();
           })
           .filter(Boolean);
-        actionsEl.innerHTML = actionLines.length > 0
-          ? actionLines.map((line) => `<li>${line}</li>`).join("")
-          : "<li class='muted'>Top actions will appear after assessment.</li>";
+        setListItems(actionsEl, actionLines, {
+          fallbackText: "Top actions will appear after assessment.",
+        });
 
         const beforeAfterLines = [];
         if (beforeStatus && afterStatus) {
-          beforeAfterLines.push(`<strong>Screening status shift:</strong> ${beforeStatus} → ${afterStatus}`);
+          beforeAfterLines.push({ label: "Screening status shift", value: `${beforeStatus} → ${afterStatus}` });
         }
         if (beforeAfterSummary) {
-          beforeAfterLines.push(String(beforeAfterSummary).trim());
+          beforeAfterLines.push({ value: String(beforeAfterSummary).trim() });
         }
         const beforeAfterDriver = (Array.isArray(beforeAfterActions) ? beforeAfterActions : [])
           .map((row) => String(row?.action || "").trim())
           .find(Boolean);
         if (beforeAfterDriver) {
-          beforeAfterLines.push(`<strong>Top action driving change:</strong> ${beforeAfterDriver}`);
+          beforeAfterLines.push({ label: "Top action driving change", value: beforeAfterDriver });
         }
-        beforeAfterEl.innerHTML = beforeAfterLines.length > 0
-          ? beforeAfterLines.join("<br>")
-          : "Run a simulation to see projected screening status and impact.";
+        clearNode(beforeAfterEl);
+        if (beforeAfterLines.length === 0) {
+          beforeAfterEl.textContent = "Run a simulation to see projected screening status and impact.";
+        } else {
+          beforeAfterLines.forEach((row) => {
+            const line = document.createElement("div");
+            const label = String(row?.label || "").trim();
+            const value = String(row?.value || "").trim();
+            if (label) {
+              const strong = document.createElement("strong");
+              strong.textContent = `${label}:`;
+              line.appendChild(strong);
+              if (value) line.appendChild(document.createTextNode(` ${value}`));
+            } else {
+              line.textContent = value;
+            }
+            beforeAfterEl.appendChild(line);
+          });
+        }
 
         confidenceEl.textContent = String(limitations || "").trim()
           || "Confidence and limitations summary will appear here.";
@@ -2309,9 +2482,9 @@
           || "This screen is for homeowner screening guidance and next-step planning, not insurer-approval prediction.";
 
         const advancedLines = topNonEmptyLines(advancedRows, 5);
-        advancedEl.innerHTML = advancedLines.length > 0
-          ? advancedLines.map((line) => `<li>${line}</li>`).join("")
-          : "<li class='muted'>Subscores, diagnostics, evidence, and calibration-compatible details are preserved in advanced sections.</li>";
+        setListItems(advancedEl, advancedLines, {
+          fallbackText: "Subscores, diagnostics, evidence, and calibration-compatible details are preserved in advanced sections.",
+        });
       }
 
       function renderHomeownerDecisionFromAssessment(data) {
@@ -2392,10 +2565,10 @@
           statusEl.textContent = reason || "Run an assessment to load the homeowner report preview.";
         }
         if (highlightsEl) {
-          highlightsEl.innerHTML = "<li class='muted'>No homeowner report preview yet.</li>";
+          setListItems(highlightsEl, [], { fallbackText: "No homeowner report preview yet." });
         }
         if (secondaryEl) {
-          secondaryEl.innerHTML = "<li class='muted'>No additional details yet.</li>";
+          setListItems(secondaryEl, [], { fallbackText: "No additional details yet." });
         }
         if (moreDetailsEl) {
           moreDetailsEl.open = false;
@@ -2416,7 +2589,7 @@
         if (confidenceAtGlanceEl) confidenceAtGlanceEl.textContent = "Pending";
         if (specificityAtGlanceEl) specificityAtGlanceEl.textContent = "Pending";
         if (confidenceSummaryTextEl) confidenceSummaryTextEl.textContent = "Run an assessment to see confidence details.";
-        if (flagsPrimaryEl) flagsPrimaryEl.innerHTML = "<span class='pill'>No trust notes yet</span>";
+        if (flagsPrimaryEl) setPillSpans(flagsPrimaryEl, [], "No trust notes yet");
         renderHomeownerLimitationsBlock();
         renderHomeownerDecisionSnapshot({
           summary: reason || "Run an assessment to see your homeowner status summary.",
@@ -2437,8 +2610,8 @@
 
         if (!report || typeof report !== "object") {
           statusEl.textContent = "Homeowner report preview is not available for this assessment.";
-          highlightsEl.innerHTML = "<li class='muted'>No homeowner report preview yet.</li>";
-          secondaryEl.innerHTML = "<li class='muted'>No additional details yet.</li>";
+          setListItems(highlightsEl, [], { fallbackText: "No homeowner report preview yet." });
+          setListItems(secondaryEl, [], { fallbackText: "No additional details yet." });
           if (moreDetailsEl) moreDetailsEl.open = false;
           return;
         }
@@ -2550,7 +2723,7 @@
           : (headline || "Homeowner report loaded.");
         const rows = [];
         if (statusLabel) {
-          rows.push(`<li><strong>Screening status:</strong> <span class="pill">${statusLabel}</span></li>`);
+          rows.push({ label: "Screening status", value: statusLabel, pill: true });
         }
         if (statusReasons.length > 0) {
           const reasonsText = statusReasons
@@ -2558,21 +2731,22 @@
             .map((item) => String(item || "").trim())
             .filter(Boolean)
             .join("; ");
-          if (reasonsText) rows.push(`<li><strong>Screening-status reasons:</strong> ${reasonsText}</li>`);
+          if (reasonsText) rows.push({ label: "Screening-status reasons", value: reasonsText });
         }
         if (headline) {
-          rows.push(`<li><strong>Bottom line:</strong> ${headline}${riskBand ? ` (${riskBand})` : ""}</li>`);
+          rows.push({ label: "Bottom line", value: `${headline}${riskBand ? ` (${riskBand})` : ""}` });
         }
         const specificityHeadline = String(specificity?.headline || "").trim();
         const specificityMeaning = String(specificity?.what_this_means || "").trim();
         if (specificityHeadline || specificityMeaning) {
-          rows.push(
-            `<li><strong>Specificity:</strong> ${specificityHeadline || "Estimate"}${specificityMeaning ? ` — ${specificityMeaning}` : ""}</li>`
-          );
+          rows.push({
+            label: "Specificity",
+            value: `${specificityHeadline || "Estimate"}${specificityMeaning ? ` — ${specificityMeaning}` : ""}`,
+          });
         }
         if (topDrivers.length > 0) {
           const text = topDrivers.slice(0, 3).map((item) => String(item)).filter(Boolean).join("; ");
-          if (text) rows.push(`<li><strong>Top 3 risk drivers:</strong> ${text}</li>`);
+          if (text) rows.push({ label: "Top 3 risk drivers", value: text });
         }
         if (topActions.length > 0) {
           const text = topActions
@@ -2580,11 +2754,11 @@
             .map((item) => String(item?.action || item?.title || "").trim())
             .filter(Boolean)
             .join("; ");
-          if (text) rows.push(`<li><strong>Top 3 next actions:</strong> ${text}</li>`);
+          if (text) rows.push({ label: "Top 3 next actions", value: text });
         }
-        if (whatFirst) rows.push(`<li><strong>What to do first:</strong> ${whatFirst}</li>`);
+        if (whatFirst) rows.push({ label: "What to do first", value: whatFirst });
         if (beforeStatus && afterStatus) {
-          rows.push(`<li><strong>Screening status shift:</strong> ${beforeStatus} → ${afterStatus}</li>`);
+          rows.push({ label: "Screening status shift", value: `${beforeStatus} → ${afterStatus}` });
         }
         if (beforeAfterActions.length > 0) {
           const actionsText = beforeAfterActions
@@ -2596,36 +2770,75 @@
             })
             .filter(Boolean)
             .join("; ");
-          if (actionsText) rows.push(`<li><strong>Actions driving change:</strong> ${actionsText}</li>`);
+          if (actionsText) rows.push({ label: "Actions driving change", value: actionsText });
         }
-        if (beforeAfterText) rows.push(`<li><strong>What-if summary:</strong> ${beforeAfterText}</li>`);
-        if (limitations) rows.push(`<li><strong>Confidence/limitations:</strong> ${limitations}</li>`);
-        highlightsEl.innerHTML = rows.length > 0
-          ? rows.join("")
-          : "<li class='muted'>No homeowner report highlights yet.</li>";
+        if (beforeAfterText) rows.push({ label: "What-if summary", value: beforeAfterText });
+        if (limitations) rows.push({ label: "Confidence/limitations", value: limitations });
+        setListItems(highlightsEl, rows, {
+          fallbackText: "No homeowner report highlights yet.",
+          renderItem: (li, row) => {
+            const label = String(row?.label || "").trim();
+            const value = String(row?.value || "").trim();
+            if (!label || !value) {
+              li.textContent = value || label;
+              return;
+            }
+            const strong = document.createElement("strong");
+            strong.textContent = `${label}:`;
+            li.appendChild(strong);
+            li.appendChild(document.createTextNode(" "));
+            if (row?.pill) {
+              const span = document.createElement("span");
+              span.className = "pill";
+              span.textContent = value;
+              li.appendChild(span);
+            } else {
+              li.appendChild(document.createTextNode(value));
+            }
+          },
+        });
 
         const secondaryRows = [];
         if (Array.isArray(confidence?.why_confidence_is_limited) && confidence.why_confidence_is_limited.length > 0) {
-          secondaryRows.push(`<li><strong>Confidence summary:</strong> ${String(confidence.why_confidence_is_limited[0])}</li>`);
+          secondaryRows.push({
+            label: "Confidence summary",
+            value: String(confidence.why_confidence_is_limited[0] || "").trim(),
+          });
         }
         if (lowDiff && typeof lowDiff === "object") {
-          secondaryRows.push(
-            `<li><strong>Nearby-home comparison:</strong> ${String(lowDiff.why_nearby_properties_may_appear_similar || "Result is based mostly on shared neighborhood conditions.")}</li>`
-          );
+          secondaryRows.push({
+            label: "Nearby-home comparison",
+            value: String(lowDiff.why_nearby_properties_may_appear_similar || "Result is based mostly on shared neighborhood conditions.").trim(),
+          });
         }
         if (focus?.advanced_details_hint) {
-          secondaryRows.push(`<li><strong>Advanced details:</strong> ${String(focus.advanced_details_hint)}</li>`);
+          secondaryRows.push({
+            label: "Advanced details",
+            value: String(focus.advanced_details_hint || "").trim(),
+          });
         }
         const advancedDetailsNote = String(report?.advanced_details?.note || "").trim();
         if (advancedDetailsNote) {
-          secondaryRows.push(`<li><strong>Advanced section:</strong> ${advancedDetailsNote}</li>`);
+          secondaryRows.push({ label: "Advanced section", value: advancedDetailsNote });
         }
         if (statusMethodologyNote) {
-          secondaryRows.push(`<li><strong>Status methodology:</strong> ${statusMethodologyNote}</li>`);
+          secondaryRows.push({ label: "Status methodology", value: statusMethodologyNote });
         }
-        secondaryEl.innerHTML = secondaryRows.length > 0
-          ? secondaryRows.join("")
-          : "<li class='muted'>No additional details yet.</li>";
+        setListItems(secondaryEl, secondaryRows, {
+          fallbackText: "No additional details yet.",
+          renderItem: (li, row) => {
+            const label = String(row?.label || "").trim();
+            const value = String(row?.value || "").trim();
+            if (!label || !value) {
+              li.textContent = value || label;
+              return;
+            }
+            const strong = document.createElement("strong");
+            strong.textContent = `${label}:`;
+            li.appendChild(strong);
+            li.appendChild(document.createTextNode(` ${value}`));
+          },
+        });
         if (moreDetailsEl) {
           moreDetailsEl.open = false;
         }
@@ -2652,7 +2865,9 @@
         } catch (err) {
           latestHomeownerReport = null;
           statusEl.textContent = `Homeowner report preview unavailable: ${err.message}`;
-          highlightsEl.innerHTML = "<li class='muted'>Open the printable report once the assessment is available.</li>";
+          setListItems(highlightsEl, [], {
+            fallbackText: "Open the printable report once the assessment is available.",
+          });
         }
       }
 
@@ -2772,38 +2987,57 @@
           .concat(nearStructureDrivers)
           .filter((v, i, arr) => arr.indexOf(v) === i)
           .slice(0, 4);
+        const propertyFindingsEl = document.getElementById("propertyFindings");
         if (scoringStatus === "insufficient_data_to_score") {
-          document.getElementById("propertyFindings").innerHTML = "<li class='muted'>We found some relevant signals, but not enough verified inputs to produce structure-level findings.</li>";
+          setListItems(propertyFindingsEl, [], {
+            fallbackText: "We found some relevant signals, but not enough verified inputs to produce structure-level findings.",
+          });
         } else if (!computedComponents.includes("home_ignition_vulnerability")) {
-          document.getElementById("propertyFindings").innerHTML = "<li class='muted'>Near-structure findings are preliminary because Home Ignition Vulnerability could not be computed.</li>";
+          setListItems(propertyFindingsEl, [], {
+            fallbackText: "Near-structure findings are preliminary because Home Ignition Vulnerability could not be computed.",
+          });
         } else {
-          document.getElementById("propertyFindings").innerHTML = combinedFindings
-            .map(v => `<li>${v}</li>`)
-            .join("") || "<li class='muted'>No structure-specific findings available for this assessment.</li>";
+          setListItems(propertyFindingsEl, combinedFindings, {
+            fallbackText: "No structure-specific findings available for this assessment.",
+          });
         }
 
         const rankedDrivers = Array.isArray(data?.top_risk_drivers_detailed)
           ? data.top_risk_drivers_detailed
           : [];
+        const driversEl = document.getElementById("drivers");
         if (scoringStatus === "insufficient_data_to_score") {
-          document.getElementById("drivers").innerHTML = "<li class='muted'>We found some relevant signals, but not enough verified inputs to compute a reliable score.</li>";
+          setListItems(driversEl, [], {
+            fallbackText: "We found some relevant signals, but not enough verified inputs to compute a reliable score.",
+          });
         } else if (rankedDrivers.length > 0) {
-          document.getElementById("drivers").innerHTML = rankedDrivers
-            .slice(0, 3)
-            .map((driver) => {
+          setListItems(driversEl, rankedDrivers, {
+            limit: 3,
+            renderItem: (li, driver) => {
               const factorText = String(driver?.factor || "risk factor").replace(/_/g, " ");
-              const impact = String(driver?.impact || "medium");
-              const explanation = String(driver?.explanation || "");
-              return `<li><strong>${factorText}</strong> (${impact}): ${explanation}</li>`;
-            })
-            .join("");
+              const impact = String(driver?.impact || "medium").trim();
+              const explanation = String(driver?.explanation || "").trim();
+              const strong = document.createElement("strong");
+              strong.textContent = factorText;
+              li.appendChild(strong);
+              li.appendChild(document.createTextNode(` (${impact})`));
+              if (explanation) {
+                li.appendChild(document.createTextNode(`: ${explanation}`));
+              }
+            },
+          });
         } else {
-          document.getElementById("drivers").innerHTML = (data.top_risk_drivers || [])
-            .slice(0, 3)
-            .map(v => `<li>${toHomeownerDriverText(v)}</li>`)
-            .join("") || "<li class='muted'>No factors available yet.</li>";
+          setListItems(
+            driversEl,
+            (Array.isArray(data.top_risk_drivers) ? data.top_risk_drivers : []).slice(0, 3).map((v) => toHomeownerDriverText(v)),
+            { fallbackText: "No factors available yet." }
+          );
         }
-        document.getElementById("protective").innerHTML = (data.top_protective_factors || []).slice(0, 3).map(v => `<li>${v}</li>`).join("") || "<li class='muted'>No factors available yet.</li>";
+        setListItems(
+          document.getElementById("protective"),
+          (Array.isArray(data.top_protective_factors) ? data.top_protective_factors : []).slice(0, 3),
+          { fallbackText: "No factors available yet." }
+        );
 
         document.getElementById("nextStepsText").textContent = buildNextStepsHint(combinedFindings);
 
@@ -2820,22 +3054,40 @@
         if (firstActionKpiEl) {
           firstActionKpiEl.textContent = topActionLabel || "Review top actions";
         }
-        const mitigationRows = (prioritizedActions.length > 0
-          ? prioritizedActions.slice(0, 5).map((m) => {
-              return `<li><strong>${m.action}</strong> (${m.impact_level} impact, ${m.effort_level} effort, ${m.estimated_cost_band} cost, ${m.timeline}): ${m.explanation || ""}</li>`;
-            })
-          : (data.mitigation_plan || []).slice(0, 3).map(m => `<li><strong>${m.title}</strong>: ${m.reason}</li>`));
+        const mitigationRows = prioritizedActions.length > 0
+          ? prioritizedActions.slice(0, 5).map((m) => ({
+              title: String(m?.action || "").trim(),
+              detail: `(${String(m?.impact_level || "unknown").trim()} impact, ${String(m?.effort_level || "unknown").trim()} effort, ${String(m?.estimated_cost_band || "unknown").trim()} cost, ${String(m?.timeline || "unknown").trim()}): ${String(m?.explanation || "").trim()}`,
+            }))
+          : (Array.isArray(data.mitigation_plan) ? data.mitigation_plan : []).slice(0, 3).map((m) => ({
+              title: String(m?.title || "").trim(),
+              detail: String(m?.reason || "").trim(),
+            }));
         const prioritizedVegetationActions = Array.isArray(data?.prioritized_vegetation_actions)
           ? data.prioritized_vegetation_actions
           : [];
         prioritizedVegetationActions.slice(0, 2).forEach(action => {
           const zone = action?.target_zone ? ` (${action.target_zone})` : "";
-          mitigationRows.push(
-            `<li><strong>${action?.title || "Vegetation action"}${zone}</strong>: ${action?.explanation || action?.why_it_matters || ""}</li>`
-          );
+          mitigationRows.push({
+            title: `${String(action?.title || "Vegetation action").trim()}${zone}`,
+            detail: String(action?.explanation || action?.why_it_matters || "").trim(),
+          });
         });
-        document.getElementById("mitigations").innerHTML = mitigationRows
-          .join("") || "<li class='muted'>No recommendations available yet.</li>";
+        setListItems(document.getElementById("mitigations"), mitigationRows, {
+          fallbackText: "No recommendations available yet.",
+          renderItem: (li, row) => {
+            const title = String(row?.title || "").trim();
+            const detail = String(row?.detail || "").trim();
+            if (title) {
+              const strong = document.createElement("strong");
+              strong.textContent = title;
+              li.appendChild(strong);
+              if (detail) li.appendChild(document.createTextNode(`: ${detail}`));
+            } else {
+              li.textContent = detail;
+            }
+          },
+        });
 
         const confidenceRaw = Number(homeownerConfidence?.score);
         const confidenceLabel = String(homeownerConfidence?.label || "").trim();
@@ -2879,10 +3131,10 @@
         const missingRows = Array.isArray(homeownerSummary?.what_was_missing) && homeownerSummary.what_was_missing.length > 0
           ? homeownerSummary.what_was_missing
           : (Array.isArray(data?.what_was_missing) ? data.what_was_missing : []);
-        document.getElementById("assumptions").innerHTML = estimatedRows
-          .slice(0, 5)
-          .map(v => `<li>${v}</li>`)
-          .join("") || "<li class='muted'>No estimate notes available.</li>";
+        setListItems(document.getElementById("assumptions"), estimatedRows, {
+          limit: 5,
+          fallbackText: "No estimate notes available.",
+        });
         const confidenceActionRows = (Array.isArray(homeownerSummary?.confidence_improvement_actions) && homeownerSummary.confidence_improvement_actions.length > 0
           ? homeownerSummary.confidence_improvement_actions
           : (Array.isArray(homeownerConfidence?.how_to_improve_confidence) && homeownerConfidence.how_to_improve_confidence.length > 0
@@ -2890,10 +3142,10 @@
             : (Array.isArray(homeownerSummary?.recommended_data_improvements) && homeownerSummary.recommended_data_improvements.length > 0
               ? homeownerSummary.recommended_data_improvements
               : (Array.isArray(data?.recommended_data_improvements) ? data.recommended_data_improvements : []))));
-        document.getElementById("confidenceActions").innerHTML = confidenceActionRows
-          .slice(0, 6)
-          .map(v => `<li>${v}</li>`)
-          .join("") || "<li class='muted'>No additional confidence actions are currently suggested.</li>";
+        setListItems(document.getElementById("confidenceActions"), confidenceActionRows, {
+          limit: 6,
+          fallbackText: "No additional confidence actions are currently suggested.",
+        });
         renderHomeownerLimitationsBlock({
           observedRows,
           estimatedRows,
@@ -2910,22 +3162,10 @@
           .map(v => normalizeLimitationChip(v))
           .filter(Boolean);
         const chips = (limitationPills.length > 0 ? limitationPills : fallbackChips);
-        document.getElementById("flags").innerHTML = chips
-          .map((chip) => {
-            const detail = String(chip?.detail || chip?.label || "").replace(/"/g, "&quot;");
-            return `<span class='pill' title="${detail}">${chip?.label || ""}</span>`;
-          })
-          .join("");
+        setPillSpans(document.getElementById("flags"), chips);
         const flagsPrimaryEl = document.getElementById("flagsPrimary");
         if (flagsPrimaryEl) {
-          flagsPrimaryEl.innerHTML = chips.length > 0
-            ? chips
-              .map((chip) => {
-                const detail = String(chip?.detail || chip?.label || "").replace(/"/g, "&quot;");
-                return `<span class='pill' title="${detail}">${chip?.label || ""}</span>`;
-              })
-              .join("")
-            : "<span class='pill'>No major limitations flagged</span>";
+          setPillSpans(flagsPrimaryEl, chips, "No major limitations flagged");
         }
         const confidenceSummaryTextEl = document.getElementById("confidenceSummaryText");
         if (confidenceSummaryTextEl) {
@@ -2936,7 +3176,7 @@
         }
 
         const seenFactors = new Set();
-        const rows = Object.entries(data.submodel_scores || {})
+        const submodelRows = Object.entries(data.submodel_scores || {})
           .filter(([k]) => k.endsWith("_risk"))
           .filter(([k]) => {
             const canonical = String(k)
@@ -2952,10 +3192,9 @@
             const contributionVal = Number(v?.weighted_contribution);
             const scoreText = Number.isFinite(scoreVal) ? scoreVal.toFixed(1) : "n/a";
             const contributionText = Number.isFinite(contributionVal) ? contributionVal.toFixed(2) : "n/a";
-            return `<tr><td>${factorLabel}</td><td>${scoreText}</td><td>${contributionText}</td></tr>`;
-          })
-          .join("");
-        document.getElementById("submodels").innerHTML = rows || "<tr><td colspan='3' class='muted'>No factor data.</td></tr>";
+            return { factor: factorLabel, score: scoreText, contribution: contributionText };
+          });
+        setSubmodelTableRows(document.getElementById("submodels"), submodelRows, "No factor data.");
 
         const readinessValue = (
           data.home_hardening_readiness !== null && data.home_hardening_readiness !== undefined
@@ -3056,18 +3295,26 @@
         }
         document.getElementById("summaryText").textContent = detail?.message
           || "We could not score this address yet because no prepared region currently covers it.";
-        document.getElementById("propertyFindings").innerHTML = "<li class='muted'>No prepared region coverage for this location yet.</li>";
-        document.getElementById("drivers").innerHTML = "<li class='muted'>Scoring requires prepared region assets for this location.</li>";
-        document.getElementById("protective").innerHTML = "<li class='muted'>Protective factors will appear once coverage is available.</li>";
+        setListItems(document.getElementById("propertyFindings"), [], {
+          fallbackText: "No prepared region coverage for this location yet.",
+        });
+        setListItems(document.getElementById("drivers"), [], {
+          fallbackText: "Scoring requires prepared region assets for this location.",
+        });
+        setListItems(document.getElementById("protective"), [], {
+          fallbackText: "Protective factors will appear once coverage is available.",
+        });
         document.getElementById("nextStepsText").textContent = "This location needs region preparation before scoring can run.";
-        document.getElementById("mitigations").innerHTML = `<li>${recommendation}</li>`;
+        setListItems(document.getElementById("mitigations"), [recommendation], {
+          fallbackText: "No recommendations available yet.",
+        });
         document.getElementById("confidenceText").textContent = "Confidence score: not available for uncovered locations.";
-        document.getElementById("assumptions").innerHTML = `<li>Resolution reason: ${reasonText}</li>`;
-        document.getElementById("confidenceActions").innerHTML = `<li>${recommendation}</li>`;
-        document.getElementById("flags").innerHTML = diagnostics
-          .slice(0, 3)
-          .map(v => `<span class='pill'>${v}</span>`)
-          .join("");
+        setListItems(document.getElementById("assumptions"), [`Resolution reason: ${reasonText}`]);
+        setListItems(document.getElementById("confidenceActions"), [recommendation]);
+        setPillSpans(
+          document.getElementById("flags"),
+          diagnostics.slice(0, 3).map((v) => ({ label: String(v || "").trim() }))
+        );
         const confidenceAtGlanceEl = document.getElementById("confidenceAtGlance");
         const specificityAtGlanceEl = document.getElementById("specificityAtGlance");
         const confidenceSummaryTextEl = document.getElementById("confidenceSummaryText");
@@ -3078,10 +3325,11 @@
           confidenceSummaryTextEl.textContent = "No prepared region currently covers this address, so confidence and specificity are limited.";
         }
         if (flagsPrimaryEl) {
-          flagsPrimaryEl.innerHTML = diagnostics
-            .slice(0, 3)
-            .map(v => `<span class='pill'>${v}</span>`)
-            .join("") || "<span class='pill'>Prepared-region coverage missing</span>";
+          setPillSpans(
+            flagsPrimaryEl,
+            diagnostics.slice(0, 3).map((v) => ({ label: String(v || "").trim() })),
+            "Prepared-region coverage missing"
+          );
         }
         const specificityKpiEl = document.getElementById("specificityKpi");
         const readinessKpiEl = document.getElementById("readinessKpi");
@@ -3089,7 +3337,11 @@
         if (specificityKpiEl) specificityKpiEl.textContent = "Regional estimate";
         if (readinessKpiEl) readinessKpiEl.textContent = "Not available";
         if (firstActionKpiEl) firstActionKpiEl.textContent = "Prepare region coverage";
-        document.getElementById("submodels").innerHTML = "<tr><td colspan='3' class='muted'>No factor data until region coverage is prepared.</td></tr>";
+        setSubmodelTableRows(
+          document.getElementById("submodels"),
+          [],
+          "No factor data until region coverage is prepared."
+        );
         document.getElementById("readinessText").textContent = "Home hardening readiness: not computed (location outside prepared coverage)";
         document.getElementById("propertyContextText").textContent = recommendation;
         const propertyContextMapHintEl = document.getElementById("propertyContextMapHint");
@@ -3147,16 +3399,25 @@
         scoreEl.className = "score warn";
         document.getElementById("riskLabel").textContent = "Address could not be resolved";
         document.getElementById("summaryText").textContent = detail?.message || "Geocoding failed before region coverage could be checked.";
-        document.getElementById("propertyFindings").innerHTML = "<li class='muted'>No geocode match was accepted for this address.</li>";
-        document.getElementById("drivers").innerHTML = "<li class='muted'>Scoring requires a usable property location (trusted geocode or user-selected point).</li>";
-        document.getElementById("protective").innerHTML = "<li class='muted'>No protective factors can be evaluated until geocoding succeeds.</li>";
+        setListItems(document.getElementById("propertyFindings"), [], {
+          fallbackText: "No geocode match was accepted for this address.",
+        });
+        setListItems(document.getElementById("drivers"), [], {
+          fallbackText: "Scoring requires a usable property location (trusted geocode or user-selected point).",
+        });
+        setListItems(document.getElementById("protective"), [], {
+          fallbackText: "No protective factors can be evaluated until geocoding succeeds.",
+        });
         document.getElementById("nextStepsText").textContent = detail?.recommended_action || "Check street, city, state, and ZIP format, then retry.";
-        document.getElementById("mitigations").innerHTML = `<li>${rejection}</li>`;
+        setListItems(document.getElementById("mitigations"), [rejection], {
+          fallbackText: "No recommendations available yet.",
+        });
         document.getElementById("confidenceText").textContent = "Confidence score: not available until geocoding succeeds.";
-        document.getElementById("assumptions").innerHTML = `<li>Geocode status: ${geocodeStatus}</li>`;
-        document.getElementById("confidenceActions").innerHTML =
-          "<li>Confirm the address details or click the map to set the home location, then retry.</li>";
-        document.getElementById("flags").innerHTML = `<span class='pill'>${geocodeStatus}</span>`;
+        setListItems(document.getElementById("assumptions"), [`Geocode status: ${geocodeStatus}`]);
+        setListItems(document.getElementById("confidenceActions"), [
+          "Confirm the address details or click the map to set the home location, then retry.",
+        ]);
+        setPillSpans(document.getElementById("flags"), [{ label: String(geocodeStatus || "").trim() }]);
         const confidenceAtGlanceEl = document.getElementById("confidenceAtGlance");
         const specificityAtGlanceEl = document.getElementById("specificityAtGlance");
         const confidenceSummaryTextEl = document.getElementById("confidenceSummaryText");
@@ -3166,14 +3427,18 @@
         if (confidenceSummaryTextEl) {
           confidenceSummaryTextEl.textContent = "Address resolution did not pass trust checks, so property-specific assessment confidence is unavailable.";
         }
-        if (flagsPrimaryEl) flagsPrimaryEl.innerHTML = `<span class='pill'>${geocodeStatus}</span>`;
+        if (flagsPrimaryEl) setPillSpans(flagsPrimaryEl, [{ label: String(geocodeStatus || "").trim() }]);
         const specificityKpiEl = document.getElementById("specificityKpi");
         const readinessKpiEl = document.getElementById("readinessKpi");
         const firstActionKpiEl = document.getElementById("firstActionKpi");
         if (specificityKpiEl) specificityKpiEl.textContent = "Not resolved";
         if (readinessKpiEl) readinessKpiEl.textContent = "Not available";
         if (firstActionKpiEl) firstActionKpiEl.textContent = "Fix address match";
-        document.getElementById("submodels").innerHTML = "<tr><td colspan='3' class='muted'>No factor data until geocoding succeeds.</td></tr>";
+        setSubmodelTableRows(
+          document.getElementById("submodels"),
+          [],
+          "No factor data until geocoding succeeds."
+        );
         document.getElementById("readinessText").textContent = "Home hardening readiness: not computed";
         document.getElementById("propertyContextText").textContent = "Region resolution was not attempted because geocoding did not pass trust checks.";
         const propertyContextMapHintEl = document.getElementById("propertyContextMapHint");
@@ -3422,24 +3687,35 @@
         const select = document.getElementById("verifyLocalitySelect");
         if (!select) return;
         const normalizedSelected = String(selected || "").trim().toLowerCase();
-        const options = ['<option value="">Auto-detect</option>'];
+        clearNode(select);
+        const defaultOption = document.createElement("option");
+        defaultOption.value = "";
+        defaultOption.textContent = "Auto-detect";
+        select.appendChild(defaultOption);
         (Array.isArray(localities) ? localities : []).forEach((name) => {
           const label = String(name || "").trim();
           if (!label) return;
           const isSelected = normalizedSelected && label.toLowerCase() === normalizedSelected;
-          options.push(`<option value="${label.replace(/"/g, "&quot;")}"${isSelected ? " selected" : ""}>${label}</option>`);
+          const option = document.createElement("option");
+          option.value = label;
+          option.textContent = label;
+          if (isSelected) option.selected = true;
+          select.appendChild(option);
         });
-        select.innerHTML = options.join("");
       }
 
       function renderManualCandidateList(candidates = []) {
         const listEl = document.getElementById("verifyCandidateList");
         if (!listEl) return;
+        clearNode(listEl);
         if (!Array.isArray(candidates) || candidates.length === 0) {
-          listEl.innerHTML = `<div class="verify-candidate-empty">No address candidates found. Use map-click fallback below.</div>`;
+          const empty = document.createElement("div");
+          empty.className = "verify-candidate-empty";
+          empty.textContent = "No address candidates found. Use map-click fallback below.";
+          listEl.appendChild(empty);
           return;
         }
-        const rows = candidates.map((row) => {
+        candidates.forEach((row) => {
           const candidateId = String(row?.candidate_id || "");
           const selectedCls = verificationSelectedCandidateId && candidateId === verificationSelectedCandidateId
             ? " selected"
@@ -3455,14 +3731,23 @@
               ? `${formatCoordinate(row.latitude)}, ${formatCoordinate(row.longitude)}`
               : null,
           ].filter(Boolean).join(" | ");
-          return `
-            <button type="button" class="verify-candidate-item${selectedCls}" data-candidate-id="${candidateId.replace(/"/g, "&quot;")}">
-              <div class="verify-candidate-title">${String(row?.formatted_address || "(unknown)")}</div>
-              <div class="verify-candidate-meta">${meta}</div>
-            </button>
-          `;
+          const button = document.createElement("button");
+          button.type = "button";
+          button.className = `verify-candidate-item${selectedCls}`;
+          button.dataset.candidateId = candidateId;
+
+          const titleDiv = document.createElement("div");
+          titleDiv.className = "verify-candidate-title";
+          titleDiv.textContent = String(row?.formatted_address || "(unknown)");
+
+          const metaDiv = document.createElement("div");
+          metaDiv.className = "verify-candidate-meta";
+          metaDiv.textContent = meta;
+
+          button.appendChild(titleDiv);
+          button.appendChild(metaDiv);
+          listEl.appendChild(button);
         });
-        listEl.innerHTML = rows.join("");
         listEl.querySelectorAll("button.verify-candidate-item").forEach((btn) => {
           btn.addEventListener("click", () => {
             const candidateId = btn.getAttribute("data-candidate-id");
@@ -4285,9 +4570,8 @@
           }, "POST");
 
           const delta = sim.delta || sim.score_delta;
-          const changed = Object.entries(sim.changed_inputs || {})
-            .map(([k, v]) => `${k}: ${v.before ?? "(none)"} -> ${v.after ?? "(none)"}`)
-            .join("<br>");
+          const changedRows = Object.entries(sim.changed_inputs || {})
+            .map(([k, v]) => `${k}: ${v.before ?? "(none)"} -> ${v.after ?? "(none)"}`);
           const baselineHardening = (
             sim.baseline?.home_hardening_readiness !== null && sim.baseline?.home_hardening_readiness !== undefined
               ? sim.baseline.home_hardening_readiness
@@ -4323,17 +4607,6 @@
           const actionDrivers = Array.isArray(simHomeownerSummary?.top_actions_driving_change)
             ? simHomeownerSummary.top_actions_driving_change.slice(0, 3)
             : [];
-          const actionDriversHtml = actionDrivers.length > 0
-            ? actionDrivers
-              .map((row) => {
-                const action = String(row?.action || "").trim();
-                const why = String(row?.why_this_matters || "").trim();
-                if (!action) return "";
-                return `<li><strong>${action}</strong>${why ? `: ${why}` : ""}</li>`;
-              })
-              .filter(Boolean)
-              .join("")
-            : "";
           const changeSummary = String(
             simHomeownerSummary?.summary
             || simExplainer.plain_language_change_summary
@@ -4355,22 +4628,78 @@
             renderHomeownerDecisionFromAssessment(latestAssessment);
           }
 
-          const statusShiftLine = (statusBefore && statusAfter)
-            ? `<strong>Screening status shift:</strong> ${statusBefore} → ${statusAfter}<br>`
-            : "";
-          document.getElementById("simResult").innerHTML =
-            `${statusShiftLine}` +
-            `<strong>What-if summary:</strong> ${changeSummary}<br><br>` +
-            (actionDriversHtml
-              ? `<strong>Top actions driving this change:</strong><ul>${actionDriversHtml}</ul>`
-              : "") +
-            `<details><summary>Technical deltas (advanced)</summary>` +
-            `<strong>Wildfire risk:</strong> ${fmt(sim.baseline?.wildfire_risk_score)} → ${fmt(sim.simulated?.wildfire_risk_score)} (${fmt(delta?.wildfire_risk_score_delta)})<br>` +
-            `<strong>Home hardening:</strong> ${fmt(baselineHardening)} → ${fmt(simulatedHardening)} (${fmt(hardeningDelta)})<br>` +
-            `<strong>What changed:</strong><br>${changed || "No changes detected."}<br>` +
-            `<strong>Actions resolved:</strong><br>${resolvedActions.join("<br>") || "No specific actions resolved yet."}<br>` +
-            `<strong>Around the home after upgrades:</strong><br>${(sim.simulated?.property_findings || []).slice(0, 2).join("<br>") || "No additional structure-specific findings."}` +
-            `</details>`;
+          const simResultEl = document.getElementById("simResult");
+          if (simResultEl) {
+            clearNode(simResultEl);
+
+            const appendLabeledLine = (label, value) => {
+              const row = document.createElement("div");
+              const strong = document.createElement("strong");
+              strong.textContent = `${label}:`;
+              row.appendChild(strong);
+              row.appendChild(document.createTextNode(` ${value}`));
+              simResultEl.appendChild(row);
+            };
+
+            if (statusBefore && statusAfter) {
+              appendLabeledLine("Screening status shift", `${statusBefore} → ${statusAfter}`);
+            }
+            appendLabeledLine("What-if summary", changeSummary);
+
+            if (actionDrivers.length > 0) {
+              const heading = document.createElement("strong");
+              heading.textContent = "Top actions driving this change:";
+              simResultEl.appendChild(heading);
+              const ul = document.createElement("ul");
+              actionDrivers.forEach((row) => {
+                const action = String(row?.action || "").trim();
+                const why = String(row?.why_this_matters || "").trim();
+                if (!action) return;
+                const li = document.createElement("li");
+                const strong = document.createElement("strong");
+                strong.textContent = action;
+                li.appendChild(strong);
+                if (why) li.appendChild(document.createTextNode(`: ${why}`));
+                ul.appendChild(li);
+              });
+              simResultEl.appendChild(ul);
+            }
+
+            const details = document.createElement("details");
+            const summary = document.createElement("summary");
+            summary.textContent = "Technical deltas (advanced)";
+            details.appendChild(summary);
+
+            const addDetailLine = (label, value) => {
+              const line = document.createElement("div");
+              const strong = document.createElement("strong");
+              strong.textContent = `${label}:`;
+              line.appendChild(strong);
+              line.appendChild(document.createTextNode(` ${value}`));
+              details.appendChild(line);
+            };
+
+            addDetailLine(
+              "Wildfire risk",
+              `${fmt(sim.baseline?.wildfire_risk_score)} → ${fmt(sim.simulated?.wildfire_risk_score)} (${fmt(delta?.wildfire_risk_score_delta)})`
+            );
+            addDetailLine(
+              "Home hardening",
+              `${fmt(baselineHardening)} → ${fmt(simulatedHardening)} (${fmt(hardeningDelta)})`
+            );
+            addDetailLine("What changed", changedRows.length > 0 ? changedRows.join("; ") : "No changes detected.");
+            addDetailLine(
+              "Actions resolved",
+              resolvedActions.length > 0 ? resolvedActions.join("; ") : "No specific actions resolved yet."
+            );
+            addDetailLine(
+              "Around the home after upgrades",
+              (Array.isArray(sim.simulated?.property_findings) ? sim.simulated.property_findings : []).slice(0, 2).join("; ")
+                || "No additional structure-specific findings."
+            );
+
+            simResultEl.appendChild(details);
+          }
         } catch (err) {
           alert(err.message);
         }
@@ -4380,12 +4709,10 @@
         if (!latestAssessment) return alert("Run an assessment first.");
         try {
           const html = await api(`/report/${latestAssessment.assessment_id}/view?audience=homeowner`);
-          const w = window.open("", "_blank");
-          if (w) {
-            w.document.open();
-            w.document.write(html);
-            w.document.close();
-          }
+          const blob = new Blob([String(html || "")], { type: "text/html;charset=utf-8" });
+          const url = URL.createObjectURL(blob);
+          window.open(url, "_blank", "noopener");
+          setTimeout(() => URL.revokeObjectURL(url), 5000);
         } catch (err) {
           alert(err.message);
         }
@@ -4395,12 +4722,10 @@
         if (!latestAssessment) return alert("Run an assessment first.");
         try {
           const data = await api(`/report/${latestAssessment.assessment_id}/export?audience=homeowner`);
-          const w = window.open("", "_blank");
-          if (w) {
-            w.document.open();
-            w.document.write(`<pre>${JSON.stringify(data, null, 2)}</pre>`);
-            w.document.close();
-          }
+          const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+          const url = URL.createObjectURL(blob);
+          window.open(url, "_blank", "noopener");
+          setTimeout(() => URL.revokeObjectURL(url), 5000);
         } catch (err) {
           alert(err.message);
         }
