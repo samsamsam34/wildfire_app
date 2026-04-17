@@ -155,6 +155,87 @@
         gap: 0.95rem;
         grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
       }
+      .homeowner-first-card {
+        border-color: #c6d9e3;
+        background: linear-gradient(160deg, #ffffff 0%, #f4fafd 62%, #fffaf7 100%);
+      }
+      .homeowner-first-head {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 0.7rem;
+      }
+      .status-badge {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 999px;
+        font-size: 0.8rem;
+        font-weight: 700;
+        letter-spacing: 0.02em;
+        padding: 0.32rem 0.7rem;
+        border: 1px solid #c7d5de;
+        background: #f5f8fa;
+        color: #2b4555;
+        white-space: nowrap;
+      }
+      .status-badge.status-pending {
+        border-color: #c7d5de;
+        background: #f5f8fa;
+        color: #2b4555;
+      }
+      .status-badge.status-likely {
+        border-color: #9fd5ca;
+        background: #e9faf5;
+        color: #0f5d50;
+      }
+      .status-badge.status-at-risk {
+        border-color: #edcd9f;
+        background: #fff7ea;
+        color: #8a5610;
+      }
+      .status-badge.status-high-risk {
+        border-color: #e7b0b0;
+        background: #fff1f1;
+        color: #8e1f1f;
+      }
+      .homeowner-first-summary {
+        margin-top: 0.55rem;
+        color: #163142;
+        font-size: 1rem;
+        font-weight: 600;
+      }
+      .homeowner-first-grid {
+        margin-top: 0.72rem;
+        display: grid;
+        gap: 0.65rem;
+        grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+      }
+      .homeowner-first-group {
+        border: 1px solid var(--line-soft);
+        border-radius: 11px;
+        background: #fbfdff;
+        padding: 0.56rem 0.62rem;
+      }
+      .homeowner-first-group ul {
+        margin-top: 0.32rem;
+      }
+      .homeowner-first-group li {
+        margin-bottom: 0.25rem;
+      }
+      .before-after-callout {
+        margin-top: 0.32rem;
+        border: 1px solid #e8ddd0;
+        border-left: 4px solid #cf7958;
+        border-radius: 10px;
+        background: #fffaf6;
+        padding: 0.5rem 0.55rem;
+        color: #344958;
+        font-size: 0.92rem;
+      }
+      .homeowner-first-note {
+        margin-top: 0.62rem;
+      }
       .result-primary {
         border-color: #c7d6e0;
         background: linear-gradient(180deg, #ffffff 0%, #f8fbfd 100%);
@@ -692,6 +773,10 @@
         .actions button {
           width: 100%;
         }
+        .homeowner-first-head {
+          flex-direction: column;
+          align-items: flex-start;
+        }
         .modal-grid {
           grid-template-columns: 1fr;
           gap: 0.2rem;
@@ -832,9 +917,49 @@
         <p id="requestStatus" class="status-line tone-muted">Idle.</p>
       </section>
 
+      <section class="card homeowner-first-card">
+        <div class="homeowner-first-head">
+          <div>
+            <h2>3. Homeowner Decision Snapshot</h2>
+            <p class="section-help">Quick answer first: your status, why it matters, and what to do next.</p>
+          </div>
+          <span id="homeownerStatusBadge" class="status-badge status-pending">Status pending</span>
+        </div>
+        <p id="homeownerDecisionSummary" class="homeowner-first-summary">Run an assessment to see your homeowner status summary.</p>
+
+        <div class="homeowner-first-grid">
+          <div class="homeowner-first-group">
+            <div class="mini-label">Why this screening status</div>
+            <ul id="homeownerDecisionReasons"><li class="muted">Reasons will appear after assessment.</li></ul>
+          </div>
+          <div class="homeowner-first-group">
+            <div class="mini-label">Top risk drivers</div>
+            <ul id="homeownerDecisionDrivers"><li class="muted">Top drivers will appear after assessment.</li></ul>
+          </div>
+          <div class="homeowner-first-group">
+            <div class="mini-label">Top recommended actions</div>
+            <ul id="homeownerDecisionActions"><li class="muted">Top actions will appear after assessment.</li></ul>
+          </div>
+          <div class="homeowner-first-group">
+            <div class="mini-label">Before vs after</div>
+            <div id="homeownerDecisionBeforeAfter" class="before-after-callout muted">
+              Run a simulation to see projected screening status and impact.
+            </div>
+          </div>
+        </div>
+        <p id="homeownerDecisionConfidence" class="homeowner-first-note muted">Confidence and limitations summary will appear here.</p>
+        <p id="homeownerDecisionMethodology" class="muted">This screen is for homeowner screening guidance and next-step planning, not insurer-approval prediction.</p>
+        <details id="homeownerDecisionAdvancedDetails" class="mt-sm">
+          <summary>Advanced details</summary>
+          <ul id="homeownerDecisionAdvancedList">
+            <li class="muted">Subscores, diagnostics, evidence, and calibration-compatible details are preserved and available in advanced sections.</li>
+          </ul>
+        </details>
+      </section>
+
       <section class="results">
         <div class="card result-primary">
-          <h2>3. Current Risk</h2>
+          <h2>4. Supporting Risk Score</h2>
           <p class="section-help">Risk blends site hazard and home ignition vulnerability when both components are supported by evidence.</p>
           <div id="riskScore" class="score">-</div>
           <div id="riskLabel" class="muted">Run an assessment to see your score.</div>
@@ -857,7 +982,7 @@
         </div>
 
         <div class="card">
-          <h2>4. Why This Home May Be at Risk</h2>
+          <h2>5. Supporting Risk Drivers</h2>
           <p class="section-help">What's driving this result, based on observed local and regional evidence.</p>
           <div class="insight-group">
             <div class="mini-label">Top risk drivers</div>
@@ -873,7 +998,7 @@
         </div>
 
         <div class="card">
-          <h2>5. Best Next Steps</h2>
+          <h2>6. Supporting Action Plan</h2>
           <p class="section-help">What to do first: prioritized actions focused on reduction impact and practical effort.</p>
           <div class="mini-label">Recommended next steps</div>
           <p id="nextStepsText">Focus on the top actions first.</p>
@@ -882,7 +1007,7 @@
       </section>
 
       <section class="card trust-card">
-        <h2>Assessment Confidence</h2>
+        <h2>7. Confidence & Limitations</h2>
         <p class="section-help">How reliable this assessment is, and where data limits may affect precision.</p>
         <div class="trust-overview">
           <div class="trust-value">
@@ -915,13 +1040,16 @@
       </section>
 
       <section class="card">
-        <h2>6. View Homeowner Report</h2>
+        <h2>8. Printable Report & Share</h2>
         <p class="muted">See the homeowner-focused summary and shareable report formats.</p>
-        <p id="homeownerReportStatus" class="status-line tone-muted">Run an assessment to load the homeowner report preview.</p>
-        <ul id="homeownerReportHighlights"><li class="muted">No homeowner report preview yet.</li></ul>
-        <details id="homeownerReportMoreDetails" class="mt-sm">
-          <summary>More details</summary>
-          <ul id="homeownerReportSecondary"><li class="muted">No additional details yet.</li></ul>
+        <details id="homeownerReportPreviewPanel" class="mt-sm">
+          <summary>Detailed homeowner report preview</summary>
+          <p id="homeownerReportStatus" class="status-line tone-muted">Run an assessment to load the homeowner report preview.</p>
+          <ul id="homeownerReportHighlights"><li class="muted">No homeowner report preview yet.</li></ul>
+          <details id="homeownerReportMoreDetails" class="mt-sm">
+            <summary>More details</summary>
+            <ul id="homeownerReportSecondary"><li class="muted">No additional details yet.</li></ul>
+          </details>
         </details>
         <div class="actions">
           <button id="openReportBtn" type="button" class="secondary">Open Printable Report</button>
@@ -1039,9 +1167,14 @@
       </section>
 
       <section class="card advanced-secondary">
-        <details>
+        <details id="advancedInternalDetailsPanel">
           <summary>Advanced / Internal Details</summary>
-          <p class="section-help">Use this panel for deeper evidence, confidence, and diagnostics beyond the homeowner summary.</p>
+          <p class="section-help">Use this panel for technical outputs beyond homeowner-first guidance.</p>
+          <ul id="advancedCoverageList">
+            <li>Subscore breakdowns and weighted factor contributions</li>
+            <li>Confidence diagnostics, assumptions, and evidence-quality context</li>
+            <li>Calibration-compatible and legacy/compatibility outputs</li>
+          </ul>
           <div class="row">
             <div>
               <label>API Key (local/internal use)</label>
@@ -1875,6 +2008,23 @@
         return payload;
       }
 
+      async function trackHomeownerFlowEvent(eventName, options = {}) {
+        const name = String(eventName || "").trim();
+        if (!name) return;
+        const assessmentId = String(options?.assessmentId || latestAssessment?.assessment_id || "").trim() || null;
+        const metadata = options?.metadata && typeof options.metadata === "object" ? options.metadata : {};
+        try {
+          await api("/analytics/homeowner/event", {
+            event_name: name,
+            assessment_id: assessmentId,
+            metadata,
+          }, "POST");
+        } catch (err) {
+          // Event tracking should never break homeowner flows.
+          console.debug("Homeowner event tracking skipped:", name, err?.message || err);
+        }
+      }
+
       function riskBand(score) {
         if (score >= 70) return { label: "Higher risk", cls: "bad" };
         if (score >= 40) return { label: "Moderate risk", cls: "warn" };
@@ -2046,6 +2196,190 @@
         ].join("");
       }
 
+      function homeownerStatusBadgeClass(statusLabel) {
+        const normalized = String(statusLabel || "").trim().toLowerCase();
+        if (normalized === "likely insurable") return "status-likely";
+        if (normalized === "at risk") return "status-at-risk";
+        if (normalized === "high risk of insurance issues") return "status-high-risk";
+        return "status-pending";
+      }
+
+      function topNonEmptyLines(rows, limit = 3) {
+        const seen = new Set();
+        return (Array.isArray(rows) ? rows : [])
+          .map((row) => String(row || "").trim())
+          .filter((row) => {
+            if (!row) return false;
+            const key = row.toLowerCase();
+            if (seen.has(key)) return false;
+            seen.add(key);
+            return true;
+          })
+          .slice(0, limit);
+      }
+
+      function renderHomeownerDecisionSnapshot({
+        statusLabel = "",
+        summary = "",
+        reasons = [],
+        drivers = [],
+        actions = [],
+        beforeAfterSummary = "",
+        beforeStatus = "",
+        afterStatus = "",
+        beforeAfterActions = [],
+        limitations = "",
+        methodology = "",
+        advancedRows = [],
+      } = {}) {
+        const badgeEl = document.getElementById("homeownerStatusBadge");
+        const summaryEl = document.getElementById("homeownerDecisionSummary");
+        const reasonsEl = document.getElementById("homeownerDecisionReasons");
+        const driversEl = document.getElementById("homeownerDecisionDrivers");
+        const actionsEl = document.getElementById("homeownerDecisionActions");
+        const beforeAfterEl = document.getElementById("homeownerDecisionBeforeAfter");
+        const confidenceEl = document.getElementById("homeownerDecisionConfidence");
+        const methodologyEl = document.getElementById("homeownerDecisionMethodology");
+        const advancedEl = document.getElementById("homeownerDecisionAdvancedList");
+        if (
+          !badgeEl
+          || !summaryEl
+          || !reasonsEl
+          || !driversEl
+          || !actionsEl
+          || !beforeAfterEl
+          || !confidenceEl
+          || !methodologyEl
+          || !advancedEl
+        ) return;
+
+        const normalizedStatus = String(statusLabel || "").trim();
+        const badgeText = normalizedStatus || "Status pending";
+        badgeEl.textContent = badgeText;
+        badgeEl.className = `status-badge ${homeownerStatusBadgeClass(normalizedStatus)}`;
+
+        summaryEl.textContent = String(summary || "").trim()
+          || "Run an assessment to see your homeowner status summary.";
+
+        const reasonLines = topNonEmptyLines(reasons, 3);
+        reasonsEl.innerHTML = reasonLines.length > 0
+          ? reasonLines.map((line) => `<li>${line}</li>`).join("")
+          : "<li class='muted'>Reasons will appear after assessment.</li>";
+
+        const driverLines = topNonEmptyLines(drivers, 3);
+        driversEl.innerHTML = driverLines.length > 0
+          ? driverLines.map((line) => `<li>${line}</li>`).join("")
+          : "<li class='muted'>Top drivers will appear after assessment.</li>";
+
+        const actionLines = (Array.isArray(actions) ? actions : [])
+          .slice(0, 3)
+          .map((row) => {
+            if (row && typeof row === "object") {
+              const action = String(row?.action || row?.title || "").trim();
+              const why = String(row?.why_this_matters || row?.explanation || "").trim();
+              return action ? `${action}${why ? `: ${why}` : ""}` : "";
+            }
+            return String(row || "").trim();
+          })
+          .filter(Boolean);
+        actionsEl.innerHTML = actionLines.length > 0
+          ? actionLines.map((line) => `<li>${line}</li>`).join("")
+          : "<li class='muted'>Top actions will appear after assessment.</li>";
+
+        const beforeAfterLines = [];
+        if (beforeStatus && afterStatus) {
+          beforeAfterLines.push(`<strong>Screening status shift:</strong> ${beforeStatus} → ${afterStatus}`);
+        }
+        if (beforeAfterSummary) {
+          beforeAfterLines.push(String(beforeAfterSummary).trim());
+        }
+        const beforeAfterDriver = (Array.isArray(beforeAfterActions) ? beforeAfterActions : [])
+          .map((row) => String(row?.action || "").trim())
+          .find(Boolean);
+        if (beforeAfterDriver) {
+          beforeAfterLines.push(`<strong>Top action driving change:</strong> ${beforeAfterDriver}`);
+        }
+        beforeAfterEl.innerHTML = beforeAfterLines.length > 0
+          ? beforeAfterLines.join("<br>")
+          : "Run a simulation to see projected screening status and impact.";
+
+        confidenceEl.textContent = String(limitations || "").trim()
+          || "Confidence and limitations summary will appear here.";
+        methodologyEl.textContent = String(methodology || "").trim()
+          || "This screen is for homeowner screening guidance and next-step planning, not insurer-approval prediction.";
+
+        const advancedLines = topNonEmptyLines(advancedRows, 5);
+        advancedEl.innerHTML = advancedLines.length > 0
+          ? advancedLines.map((line) => `<li>${line}</li>`).join("")
+          : "<li class='muted'>Subscores, diagnostics, evidence, and calibration-compatible details are preserved in advanced sections.</li>";
+      }
+
+      function renderHomeownerDecisionFromAssessment(data) {
+        if (!data || typeof data !== "object") {
+          renderHomeownerDecisionSnapshot();
+          return;
+        }
+        const homeownerSummary = (data && typeof data.homeowner_summary === "object" && data.homeowner_summary)
+          ? data.homeowner_summary
+          : {};
+        const confidence = (homeownerSummary && typeof homeownerSummary.confidence_summary === "object" && homeownerSummary.confidence_summary)
+          ? homeownerSummary.confidence_summary
+          : {};
+        const statusLabel = String(
+          data?.insurability_status
+          || homeownerSummary?.insurability_status
+          || ""
+        ).trim();
+        const reasons = topNonEmptyLines(
+          data?.insurability_status_reasons
+          || homeownerSummary?.insurability_status_reasons
+          || [],
+          3,
+        );
+        const summary = String(
+          data?.explanation_summary
+          || homeownerSummary?.headline_risk_summary
+          || ""
+        ).trim();
+        const drivers = topNonEmptyLines(
+          data?.top_risk_drivers
+          || homeownerSummary?.top_risk_drivers
+          || [],
+          3,
+        ).map((line) => toHomeownerDriverText(line));
+        const actions = Array.isArray(data?.prioritized_mitigation_actions) && data.prioritized_mitigation_actions.length > 0
+          ? data.prioritized_mitigation_actions.slice(0, 3)
+          : topNonEmptyLines(data?.top_recommended_actions || [], 3);
+        const limitations = String(
+          confidence?.headline
+          || data?.why_this_result_is_limited
+          || ""
+        ).trim();
+        const methodology = String(
+          data?.insurability_status_methodology_note
+          || homeownerSummary?.insurability_status_methodology_note
+          || ""
+        ).trim();
+        const beforeAfter = latestSimulationSummary || {};
+        renderHomeownerDecisionSnapshot({
+          statusLabel,
+          summary,
+          reasons,
+          drivers,
+          actions,
+          beforeAfterSummary: String(beforeAfter?.summary || "").trim(),
+          beforeStatus: String(beforeAfter?.current_insurability_status || "").trim(),
+          afterStatus: String(beforeAfter?.projected_insurability_status || "").trim(),
+          beforeAfterActions: Array.isArray(beforeAfter?.top_actions_driving_change) ? beforeAfter.top_actions_driving_change : [],
+          limitations,
+          methodology: methodology || "Rule-based screening guidance using observable wildfire and property factors; not a prediction or guarantee of insurer underwriting approval.",
+          advancedRows: [
+            "Technical subscores, diagnostics, and compatibility outputs are available in Advanced / Internal Details.",
+            "Use Open Raw Export JSON for full calibration and evidence payloads.",
+          ],
+        });
+      }
+
       function resetHomeownerJourneyPanels(reason) {
         latestHomeownerReport = null;
         latestSimulationSummary = null;
@@ -2053,6 +2387,7 @@
         const highlightsEl = document.getElementById("homeownerReportHighlights");
         const secondaryEl = document.getElementById("homeownerReportSecondary");
         const moreDetailsEl = document.getElementById("homeownerReportMoreDetails");
+        const reportPreviewPanelEl = document.getElementById("homeownerReportPreviewPanel");
         if (statusEl) {
           statusEl.textContent = reason || "Run an assessment to load the homeowner report preview.";
         }
@@ -2064,6 +2399,9 @@
         }
         if (moreDetailsEl) {
           moreDetailsEl.open = false;
+        }
+        if (reportPreviewPanelEl) {
+          reportPreviewPanelEl.open = false;
         }
         const specificityKpiEl = document.getElementById("specificityKpi");
         const readinessKpiEl = document.getElementById("readinessKpi");
@@ -2080,6 +2418,9 @@
         if (confidenceSummaryTextEl) confidenceSummaryTextEl.textContent = "Run an assessment to see confidence details.";
         if (flagsPrimaryEl) flagsPrimaryEl.innerHTML = "<span class='pill'>No trust notes yet</span>";
         renderHomeownerLimitationsBlock();
+        renderHomeownerDecisionSnapshot({
+          summary: reason || "Run an assessment to see your homeowner status summary.",
+        });
         const propertyContextMapHintEl = document.getElementById("propertyContextMapHint");
         if (propertyContextMapHintEl) {
           propertyContextMapHintEl.textContent = "Property context summary will appear here after assessment.";
@@ -2170,13 +2511,46 @@
         const snapshot = (focus?.limitations_snapshot && typeof focus.limitations_snapshot === "object")
           ? focus.limitations_snapshot
           : {};
+        const advancedRows = [];
+        const advancedNote = String(report?.advanced_details?.note || "").trim();
+        if (advancedNote) {
+          advancedRows.push(advancedNote);
+        }
+        if (report?.internal_calibration_debug?.subscores && typeof report.internal_calibration_debug.subscores === "object") {
+          advancedRows.push("Subscores and weighted contributions are preserved for calibration and model review.");
+        }
+        if (report?.internal_calibration_debug?.diagnostics && typeof report.internal_calibration_debug.diagnostics === "object") {
+          advancedRows.push("Diagnostics, confidence internals, and evidence-quality context are preserved.");
+        }
+        if (
+          report?.metadata?.optional_public_outcome_calibration
+          && typeof report.metadata.optional_public_outcome_calibration === "object"
+        ) {
+          advancedRows.push("Optional public-outcome calibration metadata is included for advanced review.");
+        }
+        advancedRows.push("Use Open Raw Export JSON and Open Internal Diagnostics for the complete technical payload.");
+
+        renderHomeownerDecisionSnapshot({
+          statusLabel,
+          summary: headline,
+          reasons: statusReasons,
+          drivers: topDrivers,
+          actions: topActions,
+          beforeAfterSummary: beforeAfterText,
+          beforeStatus,
+          afterStatus,
+          beforeAfterActions,
+          limitations,
+          methodology: statusMethodologyNote,
+          advancedRows,
+        });
 
         statusEl.textContent = statusLabel
           ? `${statusLabel}: ${headline || "homeowner report loaded."}`
           : (headline || "Homeowner report loaded.");
         const rows = [];
         if (statusLabel) {
-          rows.push(`<li><strong>Verdict:</strong> <span class="pill">${statusLabel}</span></li>`);
+          rows.push(`<li><strong>Screening status:</strong> <span class="pill">${statusLabel}</span></li>`);
         }
         if (statusReasons.length > 0) {
           const reasonsText = statusReasons
@@ -2184,7 +2558,7 @@
             .map((item) => String(item || "").trim())
             .filter(Boolean)
             .join("; ");
-          if (reasonsText) rows.push(`<li><strong>Status reasons:</strong> ${reasonsText}</li>`);
+          if (reasonsText) rows.push(`<li><strong>Screening-status reasons:</strong> ${reasonsText}</li>`);
         }
         if (headline) {
           rows.push(`<li><strong>Bottom line:</strong> ${headline}${riskBand ? ` (${riskBand})` : ""}</li>`);
@@ -2210,7 +2584,7 @@
         }
         if (whatFirst) rows.push(`<li><strong>What to do first:</strong> ${whatFirst}</li>`);
         if (beforeStatus && afterStatus) {
-          rows.push(`<li><strong>Status shift:</strong> ${beforeStatus} → ${afterStatus}</li>`);
+          rows.push(`<li><strong>Screening status shift:</strong> ${beforeStatus} → ${afterStatus}</li>`);
         }
         if (beforeAfterActions.length > 0) {
           const actionsText = beforeAfterActions
@@ -2653,6 +3027,7 @@
             geocodeDebugEl.style.display = "none";
           }
         }
+        renderHomeownerDecisionFromAssessment(data);
         renderAssessmentMap(data?.assessment_id);
         renderImproveSectionFromAssessment(data);
         loadHomeownerReportPreview(data?.assessment_id);
@@ -3976,10 +4351,12 @@
           };
           if (latestHomeownerReport && latestAssessment?.assessment_id) {
             renderHomeownerReportPreview(latestHomeownerReport);
+          } else if (latestAssessment) {
+            renderHomeownerDecisionFromAssessment(latestAssessment);
           }
 
           const statusShiftLine = (statusBefore && statusAfter)
-            ? `<strong>Status shift:</strong> ${statusBefore} → ${statusAfter}<br>`
+            ? `<strong>Screening status shift:</strong> ${statusBefore} → ${statusAfter}<br>`
             : "";
           document.getElementById("simResult").innerHTML =
             `${statusShiftLine}` +
@@ -4073,6 +4450,26 @@
           alert(err.message);
         }
       }
+
+      function wireAdvancedDetailsTracking() {
+        const trackedPanels = [
+          "homeownerDecisionAdvancedDetails",
+          "advancedInternalDetailsPanel",
+          "homeownerReportMoreDetails",
+        ];
+        trackedPanels.forEach((panelId) => {
+          const panel = document.getElementById(panelId);
+          if (!panel) return;
+          panel.addEventListener("toggle", () => {
+            if (!panel.open) return;
+            trackHomeownerFlowEvent("homeowner_advanced_details_opened", {
+              metadata: { panel_id: panelId },
+            });
+          });
+        });
+      }
+
+      wireAdvancedDetailsTracking();
 
       bindOtherInput("roof_type", "roof_type_other");
       bindOtherInput("vent_type", "vent_type_other");

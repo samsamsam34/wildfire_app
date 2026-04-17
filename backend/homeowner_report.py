@@ -409,19 +409,19 @@ def _status_one_sentence_summary(
     headline = str(headline_risk_summary or "").strip().rstrip(".")
     if status_label == "Likely Insurable":
         base = (
-            "Your property appears likely insurable based on observable wildfire risk factors and current property conditions"
+            "Screening status suggests comparatively fewer wildfire-related insurance risk signals based on observable factors"
         )
     elif status_label == "High Risk of Insurance Issues":
         base = (
-            "Your property appears at high risk of insurance issues due to strong wildfire exposure and limited protective conditions"
+            "Screening status suggests elevated wildfire-related insurance friction risk due to strong wildfire exposure and limited protective conditions"
         )
     else:
         if status_label:
-            base = "Your property appears at elevated risk of insurance issues due to wildfire exposure and remaining hardening gaps"
+            base = "Screening status suggests meaningful wildfire-related insurance friction risk due to wildfire exposure and remaining hardening gaps"
         elif headline:
             return f"{headline}."
         else:
-            return "This report provides a screening view of wildfire-related insurance risk and next steps."
+            return "This report provides wildfire-risk screening guidance and practical next steps."
     if tone_level == "advisory":
         return f"{base}, and some details were estimated, so treat this as a screening assessment."
     return f"{base}."
@@ -555,7 +555,7 @@ def _build_homeowner_focus_summary(
         # Backward-compatible alias retained for existing consumers.
         "status_label": status_label,
         "question_answer": (
-            f"{status_label}: this report summarizes your wildfire-related insurance risk and the most practical next steps."
+            f"{status_label}: heuristic screening status based on observable wildfire risk factors and property conditions, with practical next steps."
         ),
         "one_sentence_summary": _status_one_sentence_summary(
             status_label=status_label,
@@ -1291,7 +1291,7 @@ def build_homeowner_report(
         "limitations": combined_limitations,
         "decision_support_disclaimer": (
             "This report is decision-support guidance based on prepared geospatial data and provided inputs; "
-            "it is not a guarantee of insurability or wildfire safety."
+            "it is not a prediction or guarantee of insurer underwriting approval, insurability, or wildfire safety."
         ),
         "property_confidence_summary": property_confidence_summary,
     }
@@ -1499,7 +1499,10 @@ def build_homeowner_report(
             "insurance_readiness_score": result.insurance_readiness_score,
             "insurance_readiness_band": _home_hardening_band(result.insurance_readiness_score),
             "insurance_readiness_score_available": result.insurance_readiness_score_available,
-            "legacy_insurance_readiness_note": "Insurance-facing readiness is retained for compatibility and future-facing workflows.",
+            "legacy_insurance_readiness_note": (
+                "Insurance-readiness compatibility output is retained as a heuristic screening reference; "
+                "it is not an insurer underwriting decision."
+            ),
             "confidence_score": result.confidence_score,
             "confidence_tier": result.confidence_tier,
             "use_restriction": result.use_restriction,
@@ -1571,7 +1574,10 @@ def build_homeowner_report(
             "readiness_blockers": list(result.readiness_blockers or []),
             "readiness_factors": [_dump_value(row) for row in list(result.readiness_factors or [])[:8]],
             "status": "optional_future_facing",
-            "note": "Insurance readiness outputs are optional references and not the primary homeowner outcome.",
+            "note": (
+                "Insurance readiness outputs are optional heuristic references for screening context, "
+                "not insurer-specific underwriting decisions."
+            ),
         },
         confidence_summary=result.confidence_summary,
         confidence_and_limitations=confidence_and_limitations,
@@ -1724,7 +1730,8 @@ def export_homeowner_report(
         ),
         "disclaimer": (
             "This report supports homeowner planning and conversations with contractors, agents, "
-            "or insurers. It is not a guarantee of wildfire outcomes or insurability."
+            "or insurers. It is a heuristic screening assessment and not a prediction or guarantee of "
+            "insurer underwriting approval, wildfire outcomes, or insurability."
         ),
     }
 
@@ -2554,7 +2561,7 @@ def _how_this_could_improve_lines(
         if not action_name:
             continue
         direction_line = (
-            f"{action_name} {phrase} lower wildfire exposure and strengthen your insurance profile."
+            f"{action_name} {phrase} lower wildfire exposure and address wildfire-risk factors insurers often review."
         )
         lines.append(direction_line)
         why = _normalize_line(
@@ -2957,12 +2964,12 @@ def _build_report_entries(report: HomeownerReport) -> list[_PdfEntry]:
 
     # 2) PAGE 1: Decision-first homeowner snapshot
     _add_wrapped(entries, "Homeowner Decision Snapshot", style="SectionHeaderStyle")
-    _add_wrapped(entries, "Insurability status", style="summary_card_header")
+    _add_wrapped(entries, "Insurance screening status (heuristic)", style="summary_card_header")
     _add_wrapped(entries, focus_status_label or "Status unavailable", style="summary_card_value")
     _add_wrapped(entries, f"One-sentence summary: {explanation_headline}", style="summary_card_body")
     _add_wrapped(entries, f"Wildfire risk level: {risk_band_label}{risk_score_suffix}", style="summary_card_body")
     if focus_status_reasons:
-        _add_wrapped(entries, "Why this status:", style="summary_card_body")
+        _add_wrapped(entries, "Why this screening status:", style="summary_card_body")
         for reason in focus_status_reasons[:3]:
             _add_wrapped(entries, reason, style="summary_card_body", prefix="- ")
     if focus_status_note:
@@ -3008,7 +3015,7 @@ def _build_report_entries(report: HomeownerReport) -> list[_PdfEntry]:
         if focus_before_after_status_before and focus_before_after_status_after:
             _add_wrapped(
                 entries,
-                f"Status shift: {focus_before_after_status_before} -> {focus_before_after_status_after}",
+                f"Screening status shift: {focus_before_after_status_before} -> {focus_before_after_status_after}",
                 style="callout_label",
             )
         _add_wrapped(
@@ -3053,14 +3060,14 @@ def _build_report_entries(report: HomeownerReport) -> list[_PdfEntry]:
     _add_wrapped(entries, f"Overall wildfire risk: {_fmt_score(score_summary.get('overall_wildfire_risk'))}/100 ({risk_band_label}).", style="body")
     _add_wrapped(entries, f"Wildfire risk score: {_fmt_score(score_summary.get('wildfire_risk_score'))}/100.", style="body")
     _add_wrapped(entries, f"Home hardening readiness: {_fmt_score(score_summary.get('home_hardening_readiness'))}/100 ({readiness_band}).", style="body")
-    _add_wrapped(entries, f"Insurance readiness (compatibility): {_fmt_score(score_summary.get('insurance_readiness_score'))}/100.", style="body")
+    _add_wrapped(entries, f"Insurance readiness (compatibility heuristic): {_fmt_score(score_summary.get('insurance_readiness_score'))}/100.", style="body")
     _add_wrapped(entries, f"Confidence score: {_fmt_score(score_summary.get('confidence_score'))}/100 ({confidence_level_label}).", style="body")
     if debug_subscores:
         _add_wrapped(entries, "Subscores", style="technical_header")
         _add_wrapped(entries, f"- Site hazard score: {_fmt_score(debug_subscores.get('site_hazard_score'))}/100", style="technical_body")
         _add_wrapped(entries, f"- Home ignition vulnerability score: {_fmt_score(debug_subscores.get('home_ignition_vulnerability_score'))}/100", style="technical_body")
         _add_wrapped(entries, f"- Home hardening readiness score: {_fmt_score(debug_subscores.get('home_hardening_readiness'))}/100", style="technical_body")
-        _add_wrapped(entries, f"- Insurance readiness score: {_fmt_score(debug_subscores.get('insurance_readiness_score'))}/100", style="technical_body")
+        _add_wrapped(entries, f"- Insurance readiness score (compatibility heuristic): {_fmt_score(debug_subscores.get('insurance_readiness_score'))}/100", style="technical_body")
     entries.append(_PdfEntry(style="spacer_md"))
 
     # 8) PAGE 2+: Property context and map

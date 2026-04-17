@@ -6,7 +6,8 @@ from typing import Any, Sequence
 
 INSURABILITY_STATUS_METHODOLOGY_NOTE = (
     "This insurability status is a rule-based interpretation of observable wildfire risk factors "
-    "and property conditions from available data, not a guarantee of underwriting outcome."
+    "and property conditions from available data. It is a heuristic screening signal, "
+    "not a prediction or guarantee of insurer underwriting approval."
 )
 
 
@@ -196,4 +197,3 @@ def derive_insurability_status(
         insurability_status=status,
         insurability_status_reasons=final_reasons,
     )
-

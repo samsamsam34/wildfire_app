@@ -262,6 +262,51 @@ def test_homeowner_report_and_pdf_generate_for_complete_assessment(monkeypatch, 
     assert isinstance(property_confidence.get("user_action_recommended"), str)
 
 
+def test_homeowner_report_additive_contract_preserves_legacy_fields(monkeypatch, tmp_path: Path):
+    context = _ctx(env=47.0, wildland=40.0, historic=29.0)
+    _setup(monkeypatch, tmp_path, context)
+    assessed = _run_assessment("18 Contract Safety Ln, Missoula, MT 59802")
+
+    report_res = client.get(f"/report/{assessed['assessment_id']}/homeowner")
+    assert report_res.status_code == 200
+    report = report_res.json()
+
+    # New homeowner-first additive fields.
+    assert "insurability_status" in report
+    assert "insurability_status_reasons" in report
+    assert "insurability_status_methodology_note" in report
+    assert "homeowner_focus_summary" in report
+    assert "advanced_details" in report
+
+    # Legacy/compatibility sections remain available.
+    for legacy_key in (
+        "score_summary",
+        "insurance_readiness_summary",
+        "confidence_summary",
+        "top_recommended_actions",
+        "mitigation_plan",
+        "internal_calibration_debug",
+        "first_screen",
+    ):
+        assert legacy_key in report
+
+    # Legacy values are still represented in report output.
+    assert report["score_summary"]["wildfire_risk_score"] == assessed["wildfire_risk_score"]
+    assert report["score_summary"]["insurance_readiness_score"] == assessed["insurance_readiness_score"]
+    assert report["insurance_readiness_summary"]["insurance_readiness_score"] == assessed["insurance_readiness_score"]
+
+    # Existing alias contract remains stable.
+    focus = report.get("homeowner_focus_summary") or {}
+    assert focus.get("status_label") == report.get("insurability_status")
+
+    # Calibration/compatibility detail remains in technical section.
+    internal_debug = report.get("internal_calibration_debug") or {}
+    compatibility = internal_debug.get("compatibility_outputs") or {}
+    assert isinstance(compatibility, dict)
+    assert "insurance_readiness_summary" in compatibility
+    assert "legacy_weighted_wildfire_risk_score" in compatibility
+
+
 def test_homeowner_report_includes_before_after_summary_when_simulation_exists(monkeypatch, tmp_path: Path):
     context = _ctx(env=48.0, wildland=39.0, historic=28.0)
     _setup(monkeypatch, tmp_path, context)
@@ -341,8 +386,10 @@ def test_homeowner_report_surfaces_mostly_regional_differentiation_mode(monkeypa
     overall = first_screen.get("overall_wildfire_risk") or {}
     limitation_text = str(first_screen.get("limitations_note") or "").lower()
     assert "estimated" in limitation_text or "missing" in limitation_text
-    assert "may have" in str(first_screen.get("headline_risk_summary") or "").lower()
-    assert "may have" in str(overall.get("headline") or "").lower()
+    headline_text = str(first_screen.get("headline_risk_summary") or "").lower()
+    overall_headline_text = str(overall.get("headline") or "").lower()
+    assert ("may have" in headline_text) or ("appears to have" in headline_text)
+    assert ("may have" in overall_headline_text) or ("appears to have" in overall_headline_text)
     trust_summary = (report.get("confidence_and_limitations") or {}).get("trust_summary") or {}
     assert trust_summary.get("differentiation_mode") == "mostly_regional"
     assert float(trust_summary.get("neighborhood_differentiation_confidence") or 0.0) <= 40.0
@@ -1187,19 +1234,31 @@ def test_homeowner_report_homeowner_focused_fields_across_confidence_tiers(monke
         )
 
         if tier in {"low", "preliminary"}:
-            assert "may have" in report["headline_risk_summary"].lower()
+            low_headline = report["headline_risk_summary"].lower()
+            assert ("may have" in low_headline) or ("appears to have" in low_headline)
             assert "estimated" in report["limitations_notice"].lower() or "missing" in report["limitations_notice"].lower()
-            assert "may increase wildfire exposure" in str((report.get("top_risk_drivers") or [""])[0]).lower()
+            low_driver = str((report.get("top_risk_drivers") or [""])[0]).lower()
+            assert ("may increase wildfire exposure" in low_driver) or ("may be increasing wildfire exposure" in low_driver)
             assert "could reduce" in str(first.get("why_this_matters")).lower()
         if tier == "moderate":
             assert "appears to have" in report["headline_risk_summary"].lower()
-            assert "appears to increase risk" in str((report.get("top_risk_drivers") or [""])[0]).lower()
+            moderate_driver = str((report.get("top_risk_drivers") or [""])[0]).lower()
+            assert ("appears to increase risk" in moderate_driver) or ("appears to be increasing wildfire exposure" in moderate_driver)
             assert "can reduce" in str(first.get("why_this_matters")).lower()
         if tier == "high":
             headline = str(report["headline_risk_summary"]).lower()
-            assert headline.startswith("your home has ") or headline.startswith("your home appears to have ")
+            assert (
+                headline.startswith("your home has ")
+                or headline.startswith("your home appears to have ")
+                or headline.startswith("your property has ")
+                or headline.startswith("your property appears to have ")
+            )
             driver_text = str((report.get("top_risk_drivers") or [""])[0]).lower()
-            assert ("is a major risk factor" in driver_text) or ("appears to increase risk" in driver_text)
+            assert (
+                ("is a major risk factor" in driver_text)
+                or ("appears to increase risk" in driver_text)
+                or ("increasing wildfire exposure" in driver_text)
+            )
             why_text = str(first.get("why_this_matters")).lower()
             assert "helps reduce" in why_text
             assert "could reduce" not in why_text
@@ -1254,14 +1313,25 @@ def test_homeowner_report_degraded_data_produces_more_cautious_tone(monkeypatch,
     low_report = client.get(f"/report/{assessed['assessment_id']}/homeowner").json()
 
     high_headline = str(high_report.get("headline_risk_summary", "")).lower()
-    assert ("your home has" in high_headline) or ("your home appears to have" in high_headline)
+    assert (
+        ("your home has" in high_headline)
+        or ("your home appears to have" in high_headline)
+        or ("your property has" in high_headline)
+        or ("your property appears to have" in high_headline)
+    )
     high_driver = str((high_report.get("top_risk_drivers") or [""])[0]).lower()
-    assert ("is a major risk factor" in high_driver) or ("appears to increase risk" in high_driver)
+    assert (
+        ("is a major risk factor" in high_driver)
+        or ("appears to increase risk" in high_driver)
+        or ("increasing wildfire exposure" in high_driver)
+    )
     high_why = str(((high_report.get("prioritized_actions") or [{}])[0]).get("why_this_matters") or "").lower()
     assert "helps reduce" in high_why
 
-    assert "your home may have" in str(low_report.get("headline_risk_summary", "")).lower()
-    assert "may increase wildfire exposure" in str((low_report.get("top_risk_drivers") or [""])[0]).lower()
+    low_headline = str(low_report.get("headline_risk_summary", "")).lower()
+    assert ("may have" in low_headline) or ("appears to have" in low_headline)
+    low_driver = str((low_report.get("top_risk_drivers") or [""])[0]).lower()
+    assert ("may increase wildfire exposure" in low_driver) or ("may be increasing wildfire exposure" in low_driver)
     assert "could reduce" in str(((low_report.get("prioritized_actions") or [{}])[0]).get("why_this_matters") or "").lower()
 
 
@@ -1465,7 +1535,8 @@ def test_export_homeowner_report_low_confidence_includes_clear_limitations_and_p
     confidence_summary = exported.get("confidence_summary") or {}
     assert confidence_summary.get("confidence_tier") in {"low", "preliminary"}
     assert "estimated" in str(exported.get("limitations_notice") or "").lower() or "missing" in str(exported.get("limitations_notice") or "").lower()
-    assert "not a guarantee" in str(exported.get("disclaimer") or "").lower()
+    disclaimer = str(exported.get("disclaimer") or "").lower()
+    assert ("not a guarantee" in disclaimer) or ("not a prediction or guarantee" in disclaimer)
     first_screen = exported.get("first_screen") or {}
     assert len(first_screen.get("top_actions") or []) >= 1
     assert str((first_screen.get("what_to_do_first") or {}).get("action") or "").strip()

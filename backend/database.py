@@ -162,6 +162,16 @@ class AssessmentStore:
                 )
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS assessment_improvement_snapshots (
+                    updated_assessment_id TEXT PRIMARY KEY,
+                    source_assessment_id TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    payload_json TEXT NOT NULL
+                )
+                """
+            )
 
             conn.execute(
                 """
@@ -507,6 +517,52 @@ class AssessmentStore:
                 ),
             )
         return scenario_id
+
+    def save_improvement_snapshot(
+        self,
+        *,
+        updated_assessment_id: str,
+        source_assessment_id: str,
+        payload: dict[str, Any],
+    ) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO assessment_improvement_snapshots
+                (updated_assessment_id, source_assessment_id, created_at, payload_json)
+                VALUES (?, ?, ?, ?)
+                """,
+                (
+                    updated_assessment_id,
+                    source_assessment_id,
+                    self._now(),
+                    json.dumps(payload, default=str),
+                ),
+            )
+
+    def get_improvement_snapshot(self, updated_assessment_id: str) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT updated_assessment_id, source_assessment_id, created_at, payload_json
+                FROM assessment_improvement_snapshots
+                WHERE updated_assessment_id = ?
+                LIMIT 1
+                """,
+                (updated_assessment_id,),
+            ).fetchone()
+        if not row:
+            return None
+        try:
+            payload = json.loads(row["payload_json"]) if row["payload_json"] else {}
+        except Exception:
+            payload = {}
+        return {
+            "updated_assessment_id": row["updated_assessment_id"],
+            "source_assessment_id": row["source_assessment_id"],
+            "created_at": row["created_at"],
+            "payload": payload if isinstance(payload, dict) else {},
+        }
 
     def set_review_status(
         self,

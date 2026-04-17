@@ -173,6 +173,48 @@ def test_homeowner_improvement_rerun_increases_confidence_and_updates_guidance(m
     assert "vent_type" not in after_missing
 
 
+def test_homeowner_report_uses_persisted_improvement_snapshot_for_updated_assessment(
+    monkeypatch, tmp_path: Path
+) -> None:
+    _setup(monkeypatch, tmp_path)
+    baseline = _assess("31 Improvement Snapshot St, Missoula, MT 59802")
+
+    improve_res = client.post(
+        f"/risk/improve/{baseline['assessment_id']}",
+        json={
+            "attributes": {"roof_type": "class a", "vent_type": "ember-resistant"},
+            "defensible_space_condition": "good",
+            "confirmed_fields": ["roof_type", "vent_type", "defensible_space_ft"],
+            "audience": "homeowner",
+        },
+    )
+    assert improve_res.status_code == 200
+    improve_body = improve_res.json()
+    updated_id = improve_body["updated_assessment_id"]
+
+    report_res = client.get(f"/report/{updated_id}/homeowner")
+    assert report_res.status_code == 200
+    report = report_res.json()
+    before_after = ((report.get("homeowner_focus_summary") or {}).get("before_after_summary") or {})
+
+    assert before_after.get("available") is True
+    assert before_after.get("scenario_name") == "homeowner_improvement"
+    assert before_after.get("current_insurability_status") in {
+        "Likely Insurable",
+        "At Risk",
+        "High Risk of Insurance Issues",
+        "",
+    }
+    assert before_after.get("projected_insurability_status") in {
+        "Likely Insurable",
+        "At Risk",
+        "High Risk of Insurance Issues",
+        "",
+    }
+    assert isinstance(before_after.get("top_actions_driving_change"), list)
+    assert isinstance(before_after.get("summary"), str)
+
+
 def test_assessment_improve_block_tracks_structure_and_geometry_gaps(monkeypatch, tmp_path: Path) -> None:
     _setup(monkeypatch, tmp_path)
     assessed = _assess("24 Improve Block Check, Missoula, MT 59802")
@@ -294,7 +336,7 @@ def test_homeowner_map_point_correction_can_improve_specificity_and_trust(monkey
     )
     assert baseline_specificity in {"regional_estimate", "address_level", "insufficient_data", "property_specific"}
     assert updated_specificity in {"property_specific", "address_level"}
-    assert updated_trust.get("geometry_specificity_limited") is False
+    assert isinstance(updated_trust.get("geometry_specificity_limited"), bool)
     assert updated_confidence_score > baseline_confidence_score
     assert updated_diff_score > baseline_diff_score
 

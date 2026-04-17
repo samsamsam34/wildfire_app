@@ -403,6 +403,16 @@ ALLOWED_ROLES: set[str] = {"admin", "underwriter", "broker", "inspector", "agent
 WRITE_ROLES: set[str] = {"admin", "underwriter", "broker", "inspector", "agent"}
 REVIEW_EDIT_ROLES: set[str] = {"admin", "underwriter"}
 WORKFLOW_EDIT_ROLES: set[str] = {"admin", "underwriter", "broker", "inspector"}
+HOMEOWNER_FLOW_EVENTS: set[str] = {
+    "homeowner_assessment_submitted",
+    "homeowner_report_viewed",
+    "homeowner_pdf_generated",
+    "homeowner_advanced_details_opened",
+    "homeowner_simulation_started",
+    "homeowner_simulation_completed",
+    "homeowner_improvement_flow_opened",
+    "homeowner_input_submitted",
+}
 
 WORKFLOW_TRANSITIONS: dict[WorkflowState, set[WorkflowState]] = {
     "new": {"triaged", "needs_inspection", "approved", "declined", "escalated"},
@@ -533,6 +543,29 @@ def _log_audit(
         organization_id=organization_id,
         user_role=ctx.user_role,
         action=action,
+        metadata=metadata or {},
+    )
+
+
+def _log_homeowner_flow_event(
+    *,
+    ctx: ActorContext,
+    event_name: str,
+    organization_id: str,
+    assessment_id: str | None = None,
+    entity_type: str = "assessment",
+    metadata: dict[str, object] | None = None,
+) -> None:
+    if event_name not in HOMEOWNER_FLOW_EVENTS:
+        return
+    resolved_entity_type = entity_type if assessment_id else "homeowner_flow"
+    resolved_entity_id = assessment_id or f"{organization_id}:homeowner_flow"
+    _log_audit(
+        ctx=ctx,
+        entity_type=resolved_entity_type,
+        entity_id=resolved_entity_id,
+        action=event_name,
+        organization_id=organization_id,
         metadata=metadata or {},
     )
 
@@ -9630,7 +9663,7 @@ pre {{ white-space: pre-wrap; }}
 <p><span class=\"badge\">Assessment {result.assessment_id}</span> <span class=\"badge\">Model {result.model_version}</span> <span class=\"badge\">Generated {result.generated_at.isoformat()}</span> <span class=\"badge\">Audience View {mode}</span></p>
 <div class=\"card\"><h2>Property</h2><p>{result.address}</p><p>Organization: {result.organization_id}</p><p>Audience: {result.audience}</p><p>Review Status: {result.review_status}</p><p>Workflow: {result.workflow_state}</p><p>Assigned: {result.assigned_reviewer or 'n/a'}</p><p>Portfolio: {result.portfolio_name or 'n/a'}</p><p>Tags: {', '.join(result.tags) if result.tags else 'none'}</p></div>
 <div class=\"card\"><h3>Ruleset</h3><p>{result.ruleset_name} ({result.ruleset_id} v{result.ruleset_version})</p><p>{result.ruleset_description}</p></div>
-    <div class=\"card\"><h2>Homeowner Verdict</h2><p><strong>{insurability_status}</strong></p><ul>{insurability_reasons_html}</ul><p>{insurability_method_note}</p></div>
+    <div class=\"card\"><h2>Homeowner Screening Status</h2><p><strong>{insurability_status}</strong></p><ul>{insurability_reasons_html}</ul><p>{insurability_method_note}</p><p><em>This is heuristic screening guidance, not a prediction or guarantee of insurer underwriting approval.</em></p></div>
 <div class=\"row\">
 <div class=\"card\"><h3>Wildfire Risk Score</h3><p>{_score_html(result.wildfire_risk_score)}</p></div>
 <div class=\"card\"><h3>Home Hardening Readiness</h3><p>{_score_html(result.home_hardening_readiness)}</p></div>
@@ -9641,7 +9674,7 @@ pre {{ white-space: pre-wrap; }}
     <div class=\"card\"><h3>Key Home Hardening Gaps</h3><ul>{blockers}</ul></div>
     <div class=\"card\"><h3>Top Recommended Actions</h3><ul>{mitigations}</ul></div>
 <div class=\"card\"><h3>Prioritized Vegetation Actions</h3><ul>{vegetation_actions}</ul></div>
-    <div class=\"card\"><h3>Insurance Readiness Score (Technical / Optional)</h3><p>{_score_html(result.insurance_readiness_score)}</p></div>
+    <div class=\"card\"><h3>Insurance Readiness Score (Technical Compatibility / Heuristic)</h3><p>{_score_html(result.insurance_readiness_score)}</p></div>
 {advanced_html}
 </body></html>
 """
@@ -13816,6 +13849,13 @@ def assess_risk(
         ctx, payload.organization_id, payload.ruleset_id,
         "Viewer role cannot create assessments",
     )
+    if payload.audience == "homeowner":
+        _log_homeowner_flow_event(
+            ctx=ctx,
+            event_name="homeowner_assessment_submitted",
+            organization_id=organization_id,
+            metadata={"endpoint": "/risk/assess", "ruleset_id": ruleset.ruleset_id},
+        )
     if _is_dev_mode():
         LOGGER.info(
             "assessment_request %s",
@@ -14068,6 +14108,14 @@ def reassess_risk(
         organization_id=result.organization_id,
         metadata={"source_assessment_id": assessment_id, "ruleset_id": ruleset.ruleset_id},
     )
+    if payload.audience == "homeowner":
+        _log_homeowner_flow_event(
+            ctx=ctx,
+            event_name="homeowner_input_submitted",
+            organization_id=result.organization_id,
+            assessment_id=result.assessment_id,
+            metadata={"endpoint": "/risk/reassess", "source_assessment_id": assessment_id},
+        )
     return result
 
 
@@ -14084,6 +14132,13 @@ def homeowner_improvement_options(
     if not existing:
         raise HTTPException(status_code=404, detail="Assessment not found")
     _enforce_org_scope(ctx, existing.organization_id)
+    _log_homeowner_flow_event(
+        ctx=ctx,
+        event_name="homeowner_improvement_flow_opened",
+        organization_id=existing.organization_id,
+        assessment_id=assessment_id,
+        metadata={"endpoint": "/risk/improve/{assessment_id}", "method": "GET"},
+    )
     return build_homeowner_improvement_options(existing)
 
 
@@ -14483,6 +14538,25 @@ def rerun_assessment_with_homeowner_inputs(
             "selected_structure_id": effective_selected_structure_id,
         },
     )
+    _log_homeowner_flow_event(
+        ctx=ctx,
+        event_name="homeowner_input_submitted",
+        organization_id=updated.organization_id,
+        assessment_id=updated.assessment_id,
+        metadata={"endpoint": "/risk/improve/{assessment_id}", "source_assessment_id": assessment_id},
+    )
+    store.save_improvement_snapshot(
+        updated_assessment_id=updated.assessment_id,
+        source_assessment_id=assessment_id,
+        payload={
+            "scenario_name": "homeowner_improvement",
+            "homeowner_before_after_summary": homeowner_before_after_summary,
+            "what_changed_summary": what_changed_summary,
+            "why_it_matters": list(why_it_matters or []),
+            "confidence_improved": bool(confidence_improved),
+            "recommendations_adjusted": bool(recommendations_adjusted),
+        },
+    )
     return HomeownerImprovementRunResponse(
         baseline_assessment_id=assessment_id,
         updated_assessment_id=updated.assessment_id,
@@ -14529,10 +14603,20 @@ def simulate_risk(
         )
         org_id = ctx.organization_id
         ruleset = _get_ruleset_or_default("default")
+    homeowner_audience = (base_req.audience if base_req.audience else payload.audience) == "homeowner"
 
     scenario_override_values = _attributes_to_dict(payload.scenario_overrides)
     if not scenario_override_values:
         raise HTTPException(status_code=400, detail="Simulation requires at least one scenario override")
+    if homeowner_audience:
+        _log_homeowner_flow_event(
+            ctx=ctx,
+            event_name="homeowner_simulation_started",
+            organization_id=org_id,
+            assessment_id=payload.assessment_id,
+            entity_type="simulation",
+            metadata={"endpoint": "/risk/simulate", "scenario_name": payload.scenario_name},
+        )
 
     baseline_attrs = _merge_attributes(base_req.attributes, payload.attributes)
     baseline_confirmed = sorted(set(base_req.confirmed_fields + payload.confirmed_fields))
@@ -14646,6 +14730,15 @@ def simulate_risk(
         organization_id=org_id,
         metadata={"scenario_name": payload.scenario_name},
     )
+    if homeowner_audience:
+        _log_homeowner_flow_event(
+            ctx=ctx,
+            event_name="homeowner_simulation_completed",
+            organization_id=org_id,
+            assessment_id=payload.assessment_id or baseline.assessment_id,
+            entity_type="simulation",
+            metadata={"endpoint": "/risk/simulate", "scenario_name": payload.scenario_name},
+        )
 
     return sim_result
 
@@ -15333,14 +15426,24 @@ def view_report(
         raise HTTPException(status_code=404, detail="Assessment not found")
     _enforce_org_scope(ctx, result.organization_id)
     html = _build_report_html(result, actor=ctx, audience=audience, audience_mode=audience_mode)
+    resolved_audience = audience or audience_mode or _default_audience_for_role(ctx.user_role)
     _log_audit(
         ctx=ctx,
         entity_type="report",
         entity_id=assessment_id,
         action="report_viewed",
         organization_id=result.organization_id,
-        metadata={"audience": audience or audience_mode or _default_audience_for_role(ctx.user_role)},
+        metadata={"audience": resolved_audience},
     )
+    if resolved_audience == "homeowner":
+        _log_homeowner_flow_event(
+            ctx=ctx,
+            event_name="homeowner_report_viewed",
+            organization_id=result.organization_id,
+            assessment_id=assessment_id,
+            entity_type="report",
+            metadata={"endpoint": "/report/{assessment_id}/view"},
+        )
     return HTMLResponse(html)
 
 
@@ -15354,6 +15457,41 @@ def get_assessment_map(
         raise HTTPException(status_code=404, detail="Assessment not found")
     _enforce_org_scope(ctx, result.organization_id)
     return build_assessment_map_payload(_refresh_result_governance(result), wildfire_data=wildfire_data)
+
+
+def _build_homeowner_before_after_overview(assessment_id: str) -> dict[str, object] | None:
+    latest_scenarios = store.list_scenarios(assessment_id=assessment_id, limit=1)
+    if latest_scenarios:
+        latest = latest_scenarios[0]
+        simulation_overview: dict[str, object] = {
+            "scenario_name": latest.scenario_name,
+            "wildfire_risk_score_delta": latest.wildfire_risk_score_delta,
+            "insurance_readiness_score_delta": latest.insurance_readiness_score_delta,
+        }
+        if isinstance(latest.homeowner_before_after_summary, dict) and latest.homeowner_before_after_summary:
+            simulation_overview["homeowner_before_after_summary"] = latest.homeowner_before_after_summary
+        return simulation_overview
+
+    snapshot = store.get_improvement_snapshot(assessment_id)
+    if not snapshot:
+        return None
+    payload = snapshot.get("payload") if isinstance(snapshot.get("payload"), dict) else {}
+    homeowner_before_after = (
+        payload.get("homeowner_before_after_summary")
+        if isinstance(payload.get("homeowner_before_after_summary"), dict)
+        else {}
+    )
+    if not homeowner_before_after:
+        return None
+    return {
+        "scenario_name": str(payload.get("scenario_name") or "homeowner_improvement"),
+        "wildfire_risk_score_delta": homeowner_before_after.get("wildfire_risk_score_delta"),
+        "insurance_readiness_score_delta": homeowner_before_after.get("home_hardening_readiness_delta"),
+        "homeowner_before_after_summary": homeowner_before_after,
+        "source_assessment_id": snapshot.get("source_assessment_id"),
+        "updated_assessment_id": snapshot.get("updated_assessment_id"),
+        "overview_type": "homeowner_improvement_snapshot",
+    }
 
 
 @app.get("/report/{assessment_id}/homeowner", response_model=HomeownerReport, dependencies=[Depends(require_api_key)])
@@ -15373,17 +15511,19 @@ def get_homeowner_report(
     if not result:
         raise HTTPException(status_code=404, detail="Assessment not found")
     _enforce_org_scope(ctx, result.organization_id)
-    simulation_overview: dict[str, object] | None = None
-    latest_scenarios = store.list_scenarios(assessment_id=assessment_id, limit=1)
-    if latest_scenarios:
-        latest = latest_scenarios[0]
-        simulation_overview = {
-            "scenario_name": latest.scenario_name,
-            "wildfire_risk_score_delta": latest.wildfire_risk_score_delta,
-            "insurance_readiness_score_delta": latest.insurance_readiness_score_delta,
-        }
-        if isinstance(latest.homeowner_before_after_summary, dict) and latest.homeowner_before_after_summary:
-            simulation_overview["homeowner_before_after_summary"] = latest.homeowner_before_after_summary
+    simulation_overview = _build_homeowner_before_after_overview(assessment_id)
+    _log_homeowner_flow_event(
+        ctx=ctx,
+        event_name="homeowner_report_viewed",
+        organization_id=result.organization_id,
+        assessment_id=assessment_id,
+        entity_type="report",
+        metadata={
+            "endpoint": "/report/{assessment_id}/homeowner",
+            "include_professional_debug_metadata": bool(include_professional_debug_metadata),
+            "include_optional_calibration_metadata": bool(include_optional_calibration_metadata),
+        },
+    )
     return build_homeowner_report(
         _refresh_result_governance(result),
         include_professional_debug_metadata=include_professional_debug_metadata,
@@ -15409,17 +15549,7 @@ def download_homeowner_report_pdf(
     if not result:
         raise HTTPException(status_code=404, detail="Assessment not found")
     _enforce_org_scope(ctx, result.organization_id)
-    simulation_overview: dict[str, object] | None = None
-    latest_scenarios = store.list_scenarios(assessment_id=assessment_id, limit=1)
-    if latest_scenarios:
-        latest = latest_scenarios[0]
-        simulation_overview = {
-            "scenario_name": latest.scenario_name,
-            "wildfire_risk_score_delta": latest.wildfire_risk_score_delta,
-            "insurance_readiness_score_delta": latest.insurance_readiness_score_delta,
-        }
-        if isinstance(latest.homeowner_before_after_summary, dict) and latest.homeowner_before_after_summary:
-            simulation_overview["homeowner_before_after_summary"] = latest.homeowner_before_after_summary
+    simulation_overview = _build_homeowner_before_after_overview(assessment_id)
     report = build_homeowner_report(
         _refresh_result_governance(result),
         include_professional_debug_metadata=include_professional_debug_metadata,
@@ -15427,12 +15557,52 @@ def download_homeowner_report_pdf(
         simulation_overview=simulation_overview,
     )
     pdf_bytes = render_homeowner_report_pdf(report)
+    _log_homeowner_flow_event(
+        ctx=ctx,
+        event_name="homeowner_pdf_generated",
+        organization_id=result.organization_id,
+        assessment_id=assessment_id,
+        entity_type="report",
+        metadata={
+            "endpoint": "/report/{assessment_id}/homeowner/pdf",
+            "include_professional_debug_metadata": bool(include_professional_debug_metadata),
+            "include_optional_calibration_metadata": bool(include_optional_calibration_metadata),
+        },
+    )
     filename = f"wildfire_homeowner_report_{assessment_id}.pdf"
     return Response(
         content=pdf_bytes,
         media_type="application/pdf",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+@app.post("/analytics/homeowner/event", dependencies=[Depends(require_api_key)])
+def track_homeowner_event(
+    payload: Dict[str, Any],
+    ctx: ActorContext = Depends(get_actor_context),
+) -> Dict[str, object]:
+    event_name = str(payload.get("event_name") or "").strip()
+    if event_name not in HOMEOWNER_FLOW_EVENTS:
+        raise HTTPException(status_code=400, detail="Unsupported homeowner event_name")
+    assessment_id = str(payload.get("assessment_id") or "").strip() or None
+    metadata = payload.get("metadata")
+    event_metadata = metadata if isinstance(metadata, dict) else {}
+    organization_id = ctx.organization_id
+    if assessment_id:
+        existing = store.get(assessment_id)
+        if not existing:
+            raise HTTPException(status_code=404, detail="Assessment not found")
+        _enforce_org_scope(ctx, existing.organization_id)
+        organization_id = existing.organization_id
+    _log_homeowner_flow_event(
+        ctx=ctx,
+        event_name=event_name,
+        organization_id=organization_id,
+        assessment_id=assessment_id,
+        metadata={**event_metadata, "source": "frontend_event"},
+    )
+    return {"status": "ok", "event_name": event_name}
 
 
 @app.get("/portfolio", response_model=PortfolioResponse, dependencies=[Depends(require_api_key)])
