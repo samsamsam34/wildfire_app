@@ -625,6 +625,55 @@
         margin-top: 0.65rem;
         color: var(--text);
       }
+      .simulation-preset-grid {
+        margin-top: 0.5rem;
+        display: grid;
+        gap: 0.55rem;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      }
+      .sim-preset-btn {
+        width: 100%;
+        min-height: 66px;
+        text-align: left;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        gap: 0.16rem;
+        border-radius: 11px;
+      }
+      .sim-preset-btn .preset-title {
+        font-size: 0.92rem;
+        font-weight: 700;
+      }
+      .sim-preset-btn .preset-detail {
+        font-size: 0.8rem;
+        font-weight: 500;
+        opacity: 0.92;
+      }
+      .sim-preset-btn.is-selected {
+        box-shadow: 0 0 0 3px rgba(44, 87, 111, 0.32);
+      }
+      .sim-preset-hint {
+        margin-top: 0.5rem;
+        font-size: 0.87rem;
+      }
+      .sim-run-status {
+        margin-top: 0.58rem;
+      }
+      .sim-result-headline {
+        margin-bottom: 0.58rem;
+        color: #173547;
+        font-weight: 600;
+      }
+      .sim-result-actions {
+        margin-top: 0.62rem;
+      }
+      .sim-result-actions li {
+        margin-bottom: 0.32rem;
+      }
+      .sim-result-advanced {
+        margin-top: 0.55rem;
+      }
       details {
         border-top: 1px solid var(--line);
         padding-top: 0.8rem;
@@ -1089,99 +1138,126 @@
       <section id="simulationPlannerSection" class="card secondary-panel">
         <details id="simulationPlannerPanel">
           <summary>Mitigation Simulation Planner</summary>
-          <p>Try a few changes to see how they could lower risk.</p>
+          <p class="section-help">Run a quick preset to estimate before vs after impact, or customize a full scenario below.</p>
 
-          <div class="row mt-sm">
-          <div>
-            <label>Scenario name</label>
-            <input id="scenario_name" value="home_upgrade_plan" />
+          <div class="mini-label">Quick scenario presets</div>
+          <div id="simulationPresetGrid" class="simulation-preset-grid">
+            <button type="button" class="secondary sim-preset-btn" data-preset-id="defensible_space">
+              <span class="preset-title">Improve defensible space</span>
+              <span class="preset-detail">Simulate stronger vegetation clearance around the structure.</span>
+            </button>
+            <button type="button" class="secondary sim-preset-btn" data-preset-id="home_hardening">
+              <span class="preset-title">Improve home hardening</span>
+              <span class="preset-detail">Simulate upgraded roof, vent, siding, and deck resilience.</span>
+            </button>
+            <button type="button" class="secondary sim-preset-btn" data-preset-id="apply_top_actions">
+              <span class="preset-title">Apply top recommended actions</span>
+              <span class="preset-detail">Auto-map your top recommendations into a single quick scenario.</span>
+            </button>
           </div>
-
-          <div>
-            <label>Roof type (scenario)</label>
-            <select id="sim_roof_type">
-              <option value="">Unsure</option>
-              <option value="class_a_asphalt_composition">Class A asphalt / composition</option>
-              <option value="metal">Metal</option>
-              <option value="tile_slate">Tile / slate</option>
-              <option value="wood_shake">Wood shake</option>
-              <option value="other">Other (enter)</option>
-            </select>
-            <input id="sim_roof_type_other" class="other-input" placeholder="Enter roof type" />
+          <p id="simulationPresetHint" class="sim-preset-hint muted">Choose a quick scenario to prefill the simulation.</p>
+          <div class="actions">
+            <button id="simulatePresetBtn" type="button">Run Quick Simulation</button>
           </div>
+          <p id="simulationRunStatus" class="status-line tone-muted sim-run-status">Run an assessment, pick a preset, then run simulation.</p>
 
-          <div>
-            <label>Vent protection (scenario)</label>
-            <select id="sim_vent_type">
-              <option value="">Unsure</option>
-              <option value="standard_vents">Standard vents</option>
-              <option value="ember_resistant_vents">Ember-resistant vents</option>
-              <option value="covered_vents_screens">Covered vents / screens</option>
-              <option value="other">Other (enter)</option>
-            </select>
-            <input id="sim_vent_type_other" class="other-input" placeholder="Enter vent type" />
-          </div>
+          <details id="simulationAdvancedPanel" class="mt-sm">
+            <summary>Customize scenario (advanced)</summary>
+            <p class="section-help">Fine-tune scenario inputs manually. You can still run a custom simulation at any time.</p>
 
-          <div>
-            <label>Siding material (scenario)</label>
-            <select id="sim_siding_type">
-              <option value="">Unsure</option>
-              <option value="stucco_masonry">Stucco / masonry</option>
-              <option value="fiber_cement">Fiber cement</option>
-              <option value="wood_siding">Wood siding</option>
-              <option value="vinyl_composite">Vinyl / composite</option>
-              <option value="other">Other (enter)</option>
-            </select>
-            <input id="sim_siding_type_other" class="other-input" placeholder="Enter siding material" />
-          </div>
+            <div class="row mt-sm">
+              <div>
+                <label>Scenario name</label>
+                <input id="scenario_name" value="home_upgrade_plan" />
+              </div>
 
-          <div>
-            <label>Deck or fence (scenario)</label>
-            <select id="sim_deck_attachment">
-              <option value="">Unsure</option>
-              <option value="no_deck_attached">No deck attached</option>
-              <option value="non_combustible_deck">Non-combustible deck</option>
-              <option value="wood_deck_attached">Wood deck attached</option>
-              <option value="fence_attached_to_house">Fence attached to house</option>
-              <option value="other">Other (enter)</option>
-            </select>
-            <input id="sim_deck_attachment_other" class="other-input" placeholder="Enter deck/fence detail" />
-          </div>
+              <div>
+                <label>Roof type (scenario)</label>
+                <select id="sim_roof_type">
+                  <option value="">Unsure</option>
+                  <option value="class_a_asphalt_composition">Class A asphalt / composition</option>
+                  <option value="metal">Metal</option>
+                  <option value="tile_slate">Tile / slate</option>
+                  <option value="wood_shake">Wood shake</option>
+                  <option value="other">Other (enter)</option>
+                </select>
+                <input id="sim_roof_type_other" class="other-input" placeholder="Enter roof type" />
+              </div>
 
-          <div>
-            <label>Defensible space (scenario)</label>
-            <select id="sim_defensible_space">
-              <option value="">Unsure</option>
-              <option value="lt5">Little or none (&lt;5 ft)</option>
-              <option value="10_30">Some clearance (~10–30 ft)</option>
-              <option value="30_100">Well maintained (~30–100 ft)</option>
-              <option value="gt100">Large cleared area (&gt;100 ft)</option>
-            </select>
-          </div>
+              <div>
+                <label>Vent protection (scenario)</label>
+                <select id="sim_vent_type">
+                  <option value="">Unsure</option>
+                  <option value="standard_vents">Standard vents</option>
+                  <option value="ember_resistant_vents">Ember-resistant vents</option>
+                  <option value="covered_vents_screens">Covered vents / screens</option>
+                  <option value="other">Other (enter)</option>
+                </select>
+                <input id="sim_vent_type_other" class="other-input" placeholder="Enter vent type" />
+              </div>
 
-          <div>
-            <label>Approximate year built (scenario)</label>
-            <select id="sim_year_built">
-              <option value="">Unsure</option>
-              <option value="before_1980">Before 1980</option>
-              <option value="1980_2000">1980–2000</option>
-              <option value="2000_2015">2000–2015</option>
-              <option value="after_2015">After 2015</option>
-              <option value="other">Other (enter)</option>
-            </select>
-            <input id="sim_year_built_other" class="other-input" placeholder="Enter year or range" />
-          </div>
-        </div>
+              <div>
+                <label>Siding material (scenario)</label>
+                <select id="sim_siding_type">
+                  <option value="">Unsure</option>
+                  <option value="stucco_masonry">Stucco / masonry</option>
+                  <option value="fiber_cement">Fiber cement</option>
+                  <option value="wood_siding">Wood siding</option>
+                  <option value="vinyl_composite">Vinyl / composite</option>
+                  <option value="other">Other (enter)</option>
+                </select>
+                <input id="sim_siding_type_other" class="other-input" placeholder="Enter siding material" />
+              </div>
 
-        <div class="mt-sm">
-          <label>Scenario confirmed fields (optional, comma separated)</label>
-          <input id="scenario_confirmed_fields" placeholder="roof_type, vent_type, defensible_space_ft" />
-        </div>
+              <div>
+                <label>Deck or fence (scenario)</label>
+                <select id="sim_deck_attachment">
+                  <option value="">Unsure</option>
+                  <option value="no_deck_attached">No deck attached</option>
+                  <option value="non_combustible_deck">Non-combustible deck</option>
+                  <option value="wood_deck_attached">Wood deck attached</option>
+                  <option value="fence_attached_to_house">Fence attached to house</option>
+                  <option value="other">Other (enter)</option>
+                </select>
+                <input id="sim_deck_attachment_other" class="other-input" placeholder="Enter deck/fence detail" />
+              </div>
 
-        <div class="actions">
-          <button id="simulateBtn" type="button">Run Simulation</button>
-        </div>
-        <div id="simResult" class="sim-box muted">No simulation run yet.</div>
+              <div>
+                <label>Defensible space (scenario)</label>
+                <select id="sim_defensible_space">
+                  <option value="">Unsure</option>
+                  <option value="lt5">Little or none (&lt;5 ft)</option>
+                  <option value="10_30">Some clearance (~10–30 ft)</option>
+                  <option value="30_100">Well maintained (~30–100 ft)</option>
+                  <option value="gt100">Large cleared area (&gt;100 ft)</option>
+                </select>
+              </div>
+
+              <div>
+                <label>Approximate year built (scenario)</label>
+                <select id="sim_year_built">
+                  <option value="">Unsure</option>
+                  <option value="before_1980">Before 1980</option>
+                  <option value="1980_2000">1980–2000</option>
+                  <option value="2000_2015">2000–2015</option>
+                  <option value="after_2015">After 2015</option>
+                  <option value="other">Other (enter)</option>
+                </select>
+                <input id="sim_year_built_other" class="other-input" placeholder="Enter year or range" />
+              </div>
+            </div>
+
+            <div class="mt-sm">
+              <label>Scenario confirmed fields (optional, comma separated)</label>
+              <input id="scenario_confirmed_fields" placeholder="roof_type, vent_type, defensible_space_ft" />
+            </div>
+
+            <div class="actions">
+              <button id="simulateBtn" type="button" class="secondary">Run Custom Simulation</button>
+            </div>
+          </details>
+
+          <div id="simResult" class="sim-box muted">No simulation run yet.</div>
         </details>
       </section>
 
@@ -1376,6 +1452,7 @@
       let mapLayerInstances = {};
       let isAddressVerificationPending = false;
       let isAssessmentSubmitting = false;
+      let isSimulationSubmitting = false;
       let addressVerificationModalOpen = false;
       let pendingAssessmentPayload = null;
       let verifiedAddressPayload = null;
@@ -1398,6 +1475,7 @@
       let pendingSelectedStructureId = null;
       let pendingSelectedStructureGeometry = null;
       let pendingSelectedStructureAssessmentId = null;
+      let selectedSimulationPresetId = "apply_top_actions";
 
       const mapLayerStyle = {
         property_anchor_point: {
@@ -1657,6 +1735,21 @@
         "advancedInternalDetailsPanel",
       ];
 
+      const simulationPresetDefinitions = {
+        defensible_space: {
+          scenarioName: "preset_defensible_space_upgrade",
+          hint: "Targets stronger defensible space clearance in near-home zones.",
+        },
+        home_hardening: {
+          scenarioName: "preset_home_hardening_upgrade",
+          hint: "Targets common ember and structure hardening upgrades.",
+        },
+        apply_top_actions: {
+          scenarioName: "preset_top_recommended_actions",
+          hint: "Maps your top recommended actions into a quick before/after scenario.",
+        },
+      };
+
       function setPanelOpen(panelId, shouldOpen) {
         const panel = document.getElementById(panelId);
         if (!panel || typeof panel.open !== "boolean") return;
@@ -1667,18 +1760,203 @@
         defaultCollapsedPanelIds.forEach((panelId) => setPanelOpen(panelId, false));
       }
 
+      function setSimulationRunStatus(message, tone = "muted") {
+        const el = document.getElementById("simulationRunStatus");
+        if (!el) return;
+        el.textContent = String(message || "").trim();
+        el.classList.remove("tone-error", "tone-success", "tone-muted");
+        if (tone === "error") {
+          el.classList.add("tone-error");
+        } else if (tone === "success") {
+          el.classList.add("tone-success");
+        } else {
+          el.classList.add("tone-muted");
+        }
+      }
+
+      function syncSimulationActionState() {
+        const hasAssessment = !!(latestAssessment && latestAssessment.assessment_id);
+        const shouldDisable = isSimulationSubmitting || !hasAssessment;
+        const simulateBtn = document.getElementById("simulateBtn");
+        const presetRunBtn = document.getElementById("simulatePresetBtn");
+        if (simulateBtn) simulateBtn.disabled = shouldDisable;
+        if (presetRunBtn) presetRunBtn.disabled = shouldDisable;
+        document.querySelectorAll("#simulationPresetGrid .sim-preset-btn").forEach((btn) => {
+          btn.disabled = shouldDisable;
+        });
+        if (!hasAssessment) {
+          setSimulationRunStatus("Run an assessment first to unlock before/after simulation.", "muted");
+        }
+      }
+
+      function setScenarioSelectValue(selectId, value, otherInputId = null) {
+        const select = document.getElementById(selectId);
+        if (!select) return;
+        const desired = String(value || "").trim();
+        const hasOption = desired
+          ? Array.from(select.options || []).some((opt) => String(opt.value || "").trim() === desired)
+          : false;
+        if (hasOption) {
+          select.value = desired;
+        } else if (desired && otherInputId) {
+          select.value = "other";
+          const otherInput = document.getElementById(otherInputId);
+          if (otherInput) otherInput.value = desired;
+        } else {
+          select.value = "";
+        }
+        select.dispatchEvent(new Event("change", { bubbles: true }));
+      }
+
+      function clearSimulationScenarioForm() {
+        setScenarioSelectValue("sim_roof_type", "", "sim_roof_type_other");
+        setScenarioSelectValue("sim_vent_type", "", "sim_vent_type_other");
+        setScenarioSelectValue("sim_siding_type", "", "sim_siding_type_other");
+        setScenarioSelectValue("sim_deck_attachment", "", "sim_deck_attachment_other");
+        setScenarioSelectValue("sim_defensible_space", "");
+        setScenarioSelectValue("sim_year_built", "", "sim_year_built_other");
+      }
+
+      function topAssessmentActionTexts(limit = 3) {
+        const prioritized = Array.isArray(latestAssessment?.prioritized_mitigation_actions)
+          ? latestAssessment.prioritized_mitigation_actions
+          : [];
+        if (prioritized.length > 0) {
+          return prioritized
+            .slice(0, limit)
+            .map((row) => `${String(row?.action || "").trim()} ${String(row?.explanation || "").trim()}`.trim())
+            .filter(Boolean);
+        }
+        return topNonEmptyLines(latestAssessment?.top_recommended_actions || [], limit);
+      }
+
+      function deriveTopActionPreset() {
+        const actionTexts = topAssessmentActionTexts(3);
+        const overrides = {};
+        // TODO(calibration): replace these text heuristics with empirically validated action-to-override mappings.
+        actionTexts.forEach((text) => {
+          const lower = String(text || "").toLowerCase();
+          if (!lower) return;
+          if (!overrides.defensible_space && /(defensible|vegetation|zone 0|zone 1|clear|brush|fuel)/.test(lower)) {
+            overrides.defensible_space = "30_100";
+          }
+          if (!overrides.roof_type && /(roof|class a|covering)/.test(lower)) {
+            overrides.roof_type = "class_a_asphalt_composition";
+          }
+          if (!overrides.vent_type && /(vent|ember[- ]?resistant|screen)/.test(lower)) {
+            overrides.vent_type = "ember_resistant_vents";
+          }
+          if (!overrides.siding_type && /(siding|stucco|masonry|fiber cement|non[- ]?combust)/.test(lower)) {
+            overrides.siding_type = "fiber_cement";
+          }
+          if (!overrides.deck_attachment && /(deck|fence)/.test(lower)) {
+            overrides.deck_attachment = "non_combustible_deck";
+          }
+        });
+
+        if (Object.keys(overrides).length === 0) {
+          overrides.defensible_space = "30_100";
+          overrides.vent_type = "ember_resistant_vents";
+          return {
+            overrides,
+            hint: "No exact action match found, so this preset applies common high-impact wildfire mitigation defaults.",
+          };
+        }
+
+        const matchedCount = Object.keys(overrides).length;
+        return {
+          overrides,
+          hint: `Mapped ${matchedCount} scenario ${matchedCount === 1 ? "change" : "changes"} from your top recommended actions.`,
+        };
+      }
+
+      function getSimulationPresetPlan(presetId = selectedSimulationPresetId) {
+        const selectedId = simulationPresetDefinitions[presetId] ? presetId : "apply_top_actions";
+        const definition = simulationPresetDefinitions[selectedId];
+        if (selectedId === "defensible_space") {
+          return {
+            presetId: selectedId,
+            scenarioName: definition.scenarioName,
+            hint: definition.hint,
+            overrides: { defensible_space: "30_100" },
+          };
+        }
+        if (selectedId === "home_hardening") {
+          return {
+            presetId: selectedId,
+            scenarioName: definition.scenarioName,
+            hint: definition.hint,
+            overrides: {
+              roof_type: "class_a_asphalt_composition",
+              vent_type: "ember_resistant_vents",
+              siding_type: "fiber_cement",
+              deck_attachment: "non_combustible_deck",
+            },
+          };
+        }
+        const derived = deriveTopActionPreset();
+        return {
+          presetId: selectedId,
+          scenarioName: definition.scenarioName,
+          hint: derived.hint || definition.hint,
+          overrides: derived.overrides,
+        };
+      }
+
+      function applySimulationPresetToScenarioForm(plan) {
+        if (!plan || typeof plan !== "object") return;
+        clearSimulationScenarioForm();
+        const scenarioNameInput = document.getElementById("scenario_name");
+        if (scenarioNameInput) scenarioNameInput.value = String(plan.scenarioName || "what_if").trim() || "what_if";
+        const overrides = plan.overrides && typeof plan.overrides === "object" ? plan.overrides : {};
+        setScenarioSelectValue("sim_roof_type", overrides.roof_type || "", "sim_roof_type_other");
+        setScenarioSelectValue("sim_vent_type", overrides.vent_type || "", "sim_vent_type_other");
+        setScenarioSelectValue("sim_siding_type", overrides.siding_type || "", "sim_siding_type_other");
+        setScenarioSelectValue("sim_deck_attachment", overrides.deck_attachment || "", "sim_deck_attachment_other");
+        setScenarioSelectValue("sim_defensible_space", overrides.defensible_space || "");
+        setScenarioSelectValue("sim_year_built", overrides.year_built || "", "sim_year_built_other");
+      }
+
+      function setSimulationPresetSelection(presetId = "apply_top_actions", { prefill = false } = {}) {
+        selectedSimulationPresetId = simulationPresetDefinitions[presetId] ? presetId : "apply_top_actions";
+        const plan = getSimulationPresetPlan(selectedSimulationPresetId);
+        document.querySelectorAll("#simulationPresetGrid .sim-preset-btn").forEach((btn) => {
+          const active = btn?.dataset?.presetId === selectedSimulationPresetId;
+          btn.classList.toggle("is-selected", !!active);
+          btn.setAttribute("aria-pressed", active ? "true" : "false");
+        });
+        const hintEl = document.getElementById("simulationPresetHint");
+        if (hintEl) hintEl.textContent = plan.hint || "Choose a quick scenario to prefill the simulation.";
+        if (prefill) applySimulationPresetToScenarioForm(plan);
+      }
+
+      async function runSelectedSimulationPreset() {
+        if (!latestAssessment?.assessment_id) {
+          setSimulationRunStatus("Run an assessment first, then try a quick simulation preset.", "error");
+          alert("Run an assessment first.");
+          return;
+        }
+        const plan = getSimulationPresetPlan(selectedSimulationPresetId);
+        applySimulationPresetToScenarioForm(plan);
+        await runSimulation({
+          source: "preset",
+          presetId: selectedSimulationPresetId,
+        });
+      }
+
       function openSimulationPlannerFromCta({ smooth = true } = {}) {
         setPanelOpen("simulationPlannerPanel", true);
+        setSimulationPresetSelection(selectedSimulationPresetId);
         const target = document.getElementById("simulationPlannerSection");
         if (target && typeof target.scrollIntoView === "function") {
           target.scrollIntoView({ behavior: smooth ? "smooth" : "auto", block: "start" });
         }
-        const scenarioInput = document.getElementById("scenario_name");
-        if (scenarioInput && typeof scenarioInput.focus === "function") {
+        const quickRunBtn = document.getElementById("simulatePresetBtn");
+        if (quickRunBtn && typeof quickRunBtn.focus === "function") {
           try {
-            scenarioInput.focus({ preventScroll: true });
+            quickRunBtn.focus({ preventScroll: true });
           } catch (_err) {
-            scenarioInput.focus();
+            quickRunBtn.focus();
           }
         }
       }
@@ -2683,6 +2961,7 @@
       function resetHomeownerJourneyPanels(reason) {
         latestHomeownerReport = null;
         latestSimulationSummary = null;
+        isSimulationSubmitting = false;
         collapseSecondaryPanels();
         const statusEl = document.getElementById("homeownerReportStatus");
         const highlightsEl = document.getElementById("homeownerReportHighlights");
@@ -2728,6 +3007,16 @@
         }
         renderImproveSectionFromBlock(null);
         updatePrimaryDecisionCta("");
+        setSimulationPresetSelection("apply_top_actions", { prefill: true });
+        const simResultEl = document.getElementById("simResult");
+        if (simResultEl) {
+          clearNode(simResultEl);
+          simResultEl.classList.add("muted");
+          simResultEl.textContent = "No simulation run yet.";
+        }
+        setPanelOpen("simulationAdvancedPanel", false);
+        setSimulationRunStatus("Run an assessment, pick a preset, then run simulation.", "muted");
+        syncSimulationActionState();
       }
 
       function renderHomeownerReportPreview(report) {
@@ -3045,6 +3334,16 @@
         latestAssessment = data;
         latestSimulationSummary = null;
         collapseSecondaryPanels();
+        setPanelOpen("simulationAdvancedPanel", false);
+        const simResultEl = document.getElementById("simResult");
+        if (simResultEl) {
+          clearNode(simResultEl);
+          simResultEl.classList.add("muted");
+          simResultEl.textContent = "No simulation run yet.";
+        }
+        setSimulationRunStatus("Choose a quick preset or customize a scenario, then run simulation.", "muted");
+        setSimulationPresetSelection(selectedSimulationPresetId, { prefill: true });
+        syncSimulationActionState();
         if (
           pendingSelectedStructureAssessmentId
           && pendingSelectedStructureAssessmentId !== data?.assessment_id
@@ -4684,17 +4983,48 @@
         }
       }
 
-      async function runSimulation() {
-        if (!latestAssessment) {
+      async function runSimulation({ source = "custom", presetId = null } = {}) {
+        if (!latestAssessment?.assessment_id) {
+          setSimulationRunStatus("Run an assessment first, then simulate before vs after impact.", "error");
           alert("Run an assessment first.");
           return;
         }
+        if (isSimulationSubmitting) return;
+
+        isSimulationSubmitting = true;
+        syncSimulationActionState();
+
+        const simResultEl = document.getElementById("simResult");
+        const scenarioName = String(document.getElementById("scenario_name")?.value || "what_if").trim() || "what_if";
 
         try {
           const fmt = (value) => (value === null || value === undefined || Number.isNaN(Number(value)) ? "Not computed" : Number(value).toFixed(1));
+          const formatDirectionalDelta = (value, positiveWord = "higher", negativeWord = "lower") => {
+            const n = Number(value);
+            if (!Number.isFinite(n)) return "Not computed";
+            if (Math.abs(n) < 0.05) return "No meaningful change";
+            if (n > 0) return `${n.toFixed(1)} points ${positiveWord}`;
+            return `${Math.abs(n).toFixed(1)} points ${negativeWord}`;
+          };
+
+          setSimulationRunStatus("Running before/after simulation...", "muted");
+          if (simResultEl) {
+            clearNode(simResultEl);
+            simResultEl.classList.add("muted");
+            simResultEl.textContent = "Running simulation...";
+          }
+
+          trackHomeownerFlowEvent("homeowner_simulation_started", {
+            metadata: {
+              source,
+              preset_id: presetId || null,
+              scenario_name: scenarioName,
+            },
+          });
+
           const sim = await api("/risk/simulate", {
             assessment_id: latestAssessment.assessment_id,
-            scenario_name: document.getElementById("scenario_name").value || "what_if",
+            scenario_name: scenarioName,
             scenario_overrides: collectAttributes("sim_"),
             scenario_confirmed_fields: parseCSV(document.getElementById("scenario_confirmed_fields").value)
           }, "POST");
@@ -4743,13 +5073,17 @@
             || sim.summary
             || "Simulation complete."
           ).trim();
+          const visibleActionDrivers = actionDrivers.length > 0
+            ? actionDrivers
+            : resolvedActions.slice(0, 3).map((action) => ({ action, why_this_matters: "" }));
+
           latestSimulationSummary = {
-            scenario_name: sim.scenario_name || "what_if",
+            scenario_name: sim.scenario_name || scenarioName,
             wildfire_risk_score_delta: delta?.wildfire_risk_score_delta,
             home_hardening_readiness_delta: hardeningDelta,
             current_insurability_status: statusBefore,
             projected_insurability_status: statusAfter,
-            top_actions_driving_change: actionDrivers,
+            top_actions_driving_change: visibleActionDrivers,
             summary: changeSummary,
           };
           if (latestHomeownerReport && latestAssessment?.assessment_id) {
@@ -4758,30 +5092,62 @@
             renderHomeownerDecisionFromAssessment(latestAssessment);
           }
 
-          const simResultEl = document.getElementById("simResult");
+          setSimulationRunStatus("Simulation complete. Review your projected status and top action drivers below.", "success");
+
+          trackHomeownerFlowEvent("homeowner_simulation_completed", {
+            metadata: {
+              source,
+              preset_id: presetId || null,
+              scenario_name: sim.scenario_name || scenarioName,
+              status_before: statusBefore || null,
+              status_after: statusAfter || null,
+            },
+          });
+
           if (simResultEl) {
             clearNode(simResultEl);
+            simResultEl.classList.remove("muted");
 
-            const appendLabeledLine = (label, value) => {
-              const row = document.createElement("div");
-              const strong = document.createElement("strong");
-              strong.textContent = `${label}:`;
-              row.appendChild(strong);
-              row.appendChild(document.createTextNode(` ${value}`));
-              simResultEl.appendChild(row);
+            const headline = document.createElement("p");
+            headline.className = "sim-result-headline";
+            const statusShiftText = (statusBefore && statusAfter)
+              ? `Status shift: ${statusBefore} → ${statusAfter}.`
+              : "";
+            headline.textContent = `${statusShiftText} ${changeSummary}`.trim();
+            simResultEl.appendChild(headline);
+
+            const kpiGrid = document.createElement("div");
+            kpiGrid.className = "trust-overview";
+            const addKpiCard = (label, value) => {
+              const card = document.createElement("div");
+              card.className = "trust-value";
+              const labelEl = document.createElement("span");
+              labelEl.textContent = label;
+              const valueEl = document.createElement("strong");
+              valueEl.textContent = value;
+              card.appendChild(labelEl);
+              card.appendChild(valueEl);
+              kpiGrid.appendChild(card);
             };
+            addKpiCard("Current status", statusBefore || "Not available");
+            addKpiCard("Projected status", statusAfter || "Not available");
+            addKpiCard("Wildfire risk score", formatDirectionalDelta(delta?.wildfire_risk_score_delta, "higher", "lower"));
+            addKpiCard("Home hardening readiness", formatDirectionalDelta(hardeningDelta, "higher", "lower"));
+            simResultEl.appendChild(kpiGrid);
 
-            if (statusBefore && statusAfter) {
-              appendLabeledLine("Screening status shift", `${statusBefore} → ${statusAfter}`);
-            }
-            appendLabeledLine("What-if summary", changeSummary);
+            const actionHeading = document.createElement("strong");
+            actionHeading.textContent = "Top actions driving projected change:";
+            simResultEl.appendChild(actionHeading);
 
-            if (actionDrivers.length > 0) {
-              const heading = document.createElement("strong");
-              heading.textContent = "Top actions driving this change:";
-              simResultEl.appendChild(heading);
-              const ul = document.createElement("ul");
-              actionDrivers.forEach((row) => {
+            const actionList = document.createElement("ul");
+            actionList.className = "sim-result-actions";
+            if (visibleActionDrivers.length === 0) {
+              const li = document.createElement("li");
+              li.className = "muted";
+              li.textContent = "No specific action drivers were returned for this scenario.";
+              actionList.appendChild(li);
+            } else {
+              visibleActionDrivers.forEach((row) => {
                 const action = String(row?.action || "").trim();
                 const why = String(row?.why_this_matters || "").trim();
                 if (!action) return;
@@ -4790,12 +5156,13 @@
                 strong.textContent = action;
                 li.appendChild(strong);
                 if (why) li.appendChild(document.createTextNode(`: ${why}`));
-                ul.appendChild(li);
+                actionList.appendChild(li);
               });
-              simResultEl.appendChild(ul);
             }
+            simResultEl.appendChild(actionList);
 
             const details = document.createElement("details");
+            details.className = "sim-result-advanced";
             const summary = document.createElement("summary");
             summary.textContent = "Technical deltas (advanced)";
             details.appendChild(summary);
@@ -4831,7 +5198,16 @@
             simResultEl.appendChild(details);
           }
         } catch (err) {
+          setSimulationRunStatus(`Simulation failed: ${err.message}`, "error");
+          if (simResultEl) {
+            clearNode(simResultEl);
+            simResultEl.classList.add("muted");
+            simResultEl.textContent = `Simulation failed: ${err.message}`;
+          }
           alert(err.message);
+        } finally {
+          isSimulationSubmitting = false;
+          syncSimulationActionState();
         }
       }
 
@@ -4938,12 +5314,23 @@
       bindOtherInput("sim_deck_attachment", "sim_deck_attachment_other");
       bindOtherInput("sim_year_built", "sim_year_built_other");
 
+      document.querySelectorAll("#simulationPresetGrid .sim-preset-btn").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          setSimulationPresetSelection(btn?.dataset?.presetId || "apply_top_actions", { prefill: true });
+        });
+      });
+
       collapseSecondaryPanels();
       updatePrimaryDecisionCta("");
+      setSimulationPresetSelection("apply_top_actions", { prefill: true });
+      setPanelOpen("simulationAdvancedPanel", false);
+      syncSimulationActionState();
+      setSimulationRunStatus("Run an assessment, pick a preset, then run simulation.", "muted");
 
       document.getElementById("assessBtn").addEventListener("click", startAddressVerificationFlow);
       document.getElementById("reassessBtn").addEventListener("click", () => runAssessment(true));
       document.getElementById("simulateBtn").addEventListener("click", runSimulation);
+      document.getElementById("simulatePresetBtn")?.addEventListener("click", runSelectedSimulationPreset);
       document.getElementById("primaryDecisionCtaBtn")?.addEventListener("click", () => {
         openSimulationPlannerFromCta({ smooth: true });
       });
