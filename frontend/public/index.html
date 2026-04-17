@@ -1348,7 +1348,7 @@
           <div id="mapLayerToggles" class="map-toggles"></div>
           <p id="mapLimitationsText" class="muted map-note">Map limitations will appear here when needed.</p>
           <p id="propertyContextMapHint" class="muted map-note">Property context summary will appear here after assessment.</p>
-          <div id="mapDebugPanel" class="map-debug" style="display:none;"></div>
+          <div id="mapDebugPanel" class="map-debug" data-operator-only="true" style="display:none;"></div>
         </details>
       </section>
 
@@ -1361,13 +1361,13 @@
             <li>Confidence diagnostics, assumptions, and evidence-quality context</li>
             <li>Calibration-compatible and legacy/compatibility outputs</li>
           </ul>
-          <div class="row">
+          <div class="row" data-operator-only="true">
             <div>
               <label>API Key (local/internal use)</label>
               <input id="apiKey" value="dev-key-1" />
             </div>
           </div>
-          <div class="actions">
+          <div class="actions" data-operator-only="true">
             <button id="exportReportBtn" type="button" class="secondary">Open Raw Export JSON</button>
             <button id="openInternalDiagnosticsBtn" type="button" class="secondary">Open Internal Diagnostics</button>
           </div>
@@ -1480,6 +1480,9 @@
         || window.location.hostname === "localhost"
         || window.location.hostname === "127.0.0.1"
         || window.location.protocol === "file:";
+      const showOperatorControls = !!window.WILDFIRE_SHOW_OPERATOR_CONTROLS || !!window.WILDFIRE_OPERATOR_UI;
+      const isHomeownerMode = !showOperatorControls;
+      const showOperatorDiagnostics = isDebugMode && showOperatorControls;
       const apiKeyInput = document.getElementById("apiKey");
       let storedApiKey = "dev-key-1";
       try {
@@ -1805,6 +1808,13 @@
 
       function collapseSecondaryPanels() {
         defaultCollapsedPanelIds.forEach((panelId) => setPanelOpen(panelId, false));
+      }
+
+      function applyHomeownerModeGates() {
+        document.querySelectorAll("[data-operator-only='true']").forEach((el) => {
+          if (!el) return;
+          el.style.display = isHomeownerMode ? "none" : "";
+        });
       }
 
       function applyToneClass(el, tone = "muted") {
@@ -2281,7 +2291,7 @@
       function renderMapDebugPanel(payload) {
         const panel = document.getElementById("mapDebugPanel");
         if (!panel) return;
-        if (!isDebugMode) {
+        if (!showOperatorDiagnostics) {
           panel.style.display = "none";
           panel.textContent = "";
           return;
@@ -3083,7 +3093,9 @@
           methodology: methodology || "Rule-based screening guidance using observable wildfire and property factors; not a prediction or guarantee of insurer underwriting approval.",
           advancedRows: [
             "Technical subscores, diagnostics, and compatibility outputs are available in Advanced / Internal Details.",
-            "Use Open Raw Export JSON for full calibration and evidence payloads.",
+            showOperatorControls
+              ? "Operator export and diagnostics tools are available in this mode."
+              : "Operator export and diagnostics tools are hidden in homeowner mode.",
           ],
         });
       }
@@ -3252,7 +3264,11 @@
         ) {
           advancedRows.push("Optional public-outcome calibration metadata is included for advanced review.");
         }
-        advancedRows.push("Use Open Raw Export JSON and Open Internal Diagnostics for the complete technical payload.");
+        advancedRows.push(
+          showOperatorControls
+            ? "Operator export and diagnostics tools are available in this mode."
+            : "Operator export and diagnostics tools are hidden in homeowner mode."
+        );
 
         renderHomeownerDecisionSnapshot({
           statusLabel,
@@ -3543,7 +3559,7 @@
         }
         const regionInlineEl = document.getElementById("regionDebugInline");
         if (regionInlineEl) {
-          if (isDebugMode) {
+          if (showOperatorDiagnostics) {
             const regionId = data?.resolved_region_id || resolution?.resolved_region_id || "unresolved";
             const coverage = data?.coverage_available ?? resolution?.coverage_available;
             const regionText = coverage === false ? "unsupported_location" : regionId;
@@ -3815,7 +3831,7 @@
         const regionResolutionEl = document.getElementById("regionResolutionText");
         const geocodeDebugEl = document.getElementById("geocodeDebugText");
         if (regionResolutionEl) {
-          if (isDebugMode) {
+          if (showOperatorDiagnostics) {
             const resolvedRegionId = resolution?.resolved_region_id || data?.property_level_context?.region_id || "unresolved";
             regionResolutionEl.style.display = "block";
             regionResolutionEl.textContent =
@@ -3825,7 +3841,7 @@
           }
         }
         if (geocodeDebugEl) {
-          if (isDebugMode) {
+          if (showOperatorDiagnostics) {
             const geocode = data?.geocoding || {};
             const status = geocode?.geocode_status || "unknown";
             const outcome = geocode?.geocode_outcome || "unknown";
@@ -3863,7 +3879,7 @@
         document.getElementById("riskLabel").textContent = "Limited local coverage";
         const regionInlineEl = document.getElementById("regionDebugInline");
         if (regionInlineEl) {
-          if (isDebugMode) {
+          if (showOperatorDiagnostics) {
             regionInlineEl.style.display = "block";
             regionInlineEl.textContent = "Region: unsupported_location";
           } else {
@@ -3928,7 +3944,7 @@
         const regionResolutionEl = document.getElementById("regionResolutionText");
         const geocodeDebugEl = document.getElementById("geocodeDebugText");
         if (regionResolutionEl) {
-          if (isDebugMode) {
+          if (showOperatorDiagnostics) {
             regionResolutionEl.style.display = "block";
             regionResolutionEl.textContent =
               `Resolved prepared region: none (${reasonText}, covered=false).`;
@@ -3937,7 +3953,7 @@
           }
         }
         if (geocodeDebugEl) {
-          if (isDebugMode) {
+          if (showOperatorDiagnostics) {
             const geocodeStatus = detail?.geocode_status || "unknown";
             const geocodeOutcome = detail?.geocode_outcome || "unknown";
             const trustedMatchStatus = detail?.trusted_match_status || "unknown";
@@ -4031,7 +4047,7 @@
 
         const regionInlineEl = document.getElementById("regionDebugInline");
         if (regionInlineEl) {
-          if (isDebugMode) {
+          if (showOperatorDiagnostics) {
             regionInlineEl.style.display = "block";
             regionInlineEl.textContent = "Region: unresolved";
           } else {
@@ -4042,7 +4058,7 @@
         const regionResolutionEl = document.getElementById("regionResolutionText");
         const geocodeDebugEl = document.getElementById("geocodeDebugText");
         if (regionResolutionEl) {
-          if (isDebugMode) {
+          if (showOperatorDiagnostics) {
             regionResolutionEl.style.display = "block";
             regionResolutionEl.textContent = "Resolved prepared region: none (geocode rejected before coverage check).";
           } else {
@@ -4050,7 +4066,7 @@
           }
         }
         if (geocodeDebugEl) {
-          if (isDebugMode) {
+          if (showOperatorDiagnostics) {
             geocodeDebugEl.style.display = "block";
             geocodeDebugEl.textContent =
               `Geocode: status=${geocodeStatus}; outcome=${geocodeOutcome}; trust=${trustedMatchStatus}; submitted="${submitted}"; normalized="${normalized}"; lat/lon=n/a; region=unresolved`;
@@ -5538,6 +5554,7 @@
       bindOtherInput("sim_siding_type", "sim_siding_type_other");
       bindOtherInput("sim_deck_attachment", "sim_deck_attachment_other");
       bindOtherInput("sim_year_built", "sim_year_built_other");
+      applyHomeownerModeGates();
 
       document.querySelectorAll("#simulationPresetGrid .sim-preset-btn").forEach((btn) => {
         btn.addEventListener("click", () => {
