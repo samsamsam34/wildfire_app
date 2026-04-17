@@ -1,0 +1,38 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "parcel_id": "MISSOULA-PARCEL-1001"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              -113.9905,
+              46.87
+            ],
+            [
+              -113.9895,
+              46.87
+            ],
+            [
+              -113.9895,
+              46.871
+            ],
+            [
+              -113.9905,
+              46.871
+            ],
+            [
+              -113.9905,
+              46.87
+            ]
+          ]
+        ]
+      }
+    }
+  ]
+}

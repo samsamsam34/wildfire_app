@@ -3,6 +3,8 @@ from __future__ import annotations
 import os
 import json
 import re
+import math
+import difflib
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -818,3 +820,182 @@ def geocode_from_address_points(
         geocode_location_type="address_point",
         geocode_precision="rooftop",
     )
+
+
+def _distance_meters(
+    a_lat: float,
+    a_lon: float,
+    b_lat: float,
+    b_lon: float,
+) -> float:
+    lat_mid = math.radians((a_lat + b_lat) / 2.0)
+    meters_per_deg_lat = 111_320.0
+    meters_per_deg_lon = max(1.0, 111_320.0 * math.cos(lat_mid))
+    return float(math.hypot((a_lat - b_lat) * meters_per_deg_lat, (a_lon - b_lon) * meters_per_deg_lon))
+
+
+def _fuzzy_score_0_100(query: str, candidate: str) -> float:
+    query_norm = _normalize_for_similarity(query)
+    candidate_norm = _normalize_for_similarity(candidate)
+    if not query_norm or not candidate_norm:
+        return 0.0
+    try:
+        from rapidfuzz import fuzz  # type: ignore
+
+        return float(fuzz.ratio(query_norm, candidate_norm))
+    except Exception:
+        return float(difflib.SequenceMatcher(None, query_norm, candidate_norm).ratio() * 100.0)
+
+
+def _address_from_properties(props: dict[str, Any]) -> str:
+    for field in (
+        "fulladdress",
+        "address",
+        "site_address",
+        "situs_address",
+        "formatted_address",
+    ):
+        value = str(props.get(field) or "").strip()
+        if value:
+            return value
+    number = ""
+    for field in ("STREETNUMBER", "streetnumber", "house_number", "AddressNumber", "ADDRNUM"):
+        value = str(props.get(field) or "").strip()
+        if value:
+            number = value
+            break
+    street = ""
+    for field in ("STREETNAME", "street_name", "street", "road", "StreetName"):
+        value = str(props.get(field) or "").strip()
+        if value:
+            street = value
+            break
+    city = ""
+    for field in ("city", "City", "town", "locality", "municipality"):
+        value = str(props.get(field) or "").strip()
+        if value:
+            city = value
+            break
+    state = ""
+    for field in ("state", "State", "st", "province"):
+        value = str(props.get(field) or "").strip()
+        if value:
+            state = value
+            break
+    postal = ""
+    for field in ("zip", "zipcode", "postal", "postcode", "ZIP"):
+        value = str(props.get(field) or "").strip()
+        if value:
+            postal = value
+            break
+    return ", ".join([value for value in [f"{number} {street}".strip(), city, state, postal] if value])
+
+
+def snap_geocode_to_address_points(
+    *,
+    submitted_address: str,
+    geocoded_lat: float,
+    geocoded_lon: float,
+    address_points_path: str,
+    max_distance_m: float = 150.0,
+    min_match_score: float = 85.0,
+) -> dict[str, Any]:
+    """Attempt to snap a geocoded point to the nearest matching address point.
+
+    Returns a diagnostics payload with ``matched=True`` when a point within
+    ``max_distance_m`` is found and address fuzzy score is at least
+    ``min_match_score``.
+    """
+    path = str(address_points_path or "").strip()
+    if not path:
+        return {
+            "attempted": False,
+            "matched": False,
+            "reason": "missing_address_points_path",
+        }
+
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            payload = json.load(fh)
+    except Exception:
+        return {
+            "attempted": True,
+            "matched": False,
+            "reason": "address_points_unreadable",
+            "address_points_path": path,
+        }
+
+    features = payload.get("features") if isinstance(payload, dict) else []
+    if not isinstance(features, list):
+        features = []
+
+    candidates_considered = 0
+    nearby_candidates = 0
+    best_match: dict[str, Any] | None = None
+    best_key: tuple[float, float] | None = None
+
+    for feature in features:
+        if not isinstance(feature, dict):
+            continue
+        geometry = feature.get("geometry") if isinstance(feature.get("geometry"), dict) else {}
+        if str(geometry.get("type") or "") != "Point":
+            continue
+        coords = geometry.get("coordinates")
+        if not isinstance(coords, (list, tuple)) or len(coords) < 2:
+            continue
+        try:
+            lon = float(coords[0])
+            lat = float(coords[1])
+        except (TypeError, ValueError):
+            continue
+        if not (-90.0 <= lat <= 90.0 and -180.0 <= lon <= 180.0):
+            continue
+
+        candidates_considered += 1
+        distance_m = _distance_meters(geocoded_lat, geocoded_lon, lat, lon)
+        if distance_m > float(max_distance_m):
+            continue
+        nearby_candidates += 1
+        props = feature.get("properties") if isinstance(feature.get("properties"), dict) else {}
+        candidate_address = _address_from_properties(props)
+        score = _fuzzy_score_0_100(submitted_address, candidate_address)
+        if score < float(min_match_score):
+            continue
+        key = (float(score), -float(distance_m))
+        if best_key is None or key > best_key:
+            best_key = key
+            best_match = {
+                "latitude": float(lat),
+                "longitude": float(lon),
+                "matched_address": candidate_address or None,
+                "match_score": round(float(score), 2),
+                "distance_m": round(float(distance_m), 2),
+            }
+
+    if best_match is None:
+        return {
+            "attempted": True,
+            "matched": False,
+            "reason": "no_nearby_fuzzy_match",
+            "address_points_path": path,
+            "candidates_considered": int(candidates_considered),
+            "nearby_candidates": int(nearby_candidates),
+            "max_distance_m": float(max_distance_m),
+            "min_match_score": float(min_match_score),
+        }
+
+    return {
+        "attempted": True,
+        "matched": True,
+        "reason": "address_point_snapped",
+        "address_points_path": path,
+        "candidates_considered": int(candidates_considered),
+        "nearby_candidates": int(nearby_candidates),
+        "max_distance_m": float(max_distance_m),
+        "min_match_score": float(min_match_score),
+        "matched_address": best_match.get("matched_address"),
+        "match_score": best_match.get("match_score"),
+        "distance_m": best_match.get("distance_m"),
+        "latitude": best_match.get("latitude"),
+        "longitude": best_match.get("longitude"),
+    }

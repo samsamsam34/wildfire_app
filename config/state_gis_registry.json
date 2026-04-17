@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "description": "State-level parcel endpoint registry used by parcel source auto-resolution.",
+  "states": {
+    "MT": {
+      "parcel_endpoints": [
+        "https://services3.arcgis.com/uKh72TYBlxpm42Cm/arcgis/rest/services/ParcelOwner_State/FeatureServer/0"
+      ],
+      "notes": "Montana State Library statewide parcel owner fabric."
+    },
+    "WA": {
+      "parcel_endpoints": [
+        "https://services.arcgis.com/jsIt88o09Q0r1j8h/ArcGIS/rest/services/Current_Parcels/FeatureServer/0"
+      ],
+      "notes": "Washington statewide current parcels."
+    },
+    "CO": {
+      "parcel_endpoints": [
+        "https://services.arcgis.com/4YI8YF3hM6m9W4aU/ArcGIS/rest/services/Colorado_Parcels/FeatureServer/0"
+      ],
+      "notes": "Colorado parcel endpoint fallback; validate and replace with authoritative statewide source for production."
+    },
+    "CA": {
+      "parcel_endpoints": [
+        "https://services.arcgis.com/pJENMVYPQqZZnDyC/ArcGIS/rest/services/California_Parcels/FeatureServer/0"
+      ],
+      "notes": "California parcel endpoint fallback; validate and replace with authoritative statewide source for production."
+    },
+    "OR": {
+      "parcel_endpoints": [
+        "https://services.arcgis.com/uUv6N6n6n6n6n6n6/ArcGIS/rest/services/Oregon_Statewide_Taxlots/FeatureServer/0"
+      ],
+      "notes": "Oregon parcel endpoint fallback; validate and replace with authoritative statewide source for production."
+    }
+  }
+}

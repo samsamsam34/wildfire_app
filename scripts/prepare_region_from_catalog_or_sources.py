@@ -321,7 +321,31 @@ def _normalize_layer_config(candidate: Any) -> dict[str, Any]:
     return normalized
 
 
-def _load_source_config(path_or_none: str | None) -> tuple[dict[str, Any], dict[str, Any]]:
+def _merge_layer_maps(
+    base_layers: dict[str, Any],
+    region_layers: dict[str, Any],
+) -> dict[str, Any]:
+    merged: dict[str, Any] = {
+        str(k): (copy.deepcopy(v) if isinstance(v, dict) else {})
+        for k, v in base_layers.items()
+    }
+    for key, value in region_layers.items():
+        normalized_key = str(key)
+        if isinstance(value, dict) and isinstance(merged.get(normalized_key), dict):
+            merged[normalized_key] = {
+                **dict(merged.get(normalized_key) or {}),
+                **dict(value),
+            }
+        else:
+            merged[normalized_key] = copy.deepcopy(value) if isinstance(value, dict) else {}
+    return merged
+
+
+def _load_source_config(
+    path_or_none: str | None,
+    *,
+    region_id: str | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
     selected_path: Path | None = None
     if path_or_none:
         selected_path = Path(path_or_none).expanduser()
@@ -348,16 +372,33 @@ def _load_source_config(path_or_none: str | None) -> tuple[dict[str, Any], dict[
         raw_layers = payload
     if not isinstance(raw_layers, dict):
         raw_layers = {}
-    raw_entries = {
+    base_raw_entries = {
         str(k): (copy.deepcopy(v) if isinstance(v, dict) else {})
         for k, v in raw_layers.items()
     }
-    layers = {str(k): _normalize_layer_config(v) for k, v in raw_layers.items()}
+    region_override_layers: dict[str, Any] = {}
+    if region_id:
+        regions_cfg = payload.get("regions")
+        if isinstance(regions_cfg, dict):
+            region_cfg = regions_cfg.get(str(region_id))
+            if isinstance(region_cfg, dict):
+                maybe_layers = region_cfg.get("layers")
+                if isinstance(maybe_layers, dict):
+                    region_override_layers = {
+                        str(k): (copy.deepcopy(v) if isinstance(v, dict) else {})
+                        for k, v in maybe_layers.items()
+                    }
+
+    merged_raw_entries = _merge_layer_maps(base_raw_entries, region_override_layers)
+    layers = {str(k): _normalize_layer_config(v) for k, v in merged_raw_entries.items()}
     return layers, {
         "source_config_path": str(selected_path),
         "default_source_registry_used": (not path_or_none),
         "source_config_candidates": [str(p) for p in DEFAULT_SOURCE_REGISTRY_CANDIDATES],
-        "raw_layer_entries": raw_entries,
+        "raw_layer_entries": merged_raw_entries,
+        "region_id": str(region_id or ""),
+        "region_override_applied": bool(region_override_layers),
+        "region_override_layers": sorted(region_override_layers.keys()),
     }
 
 
@@ -1347,7 +1388,7 @@ def prepare_region_from_catalog_or_sources(
             "inline_source_config_used": True,
         }
     else:
-        cfg, cfg_meta = _load_source_config(source_config_path)
+        cfg, cfg_meta = _load_source_config(source_config_path, region_id=region_id)
         cfg_meta["inline_source_config_used"] = False
     layer_policy = required_layer_policy()
     required = list(layer_policy.get("required_core_layers") or required_core_layers())

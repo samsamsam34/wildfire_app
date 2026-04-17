@@ -188,5 +188,24 @@
       "expected_output_format": "tif",
       "notes": "Optional NAIP imagery for near-structure vegetation enrichment. Configure with WF_DEFAULT_NAIP_PATH, WF_DEFAULT_NAIP_ENDPOINT, or WF_DEFAULT_NAIP_FULL_URL."
     }
+  },
+  "regions": {
+    "missoula_pilot": {
+      "layers": {
+        "parcel_polygons": {
+          "provider_type": "arcgis_feature_service",
+          "source_path": "${WF_DEFAULT_PARCEL_POLYGONS_PATH:-}",
+          "source_endpoint": "${WF_DEFAULT_PARCEL_POLYGONS_ENDPOINT:-https://gis.missoulacounty.us/arcgis/rest/services/Base/Cadastral/MapServer/23}",
+          "source_url": "${WF_DEFAULT_PARCEL_POLYGONS_URL:-}",
+          "supports_bbox_export": true,
+          "allow_full_download_fallback": false,
+          "query_format": "json",
+          "supports_geojson_direct": false,
+          "require_return_geometry": true,
+          "expected_output_format": "geojson",
+          "notes": "Missoula parcel polygons (county source) for parcel-first structure matching."
+        }
+      }
+    }
   }
 }

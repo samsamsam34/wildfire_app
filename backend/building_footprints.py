@@ -267,27 +267,51 @@ class BuildingFootprintClient:
         point_wgs84 = Point(lon, lat)
         to_3857 = Transformer.from_crs("EPSG:4326", "EPSG:3857", always_xy=True).transform
 
-        containing = [row for row in features if self._inside_polygon(row["geometry"], point_wgs84)]
         parcel_overlap_available = parcel_polygon is not None and not getattr(parcel_polygon, "is_empty", True)
-        if containing and parcel_overlap_available:
-            parcel_containing = [
+        search_features = list(features)
+        if parcel_overlap_available:
+            parcel_intersecting = [
                 row
-                for row in containing
+                for row in features
                 if bool(getattr(row["geometry"], "intersects", lambda _p: False)(parcel_polygon))
             ]
-            if parcel_containing:
-                containing = parcel_containing
-                assumptions.append("Structure matching prioritized footprints intersecting the matched parcel.")
+            if not parcel_intersecting:
+                assumptions.append(
+                    "Matched parcel contained no intersecting building footprints; using point proxy instead of off-parcel nearest fallback."
+                )
+                return BuildingFootprintResult(
+                    found=False,
+                    source=self.path,
+                    match_status="none",
+                    match_method="parcel_intersection",
+                    candidate_count=0,
+                    assumptions=assumptions,
+                )
+            search_features = parcel_intersecting
+            assumptions.append("Structure matching prioritized footprints intersecting the matched parcel.")
+
+        containing = [row for row in search_features if self._inside_polygon(row["geometry"], point_wgs84)]
         if containing:
             # Deterministically pick best residential-sized containing polygon.
-            def _contain_score(item: dict[str, Any]) -> float:
+            def _contain_score(item: dict[str, Any]) -> tuple[float, float]:
                 geom = item["geometry"]
+                parcel_intersection_area_m2 = 0.0
+                if parcel_overlap_available:
+                    try:
+                        parcel_intersection_area_m2 = self._geom_area_m2(geom.intersection(parcel_polygon))
+                    except Exception:
+                        parcel_intersection_area_m2 = 0.0
                 area_m2 = self._geom_area_m2(geom)
-                return self._residential_area_score(area_m2) + min(1.0, area_m2 / 10_000.0) * 0.05
+                residential_score = self._residential_area_score(area_m2) + min(1.0, area_m2 / 10_000.0) * 0.05
+                return parcel_intersection_area_m2, residential_score
 
             ranked = sorted(
                 containing,
-                key=lambda row: (-_contain_score(row), int(row.get("source_rank", 999))),
+                key=lambda row: (
+                    -_contain_score(row)[0],
+                    -_contain_score(row)[1],
+                    int(row.get("source_rank", 999)),
+                ),
             )
             top_row = ranked[0]
             geom = top_row["geometry"]
@@ -298,7 +322,7 @@ class BuildingFootprintClient:
                 self._candidate_summary(
                     row={
                         **row,
-                        "score": _contain_score(row),
+                        "score": _contain_score(row)[1],
                     },
                     point_wgs84=point_wgs84,
                     to_3857=to_3857,
@@ -306,12 +330,16 @@ class BuildingFootprintClient:
                 for row in ranked[: self.max_candidate_summaries]
             ]
             if len(ranked) > 1:
-                top_score = _contain_score(ranked[0])
-                second_score = _contain_score(ranked[1])
+                top_area, top_score = _contain_score(ranked[0])
+                second_area, second_score = _contain_score(ranked[1])
                 top_geom_m = shapely_transform(to_3857, ranked[0]["geometry"])
                 second_geom_m = shapely_transform(to_3857, ranked[1]["geometry"])
                 centroid_gap_m = float(max(0.0, top_geom_m.centroid.distance(second_geom_m.centroid)))
-                if (top_score - second_score) < 0.02 and centroid_gap_m <= 2.0:
+                if (
+                    abs(top_area - second_area) <= 12.0
+                    and (top_score - second_score) < 0.02
+                    and centroid_gap_m <= 2.0
+                ):
                     assumptions.append("Multiple overlapping structure footprints were equally plausible; using geocoded point fallback.")
                     return BuildingFootprintResult(
                         found=False,
@@ -351,7 +379,7 @@ class BuildingFootprintClient:
                 parcel_centroid_m = shapely_transform(to_3857, parcel_polygon).centroid
             except Exception:
                 parcel_centroid_m = None
-        for candidate in features:
+        for candidate in search_features:
             candidate_geom = candidate["geometry"]
             source = str(candidate.get("source") or "")
             candidate_m = shapely_transform(to_3857, candidate_geom)
@@ -407,6 +435,7 @@ class BuildingFootprintClient:
                 found=False,
                 source=self.path,
                 match_status="none",
+                match_method="parcel_intersection" if parcel_overlap_available else "nearest_building_fallback",
                 candidate_count=0,
                 assumptions=assumptions,
             )
@@ -414,10 +443,21 @@ class BuildingFootprintClient:
         match_method = "nearest_building_fallback"
         if parcel_overlap_available:
             parcel_candidates = [row for row in candidates if row.get("parcel_overlap")]
-            if parcel_candidates:
-                candidates = parcel_candidates
-                assumptions.append("Structure matching prioritized candidates intersecting the matched parcel.")
-                match_method = "parcel_intersection"
+            if not parcel_candidates:
+                assumptions.append(
+                    "Matched parcel had no intersecting footprint candidates within search distance; using point proxy."
+                )
+                return BuildingFootprintResult(
+                    found=False,
+                    source=self.path,
+                    match_status="none",
+                    match_method="parcel_intersection",
+                    candidate_count=len(candidates),
+                    assumptions=assumptions,
+                )
+            candidates = parcel_candidates
+            assumptions.append("Structure matching prioritized candidates intersecting the matched parcel.")
+            match_method = "parcel_intersection"
 
         if match_method == "parcel_intersection":
             candidates.sort(

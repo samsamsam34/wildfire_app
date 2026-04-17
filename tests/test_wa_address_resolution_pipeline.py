@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from typing import Any
+from pathlib import Path
+import math
 
 from fastapi.testclient import TestClient
 
@@ -27,6 +29,13 @@ def _covered_lookup(lat: float, lon: float, regions_root: str | None = None) -> 
         "nearest_region_id": "winthrop_pilot",
         "region_distance_to_boundary_m": 640.0,
     }
+
+
+def _distance_m(a_lat: float, a_lon: float, b_lat: float, b_lon: float) -> float:
+    lat_mid = math.radians((a_lat + b_lat) / 2.0)
+    meters_per_deg_lat = 111_320.0
+    meters_per_deg_lon = max(1.0, 111_320.0 * math.cos(lat_mid))
+    return float(math.hypot((a_lat - b_lat) * meters_per_deg_lat, (a_lon - b_lon) * meters_per_deg_lon))
 
 
 def test_primary_geocoder_with_extra_tokens_still_auto_resolves(monkeypatch):
@@ -65,6 +74,100 @@ def test_primary_geocoder_with_extra_tokens_still_auto_resolves(monkeypatch):
     assert top["source_stage"] == "primary_geocoder"
     assert top["confidence_tier"] in {"high", "medium"}
     assert top["auto_eligible"] is True
+
+
+def test_address_points_snap_reanchors_offset_primary_geocode(monkeypatch):
+    auth.API_KEYS = set()
+    fixture = Path(__file__).resolve().parent / "fixtures" / "address_points" / "missoula_address_points.geojson"
+    monkeypatch.setenv("WF_GEOCODE_SECONDARY_ENABLED", "false")
+    monkeypatch.setenv("WF_ADDRESS_POINTS_SNAP_MAX_DISTANCE_M", "400")
+    monkeypatch.setattr(app_main, "geocode_from_address_points", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        app_main.geocoder,
+        "geocode",
+        lambda _addr: (46.8308, -113.9778, "test-primary"),
+    )
+    monkeypatch.setattr(
+        app_main.geocoder,
+        "last_result",
+        {
+            "geocode_status": "accepted",
+            "provider": "test-primary",
+            "matched_address": "1355 Pattee Canyon Rd, Missoula, MT 59803",
+            "confidence_score": 0.42,
+            "candidate_count": 1,
+            "geocode_precision": "interpolated",
+            "geocode_trust_tier": "medium",
+            "raw_response_preview": {"candidate_count": 1},
+        },
+    )
+    monkeypatch.setattr(app_main, "_resolve_local_authoritative_coordinates", lambda _addr, **_kwargs: {"matched": False, "candidate_count": 0})
+    monkeypatch.setattr(app_main, "_resolve_statewide_parcel_coordinates", lambda _addr, **_kwargs: {"matched": False, "candidate_count": 0})
+    monkeypatch.setattr(app_main, "_resolve_local_fallback_coordinates", lambda _addr: {"matched": False, "candidate_count": 0})
+    monkeypatch.setattr(
+        app_main,
+        "lookup_region_for_point",
+        lambda lat, lon, regions_root=None: {
+            "covered": True,
+            "region_id": "missoula_pilot",
+            "display_name": "Missoula Pilot",
+            "diagnostics": [],
+            "containing_region_ids": ["missoula_pilot"],
+        },
+    )
+
+    result = app_main._resolve_trusted_geocode(
+        address_input="1355 Pattee Canyon Rd, Missoula, MT 59803",
+        purpose="assessment",
+        route_name="test",
+        address_points_path=str(fixture),
+    )
+    assert result.geocode_status == "accepted"
+    assert result.geocode_meta.get("resolution_method") == "address_points_snap"
+    assert result.geocode_meta.get("trust") == "address_point_snapped"
+    assert (result.geocode_meta.get("address_points_snap") or {}).get("matched") is True
+    assert _distance_m(result.latitude, result.longitude, 46.8281, -113.9778) <= 10.0
+
+
+def test_address_points_snap_sets_trust_degraded_when_no_match(monkeypatch):
+    auth.API_KEYS = set()
+    fixture = Path(__file__).resolve().parent / "fixtures" / "address_points" / "missoula_address_points.geojson"
+    monkeypatch.setenv("WF_GEOCODE_SECONDARY_ENABLED", "false")
+    monkeypatch.setattr(app_main, "geocode_from_address_points", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        app_main.geocoder,
+        "geocode",
+        lambda _addr: (46.8400, -113.9600, "test-primary"),
+    )
+    monkeypatch.setattr(
+        app_main.geocoder,
+        "last_result",
+        {
+            "geocode_status": "accepted",
+            "provider": "test-primary",
+            "matched_address": "999 Different Address, Missoula, MT 59803",
+            "confidence_score": 0.40,
+            "candidate_count": 1,
+            "geocode_precision": "interpolated",
+            "geocode_trust_tier": "medium",
+            "raw_response_preview": {"candidate_count": 1},
+        },
+    )
+    monkeypatch.setattr(app_main, "_resolve_local_authoritative_coordinates", lambda _addr, **_kwargs: {"matched": False, "candidate_count": 0})
+    monkeypatch.setattr(app_main, "_resolve_statewide_parcel_coordinates", lambda _addr, **_kwargs: {"matched": False, "candidate_count": 0})
+    monkeypatch.setattr(app_main, "_resolve_local_fallback_coordinates", lambda _addr: {"matched": False, "candidate_count": 0})
+    monkeypatch.setattr(app_main, "lookup_region_for_point", _covered_lookup)
+
+    result = app_main._resolve_trusted_geocode(
+        address_input="999 Different Address, Missoula, MT 59803",
+        purpose="assessment",
+        route_name="test",
+        address_points_path=str(fixture),
+    )
+    assert result.geocode_status == "accepted"
+    assert result.geocode_meta.get("resolution_method") == "primary_geocoder"
+    assert result.geocode_meta.get("trust_degraded") is True
+    assert (result.geocode_meta.get("address_points_snap") or {}).get("matched") is False
 
 
 def test_county_address_points_override_wrong_geocoder_candidate(monkeypatch):

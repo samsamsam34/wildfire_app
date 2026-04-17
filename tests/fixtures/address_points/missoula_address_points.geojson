@@ -1,0 +1,23 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "fulladdress": "1355 Pattee Canyon Rd, Missoula, MT 59803",
+        "STREETNUMBER": "1355",
+        "STREETNAME": "Pattee Canyon Rd",
+        "city": "Missoula",
+        "state": "MT",
+        "zip": "59803"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -113.9778,
+          46.8281
+        ]
+      }
+    }
+  ]
+}

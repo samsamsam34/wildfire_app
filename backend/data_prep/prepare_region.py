@@ -793,12 +793,30 @@ def _normalize_discovered_assets(
     return list(discovered_assets.get(layer_key) or [])
 
 
-def _normalize_source_config(source_config: dict[str, Any] | None) -> dict[str, Any]:
+def _normalize_source_config(
+    source_config: dict[str, Any] | None,
+    *,
+    region_id: str | None = None,
+) -> dict[str, Any]:
     if not source_config:
         return {}
     if isinstance(source_config.get("layers"), dict):
-        return source_config["layers"]
-    return source_config
+        base_layers = dict(source_config["layers"])
+    else:
+        base_layers = dict(source_config)
+
+    if region_id and isinstance(source_config.get("regions"), dict):
+        region_cfg = source_config["regions"].get(str(region_id))
+        if isinstance(region_cfg, dict) and isinstance(region_cfg.get("layers"), dict):
+            for layer_key, layer_cfg in region_cfg["layers"].items():
+                layer_key_str = str(layer_key)
+                if isinstance(layer_cfg, dict) and isinstance(base_layers.get(layer_key_str), dict):
+                    merged_cfg = dict(base_layers.get(layer_key_str) or {})
+                    merged_cfg.update(layer_cfg)
+                    base_layers[layer_key_str] = merged_cfg
+                else:
+                    base_layers[layer_key_str] = layer_cfg
+    return base_layers
 
 
 def _normalize_geometry_source_registry_config(
@@ -812,6 +830,7 @@ def _normalize_geometry_source_registry_config(
 
 def _apply_source_config_acquisition(
     *,
+    region_id: str,
     bounds: dict[str, float],
     layer_sources: dict[str, str],
     layer_urls: dict[str, str | list[str]],
@@ -826,7 +845,7 @@ def _apply_source_config_acquisition(
     progress_log: list[str],
     skip_optional_layers: bool,
 ) -> None:
-    configured_layers = _normalize_source_config(source_config)
+    configured_layers = _normalize_source_config(source_config, region_id=region_id)
     if not configured_layers:
         return
     for layer_key, layer_type in LAYER_TYPES.items():
@@ -1424,6 +1443,7 @@ def prepare_region_layers(
     )
 
     _apply_source_config_acquisition(
+        region_id=region_id,
         bounds=bounds,
         layer_sources=layer_sources,
         layer_urls=layer_urls,
@@ -1788,6 +1808,26 @@ def prepare_region_layers(
         for source_id in list(default_source_order.get("parcel_sources") or [])
         if str(source_id).strip()
     ]
+    address_points_layer_key: str | None = None
+    address_points_relpath: str | None = None
+    if files.get("address_points"):
+        address_points_layer_key = "address_points"
+        address_points_relpath = str(files.get("address_points"))
+    elif files.get("parcel_address_points"):
+        address_points_layer_key = "parcel_address_points"
+        address_points_relpath = str(files.get("parcel_address_points"))
+    parcel_polygons_relpath: str | None = str(files.get("parcel_polygons")) if files.get("parcel_polygons") else None
+    parcel_confidence_weight = 0.92
+    for entry in list(geometry_source_manifest.get("parcel_sources") or []):
+        if not isinstance(entry, dict):
+            continue
+        if str(entry.get("source_id") or "") != "parcel_polygons":
+            continue
+        try:
+            parcel_confidence_weight = float(entry.get("confidence_weight") or parcel_confidence_weight)
+        except (TypeError, ValueError):
+            pass
+        break
 
     manifest = {
         "region_id": region_id,
@@ -1803,6 +1843,17 @@ def prepare_region_layers(
             "max_lat": float(bounds["max_lat"]),
         },
         "files": files,
+        "address_points_availability": {
+            "available": bool(address_points_relpath),
+            "layer_key": address_points_layer_key,
+            "path": address_points_relpath,
+        },
+        "parcel_polygons_availability": {
+            "available": bool(parcel_polygons_relpath),
+            "layer_key": "parcel_polygons",
+            "path": parcel_polygons_relpath,
+            "confidence_weight": round(max(0.0, min(1.0, float(parcel_confidence_weight))), 2),
+        },
         "building_sources": building_sources,
         "parcel_sources": parcel_sources,
         "geometry_source_manifest": geometry_source_manifest,
