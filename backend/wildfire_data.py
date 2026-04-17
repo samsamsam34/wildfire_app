@@ -184,6 +184,23 @@ class WildfireDataClient:
         self.osm_adapter = OSMRoadAdapter()
         self.feature_bundle_cache = FeatureBundleCache()
 
+        # Optional Regrid parcel API client — enabled only when WF_REGRID_API_KEY is set.
+        self._regrid_client = None
+        _regrid_api_key = os.environ.get("WF_REGRID_API_KEY", "").strip()
+        if _regrid_api_key:
+            try:
+                from backend.parcel_api_client import RegridParcelClient  # noqa: PLC0415
+                self._regrid_client = RegridParcelClient(
+                    api_key=_regrid_api_key,
+                    cache_db_path=os.environ.get("WF_PARCEL_CACHE_DB", "data/parcel_cache.db"),
+                    enabled=True,
+                )
+            except Exception as _exc:  # pragma: no cover
+                import logging as _logging
+                _logging.getLogger("wildfire_app.wildfire_data").warning(
+                    "wildfire_data regrid_client_init_error error=%s", _exc
+                )
+
     @staticmethod
     def _to_index(value: float, src_min: float, src_max: float) -> float:
         if src_max <= src_min:
@@ -3843,6 +3860,7 @@ class WildfireDataClient:
             address_points_path=runtime_paths.get("address_points"),
             parcels_path=runtime_paths.get("parcels"),
             parcels_paths=self._resolve_parcel_source_paths(runtime_paths, region_context=region_context),
+            regrid_client=self._regrid_client,
         )
         explicit_anchor_override: tuple[float, float] | None = None
         explicit_anchor_source: str | None = None

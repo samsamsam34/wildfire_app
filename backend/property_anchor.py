@@ -5,9 +5,12 @@ import os
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from backend.parcel_resolution import ParcelResolutionClient, ParcelResolutionResult
+
+if TYPE_CHECKING:
+    from backend.parcel_api_client import RegridParcelClient
 
 try:
     from pyproj import Transformer
@@ -106,6 +109,7 @@ class PropertyAnchorResolver:
         parcels_path: str | None = None,
         parcels_paths: list[str] | None = None,
         source_priority: tuple[str, ...] | None = None,
+        regrid_client: "RegridParcelClient | None" = None,
     ) -> None:
         self.address_points_path = str(address_points_path or "").strip()
         self.parcels_path = str(parcels_path or "").strip()
@@ -131,6 +135,7 @@ class PropertyAnchorResolver:
         self.parcel_resolver = ParcelResolutionClient(
             parcel_paths=self.parcels_paths,
             max_lookup_distance_m=self.max_parcel_lookup_distance_m,
+            regrid_client=regrid_client,
         )
 
     @staticmethod

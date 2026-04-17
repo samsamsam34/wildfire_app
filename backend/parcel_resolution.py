@@ -1,23 +1,30 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from backend.parcel_api_client import RegridParcelClient
 
 try:
     from pyproj import Transformer
     from shapely.geometry import Point, mapping, shape
     from shapely.ops import transform as shapely_transform
+    from shapely.strtree import STRtree
 except Exception:  # pragma: no cover - optional geospatial runtime deps
     Transformer = None
     Point = None
     mapping = None
     shape = None
     shapely_transform = None
+    STRtree = None
 
+LOGGER = logging.getLogger("wildfire_app.parcel_resolution")
 
 DEFAULT_SOURCE_PRIORITY = ("county_gis", "open_parcel", "prepared_region")
 
@@ -69,6 +76,7 @@ class ParcelResolutionClient:
         *,
         parcel_paths: list[str] | None = None,
         max_lookup_distance_m: float = 30.0,
+        regrid_client: "RegridParcelClient | None" = None,
     ) -> None:
         self.parcel_paths = self._normalize_paths(parcel_paths or [])
         self.max_lookup_distance_m = self._env_float(
@@ -97,6 +105,7 @@ class ParcelResolutionClient:
             min_value=5.0,
         )
         self.source_priority = self._resolve_source_priority()
+        self._regrid_client = regrid_client
 
     @staticmethod
     def _geo_ready() -> bool:
@@ -250,6 +259,31 @@ class ParcelResolutionClient:
             rows.append(feature)
         return rows
 
+    @lru_cache(maxsize=12)
+    def _build_strtree(self, path: str) -> tuple[STRtree | None, list[dict[str, Any]]]:
+        """Build an STRtree spatial index over the features in *path*.
+
+        Returns ``(tree, features)`` so callers can map tree query indices back
+        to the original feature list.  Returns ``(None, [])`` when the
+        geospatial stack is unavailable or no features are loaded.
+        """
+        if STRtree is None or shape is None:
+            return None, []
+        features = self._load_geojson_features(path)
+        if not features:
+            return None, []
+        geoms = []
+        for feat in features:
+            try:
+                geoms.append(shape(feat["geometry"]))
+            except Exception:
+                geoms.append(None)
+        valid_geoms = [g for g in geoms if g is not None]
+        if not valid_geoms:
+            return None, []
+        tree = STRtree(valid_geoms)
+        return tree, features
+
     def _build_bounding_approximation(self, anchor_point: Any) -> dict[str, Any] | None:
         if not self._geo_ready():
             return None
@@ -290,6 +324,105 @@ class ParcelResolutionClient:
         )
         return distance_gap <= 2.5 and overlap_gap <= 6.0
 
+    def _try_regrid_fallback(
+        self,
+        anchor_point: Any,
+    ) -> ParcelResolutionResult | None:
+        """Attempt to resolve a parcel via the Regrid API.
+
+        Returns a :class:`ParcelResolutionResult` with confidence 72 and
+        ``parcel_lookup_method="api_lookup"`` on success, or ``None`` when the
+        client is not configured or the API returns no result.
+        """
+        if self._regrid_client is None or not self._regrid_client.enabled:
+            return None
+
+        try:
+            lat = float(anchor_point.y)
+            lon = float(anchor_point.x)
+        except (AttributeError, TypeError, ValueError):
+            return None
+
+        try:
+            api_result = self._regrid_client.fetch_parcel(lat, lon)
+        except Exception as exc:  # pragma: no cover - never raise
+            LOGGER.warning("parcel_api_client unexpected_error lat=%.5f lon=%.5f error=%s", lat, lon, exc)
+            return None
+
+        if api_result is None:
+            return None
+
+        LOGGER.info(
+            "parcel_resolution regrid_api_match lat=%.5f lon=%.5f "
+            "parcel_id=%r state=%r county=%r cached=%s",
+            lat, lon,
+            api_result.parcel_id,
+            api_result.state,
+            api_result.county,
+            api_result.cached,
+        )
+
+        # Convert the raw geometry dict into a Shapely polygon for downstream use.
+        parcel_polygon = None
+        if shape is not None:
+            try:
+                parcel_polygon = shape(api_result.geometry)
+            except Exception:
+                parcel_polygon = None
+
+        # Build a synthetic GeoJSON feature matching the local parcel feature shape.
+        parcel_feature: dict[str, Any] = {
+            "type": "Feature",
+            "geometry": api_result.geometry,
+            "properties": {
+                "parcel_id": api_result.parcel_id,
+                "source_name": "regrid_api",
+                "source_type": "api_lookup",
+                "address": api_result.parcel_address,
+                "owner": api_result.owner_name,
+                "usedesc": api_result.land_use_desc,
+                "state_abbr": api_result.state,
+                "county": api_result.county,
+            },
+        }
+
+        area_m2 = api_result.area_m2
+        if area_m2 is None and parcel_polygon is not None:
+            try:
+                area_m2 = self._area_m2(parcel_polygon)
+            except Exception:
+                area_m2 = None
+
+        return ParcelResolutionResult(
+            status="matched",
+            confidence=72.0,
+            source="regrid_api",
+            geometry_used="parcel_polygon",
+            overlap_score=100.0,
+            parcel_id=api_result.parcel_id,
+            parcel_polygon=parcel_polygon,
+            parcel_feature=parcel_feature,
+            parcel_lookup_method="api_lookup",
+            parcel_lookup_distance_m=0.0,
+            source_name="regrid_api",
+            source_vintage=None,
+            candidate_count=1,
+            candidate_summaries=[
+                {
+                    "parcel_id": api_result.parcel_id,
+                    "source": "regrid_api",
+                    "source_class": "api_lookup",
+                    "distance_m": 0.0,
+                    "area_m2": round(float(area_m2), 2) if area_m2 is not None else None,
+                    "contains_anchor": True,
+                }
+            ],
+            diagnostics=[
+                f"Parcel resolved via Regrid API (on-demand lookup); "
+                f"cached={api_result.cached}."
+            ],
+        )
+
     def resolve_for_point(
         self,
         *,
@@ -316,6 +449,10 @@ class ParcelResolutionClient:
 
         available_paths = [path for path in self.parcel_paths if Path(path).exists()]
         if not available_paths:
+            # No local data — try Regrid API immediately.
+            regrid = self._try_regrid_fallback(anchor_point)
+            if regrid is not None:
+                return regrid
             approximation = self._build_bounding_approximation(anchor_point)
             return ParcelResolutionResult(
                 status="not_found",
@@ -333,7 +470,27 @@ class ParcelResolutionClient:
 
         candidates: list[dict[str, Any]] = []
         for path in available_paths:
-            for feature in self._load_geojson_features(path):
+            features = self._load_geojson_features(path)
+            if not features:
+                continue
+
+            # Use STRtree for fast spatial pre-filtering when available.
+            tree, indexed_features = self._build_strtree(path)
+
+            if tree is not None and STRtree is not None:
+                # Query for candidates whose bounding box intersects a small
+                # search envelope around the anchor point.
+                to_3857 = Transformer.from_crs("EPSG:4326", "EPSG:3857", always_xy=True).transform
+                to_wgs84 = Transformer.from_crs("EPSG:3857", "EPSG:4326", always_xy=True).transform
+                anchor_m = shapely_transform(to_3857, anchor_point)
+                search_envelope_m = anchor_m.buffer(max(lookup_limit_m * 3, 150.0))
+                search_envelope_wgs84 = shapely_transform(to_wgs84, search_envelope_m)
+                candidate_indices = tree.query(search_envelope_wgs84)
+                candidate_features = [indexed_features[i] for i in candidate_indices]
+            else:
+                candidate_features = features
+
+            for feature in candidate_features:
                 geometry_raw = feature.get("geometry")
                 if not isinstance(geometry_raw, dict):
                     continue
@@ -378,6 +535,10 @@ class ParcelResolutionClient:
                 )
 
         if not candidates:
+            # No features matched at all — try Regrid API before bounding box.
+            regrid = self._try_regrid_fallback(anchor_point)
+            if regrid is not None:
+                return regrid
             approximation = self._build_bounding_approximation(anchor_point)
             return ParcelResolutionResult(
                 status="not_found",
@@ -504,6 +665,11 @@ class ParcelResolutionClient:
                 candidate_summaries=summaries,
                 diagnostics=diagnostics,
             )
+
+        # Local candidates exist but none are within tolerance — try Regrid API.
+        regrid = self._try_regrid_fallback(anchor_point)
+        if regrid is not None:
+            return regrid
 
         approximation = self._build_bounding_approximation(anchor_point)
         nearest_distance_m = min(float(row.get("distance_m") or 0.0) for row in candidates)
