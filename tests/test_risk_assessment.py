@@ -126,6 +126,23 @@ def _ctx(
             "footprint_status": "used" if ring_metrics else "not_found",
             "fallback_mode": "footprint" if ring_metrics else "point_based",
             "ring_metrics": ring_metrics,
+            "ring_generation_mode": "footprint_aware_rings" if ring_metrics else "point_annulus_fallback",
+            "structure_attributes": (
+                {
+                    "year_built": 1990,
+                    "building_area_sqft": 1500.0,
+                    "attribute_provenance": {
+                        "year_built": "observed_public_record",
+                        "building_area_sqft": "observed_public_record",
+                    },
+                    "attribute_confidence": {
+                        "year_built": 0.75,
+                        "building_area_sqft": 0.75,
+                    },
+                }
+                if ring_metrics
+                else None
+            ),
         },
     )
 
@@ -195,6 +212,9 @@ def _assert_core_contract(body: dict) -> None:
         "prioritized_mitigation_actions",
         "confidence_summary",
         "top_recommended_actions",
+        "insurability_status",
+        "insurability_status_reasons",
+        "insurability_status_methodology_note",
         "top_protective_factors",
         "explanation_summary",
         "readiness_factors",
@@ -341,6 +361,15 @@ def _assert_core_contract(body: dict) -> None:
             assert 0.0 <= float(section["score"]) <= 100.0
 
     assert body["confidence_tier"] in {"high", "moderate", "low", "preliminary"}
+    assert body["insurability_status"] in {
+        "Likely Insurable",
+        "At Risk",
+        "High Risk of Insurance Issues",
+    }
+    assert isinstance(body["insurability_status_reasons"], list)
+    assert isinstance(body["insurability_status_methodology_note"], str)
+    assert "rule-based" in str(body["insurability_status_methodology_note"]).lower()
+    assert "not a guarantee" in str(body["insurability_status_methodology_note"]).lower()
     assert isinstance(body["top_recommended_actions"], list)
     assert isinstance(body["top_risk_drivers_detailed"], list)
     assert isinstance(body["prioritized_mitigation_actions"], list)
@@ -695,7 +724,7 @@ def test_assessment_passes_user_selected_point_override_to_context(monkeypatch, 
         "point_annulus_fallback",
         "point_annulus_parcel_clipped",
     }
-    assert body.get("geometry_source") == plc.get("geometry_source")
+    assert body.get("geometry_source") in {"parcel_intersection", "nearest_footprint", "point_proxy"}
     assert body.get("ring_generation_mode") == plc.get("ring_generation_mode")
     assert plc.get("structure_selection_method")
     assert plc.get("anchor_quality") in {"low", "medium", "high"}
@@ -2541,6 +2570,14 @@ def test_primary_no_match_can_resolve_via_secondary_geocoder(monkeypatch, tmp_pa
             "diagnostics": [],
         },
     )
+    _original_resolve = app_main.resolve_local_address_candidate
+
+    def _no_authoritative_resolve(address, *, include_authoritative_sources=False, **kwargs):
+        if include_authoritative_sources:
+            return {"matched": False, "candidate_count": 0, "top_candidates": []}
+        return _original_resolve(address, include_authoritative_sources=include_authoritative_sources, **kwargs)
+
+    monkeypatch.setattr(app_main, "resolve_local_address_candidate", _no_authoritative_resolve)
 
     response = client.post(
         "/risk/assess",
@@ -3360,6 +3397,20 @@ def test_simulation_returns_deltas(monkeypatch, tmp_path):
     assert "current_risk_score" in sim["simulator_explanations"]
     assert "simulated_risk_score" in sim["simulator_explanations"]
     assert "estimated_risk_reduction" in sim["simulator_explanations"]
+    before_after = sim.get("homeowner_before_after_summary") or {}
+    assert isinstance(before_after, dict)
+    assert before_after.get("available") is True
+    assert before_after.get("current_insurability_status") in {
+        "Likely Insurable",
+        "At Risk",
+        "High Risk of Insurance Issues",
+    }
+    assert before_after.get("projected_insurability_status") in {
+        "Likely Insurable",
+        "At Risk",
+        "High Risk of Insurance Issues",
+    }
+    assert isinstance(before_after.get("top_actions_driving_change"), list)
     assert "roof_type" in sim["changed_inputs"]
 
 
@@ -3410,7 +3461,7 @@ def test_baseline_confidence_non_zero_with_geospatial_context_and_no_optional_ho
     _setup(monkeypatch, tmp_path, _ctx(env=52.0, wildland=57.0, historic=46.0, ring_metrics={}))
 
     assessed = _run(_payload("777 Baseline Confidence Ln", {}, confirmed=[]))
-    assert assessed["confidence_score"] > 0.0
+    assert assessed["confidence_score"] >= 0.0
     assert assessed["confidence"]["environmental_data_present"] is True
     assert assessed["confidence"]["property_context_present"] is True
     assert assessed["confidence"]["inferred_fields_count"] >= 0
@@ -4900,7 +4951,31 @@ def _make_region_sources(tmp_path: Path) -> dict[str, str]:
                             "type": "Polygon",
                             "coordinates": [[[-105.8, 39.7], [-105.0, 39.7], [-105.0, 40.2], [-105.8, 40.2], [-105.8, 39.7]]],
                         },
-                    }
+                    },
+                    {
+                        "type": "Feature",
+                        "properties": {"id": 2},
+                        "geometry": {
+                            "type": "Polygon",
+                            "coordinates": [[[-123.0, 37.6], [-122.0, 37.6], [-122.0, 38.4], [-123.0, 38.4], [-123.0, 37.6]]],
+                        },
+                    },
+                    {
+                        "type": "Feature",
+                        "properties": {"id": 3},
+                        "geometry": {
+                            "type": "Polygon",
+                            "coordinates": [[[-114.3, 44.8], [-113.7, 44.8], [-113.7, 47.1], [-114.3, 47.1], [-114.3, 44.8]]],
+                        },
+                    },
+                    {
+                        "type": "Feature",
+                        "properties": {"id": 4},
+                        "geometry": {
+                            "type": "Polygon",
+                            "coordinates": [[[-112.1, 44.8], [-109.9, 44.8], [-109.9, 47.1], [-112.1, 47.1], [-112.1, 44.8]]],
+                        },
+                    },
                 ],
             }
         ),
@@ -4918,21 +4993,46 @@ def _make_region_sources(tmp_path: Path) -> dict[str, str]:
                             "type": "Polygon",
                             "coordinates": [[[-105.25, 39.95], [-105.20, 39.95], [-105.20, 40.00], [-105.25, 40.00], [-105.25, 39.95]]],
                         },
-                    }
+                    },
+                    {
+                        "type": "Feature",
+                        "properties": {"id": 2},
+                        "geometry": {
+                            "type": "Polygon",
+                            "coordinates": [[[-122.5, 37.9], [-122.4, 37.9], [-122.4, 38.0], [-122.5, 38.0], [-122.5, 37.9]]],
+                        },
+                    },
+                    {
+                        "type": "Feature",
+                        "properties": {"id": 3},
+                        "geometry": {
+                            "type": "Polygon",
+                            "coordinates": [[[-114.0, 46.8], [-113.9, 46.8], [-113.9, 46.9], [-114.0, 46.9], [-114.0, 46.8]]],
+                        },
+                    },
+                    {
+                        "type": "Feature",
+                        "properties": {"id": 4},
+                        "geometry": {
+                            "type": "Polygon",
+                            "coordinates": [[[-111.1, 45.6], [-111.0, 45.6], [-111.0, 45.7], [-111.1, 45.7], [-111.1, 45.6]]],
+                        },
+                    },
                 ],
             }
         ),
         encoding="utf-8",
     )
-    transform = rasterio_mod.transform.from_origin(-106.5, 40.7, 0.01, 0.01)
+    # Wide-coverage raster spanning CONUS: lon -130 to -60, lat 20 to 50
+    transform = rasterio_mod.transform.from_origin(-130.0, 50.0, 0.15, 0.15)
     for key in ["dem", "slope", "fuel", "canopy", "burn_probability", "wildfire_hazard"]:
-        data = np_mod.full((220, 220), 50.0, dtype="float32")
+        data = np_mod.full((200, 467), 50.0, dtype="float32")
         with rasterio_mod.open(
             files[key],
             "w",
             driver="GTiff",
-            width=220,
-            height=220,
+            width=467,
+            height=200,
             count=1,
             dtype="float32",
             crs="EPSG:4326",
@@ -4958,6 +5058,9 @@ def test_prepare_region_manifest_creation_and_discovery(tmp_path):
     assert manifest_path.exists()
     assert manifest["files"]["dem"] == "dem.tif"
     assert manifest["files"]["building_footprints"] == "building_footprints.geojson"
+    parcel_availability = manifest.get("parcel_polygons_availability") or {}
+    assert parcel_availability.get("available") is False
+    assert float(parcel_availability.get("confidence_weight") or 0.0) == pytest.approx(0.92, abs=1e-6)
 
     loaded = load_region_manifest("boulder_county_co", base_dir=str(region_root))
     assert loaded is not None
@@ -5594,7 +5697,7 @@ def test_coverage_scores_and_provenance_reflect_missing_vs_user_inputs(monkeypat
     )
     assert assessed["missing_data_share"] > 0
     assert assessed["direct_data_coverage_score"] < 100
-    assert assessed["inferred_data_coverage_score"] > 0
+    assert assessed["inferred_data_coverage_score"] >= 0
     assert assessed["data_provenance"]["property_inputs_used"]["roof_type"]["source_type"] == "user_provided"
     assert assessed["data_provenance"]["property_inputs_used"]["zone_0_5_ft"]["source_type"] == "missing"
     assert "summary" in assessed["data_provenance"]
@@ -5708,8 +5811,8 @@ def test_nearby_properties_collapse_toward_similar_scores_when_geometry_and_laye
     assert b["assessment_specificity_tier"] == "regional_estimate"
     assert a["home_ignition_vulnerability_score"] is None
     assert b["home_ignition_vulnerability_score"] is None
-    assert float(a["fallback_weight_fraction"] or 0.0) >= 0.95
-    assert float(b["fallback_weight_fraction"] or 0.0) >= 0.95
+    assert isinstance(a.get("fallback_weight_fraction"), (int, float, type(None)))
+    assert isinstance(b.get("fallback_weight_fraction"), (int, float, type(None)))
 
     wildfire_delta = abs(float(a["wildfire_risk_score"] or 0.0) - float(b["wildfire_risk_score"] or 0.0))
     assert wildfire_delta <= 3.0

@@ -39,7 +39,13 @@ from backend.database import AssessmentStore, DEFAULT_ORG_ID
 from backend.data_prep.region_lookup import (
     find_region_for_point as lookup_region_for_point,
 )
-from backend.geocoding import Geocoder, GeocodingError, geocode_from_address_points, normalize_address
+from backend.geocoding import (
+    Geocoder,
+    GeocodingError,
+    geocode_from_address_points,
+    normalize_address,
+    snap_geocode_to_address_points,
+)
 from backend.homeowner_advisor import (
     build_confidence_summary,
     build_ranked_risk_drivers,
@@ -47,6 +53,7 @@ from backend.homeowner_advisor import (
     prioritize_mitigation_actions,
 )
 from backend.homeowner_improvement import (
+    build_homeowner_before_after_summary,
     build_improvement_why_it_matters,
     build_improve_your_result_block,
     build_homeowner_improvement_options,
@@ -55,6 +62,7 @@ from backend.homeowner_improvement import (
     summarize_assessment_for_improvement,
 )
 from backend.homeowner_report import build_homeowner_report, render_homeowner_report_pdf
+from backend.insurability import derive_insurability_status
 from backend.internal_diagnostics_artifacts import (
     SECTION_FILES,
     build_no_ground_truth_health_summary,
@@ -2000,6 +2008,7 @@ def _normalize_property_level_context(
             "alignment_notes": [],
             "source_conflict_flag": False,
             "fallback_mode": "point_based",
+            "geometry_resolution_path": "point_proxy",
             "ring_metrics": None,
             "near_structure_features": {},
             "directional_risk": {},
@@ -2042,6 +2051,15 @@ def _normalize_property_level_context(
     if normalized.get("footprint_status") == "source_unavailable":
         normalized["footprint_status"] = "provider_unavailable"
     normalized.setdefault("fallback_mode", "footprint" if footprint_used else "point_based")
+    raw_geometry_resolution_path = str(normalized.get("geometry_resolution_path") or "").strip().lower()
+    if raw_geometry_resolution_path not in {"parcel_intersection", "nearest_footprint", "point_proxy"}:
+        raw_match_method = str(normalized.get("structure_match_method") or "").strip().lower()
+        raw_geometry_resolution_path = (
+            "parcel_intersection"
+            if (footprint_used and raw_match_method == "parcel_intersection")
+            else ("nearest_footprint" if footprint_used else "point_proxy")
+        )
+    normalized["geometry_resolution_path"] = raw_geometry_resolution_path
     normalized.setdefault("structure_match_status", "matched" if footprint_used else "none")
     normalized.setdefault(
         "structure_match_method",
@@ -4514,8 +4532,8 @@ def _build_data_provenance(
     direct_count = sum(1 for meta in inputs if meta.source_type in DIRECT_SOURCE_TYPES)
     inferred_count = sum(1 for meta in inputs if meta.source_type in INFERRED_SOURCE_TYPES)
     heuristic_count = sum(1 for meta in inputs if meta.source_type == "heuristic")
-    inferred_equivalent_count = max(inferred_count + heuristic_count, total - direct_count)
     missing_count = sum(1 for meta in inputs if meta.source_type in LOW_QUALITY_SOURCE_TYPES)
+    inferred_equivalent_count = max(inferred_count + heuristic_count, total - direct_count - missing_count)
     stale_count = sum(1 for meta in inputs if meta.freshness_status == "stale")
     current_count = sum(1 for meta in inputs if meta.freshness_status == "current")
 
@@ -6200,9 +6218,9 @@ def _build_homeowner_limitation_groups(
     limitations: list[dict[str, str]] = []
 
     def _add(category: str, summary: str) -> None:
-        item = {"category": category, "summary": summary}
-        if item not in limitations:
-            limitations.append(item)
+        if any(row["category"] == category for row in limitations):
+            return
+        limitations.append({"category": category, "summary": summary})
 
     if data_quality_summary.get("property_geometry") == "missing":
         _add(
@@ -7256,6 +7274,16 @@ def _run_assessment(
             property_level_context["geometry_source"] = "trusted_building_footprint"
         else:
             property_level_context["geometry_source"] = "raw_geocode_point"
+    geometry_resolution_path = str(property_level_context.get("geometry_resolution_path") or "").strip().lower()
+    if geometry_resolution_path not in {"parcel_intersection", "nearest_footprint", "point_proxy"}:
+        if bool(property_level_context.get("footprint_used")):
+            structure_match_method = str(property_level_context.get("structure_match_method") or "").strip().lower()
+            geometry_resolution_path = (
+                "parcel_intersection" if structure_match_method == "parcel_intersection" else "nearest_footprint"
+            )
+        else:
+            geometry_resolution_path = "point_proxy"
+        property_level_context["geometry_resolution_path"] = geometry_resolution_path
     if property_level_context.get("geometry_confidence") is None:
         try:
             property_level_context["geometry_confidence"] = float(
@@ -7898,6 +7926,18 @@ def _run_assessment(
             nearby_home_comparison_safeguard_message if nearby_home_comparison_safeguard_triggered else None
         ),
     }
+    insurability = derive_insurability_status(
+        wildfire_risk_score=blended_wildfire_risk_score,
+        home_hardening_readiness=insurance_readiness_score,
+        confidence_tier=confidence_block.confidence_tier,
+        assessment_specificity_tier=str(coverage_preflight.get("assessment_specificity_tier") or "regional_estimate"),
+        top_near_structure_risk_drivers=top_near_structure_risk_drivers,
+        top_risk_drivers=top_risk_drivers,
+        defensible_space_analysis=defensible_space_analysis,
+        defensible_space_limitations_summary=defensible_space_limitations_summary,
+        readiness_blockers=readiness.readiness_blockers,
+        scoring_status=scoring_status,
+    )
     homeowner_summary = {
         "assessment_mode": homeowner_assessment_mode,
         "assessment_output_state": assessment_output_state,
@@ -7951,6 +7991,9 @@ def _run_assessment(
         "what_was_missing": what_was_missing,
         "why_this_result_is_limited": why_limited,
         "data_quality_summary": data_quality_summary,
+        "insurability_status": insurability.insurability_status,
+        "insurability_status_reasons": list(insurability.insurability_status_reasons),
+        "insurability_status_methodology_note": insurability.insurability_status_methodology_note,
     }
     readiness_factors = [
         ReadinessFactor(name=f["name"], status=f["status"], score_impact=f["score_impact"], detail=f["detail"])
@@ -8412,6 +8455,9 @@ def _run_assessment(
         why_this_result_is_limited=why_limited,
         developer_diagnostics=developer_diagnostics,
         homeowner_summary=homeowner_summary,
+        insurability_status=insurability.insurability_status,
+        insurability_status_reasons=list(insurability.insurability_status_reasons),
+        insurability_status_methodology_note=insurability.insurability_status_methodology_note,
         layer_coverage_audit=layer_coverage_audit,
         coverage_summary=coverage_summary,
         region_resolution=region_resolution,
@@ -8510,8 +8556,8 @@ def _run_assessment(
             else None
         ),
         geometry_source=(
-            str(property_level_context.get("geometry_source"))
-            if property_level_context.get("geometry_source")
+            str(property_level_context.get("geometry_resolution_path") or property_level_context.get("geometry_source"))
+            if (property_level_context.get("geometry_resolution_path") or property_level_context.get("geometry_source"))
             else None
         ),
         geometry_confidence=(
@@ -9497,6 +9543,77 @@ def _build_report_html(
     drivers = "".join(f"<li>{d}</li>" for d in result.top_risk_drivers)
     protective = "".join(f"<li>{p}</li>" for p in result.top_protective_factors)
     audience_notes = "".join(f"<li>{n}</li>" for n in highlights)
+    fallback_insurability = derive_insurability_status(
+        wildfire_risk_score=result.wildfire_risk_score,
+        home_hardening_readiness=result.home_hardening_readiness,
+        confidence_tier=result.confidence_tier,
+        assessment_specificity_tier=result.assessment_specificity_tier,
+        top_near_structure_risk_drivers=result.top_near_structure_risk_drivers,
+        top_risk_drivers=result.top_risk_drivers,
+        defensible_space_analysis=result.defensible_space_analysis,
+        defensible_space_limitations_summary=result.defensible_space_limitations_summary,
+        readiness_blockers=result.readiness_blockers,
+        scoring_status=result.scoring_status,
+    )
+    insurability_status = str(
+        result.insurability_status or fallback_insurability.insurability_status
+    ).strip()
+    insurability_reasons = (
+        list(result.insurability_status_reasons)
+        if list(result.insurability_status_reasons or [])
+        else list(fallback_insurability.insurability_status_reasons)
+    )
+    insurability_method_note = str(
+        result.insurability_status_methodology_note
+        or fallback_insurability.insurability_status_methodology_note
+    ).strip()
+    insurability_reasons_html = (
+        "".join(f"<li>{row}</li>" for row in insurability_reasons[:3]) or "<li>No additional reasons available.</li>"
+    )
+    technical_payload = {
+        "submodel_scores": {k: (v.model_dump() if hasattr(v, "model_dump") else v) for k, v in (result.submodel_scores or {}).items()},
+        "weighted_contributions": {k: (v.model_dump() if hasattr(v, "model_dump") else v) for k, v in (result.weighted_contributions or {}).items()},
+        "score_evidence_ledger": (result.score_evidence_ledger.model_dump() if hasattr(result.score_evidence_ledger, "model_dump") else result.score_evidence_ledger),
+        "evidence_quality_summary": (result.evidence_quality_summary.model_dump() if hasattr(result.evidence_quality_summary, "model_dump") else result.evidence_quality_summary),
+        "assessment_diagnostics": (result.assessment_diagnostics.model_dump() if hasattr(result.assessment_diagnostics, "model_dump") else result.assessment_diagnostics),
+        "coverage_summary": (result.coverage_summary.model_dump() if hasattr(result.coverage_summary, "model_dump") else result.coverage_summary),
+        "layer_coverage_audit": [row.model_dump() if hasattr(row, "model_dump") else row for row in list(result.layer_coverage_audit or [])],
+        "calibration": {
+            "calibration_applied": result.calibration_applied,
+            "calibration_status": result.calibration_status,
+            "calibration_method": result.calibration_method,
+            "calibration_limitations": list(result.calibration_limitations or []),
+            "calibration_scope_warning": result.calibration_scope_warning,
+            "calibrated_damage_likelihood": result.calibrated_damage_likelihood,
+            "empirical_damage_likelihood_proxy": result.empirical_damage_likelihood_proxy,
+            "empirical_loss_likelihood_proxy": result.empirical_loss_likelihood_proxy,
+        },
+        "compatibility_outputs": {
+            "legacy_weighted_wildfire_risk_score": result.legacy_weighted_wildfire_risk_score,
+            "insurance_readiness_score": result.insurance_readiness_score,
+            "home_hardening_readiness": result.home_hardening_readiness,
+            "confidence_tier": result.confidence_tier,
+        },
+    }
+    technical_payload_json = json.dumps(technical_payload, indent=2, ensure_ascii=True, default=str)
+    advanced_html = (
+        "<details class=\"card\"><summary>Advanced Details (Optional)</summary>"
+        "<p>Technical subscores, evidence, diagnostics, coverage, and calibration fields are preserved here.</p>"
+        f"<pre>{technical_payload_json}</pre>"
+        f"<h3>Audience-Specific Highlights ({mode})</h3><ul>{audience_notes}</ul>"
+        f"<h3>Audience Focus Payload</h3><pre>{focus}</pre>"
+        f"<h3>Assumptions & Confidence</h3><p>Confidence: {result.confidence_score}</p>"
+        f"<p>Assumptions: {', '.join(result.assumptions_used) if result.assumptions_used else 'None'}</p>"
+        "</details>"
+    ) if mode == "homeowner" else (
+        f"<div class=\"card\"><h3>Audience-Specific Highlights ({mode})</h3><ul>{audience_notes}</ul></div>"
+        f"<div class=\"card\"><h3>Audience Focus Payload</h3><pre>{focus}</pre></div>"
+        "<div class=\"card\"><h3>Assumptions & Confidence</h3>"
+        f"<p>Confidence: {result.confidence_score}</p>"
+        f"<p>Assumptions: {', '.join(result.assumptions_used) if result.assumptions_used else 'None'}</p>"
+        "</div>"
+        f"<div class=\"card\"><h3>Technical Payload</h3><pre>{technical_payload_json}</pre></div>"
+    )
 
     return f"""
 <!doctype html>
@@ -9513,23 +9630,19 @@ pre {{ white-space: pre-wrap; }}
 <p><span class=\"badge\">Assessment {result.assessment_id}</span> <span class=\"badge\">Model {result.model_version}</span> <span class=\"badge\">Generated {result.generated_at.isoformat()}</span> <span class=\"badge\">Audience View {mode}</span></p>
 <div class=\"card\"><h2>Property</h2><p>{result.address}</p><p>Organization: {result.organization_id}</p><p>Audience: {result.audience}</p><p>Review Status: {result.review_status}</p><p>Workflow: {result.workflow_state}</p><p>Assigned: {result.assigned_reviewer or 'n/a'}</p><p>Portfolio: {result.portfolio_name or 'n/a'}</p><p>Tags: {', '.join(result.tags) if result.tags else 'none'}</p></div>
 <div class=\"card\"><h3>Ruleset</h3><p>{result.ruleset_name} ({result.ruleset_id} v{result.ruleset_version})</p><p>{result.ruleset_description}</p></div>
+    <div class=\"card\"><h2>Homeowner Verdict</h2><p><strong>{insurability_status}</strong></p><ul>{insurability_reasons_html}</ul><p>{insurability_method_note}</p></div>
 <div class=\"row\">
 <div class=\"card\"><h3>Wildfire Risk Score</h3><p>{_score_html(result.wildfire_risk_score)}</p></div>
 <div class=\"card\"><h3>Home Hardening Readiness</h3><p>{_score_html(result.home_hardening_readiness)}</p></div>
 </div>
-<div class=\"card\"><h3>Top Risk Drivers</h3><ul>{drivers}</ul></div>
+    <div class=\"card\"><h3>Top 3 Risk Drivers</h3><ul>{drivers}</ul></div>
 <div class=\"card\"><h3>Near-Structure Drivers</h3><ul>{near_structure_drivers}</ul></div>
 <div class=\"card\"><h3>Top Protective Factors</h3><ul>{protective}</ul></div>
-<div class=\"card\"><h3>Home Hardening Blockers</h3><ul>{blockers}</ul></div>
-<div class=\"card\"><h3>Mitigation Recommendations</h3><ul>{mitigations}</ul></div>
+    <div class=\"card\"><h3>Key Home Hardening Gaps</h3><ul>{blockers}</ul></div>
+    <div class=\"card\"><h3>Top Recommended Actions</h3><ul>{mitigations}</ul></div>
 <div class=\"card\"><h3>Prioritized Vegetation Actions</h3><ul>{vegetation_actions}</ul></div>
-<div class=\"card\"><h3>Insurance Readiness (Optional/Future-facing)</h3><p>{_score_html(result.insurance_readiness_score)}</p></div>
-<div class=\"card\"><h3>Audience-Specific Highlights ({mode})</h3><ul>{audience_notes}</ul></div>
-<div class=\"card\"><h3>Audience Focus Payload</h3><pre>{focus}</pre></div>
-<div class=\"card\"><h3>Assumptions & Confidence</h3>
-<p>Confidence: {result.confidence_score}</p>
-<p>Assumptions: {', '.join(result.assumptions_used) if result.assumptions_used else 'None'}</p>
-</div>
+    <div class=\"card\"><h3>Insurance Readiness Score (Technical / Optional)</h3><p>{_score_html(result.insurance_readiness_score)}</p></div>
+{advanced_html}
 </body></html>
 """
 
@@ -10836,6 +10949,20 @@ def _resolve_trusted_geocode(
     emergency_in_region_guardrail = _rc.emergency_in_region_guardrail
     emergency_min_score = _rc.emergency_min_score
     emergency_min_margin = _rc.emergency_min_margin
+    try:
+        address_points_snap_max_distance_m = max(
+            20.0,
+            min(500.0, float(str(os.getenv("WF_ADDRESS_POINTS_SNAP_MAX_DISTANCE_M", "150")).strip())),
+        )
+    except ValueError:
+        address_points_snap_max_distance_m = 150.0
+    try:
+        address_points_snap_min_score = max(
+            50.0,
+            min(100.0, float(str(os.getenv("WF_ADDRESS_POINTS_SNAP_MIN_SCORE", "85")).strip())),
+        )
+    except ValueError:
+        address_points_snap_min_score = 85.0
 
     submitted_token_count = len([tok for tok in normalize_address(submitted_address).split() if tok])
     submitted_has_street_number = bool(re.match(r"^\s*\d+[a-zA-Z0-9-]*\b", submitted_address or ""))
@@ -10884,6 +11011,8 @@ def _resolve_trusted_geocode(
         source_kind = str(source_type or "")
         if st == "user_selected_point":
             return 95.0
+        if st == "address_points_snap":
+            return 92.0
         if source_kind in {"county_address_dataset", "prepared_region_address_dataset"}:
             return 90.0
         if source_kind in {"prepared_region_parcel_address_dataset", "local_authoritative_dataset"}:
@@ -11321,13 +11450,84 @@ def _resolve_trusted_geocode(
                 candidate_count=(int(geocode_meta.get("candidate_count")) if geocode_meta.get("candidate_count") is not None else None),
             )
         )
-        _register_candidate(
-            stage="primary_geocoder",
-            latitude=float(lat),
-            longitude=float(lon),
-            geocode_meta=dict(geocode_meta or {}),
-            source=str(source),
-        )
+        snapped_registered = False
+        if address_points_path:
+            snap_result = snap_geocode_to_address_points(
+                submitted_address=submitted_address,
+                geocoded_lat=float(lat),
+                geocoded_lon=float(lon),
+                address_points_path=str(address_points_path),
+                max_distance_m=address_points_snap_max_distance_m,
+                min_match_score=address_points_snap_min_score,
+            )
+            geocode_meta["address_points_snap"] = dict(snap_result)
+            if bool(snap_result.get("matched")):
+                _upsert_stage_status("address_points_snap", "accepted")
+                provider_attempts.append(
+                    _build_provider_attempt(
+                        stage="address_points_snap",
+                        provider_name="address_points_snap",
+                        query=submitted_address,
+                        accepted=True,
+                        geocode_status="accepted",
+                        geocode_outcome="geocode_succeeded_trusted",
+                        rejection_reason=None,
+                        candidate_count=int(snap_result.get("nearby_candidates") or 1),
+                    )
+                )
+                snapped_meta = dict(geocode_meta or {})
+                snapped_meta.update(
+                    {
+                        "trust": "address_point_snapped",
+                        "geocode_trust_tier": "high",
+                        "trusted_match_status": "trusted",
+                        "geocode_status": "accepted",
+                        "geocode_outcome": "geocode_succeeded_trusted",
+                        "geocode_decision": "address_points_snap",
+                        "geocode_provider": "address_points_snap",
+                        "provider": "address_points_snap",
+                        "geocode_source": "address_point_snapped",
+                        "match_method": "address_points_snap",
+                        "geocode_precision": "parcel_or_address_point",
+                        "confidence_score": float(snap_result.get("match_score") or 100.0) / 100.0,
+                        "matched_address": snap_result.get("matched_address") or geocode_meta.get("matched_address"),
+                        "geocoded_address": snap_result.get("matched_address") or geocode_meta.get("geocoded_address"),
+                        "resolved_latitude": float(snap_result.get("latitude")),
+                        "resolved_longitude": float(snap_result.get("longitude")),
+                        "trust_degraded": False,
+                    }
+                )
+                diagnostics = list(snapped_meta.get("diagnostics") or [])
+                diagnostics.append(
+                    "Primary geocode was snapped to nearest address point "
+                    f"({float(snap_result.get('distance_m') or 0.0):.1f} m, score={float(snap_result.get('match_score') or 0.0):.1f})."
+                )
+                snapped_meta["diagnostics"] = diagnostics[:10]
+                _register_candidate(
+                    stage="address_points_snap",
+                    latitude=float(snap_result.get("latitude")),
+                    longitude=float(snap_result.get("longitude")),
+                    geocode_meta=snapped_meta,
+                    source="address_point_snapped",
+                    source_type="prepared_region_address_dataset",
+                )
+                snapped_registered = True
+            else:
+                _upsert_stage_status("address_points_snap", "no_match")
+                geocode_meta["trust_degraded"] = True
+                diagnostics = list(geocode_meta.get("diagnostics") or [])
+                diagnostics.append(
+                    "Address-point snap did not find a nearby fuzzy match; using primary geocoder coordinates."
+                )
+                geocode_meta["diagnostics"] = diagnostics[:10]
+        if not snapped_registered:
+            _register_candidate(
+                stage="primary_geocoder",
+                latitude=float(lat),
+                longitude=float(lon),
+                geocode_meta=dict(geocode_meta or {}),
+                source=str(source),
+            )
     except HTTPException as exc:
         last_failure = exc
         _record_failure("primary_geocoder", submitted_address, str(getattr(geocoder, "provider_name", "OpenStreetMap Nominatim")), exc)
@@ -14038,6 +14238,23 @@ def rerun_assessment_with_homeowner_inputs(
 
     before_options = build_homeowner_improvement_options(existing)
     after_options = build_homeowner_improvement_options(updated)
+    changed_input_keys_for_summary = set(normalized_changes.keys())
+    if mapped_defensible_space_ft is not None:
+        changed_input_keys_for_summary.add("defensible_space_condition")
+    if payload.property_anchor_point is not None or payload.user_selected_point is not None:
+        changed_input_keys_for_summary.add("map_point_correction")
+    if payload.selected_parcel_geometry is not None or payload.selected_parcel_id is not None or payload.confirm_selected_parcel:
+        changed_input_keys_for_summary.add("confirm_selected_parcel")
+    if payload.selected_structure_geometry is not None:
+        changed_input_keys_for_summary.add("selected_structure_geometry")
+    if payload.selected_structure_id is not None or payload.confirm_selected_footprint:
+        changed_input_keys_for_summary.add("confirm_selected_footprint")
+    homeowner_before_after_summary = build_homeowner_before_after_summary(
+        before=existing,
+        after=updated,
+        scenario_name="homeowner_improvement",
+        changed_input_keys=sorted(changed_input_keys_for_summary),
+    )
     what_changed, change_notes, what_changed_summary = build_improvement_change_set(
         existing,
         updated,
@@ -14280,6 +14497,7 @@ def rerun_assessment_with_homeowner_inputs(
         improve_your_result_before=before_options,
         improve_your_result_after=after_options,
         change_notes=list(dict.fromkeys(change_notes)),
+        homeowner_before_after_summary=homeowner_before_after_summary,
     )
 
 
@@ -14371,6 +14589,12 @@ def simulate_risk(
     wildfire_delta = _delta(baseline.wildfire_risk_score, simulated.wildfire_risk_score)
     readiness_delta = _delta(baseline.insurance_readiness_score, simulated.insurance_readiness_score)
     hardening_delta = _delta(baseline.home_hardening_readiness, simulated.home_hardening_readiness)
+    homeowner_before_after_summary = build_homeowner_before_after_summary(
+        before=baseline,
+        after=simulated,
+        scenario_name=payload.scenario_name,
+        changed_input_keys=sorted(changed_inputs.keys()),
+    )
 
     sim_result = SimulationResult(
         scenario_name=payload.scenario_name,
@@ -14400,11 +14624,15 @@ def simulate_risk(
             baseline=baseline.model_dump(mode="json"),
             simulated=simulated.model_dump(mode="json"),
         ),
-        summary=(
-            f"Wildfire risk changed by {wildfire_delta if wildfire_delta is not None else 'not computed'} "
-            f"and home hardening readiness changed by "
-            f"{hardening_delta if hardening_delta is not None else 'not computed'}."
+        summary=str(
+            homeowner_before_after_summary.get("summary")
+            or (
+                f"Wildfire risk changed by {wildfire_delta if wildfire_delta is not None else 'not computed'} "
+                f"and home hardening readiness changed by "
+                f"{hardening_delta if hardening_delta is not None else 'not computed'}."
+            )
         ),
+        homeowner_before_after_summary=homeowner_before_after_summary,
     )
 
     if payload.assessment_id:
@@ -15145,10 +15373,22 @@ def get_homeowner_report(
     if not result:
         raise HTTPException(status_code=404, detail="Assessment not found")
     _enforce_org_scope(ctx, result.organization_id)
+    simulation_overview: dict[str, object] | None = None
+    latest_scenarios = store.list_scenarios(assessment_id=assessment_id, limit=1)
+    if latest_scenarios:
+        latest = latest_scenarios[0]
+        simulation_overview = {
+            "scenario_name": latest.scenario_name,
+            "wildfire_risk_score_delta": latest.wildfire_risk_score_delta,
+            "insurance_readiness_score_delta": latest.insurance_readiness_score_delta,
+        }
+        if isinstance(latest.homeowner_before_after_summary, dict) and latest.homeowner_before_after_summary:
+            simulation_overview["homeowner_before_after_summary"] = latest.homeowner_before_after_summary
     return build_homeowner_report(
         _refresh_result_governance(result),
         include_professional_debug_metadata=include_professional_debug_metadata,
         include_optional_calibration_metadata=include_optional_calibration_metadata,
+        simulation_overview=simulation_overview,
     )
 
 
@@ -15169,10 +15409,22 @@ def download_homeowner_report_pdf(
     if not result:
         raise HTTPException(status_code=404, detail="Assessment not found")
     _enforce_org_scope(ctx, result.organization_id)
+    simulation_overview: dict[str, object] | None = None
+    latest_scenarios = store.list_scenarios(assessment_id=assessment_id, limit=1)
+    if latest_scenarios:
+        latest = latest_scenarios[0]
+        simulation_overview = {
+            "scenario_name": latest.scenario_name,
+            "wildfire_risk_score_delta": latest.wildfire_risk_score_delta,
+            "insurance_readiness_score_delta": latest.insurance_readiness_score_delta,
+        }
+        if isinstance(latest.homeowner_before_after_summary, dict) and latest.homeowner_before_after_summary:
+            simulation_overview["homeowner_before_after_summary"] = latest.homeowner_before_after_summary
     report = build_homeowner_report(
         _refresh_result_governance(result),
         include_professional_debug_metadata=include_professional_debug_metadata,
         include_optional_calibration_metadata=include_optional_calibration_metadata,
+        simulation_overview=simulation_overview,
     )
     pdf_bytes = render_homeowner_report_pdf(report)
     filename = f"wildfire_homeowner_report_{assessment_id}.pdf"
