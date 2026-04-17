@@ -110,6 +110,12 @@ def test_homeowner_report_and_pdf_generate_for_complete_assessment(monkeypatch, 
     report = report_res.json()
 
     for key in (
+        "insurability_status",
+        "insurability_status_reasons",
+        "insurability_status_methodology_note",
+        "homeowner_focus_summary",
+        "internal_calibration_debug",
+        "advanced_details",
         "first_screen",
         "headline_risk_summary",
         "top_risk_drivers",
@@ -155,6 +161,49 @@ def test_homeowner_report_and_pdf_generate_for_complete_assessment(monkeypatch, 
     assert isinstance(report["prioritized_mitigation_actions"], list)
     assert isinstance(report["top_risk_drivers_detailed"], list)
     assert isinstance(report["confidence_summary"], dict)
+    assert report.get("insurability_status") in {
+        "Likely Insurable",
+        "At Risk",
+        "High Risk of Insurance Issues",
+    }
+    assert isinstance(report.get("insurability_status_reasons"), list)
+    assert isinstance(report.get("insurability_status_methodology_note"), str)
+    assert "rule-based" in str(report.get("insurability_status_methodology_note") or "").lower()
+    focus_summary = report.get("homeowner_focus_summary") or {}
+    assert focus_summary.get("insurability_status") in {
+        "Likely Insurable",
+        "At Risk",
+        "High Risk of Insurance Issues",
+    }
+    assert focus_summary.get("status_label") in {
+        "Likely Insurable",
+        "At Risk",
+        "High Risk of Insurance Issues",
+    }
+    assert isinstance(focus_summary.get("insurability_status_reasons"), list)
+    assert isinstance(focus_summary.get("insurability_status_methodology_note"), str)
+    assert isinstance(focus_summary.get("one_sentence_summary"), str)
+    assert isinstance(focus_summary.get("top_risk_drivers"), list)
+    assert isinstance(focus_summary.get("top_recommended_actions"), list)
+    limitations_snapshot = focus_summary.get("limitations_snapshot") or {}
+    assert isinstance(limitations_snapshot, dict)
+    assert isinstance(limitations_snapshot.get("headline"), str)
+    assert isinstance(limitations_snapshot.get("directly_observed"), list)
+    assert isinstance(limitations_snapshot.get("estimated_or_inferred"), list)
+    assert isinstance(limitations_snapshot.get("missing_or_unknown"), list)
+    assert isinstance(limitations_snapshot.get("inputs_to_improve"), list)
+    assert isinstance(focus_summary.get("confidence_limitations_summary"), str)
+    internal_debug = report.get("internal_calibration_debug") or {}
+    assert isinstance(internal_debug.get("subscores"), dict)
+    assert isinstance(internal_debug.get("diagnostics"), dict)
+    assert isinstance(internal_debug.get("evidence_ledgers"), dict)
+    assert isinstance(internal_debug.get("calibration_fields"), dict)
+    assert isinstance(internal_debug.get("compatibility_outputs"), dict)
+    advanced_details = report.get("advanced_details") or {}
+    assert isinstance(advanced_details, dict)
+    assert advanced_details.get("default_visibility") == "collapsed"
+    assert isinstance(advanced_details.get("calibration_and_diagnostics"), dict)
+    assert isinstance(advanced_details.get("sections"), dict)
     assert report["specificity_summary"]["specificity_tier"] == assessed["specificity_summary"]["specificity_tier"]
     assert isinstance(report["specificity_summary"]["comparison_allowed"], bool)
     first_screen = report.get("first_screen") or {}
@@ -211,6 +260,42 @@ def test_homeowner_report_and_pdf_generate_for_complete_assessment(monkeypatch, 
     }
     assert isinstance(property_confidence.get("key_reasons"), list)
     assert isinstance(property_confidence.get("user_action_recommended"), str)
+
+
+def test_homeowner_report_includes_before_after_summary_when_simulation_exists(monkeypatch, tmp_path: Path):
+    context = _ctx(env=48.0, wildland=39.0, historic=28.0)
+    _setup(monkeypatch, tmp_path, context)
+    assessed = _run_assessment("77 Simulation Snapshot Rd, Missoula, MT 59802")
+
+    sim_payload = {
+        "assessment_id": assessed["assessment_id"],
+        "scenario_name": "clearance_upgrade",
+        "scenario_overrides": {"defensible_space_ft": 60},
+        "scenario_confirmed_fields": ["defensible_space_ft"],
+    }
+    sim_res = client.post("/risk/simulate", json=sim_payload)
+    assert sim_res.status_code == 200
+
+    report_res = client.get(f"/report/{assessed['assessment_id']}/homeowner")
+    assert report_res.status_code == 200
+    report = report_res.json()
+    before_after = ((report.get("homeowner_focus_summary") or {}).get("before_after_summary") or {})
+    assert before_after.get("available") is True
+    assert before_after.get("scenario_name") == "clearance_upgrade"
+    assert isinstance(before_after.get("summary"), str)
+    assert before_after.get("current_insurability_status") in {
+        "Likely Insurable",
+        "At Risk",
+        "High Risk of Insurance Issues",
+        "",
+    }
+    assert before_after.get("projected_insurability_status") in {
+        "Likely Insurable",
+        "At Risk",
+        "High Risk of Insurance Issues",
+        "",
+    }
+    assert isinstance(before_after.get("top_actions_driving_change"), list)
 
 
 def test_homeowner_report_surfaces_mostly_regional_differentiation_mode(monkeypatch, tmp_path: Path):
@@ -327,26 +412,30 @@ def test_homeowner_pdf_includes_structured_sections_and_priority_content(monkeyp
 
     required_sections = [
         b"Wildfire Risk Report",
-        b"Summary Snapshot",
-        b"Why this matters",
+        b"Homeowner Decision Snapshot",
+        b"Top 3 Risk Drivers",
+        b"Top 3 Recommended Actions",
+        b"Before vs After Snapshot",
+        b"Confidence Note",
+        b"Risk Breakdown and Subscores",
+        b"Property Context and Map",
         b"Local Map View",
-        b"What To Do First",
-        b"Top Risk Drivers",
-        b"Recommended Next Steps",
-        b"How This Could Improve",
-        b"Property Context",
-        b"Confidence & Limitations",
-        b"Technical Details",
+        b"Mitigation Details",
+        b"If You Complete These Actions",
+        b"Confidence and Limitations",
+        b"Advanced Details",
     ]
     for section in required_sections:
         assert section in pdf_res.content
 
     ordered_markers = [
         b"Wildfire Risk Report",
-        b"Summary Snapshot",
-        b"What To Do First",
-        b"Top Risk Drivers",
-        b"Recommended Next Steps",
+        b"Homeowner Decision Snapshot",
+        b"Top 3 Risk Drivers",
+        b"Top 3 Recommended Actions",
+        b"Before vs After Snapshot",
+        b"Confidence Note",
+        b"Risk Breakdown and Subscores",
     ]
     marker_positions = [pdf_res.content.find(marker) for marker in ordered_markers]
     assert all(pos >= 0 for pos in marker_positions)
@@ -354,20 +443,17 @@ def test_homeowner_pdf_includes_structured_sections_and_priority_content(monkeyp
 
     for key_line in (
         b"Wildfire risk level:",
-        b"Assessment type / specificity:",
         b"Confidence level:",
-        b"One-sentence explanation:",
+        b"One-sentence summary:",
         b"Property Address:",
         b"Location context:",
         b"Observed for this report",
         b"Missing or estimated",
         b"Ring legend:",
         b"Map centered on this report location:",
-        b"This analysis is based on the area immediately surrounding your home",
-        b"conditions close to the home",
-        b"Top priority action",
+        b"Most Important Next Step",
         b"Effort level:",
-        b"lower wildfire risk",
+        b"lower wildfire exposure",
         b"Data completeness:",
         b"Specificity:",
     ):
@@ -440,22 +526,21 @@ def test_homeowner_pdf_sections_render_in_high_and_low_confidence_scenarios(monk
     assert low_pdf.startswith(b"%PDF-1.4")
 
     required_sections = [
-        b"Summary Snapshot",
-        b"Why this matters",
+        b"Homeowner Decision Snapshot",
         b"Local Map View",
-        b"What To Do First",
-        b"Top Risk Drivers",
-        b"Recommended Next Steps",
-        b"How This Could Improve",
-        b"Confidence & Limitations",
-        b"Technical Details",
+        b"Top 3 Risk Drivers",
+        b"Top 3 Recommended Actions",
+        b"Before vs After Snapshot",
+        b"Risk Breakdown and Subscores",
+        b"Mitigation Details",
+        b"Confidence and Limitations",
+        b"Advanced Details",
     ]
     for section in required_sections:
         assert section in high_pdf
         assert section in low_pdf
 
     assert b"Specificity:" in high_pdf
-    assert b"Assessment type / specificity:" in high_pdf
     assert b"Confidence level: High" in high_pdf
     assert b"Specificity: Regional estimate" in low_pdf
     assert b"Confidence level: Low" in low_pdf
@@ -464,7 +549,6 @@ def test_homeowner_pdf_sections_render_in_high_and_low_confidence_scenarios(monk
     assert b"Observed for this report" in low_pdf
     assert b"Missing or estimated" in low_pdf
     assert b"Why this may be broader:" in low_pdf
-    assert b"Low-specificity note: use this as planning guidance" in low_pdf
     assert b"Limited-data case" not in high_pdf
     assert b"Limited-data case" in low_pdf
 
@@ -503,10 +587,10 @@ def test_homeowner_pdf_how_this_could_improve_language_adapts_to_confidence(monk
 
     high_pdf = export_homeowner_report(high, output_format="pdf")
     low_pdf = export_homeowner_report(low, output_format="pdf")
-    assert b"How This Could Improve" in high_pdf
-    assert b"How This Could Improve" in low_pdf
-    assert b"is likely to lower wildfire risk" in high_pdf
-    assert b"could help lower wildfire risk" in low_pdf
+    assert b"If You Complete These Actions" in high_pdf
+    assert b"If You Complete These Actions" in low_pdf
+    assert b"lower wildfire exposure" in high_pdf
+    assert b"lower wildfire exposure" in low_pdf
 
 
 def test_homeowner_pdf_tone_softens_low_confidence_and_is_direct_for_high_confidence(monkeypatch, tmp_path: Path):
@@ -547,15 +631,13 @@ def test_homeowner_pdf_tone_softens_low_confidence_and_is_direct_for_high_confid
     high_pdf = export_homeowner_report(high, output_format="pdf")
     low_pdf = export_homeowner_report(low, output_format="pdf")
 
-    assert b"Tone: direct." in high_pdf
-    assert b"Top Risk Drivers" in high_pdf
-    assert b"lowers ignition pathways around the home" in high_pdf
-    assert b"Confidence is strong because the assessment used substantial property-level evidence" in high_pdf
+    assert b"Most key inputs were directly observed for this report." in high_pdf
+    assert b"Top 3 Risk Drivers" in high_pdf
+    assert b"helps lower ignition pressure around the home" in high_pdf
 
-    assert b"Tone: cautious." in low_pdf
-    assert b"may increase wildfire exposure" in low_pdf
-    assert b"could lower ignition pathways around the home" in low_pdf
-    assert b"Confidence is lower because some details were estimated or missing" in low_pdf
+    assert b"Several details were estimated or missing, so treat this as a screening assessment." in low_pdf
+    assert b"may be increasing wildfire exposure" in low_pdf
+    assert b"could lower ignition pressure around the home" in low_pdf
 
 
 def test_generate_homeowner_explanations_fallback_without_llm(monkeypatch, tmp_path: Path):

@@ -141,6 +141,21 @@ def test_homeowner_improvement_rerun_increases_confidence_and_updates_guidance(m
     assert isinstance(concise.get("specificity_change"), dict)
     assert isinstance(concise.get("confidence_change"), dict)
     assert isinstance(concise.get("recommendation_changes"), dict)
+    before_after = body.get("homeowner_before_after_summary") or {}
+    assert isinstance(before_after, dict)
+    assert before_after.get("available") is True
+    assert before_after.get("current_insurability_status") in {
+        "Likely Insurable",
+        "At Risk",
+        "High Risk of Insurance Issues",
+    }
+    assert before_after.get("projected_insurability_status") in {
+        "Likely Insurable",
+        "At Risk",
+        "High Risk of Insurance Issues",
+    }
+    assert isinstance(before_after.get("top_actions_driving_change"), list)
+    assert isinstance(before_after.get("summary"), str)
     why_it_matters = [str(row).lower() for row in (body.get("why_it_matters") or [])]
     assert len(why_it_matters) >= 1
     assert any(

@@ -898,6 +898,9 @@
         <div class="result-divider"></div>
         <div class="mini-label">Limitations and trust notes</div>
         <div id="flagsPrimary"><span class="pill">No trust notes yet</span></div>
+        <div class="result-divider"></div>
+        <div class="mini-label">Measured vs Estimated</div>
+        <ul id="homeownerLimitationsBlock"><li class="muted">Run an assessment to see what was observed, estimated, and missing.</li></ul>
       </section>
 
       <section class="card">
@@ -1167,6 +1170,7 @@
 
       let latestAssessment = null;
       let latestHomeownerReport = null;
+      let latestSimulationSummary = null;
       let latestMapPayload = null;
       let assessmentMap = null;
       let mapBaseLayer = null;
@@ -2007,8 +2011,44 @@
           : "<li class='muted'>No additional follow-up inputs suggested.</li>";
       }
 
+      function renderHomeownerLimitationsBlock({
+        observedRows = [],
+        estimatedRows = [],
+        missingRows = [],
+        improveRows = [],
+      } = {}) {
+        const el = document.getElementById("homeownerLimitationsBlock");
+        if (!el) return;
+        const clean = (rows) => (Array.isArray(rows) ? rows : [])
+          .map((v) => String(v || "").trim())
+          .filter(Boolean)
+          .slice(0, 3);
+        const observed = clean(observedRows);
+        const estimated = clean(estimatedRows);
+        const missing = clean(missingRows);
+        const improve = clean(improveRows);
+
+        const observedText = observed.length > 0
+          ? observed.join("; ")
+          : "Limited direct property-specific observations.";
+        const estimatedCombined = estimated.concat(missing).slice(0, 3);
+        const estimatedText = estimatedCombined.length > 0
+          ? estimatedCombined.join("; ")
+          : "No major estimated or missing items were flagged.";
+        const improveText = improve.length > 0
+          ? improve.join("; ")
+          : "Confirm roof, vent, and defensible-space details to improve confidence.";
+
+        el.innerHTML = [
+          `<li><strong>Directly observed:</strong> ${observedText}</li>`,
+          `<li><strong>Estimated or inferred:</strong> ${estimatedText}</li>`,
+          `<li><strong>Best homeowner inputs to improve this result:</strong> ${improveText}</li>`,
+        ].join("");
+      }
+
       function resetHomeownerJourneyPanels(reason) {
         latestHomeownerReport = null;
+        latestSimulationSummary = null;
         const statusEl = document.getElementById("homeownerReportStatus");
         const highlightsEl = document.getElementById("homeownerReportHighlights");
         const secondaryEl = document.getElementById("homeownerReportSecondary");
@@ -2039,6 +2079,7 @@
         if (specificityAtGlanceEl) specificityAtGlanceEl.textContent = "Pending";
         if (confidenceSummaryTextEl) confidenceSummaryTextEl.textContent = "Run an assessment to see confidence details.";
         if (flagsPrimaryEl) flagsPrimaryEl.innerHTML = "<span class='pill'>No trust notes yet</span>";
+        renderHomeownerLimitationsBlock();
         const propertyContextMapHintEl = document.getElementById("propertyContextMapHint");
         if (propertyContextMapHintEl) {
           propertyContextMapHintEl.textContent = "Property context summary will appear here after assessment.";
@@ -2062,30 +2103,91 @@
         }
 
         const firstScreen = (report?.first_screen && typeof report.first_screen === "object") ? report.first_screen : {};
+        const focus = (report?.homeowner_focus_summary && typeof report.homeowner_focus_summary === "object")
+          ? report.homeowner_focus_summary
+          : {};
         const overall = (firstScreen?.overall_wildfire_risk && typeof firstScreen.overall_wildfire_risk === "object")
           ? firstScreen.overall_wildfire_risk
           : {};
         const specificity = (firstScreen?.specificity_summary && typeof firstScreen.specificity_summary === "object")
           ? firstScreen.specificity_summary
           : {};
-        const headline = String(overall?.headline || report?.headline_risk_summary || "").trim();
+        const headline = String(focus?.one_sentence_summary || overall?.headline || report?.headline_risk_summary || "").trim();
+        const statusLabel = String(
+          focus?.insurability_status
+          || report?.insurability_status
+          || focus?.status_label
+          || ""
+        ).trim();
+        const statusReasons = Array.isArray(focus?.insurability_status_reasons) && focus.insurability_status_reasons.length > 0
+          ? focus.insurability_status_reasons
+          : (Array.isArray(report?.insurability_status_reasons) ? report.insurability_status_reasons : []);
+        const statusMethodologyNote = String(
+          focus?.insurability_status_methodology_note
+          || report?.insurability_status_methodology_note
+          || ""
+        ).trim();
         const riskBand = String(overall?.risk_band || report?.score_summary?.wildfire_risk_band || "").trim();
         const whatFirst = String(firstScreen?.what_to_do_first?.action || report?.what_to_do_first?.action || report?.what_to_do_first?.title || "").trim();
-        const topActions = Array.isArray(firstScreen?.top_actions)
+        const focusActions = Array.isArray(focus?.top_recommended_actions)
+          ? focus.top_recommended_actions
+          : [];
+        const topActions = focusActions.length > 0
+          ? focusActions
+          : (Array.isArray(firstScreen?.top_actions)
           ? firstScreen.top_actions
-          : (Array.isArray(report?.prioritized_actions) ? report.prioritized_actions : []);
-        const topDrivers = Array.isArray(firstScreen?.top_risk_drivers)
+          : (Array.isArray(report?.prioritized_actions) ? report.prioritized_actions : []));
+        const focusDrivers = Array.isArray(focus?.top_risk_drivers)
+          ? focus.top_risk_drivers
+          : [];
+        const topDrivers = focusDrivers.length > 0
+          ? focusDrivers
+          : (Array.isArray(firstScreen?.top_risk_drivers)
           ? firstScreen.top_risk_drivers
-          : (Array.isArray(report?.top_risk_drivers) ? report.top_risk_drivers : []);
-        const limitations = String(firstScreen?.limitations_note || report?.limitations_notice || "").trim();
+          : (Array.isArray(report?.top_risk_drivers) ? report.top_risk_drivers : []));
+        const limitations = String(
+          focus?.confidence_limitations_summary
+          || firstScreen?.limitations_note
+          || report?.limitations_notice
+          || ""
+        ).trim();
         const confidence = report?.confidence_summary || report?.confidence_and_limitations || {};
         const trust = report?.trust_summary || report?.confidence_and_limitations?.trust_summary || {};
         const lowDiff = trust?.low_differentiation_explanation || null;
+        const beforeAfter = (focus?.before_after_summary && typeof focus.before_after_summary === "object")
+          ? focus.before_after_summary
+          : latestSimulationSummary;
+        const beforeAfterText = String(
+          beforeAfter?.summary
+          || beforeAfter?.headline
+          || ""
+        ).trim();
+        const beforeStatus = String(beforeAfter?.current_insurability_status || "").trim();
+        const afterStatus = String(beforeAfter?.projected_insurability_status || "").trim();
+        const beforeAfterActions = Array.isArray(beforeAfter?.top_actions_driving_change)
+          ? beforeAfter.top_actions_driving_change
+          : [];
+        const snapshot = (focus?.limitations_snapshot && typeof focus.limitations_snapshot === "object")
+          ? focus.limitations_snapshot
+          : {};
 
-        statusEl.textContent = headline || "Homeowner report loaded.";
+        statusEl.textContent = statusLabel
+          ? `${statusLabel}: ${headline || "homeowner report loaded."}`
+          : (headline || "Homeowner report loaded.");
         const rows = [];
+        if (statusLabel) {
+          rows.push(`<li><strong>Verdict:</strong> <span class="pill">${statusLabel}</span></li>`);
+        }
+        if (statusReasons.length > 0) {
+          const reasonsText = statusReasons
+            .slice(0, 3)
+            .map((item) => String(item || "").trim())
+            .filter(Boolean)
+            .join("; ");
+          if (reasonsText) rows.push(`<li><strong>Status reasons:</strong> ${reasonsText}</li>`);
+        }
         if (headline) {
-          rows.push(`<li><strong>Overall wildfire risk:</strong> ${headline}${riskBand ? ` (${riskBand})` : ""}</li>`);
+          rows.push(`<li><strong>Bottom line:</strong> ${headline}${riskBand ? ` (${riskBand})` : ""}</li>`);
         }
         const specificityHeadline = String(specificity?.headline || "").trim();
         const specificityMeaning = String(specificity?.what_this_means || "").trim();
@@ -2104,28 +2206,62 @@
             .map((item) => String(item?.action || item?.title || "").trim())
             .filter(Boolean)
             .join("; ");
-          if (text) rows.push(`<li><strong>Top 3 actions:</strong> ${text}</li>`);
+          if (text) rows.push(`<li><strong>Top 3 next actions:</strong> ${text}</li>`);
         }
         if (whatFirst) rows.push(`<li><strong>What to do first:</strong> ${whatFirst}</li>`);
-        if (limitations) rows.push(`<li><strong>Limitations:</strong> ${limitations}</li>`);
+        if (beforeStatus && afterStatus) {
+          rows.push(`<li><strong>Status shift:</strong> ${beforeStatus} → ${afterStatus}</li>`);
+        }
+        if (beforeAfterActions.length > 0) {
+          const actionsText = beforeAfterActions
+            .slice(0, 3)
+            .map((item) => {
+              const action = String(item?.action || "").trim();
+              const why = String(item?.why_this_matters || "").trim();
+              return action ? `${action}${why ? ` (${why})` : ""}` : "";
+            })
+            .filter(Boolean)
+            .join("; ");
+          if (actionsText) rows.push(`<li><strong>Actions driving change:</strong> ${actionsText}</li>`);
+        }
+        if (beforeAfterText) rows.push(`<li><strong>What-if summary:</strong> ${beforeAfterText}</li>`);
+        if (limitations) rows.push(`<li><strong>Confidence/limitations:</strong> ${limitations}</li>`);
         highlightsEl.innerHTML = rows.length > 0
           ? rows.join("")
           : "<li class='muted'>No homeowner report highlights yet.</li>";
 
         const secondaryRows = [];
         if (Array.isArray(confidence?.why_confidence_is_limited) && confidence.why_confidence_is_limited.length > 0) {
-          secondaryRows.push(`<li><strong>Confidence note:</strong> ${String(confidence.why_confidence_is_limited[0])}</li>`);
+          secondaryRows.push(`<li><strong>Confidence summary:</strong> ${String(confidence.why_confidence_is_limited[0])}</li>`);
         }
         if (lowDiff && typeof lowDiff === "object") {
           secondaryRows.push(
             `<li><strong>Nearby-home comparison:</strong> ${String(lowDiff.why_nearby_properties_may_appear_similar || "Result is based mostly on shared neighborhood conditions.")}</li>`
           );
         }
+        if (focus?.advanced_details_hint) {
+          secondaryRows.push(`<li><strong>Advanced details:</strong> ${String(focus.advanced_details_hint)}</li>`);
+        }
+        const advancedDetailsNote = String(report?.advanced_details?.note || "").trim();
+        if (advancedDetailsNote) {
+          secondaryRows.push(`<li><strong>Advanced section:</strong> ${advancedDetailsNote}</li>`);
+        }
+        if (statusMethodologyNote) {
+          secondaryRows.push(`<li><strong>Status methodology:</strong> ${statusMethodologyNote}</li>`);
+        }
         secondaryEl.innerHTML = secondaryRows.length > 0
           ? secondaryRows.join("")
           : "<li class='muted'>No additional details yet.</li>";
         if (moreDetailsEl) {
           moreDetailsEl.open = false;
+        }
+        if (snapshot && typeof snapshot === "object") {
+          renderHomeownerLimitationsBlock({
+            observedRows: Array.isArray(snapshot?.directly_observed) ? snapshot.directly_observed : [],
+            estimatedRows: Array.isArray(snapshot?.estimated_or_inferred) ? snapshot.estimated_or_inferred : [],
+            missingRows: Array.isArray(snapshot?.missing_or_unknown) ? snapshot.missing_or_unknown : [],
+            improveRows: Array.isArray(snapshot?.inputs_to_improve) ? snapshot.inputs_to_improve : [],
+          });
         }
       }
 
@@ -2189,6 +2325,7 @@
         }
 
         latestAssessment = data;
+        latestSimulationSummary = null;
         if (
           pendingSelectedStructureAssessmentId
           && pendingSelectedStructureAssessmentId !== data?.assessment_id
@@ -2362,6 +2499,12 @@
           : (Array.isArray(data?.what_was_estimated) && data.what_was_estimated.length > 0
             ? data.what_was_estimated
             : (Array.isArray(data?.assumptions_used) ? data.assumptions_used : []));
+        const observedRows = Array.isArray(homeownerSummary?.what_was_observed) && homeownerSummary.what_was_observed.length > 0
+          ? homeownerSummary.what_was_observed
+          : (Array.isArray(data?.what_was_observed) ? data.what_was_observed : []);
+        const missingRows = Array.isArray(homeownerSummary?.what_was_missing) && homeownerSummary.what_was_missing.length > 0
+          ? homeownerSummary.what_was_missing
+          : (Array.isArray(data?.what_was_missing) ? data.what_was_missing : []);
         document.getElementById("assumptions").innerHTML = estimatedRows
           .slice(0, 5)
           .map(v => `<li>${v}</li>`)
@@ -2377,6 +2520,12 @@
           .slice(0, 6)
           .map(v => `<li>${v}</li>`)
           .join("") || "<li class='muted'>No additional confidence actions are currently suggested.</li>";
+        renderHomeownerLimitationsBlock({
+          observedRows,
+          estimatedRows,
+          missingRows,
+          improveRows: confidenceActionRows,
+        });
 
         const limitationPills = (Array.isArray(homeownerSummary?.assessment_limitations)
           ? homeownerSummary.assessment_limitations.map(v => normalizeLimitationChip(v)).filter(Boolean)
@@ -3777,25 +3926,74 @@
           const hardeningDelta = (
             sim.delta?.home_hardening_readiness_delta !== null && sim.delta?.home_hardening_readiness_delta !== undefined
               ? sim.delta.home_hardening_readiness_delta
-              : delta.insurance_readiness_score_delta
+              : delta?.insurance_readiness_score_delta
           );
           const simExplainer = sim.simulator_explanations || {};
           const resolvedActions = Array.isArray(simExplainer.mitigation_actions_resolved)
             ? simExplainer.mitigation_actions_resolved
             : [];
-          const changeSummary = simExplainer.plain_language_change_summary || sim.summary || "Simulation complete.";
+          const simHomeownerSummary = (sim?.homeowner_before_after_summary && typeof sim.homeowner_before_after_summary === "object")
+            ? sim.homeowner_before_after_summary
+            : {};
+          const statusBefore = String(
+            simHomeownerSummary?.current_insurability_status
+            || sim?.baseline?.insurability_status
+            || ""
+          ).trim();
+          const statusAfter = String(
+            simHomeownerSummary?.projected_insurability_status
+            || sim?.simulated?.insurability_status
+            || ""
+          ).trim();
+          const actionDrivers = Array.isArray(simHomeownerSummary?.top_actions_driving_change)
+            ? simHomeownerSummary.top_actions_driving_change.slice(0, 3)
+            : [];
+          const actionDriversHtml = actionDrivers.length > 0
+            ? actionDrivers
+              .map((row) => {
+                const action = String(row?.action || "").trim();
+                const why = String(row?.why_this_matters || "").trim();
+                if (!action) return "";
+                return `<li><strong>${action}</strong>${why ? `: ${why}` : ""}</li>`;
+              })
+              .filter(Boolean)
+              .join("")
+            : "";
+          const changeSummary = String(
+            simHomeownerSummary?.summary
+            || simExplainer.plain_language_change_summary
+            || sim.summary
+            || "Simulation complete."
+          ).trim();
+          latestSimulationSummary = {
+            scenario_name: sim.scenario_name || "what_if",
+            wildfire_risk_score_delta: delta?.wildfire_risk_score_delta,
+            home_hardening_readiness_delta: hardeningDelta,
+            current_insurability_status: statusBefore,
+            projected_insurability_status: statusAfter,
+            top_actions_driving_change: actionDrivers,
+            summary: changeSummary,
+          };
+          if (latestHomeownerReport && latestAssessment?.assessment_id) {
+            renderHomeownerReportPreview(latestHomeownerReport);
+          }
 
+          const statusShiftLine = (statusBefore && statusAfter)
+            ? `<strong>Status shift:</strong> ${statusBefore} → ${statusAfter}<br>`
+            : "";
           document.getElementById("simResult").innerHTML =
-            `<strong>Before:</strong> ${fmt(sim.baseline.wildfire_risk_score)}<br>` +
-            `<strong>After:</strong> ${fmt(sim.simulated.wildfire_risk_score)}<br>` +
-            `<strong>Change:</strong> ${fmt(delta.wildfire_risk_score_delta)} wildfire risk points<br><br>` +
-            `<strong>Home Hardening Before:</strong> ${fmt(baselineHardening)}<br>` +
-            `<strong>Home Hardening After:</strong> ${fmt(simulatedHardening)}<br>` +
-            `<strong>Home Hardening Change:</strong> ${fmt(hardeningDelta)} points<br><br>` +
-            `<strong>What changed:</strong><br>${changed || "No changes detected."}<br><br>` +
-            `<strong>Actions resolved:</strong><br>${resolvedActions.join("<br>") || "No specific actions resolved yet."}<br><br>` +
-            `<strong>Around the home after upgrades:</strong><br>${(sim.simulated?.property_findings || []).slice(0, 2).join("<br>") || "No additional structure-specific findings."}<br><br>` +
-            `<strong>Summary:</strong> ${changeSummary}`;
+            `${statusShiftLine}` +
+            `<strong>What-if summary:</strong> ${changeSummary}<br><br>` +
+            (actionDriversHtml
+              ? `<strong>Top actions driving this change:</strong><ul>${actionDriversHtml}</ul>`
+              : "") +
+            `<details><summary>Technical deltas (advanced)</summary>` +
+            `<strong>Wildfire risk:</strong> ${fmt(sim.baseline?.wildfire_risk_score)} → ${fmt(sim.simulated?.wildfire_risk_score)} (${fmt(delta?.wildfire_risk_score_delta)})<br>` +
+            `<strong>Home hardening:</strong> ${fmt(baselineHardening)} → ${fmt(simulatedHardening)} (${fmt(hardeningDelta)})<br>` +
+            `<strong>What changed:</strong><br>${changed || "No changes detected."}<br>` +
+            `<strong>Actions resolved:</strong><br>${resolvedActions.join("<br>") || "No specific actions resolved yet."}<br>` +
+            `<strong>Around the home after upgrades:</strong><br>${(sim.simulated?.property_findings || []).slice(0, 2).join("<br>") || "No additional structure-specific findings."}` +
+            `</details>`;
         } catch (err) {
           alert(err.message);
         }

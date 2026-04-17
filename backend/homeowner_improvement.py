@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Iterable
 
+from backend.insurability import derive_insurability_status
 from backend.models import (
     AssessmentResult,
     HomeownerFollowUpInput,
@@ -135,6 +136,59 @@ _STRUCTURE_ATTRIBUTE_FIELDS: tuple[str, ...] = (
     "construction_year",
     "siding_type",
 )
+
+_STATUS_SEVERITY: dict[str, int] = {
+    "Likely Insurable": 0,
+    "At Risk": 1,
+    "High Risk of Insurance Issues": 2,
+}
+
+_CHANGED_INPUT_ACTIONS: dict[str, tuple[str, str]] = {
+    "defensible_space_ft": (
+        "Reduce vegetation in the closest defensible-space zones.",
+        "This lowers ember and flame pressure close to the home.",
+    ),
+    "defensible_space_condition": (
+        "Improve defensible space around the structure.",
+        "This helps reduce ignition pathways near the home.",
+    ),
+    "roof_type": (
+        "Upgrade to a Class A fire-resistant roof.",
+        "The roof is a major ignition pathway during ember storms.",
+    ),
+    "vent_type": (
+        "Install ember-resistant vents.",
+        "This helps block ember intrusion into vulnerable openings.",
+    ),
+    "window_type": (
+        "Upgrade to more fire-resistant windows.",
+        "Stronger windows reduce breakage risk from heat and embers.",
+    ),
+    "siding_type": (
+        "Use ignition-resistant siding in vulnerable areas.",
+        "More resistant exterior materials reduce flame-contact vulnerability.",
+    ),
+    "construction_year": (
+        "Prioritize upgrades for older vulnerable components.",
+        "Older construction details can increase ember and flame exposure.",
+    ),
+    "map_point_correction": (
+        "Confirm the map pin and building location.",
+        "Better location accuracy improves property-specific scoring and action targeting.",
+    ),
+    "confirm_selected_parcel": (
+        "Confirm parcel boundaries.",
+        "Better parcel context improves property-specific inputs and recommendations.",
+    ),
+    "confirm_selected_footprint": (
+        "Confirm building footprint selection.",
+        "Footprint-anchored analysis improves near-structure risk and action precision.",
+    ),
+    "selected_structure_geometry": (
+        "Provide or refine building geometry.",
+        "Structure-anchored rings improve near-home risk interpretation.",
+    ),
+}
 
 
 def _safe_float(value: object) -> float | None:
@@ -579,11 +633,13 @@ def summarize_assessment_for_improvement(result: AssessmentResult) -> dict[str, 
             else {}
         )
     )
+    insurability_snapshot = _insurability_snapshot(result)
     return {
         "assessment_id": result.assessment_id,
         "wildfire_risk_score": result.wildfire_risk_score,
         "site_hazard_score": result.site_hazard_score,
         "insurance_readiness_score": result.insurance_readiness_score,
+        "home_hardening_readiness": result.home_hardening_readiness,
         "confidence_score": result.confidence_score,
         "confidence_tier": result.confidence_tier,
         "property_data_confidence": result.property_data_confidence,
@@ -593,8 +649,240 @@ def summarize_assessment_for_improvement(result: AssessmentResult) -> dict[str, 
             or property_confidence_summary.get("key_gaps")
             or []
         )[:4],
+        "insurability_status": insurability_snapshot.get("insurability_status"),
+        "insurability_status_reasons": list(insurability_snapshot.get("insurability_status_reasons") or [])[:3],
+        "insurability_status_methodology_note": str(
+            insurability_snapshot.get("insurability_status_methodology_note") or ""
+        ),
         "top_recommended_actions": list(result.top_recommended_actions or [])[:3],
         "top_risk_drivers": list(result.top_risk_drivers or [])[:3],
+    }
+
+
+def _insurability_snapshot(result: AssessmentResult) -> dict[str, Any]:
+    risk_score = (
+        result.overall_wildfire_risk
+        if result.overall_wildfire_risk is not None
+        else result.wildfire_risk_score
+    )
+    hardening = (
+        result.home_hardening_readiness
+        if result.home_hardening_readiness is not None
+        else result.insurance_readiness_score
+    )
+    fallback = derive_insurability_status(
+        wildfire_risk_score=risk_score,
+        home_hardening_readiness=hardening,
+        confidence_tier=result.confidence_tier,
+        assessment_specificity_tier=result.assessment_specificity_tier,
+        top_near_structure_risk_drivers=result.top_near_structure_risk_drivers,
+        top_risk_drivers=result.top_risk_drivers,
+        defensible_space_analysis=result.defensible_space_analysis,
+        defensible_space_limitations_summary=result.defensible_space_limitations_summary,
+        readiness_blockers=result.readiness_blockers,
+        scoring_status=result.scoring_status,
+    )
+    status = str(result.insurability_status or fallback.insurability_status).strip()
+    reasons = [
+        str(v).strip()
+        for v in (
+            list(result.insurability_status_reasons or [])
+            if list(result.insurability_status_reasons or [])
+            else list(fallback.insurability_status_reasons)
+        )
+        if str(v).strip()
+    ][:3]
+    methodology_note = str(
+        result.insurability_status_methodology_note
+        or fallback.insurability_status_methodology_note
+    ).strip()
+    return {
+        "insurability_status": status,
+        "insurability_status_reasons": reasons,
+        "insurability_status_methodology_note": methodology_note,
+    }
+
+
+def _status_shift(before_status: str, after_status: str) -> str:
+    before_rank = _STATUS_SEVERITY.get(str(before_status or "").strip(), 1)
+    after_rank = _STATUS_SEVERITY.get(str(after_status or "").strip(), 1)
+    if after_rank < before_rank:
+        return "improved"
+    if after_rank > before_rank:
+        return "worsened"
+    return "unchanged"
+
+
+def _delta(before_value: float | None, after_value: float | None) -> float | None:
+    if before_value is None or after_value is None:
+        return None
+    return round(float(after_value) - float(before_value), 1)
+
+
+def _action_drivers_from_changed_inputs(changed_input_keys: Iterable[str] | None) -> list[dict[str, str]]:
+    keys = [str(v).strip().lower() for v in list(changed_input_keys or []) if str(v).strip()]
+    rows: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for key in keys:
+        action_pair = _CHANGED_INPUT_ACTIONS.get(key)
+        if not action_pair:
+            continue
+        action, why = action_pair
+        dedupe_key = action.lower()
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        rows.append(
+            {
+                "action": action,
+                "why_this_matters": why,
+                "source": "changed_input_mapping",
+                "input_key": key,
+            }
+        )
+        if len(rows) >= 3:
+            break
+    return rows
+
+
+def _action_drivers_from_assessment(result: AssessmentResult, *, limit: int = 3) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for row in list(result.prioritized_mitigation_actions or []):
+        action = str(getattr(row, "action", "") or "").strip()
+        if not action:
+            continue
+        dedupe_key = action.lower()
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        why = str(
+            getattr(row, "why_this_matters", "")
+            or getattr(row, "what_it_reduces", "")
+            or getattr(row, "explanation", "")
+            or ""
+        ).strip()
+        rows.append(
+            {
+                "action": action,
+                "why_this_matters": (
+                    why
+                    if why
+                    else "This action targets one of the leading wildfire risk factors for this property."
+                ),
+                "source": "post_change_prioritized_actions",
+            }
+        )
+        if len(rows) >= max(1, int(limit)):
+            break
+    if rows:
+        return rows
+    fallback_actions = [str(v).strip() for v in list(result.top_recommended_actions or []) if str(v).strip()]
+    for action in fallback_actions[: max(1, int(limit))]:
+        rows.append(
+            {
+                "action": action,
+                "why_this_matters": "This is a high-priority risk-reduction step for this property.",
+                "source": "post_change_top_recommended_actions",
+            }
+        )
+    return rows
+
+
+def build_homeowner_before_after_summary(
+    *,
+    before: AssessmentResult,
+    after: AssessmentResult,
+    scenario_name: str | None = None,
+    changed_input_keys: Iterable[str] | None = None,
+) -> dict[str, Any]:
+    before_risk = _safe_float(before.wildfire_risk_score)
+    after_risk = _safe_float(after.wildfire_risk_score)
+    before_hardening = _safe_float(
+        before.home_hardening_readiness
+        if before.home_hardening_readiness is not None
+        else before.insurance_readiness_score
+    )
+    after_hardening = _safe_float(
+        after.home_hardening_readiness
+        if after.home_hardening_readiness is not None
+        else after.insurance_readiness_score
+    )
+    risk_delta = _delta(before_risk, after_risk)
+    hardening_delta = _delta(before_hardening, after_hardening)
+
+    before_status = _insurability_snapshot(before)
+    after_status = _insurability_snapshot(after)
+    current_status = str(before_status.get("insurability_status") or "").strip()
+    projected_status = str(after_status.get("insurability_status") or "").strip()
+    status_shift = _status_shift(current_status, projected_status)
+
+    action_drivers = _action_drivers_from_changed_inputs(changed_input_keys)
+    if len(action_drivers) < 3:
+        for row in _action_drivers_from_assessment(after, limit=3):
+            action_key = str(row.get("action") or "").strip().lower()
+            if not action_key:
+                continue
+            if any(str(existing.get("action") or "").strip().lower() == action_key for existing in action_drivers):
+                continue
+            action_drivers.append(row)
+            if len(action_drivers) >= 3:
+                break
+
+    if status_shift == "improved":
+        shift_phrase = f"Status improved from {current_status} to {projected_status}"
+    elif status_shift == "worsened":
+        shift_phrase = f"Status shifted from {current_status} to {projected_status}"
+    else:
+        shift_phrase = f"Status remained {projected_status or current_status or 'unchanged'}"
+
+    risk_phrase = ""
+    if risk_delta is not None:
+        if risk_delta < 0:
+            risk_phrase = f"wildfire risk score decreased by {abs(risk_delta):.1f} points"
+        elif risk_delta > 0:
+            risk_phrase = f"wildfire risk score increased by {risk_delta:.1f} points"
+        else:
+            risk_phrase = "wildfire risk score stayed flat"
+    readiness_phrase = ""
+    if hardening_delta is not None:
+        if hardening_delta > 0:
+            readiness_phrase = f"home hardening readiness improved by {hardening_delta:.1f} points"
+        elif hardening_delta < 0:
+            readiness_phrase = f"home hardening readiness declined by {abs(hardening_delta):.1f} points"
+        else:
+            readiness_phrase = "home hardening readiness stayed flat"
+    parts = [shift_phrase]
+    if risk_phrase:
+        parts.append(risk_phrase)
+    if readiness_phrase:
+        parts.append(readiness_phrase)
+    if action_drivers:
+        parts.append(f"Top driver: {str(action_drivers[0].get('action') or '').strip()}")
+
+    return {
+        "available": True,
+        "scenario_name": str(scenario_name or "what_if").strip() or "what_if",
+        "current_insurability_status": current_status,
+        "projected_insurability_status": projected_status,
+        "status_shift": status_shift,
+        "current_insurability_status_reasons": list(before_status.get("insurability_status_reasons") or [])[:3],
+        "projected_insurability_status_reasons": list(after_status.get("insurability_status_reasons") or [])[:3],
+        "insurability_status_methodology_note": str(
+            after_status.get("insurability_status_methodology_note")
+            or before_status.get("insurability_status_methodology_note")
+            or ""
+        ),
+        "wildfire_risk_score_before": before_risk,
+        "wildfire_risk_score_after": after_risk,
+        "wildfire_risk_score_delta": risk_delta,
+        "home_hardening_readiness_before": before_hardening,
+        "home_hardening_readiness_after": after_hardening,
+        "home_hardening_readiness_delta": hardening_delta,
+        "confidence_tier_before": str(before.confidence_tier or ""),
+        "confidence_tier_after": str(after.confidence_tier or ""),
+        "top_actions_driving_change": action_drivers[:3],
+        "summary": ". ".join([str(v).rstrip(".") for v in parts if str(v).strip()]) + ".",
     }
 
 

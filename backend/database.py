@@ -1988,17 +1988,30 @@ class AssessmentStore:
             ).fetchall()
 
         items: list[SimulationScenarioItem] = []
+        def _safe_float(value: Any, default: float = 0.0) -> float:
+            try:
+                if value is None:
+                    return float(default)
+                return float(value)
+            except (TypeError, ValueError):
+                return float(default)
         for row in rows:
             payload = json.loads(row["payload_json"])
             delta = payload.get("delta", {}) if isinstance(payload, dict) else {}
+            homeowner_before_after_summary = (
+                payload.get("homeowner_before_after_summary")
+                if isinstance(payload, dict) and isinstance(payload.get("homeowner_before_after_summary"), dict)
+                else {}
+            )
             items.append(
                 SimulationScenarioItem(
                     scenario_id=row["scenario_id"],
                     assessment_id=row["assessment_id"],
                     scenario_name=row["scenario_name"],
                     created_at=row["created_at"],
-                    wildfire_risk_score_delta=float(delta.get("wildfire_risk_score_delta", 0.0)),
-                    insurance_readiness_score_delta=float(delta.get("insurance_readiness_score_delta", 0.0)),
+                    wildfire_risk_score_delta=_safe_float(delta.get("wildfire_risk_score_delta", 0.0)),
+                    insurance_readiness_score_delta=_safe_float(delta.get("insurance_readiness_score_delta", 0.0)),
+                    homeowner_before_after_summary=homeowner_before_after_summary,
                 )
             )
 
