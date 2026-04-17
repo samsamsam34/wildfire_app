@@ -810,12 +810,54 @@
         font-size: 0.82rem;
         color: #6b7280;
       }
+      .verify-primary-card {
+        margin-top: 0.55rem;
+        border: 1px solid #dbe6ed;
+        border-left: 4px solid #2f6077;
+        border-radius: 10px;
+        background: #f8fcff;
+        padding: 0.62rem 0.68rem;
+      }
+      .verify-primary-address {
+        margin-top: 0.22rem;
+        color: #0f2432;
+        font-weight: 700;
+        font-size: 0.96rem;
+      }
+      .verify-primary-status {
+        margin-top: 0.34rem;
+        font-size: 0.84rem;
+      }
+      .verify-core-grid {
+        margin-top: 0.62rem;
+      }
+      .verify-optional-panel {
+        margin-top: 0.6rem;
+      }
+      .verify-optional-panel summary {
+        font-size: 0.9rem;
+        cursor: pointer;
+        color: #1f2937;
+        font-weight: 600;
+      }
+      .verify-optional-panel[open] {
+        border: 1px solid #e5ebf0;
+        border-radius: 10px;
+        padding: 0.55rem 0.6rem 0.62rem;
+        background: #fbfdff;
+      }
       .verify-live {
         margin-top: 0.65rem;
         font-size: 0.86rem;
         color: var(--text);
         display: grid;
         gap: 0.18rem;
+      }
+      .verify-alt-toggle {
+        margin-top: 0.55rem;
+      }
+      .verify-alt-toggle button {
+        width: auto;
       }
       .verify-manual {
         margin-top: 0.8rem;
@@ -824,11 +866,13 @@
         padding: 0.65rem 0.75rem;
         background: #fafaf9;
       }
-      .verify-manual h4 {
-        margin: 0 0 0.45rem;
-        font-size: 0.95rem;
+      .verify-manual summary {
+        cursor: pointer;
+        font-weight: 600;
+        color: #1f2937;
       }
       .verify-manual-controls {
+        margin-top: 0.55rem;
         display: grid;
         grid-template-columns: 1fr 1fr auto;
         gap: 0.45rem;
@@ -1411,62 +1455,76 @@
       aria-labelledby="addressVerifyModalTitle"
     >
       <div class="modal-card" role="document">
-        <h3 id="addressVerifyModalTitle" class="modal-title">Confirm Address Before Assessment</h3>
-        <p class="muted">Review the resolved property location before running the assessment.</p>
-        <dl class="modal-grid">
-          <dt>Entered address</dt>
+        <h3 id="addressVerifyModalTitle" class="modal-title">Confirm Home Location</h3>
+        <p class="muted">Use the suggested match below, or adjust only if it looks off.</p>
+        <div class="verify-primary-card">
+          <div class="mini-label">Suggested match</div>
+          <p id="verifyResolvedAddress" class="verify-primary-address">-</p>
+          <p id="verifyQuickStatus" class="verify-primary-status muted">This looks like the best match. Continue if it is correct.</p>
+        </div>
+        <dl class="modal-grid verify-core-grid">
+          <dt>You entered</dt>
           <dd id="verifyEnteredAddress">-</dd>
-          <dt>Resolved address</dt>
-          <dd id="verifyResolvedAddress">-</dd>
-          <dt>Coordinates</dt>
-          <dd id="verifyCoordinates">-</dd>
-          <dt>Address source</dt>
-          <dd id="verifyGeocoderSource">-</dd>
           <dt>Match confidence</dt>
           <dd id="verifyConfidence">-</dd>
-          <dt>Detailed coverage area</dt>
-          <dd id="verifyPreparedRegion">-</dd>
         </dl>
-        <p class="verify-tip">Tip: drag the pin or click the map if the location is slightly off.</p>
-        <div id="verifyLocationMap" aria-label="Address verification map"></div>
-        <div id="verifyLiveLocationDetails" class="verify-live">
-          <div id="verifySelectedCoordinates">Current map point: -</div>
-          <div id="verifySelectionSource">Location to use: Suggested address match</div>
-          <div id="verifyDistanceFromSuggested">Distance from suggested: 0 m</div>
-          <div id="verifyCoverageStatus">Coverage status: checking...</div>
-          <div id="verifyApplyState">Selected location applied.</div>
-        </div>
-        <div id="verifyManualAddressSection" class="verify-manual" style="display:none;">
-          <h4>Choose your address</h4>
-          <div class="verify-manual-controls">
-            <div>
-              <label for="verifyZipInput">ZIP code</label>
-              <input id="verifyZipInput" type="text" placeholder="e.g., 98862" />
+        <details id="verifyAddressContextPanel" class="verify-optional-panel">
+          <summary>See match details</summary>
+          <dl class="modal-grid">
+            <dt>Coordinates</dt>
+            <dd id="verifyCoordinates">-</dd>
+            <dt>Address source</dt>
+            <dd id="verifyGeocoderSource">-</dd>
+            <dt>Detailed coverage area</dt>
+            <dd id="verifyPreparedRegion">-</dd>
+          </dl>
+        </details>
+        <details id="verifyAdjustLocationPanel" class="verify-optional-panel">
+          <summary>Adjust location (optional)</summary>
+          <p class="verify-tip">Only adjust if the suggested location is clearly wrong.</p>
+          <div id="verifyLocationMap" aria-label="Address verification map"></div>
+          <div id="verifyLiveLocationDetails" class="verify-live">
+            <div id="verifySelectedCoordinates">Current map point: -</div>
+            <div id="verifySelectionSource">Location to use: Suggested address match</div>
+            <div id="verifyDistanceFromSuggested">Distance from suggested: 0 m</div>
+            <div id="verifyCoverageStatus">Coverage status: checking...</div>
+            <div id="verifyApplyState">Selected location applied.</div>
+          </div>
+          <div class="verify-alt-toggle">
+            <button id="verifyShowManualOptionsBtn" type="button" class="secondary">Choose a different address match</button>
+          </div>
+          <details id="verifyManualAddressSection" class="verify-manual" style="display:none;">
+            <summary>Find a different address match</summary>
+            <div class="verify-manual-controls">
+              <div>
+                <label for="verifyZipInput">ZIP code</label>
+                <input id="verifyZipInput" type="text" placeholder="e.g., 98862" />
+              </div>
+              <div>
+                <label for="verifyLocalitySelect">Town / locality</label>
+                <select id="verifyLocalitySelect">
+                  <option value="">Auto-detect</option>
+                </select>
+              </div>
+              <button id="verifySearchCandidatesBtn" type="button" class="secondary">Find matches</button>
             </div>
-            <div>
-              <label for="verifyLocalitySelect">Town / locality</label>
-              <select id="verifyLocalitySelect">
-                <option value="">Auto-detect</option>
-              </select>
+            <div id="verifyCandidateStatus" class="verify-candidate-status">Search for your address and choose the best match.</div>
+            <div id="verifyCandidateList" class="verify-candidate-list">
+              <div class="verify-candidate-empty">No candidates loaded yet.</div>
             </div>
-            <button id="verifySearchCandidatesBtn" type="button" class="secondary">Search addresses</button>
-          </div>
-          <div id="verifyCandidateStatus" class="verify-candidate-status">Search candidate addresses in your locality.</div>
-          <div id="verifyCandidateList" class="verify-candidate-list">
-            <div class="verify-candidate-empty">No candidates loaded yet.</div>
-          </div>
-          <div class="verify-map-fallback">
-            <button id="verifyUseMapFallbackBtn" type="button" class="secondary">Can’t find it? Click your home on the map</button>
-          </div>
-        </div>
+            <div class="verify-map-fallback">
+              <button id="verifyUseMapFallbackBtn" type="button" class="secondary">Can’t find it? Place the pin on your home</button>
+            </div>
+          </details>
+        </details>
         <div id="verifyWarningBox" class="modal-warning" style="display:none;"></div>
         <p id="verifyModalError" class="modal-error" style="display:none;"></p>
         <div class="actions">
-          <button id="applyVerifyLocationBtn" type="button" class="secondary">Use this location</button>
-          <button id="confirmAddressBtn" type="button">Confirm location and continue</button>
-          <button id="resetVerifyLocationBtn" type="button" class="secondary">Reset to suggested location</button>
+          <button id="confirmAddressBtn" type="button">Use suggested match and continue</button>
+          <button id="applyVerifyLocationBtn" type="button" class="secondary" style="display:none;">Use updated pin</button>
+          <button id="resetVerifyLocationBtn" type="button" class="secondary" style="display:none;">Reset to suggested match</button>
           <button id="editAddressBtn" type="button" class="secondary">Edit address</button>
-          <button id="cancelAddressBtn" type="button" class="secondary">Cancel</button>
+          <button id="cancelAddressBtn" type="button" class="secondary">Close</button>
         </div>
       </div>
     </div>
@@ -4238,22 +4296,19 @@
         const selected = verificationPendingCoords;
         const suggested = verificationSuggestedCoords;
         if (hasMaterialAddressDifference(enteredAddress, resolvedAddress)) {
-          warnings.push("Please confirm this is the correct property before continuing.");
+          warnings.push("This match differs from what you entered. Confirm this is the right property.");
         }
         if (confidence === "low" || confidence === "unknown") {
-          warnings.push("Address match confidence is limited.");
+          warnings.push("This address match is less certain than usual.");
         }
         if (verification?.geocode_outcome === "geocode_succeeded_untrusted") {
-          warnings.push("Address was accepted through a fallback path.");
+          warnings.push("Automatic address matching was uncertain for this location.");
         }
         if (verificationHasUnappliedPending) {
-          warnings.push("New map point is selected but not yet applied.");
+          warnings.push("A new map point is selected but not applied yet.");
         }
         if (verificationPendingSelectionSource === "map_click_fallback" && selected) {
-          warnings.push("Location pin was manually adjusted.");
-        }
-        if (verificationAcceptedSelectionSource === "manual_address_selection") {
-          warnings.push("Coordinates are based on your manually selected address candidate.");
+          warnings.push("You are using a manually placed map pin.");
         }
         if (suggested && selected) {
           const distanceM = haversineMeters(
@@ -4262,7 +4317,7 @@
           );
           if (distanceM >= 150) {
             warnings.push(
-              "You moved the location significantly from the suggested address match. Please confirm this is the correct property."
+              "You moved the pin far from the suggested match. Confirm this is your property."
             );
           }
         }
@@ -4296,7 +4351,60 @@
       function setManualAddressSectionVisible(visible) {
         const section = document.getElementById("verifyManualAddressSection");
         if (!section) return;
-        section.style.display = visible ? "block" : "none";
+        const shouldShow = !!visible;
+        section.style.display = shouldShow ? "block" : "none";
+        if (!shouldShow) {
+          section.open = false;
+        }
+        const toggleBtn = document.getElementById("verifyShowManualOptionsBtn");
+        if (toggleBtn) {
+          toggleBtn.style.display = shouldShow ? "none" : "inline-flex";
+        }
+      }
+
+      function updateVerificationQuickStatus(enteredAddress = "", verification = null) {
+        const quickStatusEl = document.getElementById("verifyQuickStatus");
+        if (!quickStatusEl) return;
+        const resolvedAddress = verification?.normalized_address || verification?.display_name || "";
+        const confidence = String(
+          verification?.final_location_confidence
+          || verification?.geocode_trust_tier
+          || verification?.match_confidence
+          || "unknown"
+        ).toLowerCase();
+        const unresolvedStatus = new Set([
+          "address_unresolved_needs_manual_selection",
+          "address_candidates_conflict_needs_manual_selection",
+          "candidates_found_but_not_safe_enough",
+          "ambiguous_conflict",
+        ]);
+        const needsManual = !!(
+          verification?.needs_user_confirmation
+          || unresolvedStatus.has(String(verification?.resolution_status || "").toLowerCase())
+          || unresolvedStatus.has(String(verification?.final_status || "").toLowerCase())
+          || String(verification?.error_class || "").toLowerCase() === "address_unresolved"
+        );
+        const coverageLimited = (
+          verificationCoverageResult?.coverage_available === false
+          || verificationCoverageResult?.covered === false
+          || verification?.coverage_available === false
+          || verification?.covered === false
+        );
+        let message = "This looks like the best available match. Continue if it is correct.";
+        if (needsManual) {
+          message = "We could not confidently match this address. Choose a better match or place the pin on your home.";
+        } else if (confidence === "low" || confidence === "unknown") {
+          message = "Match confidence is limited. Please confirm this location before continuing.";
+        } else if (hasMaterialAddressDifference(enteredAddress, resolvedAddress)) {
+          message = "This result differs from the address you entered. Confirm this is the right property.";
+        }
+        if (coverageLimited) {
+          message += " Detailed local coverage is limited here, so some results may be estimated.";
+        }
+        if (verificationHasUnappliedPending) {
+          message = "You selected a new map point. Click \"Use updated pin\" before continuing.";
+        }
+        quickStatusEl.textContent = message;
       }
 
       function renderLocalityOptions(localities = [], selected = "") {
@@ -4327,7 +4435,7 @@
         if (!Array.isArray(candidates) || candidates.length === 0) {
           const empty = document.createElement("div");
           empty.className = "verify-candidate-empty";
-          empty.textContent = "No address candidates found. Use map-click fallback below.";
+          empty.textContent = "No close matches found. Place the pin on your home if needed.";
           listEl.appendChild(empty);
           return;
         }
@@ -4379,7 +4487,7 @@
               selectionSource: "manual_address_selection",
             });
             renderManualCandidateList(verificationManualCandidates);
-            setManualCandidateStatus("Manual candidate selected. Confirm location to continue.");
+            setManualCandidateStatus("Address selected. Continue when this looks right.");
           });
         });
       }
@@ -4393,7 +4501,7 @@
         const searchBtn = document.getElementById("verifySearchCandidatesBtn");
         if (searchBtn) searchBtn.disabled = true;
         if (statusMessage) {
-          setManualCandidateStatus("Searching likely addresses...");
+          setManualCandidateStatus("Finding likely address matches...");
         }
         try {
           const result = await fetchManualAddressCandidates(
@@ -4408,11 +4516,11 @@
           verificationSelectedCandidateId = null;
           renderManualCandidateList(verificationManualCandidates);
           if (verificationManualCandidates.length > 0) {
-            setManualCandidateStatus("Select the correct address from the list, then confirm location.");
+            setManualCandidateStatus("Select the correct address from the list, then continue.");
           } else {
             setManualCandidateStatus(result?.status === "outside_prepared_region"
-              ? "Candidates were found, but detailed local coverage is limited there. You can still place the map pin manually."
-              : "No usable candidates found. Use map-click fallback.");
+              ? "We found candidates, but detailed coverage is limited there. You can still place the pin manually."
+              : "No usable matches found. Place the pin on your home in the map.");
           }
         } catch (err) {
           verificationManualCandidates = [];
@@ -4458,18 +4566,39 @@
       function setConfirmAddressButtonState() {
         const confirmBtn = document.getElementById("confirmAddressBtn");
         if (!confirmBtn) return;
+        if (verificationAcceptedSelectionSource === "suggested_geocode" && !verificationHasUnappliedPending) {
+          confirmBtn.textContent = "Use suggested match and continue";
+        } else {
+          confirmBtn.textContent = "Use selected location and continue";
+        }
         confirmBtn.disabled = isAssessmentSubmitting || !getLocationToUse() || verificationHasUnappliedPending;
+
         const applyBtn = document.getElementById("applyVerifyLocationBtn");
+        const resetBtn = document.getElementById("resetVerifyLocationBtn");
+        const adjustPanel = document.getElementById("verifyAdjustLocationPanel");
+        const panelOpen = !!adjustPanel?.open;
+        const movedFromSuggested = (
+          verificationSuggestedCoords
+          && verificationAcceptedCoords
+          && !coordinatesMatch(verificationSuggestedCoords, verificationAcceptedCoords)
+        );
+        const pendingValid = verificationPendingCoords
+          && isValidCoordinatePair(Number(verificationPendingCoords.latitude), Number(verificationPendingCoords.longitude));
         if (applyBtn) {
-          const pendingValid = verificationPendingCoords
-            && isValidCoordinatePair(Number(verificationPendingCoords.latitude), Number(verificationPendingCoords.longitude));
+          applyBtn.style.display = (panelOpen || verificationHasUnappliedPending) ? "inline-flex" : "none";
           applyBtn.disabled = isAssessmentSubmitting || !pendingValid || !verificationHasUnappliedPending;
+        }
+        if (resetBtn) {
+          resetBtn.style.display = (panelOpen || verificationHasUnappliedPending || movedFromSuggested) ? "inline-flex" : "none";
+          resetBtn.disabled = isAssessmentSubmitting || !verificationSuggestedCoords;
         }
       }
 
       function activateMapClickFallback() {
+        const adjustPanel = document.getElementById("verifyAdjustLocationPanel");
+        if (adjustPanel) adjustPanel.open = true;
         verificationSelectedCandidateId = null;
-        setManualCandidateStatus("Map-click fallback is active. Click or drag the pin to your home location, then click \"Use this location\".");
+        setManualCandidateStatus("Map selection is active. Place the pin on your home, then click \"Use updated pin\".");
         if (!verificationPendingCoords && verifyLocationMap) {
           const center = verifyLocationMap.getCenter();
           setVerificationSelectedLocation({
@@ -4540,11 +4669,18 @@
         }
 
         if (verificationHasUnappliedPending) {
-          applyStateEl.textContent = "You have selected a new point. Click \"Use this location\" to apply it.";
+          applyStateEl.textContent = "You selected a new point. Click \"Use updated pin\" to apply it.";
           applyStateEl.style.color = "var(--warn)";
         } else {
-          applyStateEl.textContent = accepted ? "Selected location applied." : "Select a valid location to continue.";
+          applyStateEl.textContent = accepted
+            ? (verificationAcceptedSelectionSource === "suggested_geocode"
+              ? "Using the suggested address match."
+              : "Using your selected location.")
+            : "Select a valid location to continue.";
           applyStateEl.style.color = accepted ? "var(--good)" : "var(--muted)";
+        }
+        if (pendingAssessmentPayload && verifiedAddressPayload) {
+          updateVerificationQuickStatus(pendingAssessmentPayload.address, verifiedAddressPayload);
         }
         setConfirmAddressButtonState();
       }
@@ -4557,8 +4693,12 @@
           warnings.unshift("A new map point is selected but not applied yet.");
         }
         if (warnings.length > 0) {
+          const compactWarnings = warnings.slice(0, 2);
+          if (warnings.length > 2) {
+            compactWarnings.push(`+${warnings.length - 2} more checks in match details.`);
+          }
           warningBox.style.display = "block";
-          warningBox.textContent = warnings.join("\n");
+          warningBox.textContent = compactWarnings.join("\n");
         } else {
           warningBox.style.display = "none";
           warningBox.textContent = "";
@@ -4837,14 +4977,24 @@
           || unresolvedStatus.has(String(verification?.final_status || "").toLowerCase())
           || String(verification?.error_class || "").toLowerCase() === "address_unresolved"
         );
+        const contextPanel = document.getElementById("verifyAddressContextPanel");
+        if (contextPanel) contextPanel.open = false;
+        const adjustPanel = document.getElementById("verifyAdjustLocationPanel");
+        if (adjustPanel) adjustPanel.open = shouldShowManual;
+
         setManualAddressSectionVisible(shouldShowManual);
         if (shouldShowManual) {
-          setManualCandidateStatus("Address needs manual confirmation. Search for your exact address below.");
+          const manualSection = document.getElementById("verifyManualAddressSection");
+          if (manualSection) manualSection.open = true;
+        }
+        if (shouldShowManual) {
+          setManualCandidateStatus("Please choose the best match before continuing.");
         } else {
           setManualCandidateStatus("");
         }
         clearVerificationCoverageDebounce();
         setVerificationModalError("");
+        updateVerificationQuickStatus(enteredAddress, verification);
         updateVerificationLiveDetails();
         renderVerificationWarnings(enteredAddress, verification);
 
@@ -4904,7 +5054,7 @@
         }
         isAddressVerificationPending = true;
         syncAssessmentActionState();
-        setRequestStatus("Verifying address before assessment...");
+        setRequestStatus("Checking your address...");
         try {
           const verification = await fetchCoverageForAddress(payload.address);
           const geocodeAccepted = String(verification?.geocode_status || "").toLowerCase() === "accepted";
@@ -4931,8 +5081,7 @@
           if (shouldOpenManualSelection) {
             await runManualAddressCandidateSearch({ statusMessage: false });
             setRequestStatus(
-              "Address needs manual confirmation. Pick your address candidate, then confirm location.",
-              "error"
+              "Please confirm the correct property match, then continue."
             );
             return;
           }
@@ -4941,10 +5090,10 @@
               verification?.message,
               "We couldn’t confidently place this address. Please confirm the address or select the location on the map."
             );
-            setRequestStatus(reason, "error");
+            setRequestStatus(reason);
             return;
           }
-          setRequestStatus("Address verified. Confirm address to continue.");
+          setRequestStatus("Address looks good. Confirm to continue.");
         } catch (err) {
           const detail = err?.detail && typeof err.detail === "object" ? err.detail : null;
           const unresolvedStatus = new Set([
@@ -4970,8 +5119,7 @@
             openAddressVerificationModal();
             await runManualAddressCandidateSearch({ statusMessage: false });
             setRequestStatus(
-              "Automatic verification was uncertain. Choose your address candidate or click your home on the map.",
-              "error"
+              "We need a quick confirmation of this location before continuing."
             );
             return;
           }
@@ -4979,7 +5127,7 @@
             err?.message,
             "We couldn’t verify this address yet. Please confirm the address or pick your location on the map."
           );
-          setRequestStatus(friendly, "error");
+          setRequestStatus(friendly);
           showHomeownerToast(friendly, "error");
         } finally {
           isAddressVerificationPending = false;
@@ -5042,7 +5190,7 @@
         verificationInferredLocalities = [];
         setVerificationModalError("");
         closeAddressVerificationModal();
-        setRequestStatus("Address confirmation canceled. Edit the address and retry.");
+        setRequestStatus("Address confirmation closed. Update the address when you are ready.");
       }
 
       function buildAssessmentPayload() {
@@ -5589,6 +5737,22 @@
       document.getElementById("applyVerifyLocationBtn")?.addEventListener("click", applyVerificationPendingLocation);
       document.getElementById("confirmAddressBtn")?.addEventListener("click", confirmVerifiedAddressAndRunAssessment);
       document.getElementById("resetVerifyLocationBtn")?.addEventListener("click", resetVerificationLocationToSuggested);
+      document.getElementById("verifyShowManualOptionsBtn")?.addEventListener("click", () => {
+        const adjustPanel = document.getElementById("verifyAdjustLocationPanel");
+        if (adjustPanel) adjustPanel.open = true;
+        const manualSection = document.getElementById("verifyManualAddressSection");
+        setManualAddressSectionVisible(true);
+        if (manualSection) manualSection.open = true;
+        if (Array.isArray(verificationManualCandidates) && verificationManualCandidates.length === 0) {
+          runManualAddressCandidateSearch({ statusMessage: true });
+        }
+      });
+      document.getElementById("verifyAdjustLocationPanel")?.addEventListener("toggle", () => {
+        if (verifyLocationMap && document.getElementById("verifyAdjustLocationPanel")?.open) {
+          setTimeout(() => verifyLocationMap.invalidateSize(), 0);
+        }
+        setConfirmAddressButtonState();
+      });
       document.getElementById("verifySearchCandidatesBtn")?.addEventListener("click", () => {
         runManualAddressCandidateSearch({ statusMessage: true });
       });
