@@ -1,0 +1,228 @@
+{
+  "artifact_version": "2.0.0",
+  "calibrated_semantic_name": "calibrated_adverse_outcome_probability_public",
+  "dataset": {
+    "adverse_rate": 0.615,
+    "basis": "public_observed_outcomes",
+    "input_path": "benchmark/public_outcomes/evaluation_dataset/all_diag_eval_ds_20260325T1909/evaluation_dataset.jsonl",
+    "outcome_definition": "structure_loss_or_major_damage (major_damage or destroyed = 1)",
+    "row_count": 200
+  },
+  "generated_at": "2026-03-25T19:09:52.329132+00:00",
+  "limitations": [
+    "Fallback-heavy evidence dominates this calibration dataset."
+  ],
+  "method": "logistic",
+  "metrics": {
+    "delta": {
+      "brier_improvement": 0.01935461489265805,
+      "log_loss_improvement": 0.04479473328412642
+    },
+    "post": {
+      "brier_probability": 0.22200242010734197,
+      "calibration": {
+        "bins": [
+          {
+            "bin": 1,
+            "count": 20,
+            "mean_predicted": 0.5786497021332333,
+            "observed_rate": 0.5,
+            "probability_max": 0.5786497021332333,
+            "probability_min": 0.5786497021332333
+          },
+          {
+            "bin": 2,
+            "count": 20,
+            "mean_predicted": 0.5786497021332333,
+            "observed_rate": 0.9,
+            "probability_max": 0.5786497021332333,
+            "probability_min": 0.5786497021332333
+          },
+          {
+            "bin": 3,
+            "count": 20,
+            "mean_predicted": 0.5786497021332333,
+            "observed_rate": 0.2,
+            "probability_max": 0.5786497021332333,
+            "probability_min": 0.5786497021332333
+          },
+          {
+            "bin": 4,
+            "count": 20,
+            "mean_predicted": 0.5786497021332333,
+            "observed_rate": 0.4,
+            "probability_max": 0.5786497021332333,
+            "probability_min": 0.5786497021332333
+          },
+          {
+            "bin": 5,
+            "count": 20,
+            "mean_predicted": 0.5786497021332333,
+            "observed_rate": 0.7,
+            "probability_max": 0.5786497021332333,
+            "probability_min": 0.5786497021332333
+          },
+          {
+            "bin": 6,
+            "count": 20,
+            "mean_predicted": 0.579159853668609,
+            "observed_rate": 0.8,
+            "probability_max": 0.5799250809716725,
+            "probability_min": 0.5786497021332333
+          },
+          {
+            "bin": 7,
+            "count": 20,
+            "mean_predicted": 0.5799250809716725,
+            "observed_rate": 0.55,
+            "probability_max": 0.5799250809716725,
+            "probability_min": 0.5799250809716725
+          },
+          {
+            "bin": 8,
+            "count": 20,
+            "mean_predicted": 0.5799250809716725,
+            "observed_rate": 0.55,
+            "probability_max": 0.5799250809716725,
+            "probability_min": 0.5799250809716725
+          },
+          {
+            "bin": 9,
+            "count": 20,
+            "mean_predicted": 0.6487348111881406,
+            "observed_rate": 0.55,
+            "probability_max": 0.7051497118543478,
+            "probability_min": 0.5799250809716725
+          },
+          {
+            "bin": 10,
+            "count": 20,
+            "mean_predicted": 0.8816820643002643,
+            "observed_rate": 1.0,
+            "probability_max": 0.9071774960298463,
+            "probability_min": 0.7051497118543478
+          }
+        ],
+        "expected_calibration_error": 0.15763927572958458
+      },
+      "log_loss_probability": 0.6269157078758161,
+      "positive_rate": 0.615,
+      "pr_auc_probability": 0.7199079687926514,
+      "roc_auc_probability": 0.5603420969274627,
+      "roc_auc_raw_score": 0.5603420969274627,
+      "row_count": 200,
+      "spearman_score_vs_label": 0.11325643631971638
+    },
+    "pre": {
+      "brier_probability": 0.24135703500000003,
+      "calibration": {
+        "bins": [
+          {
+            "bin": 1,
+            "count": 20,
+            "mean_predicted": 0.434,
+            "observed_rate": 0.5,
+            "probability_max": 0.434,
+            "probability_min": 0.434
+          },
+          {
+            "bin": 2,
+            "count": 20,
+            "mean_predicted": 0.434,
+            "observed_rate": 0.9,
+            "probability_max": 0.434,
+            "probability_min": 0.434
+          },
+          {
+            "bin": 3,
+            "count": 20,
+            "mean_predicted": 0.434,
+            "observed_rate": 0.2,
+            "probability_max": 0.434,
+            "probability_min": 0.434
+          },
+          {
+            "bin": 4,
+            "count": 20,
+            "mean_predicted": 0.434,
+            "observed_rate": 0.4,
+            "probability_max": 0.434,
+            "probability_min": 0.434
+          },
+          {
+            "bin": 5,
+            "count": 20,
+            "mean_predicted": 0.434,
+            "observed_rate": 0.7,
+            "probability_max": 0.434,
+            "probability_min": 0.434
+          },
+          {
+            "bin": 6,
+            "count": 20,
+            "mean_predicted": 0.4344,
+            "observed_rate": 0.8,
+            "probability_max": 0.435,
+            "probability_min": 0.434
+          },
+          {
+            "bin": 7,
+            "count": 20,
+            "mean_predicted": 0.43499999999999994,
+            "observed_rate": 0.55,
+            "probability_max": 0.435,
+            "probability_min": 0.435
+          },
+          {
+            "bin": 8,
+            "count": 20,
+            "mean_predicted": 0.43499999999999994,
+            "observed_rate": 0.55,
+            "probability_max": 0.435,
+            "probability_min": 0.435
+          },
+          {
+            "bin": 9,
+            "count": 20,
+            "mean_predicted": 0.4918,
+            "observed_rate": 0.55,
+            "probability_max": 0.54,
+            "probability_min": 0.435
+          },
+          {
+            "bin": 10,
+            "count": 20,
+            "mean_predicted": 0.7699499999999999,
+            "observed_rate": 1.0,
+            "probability_max": 0.809,
+            "probability_min": 0.54
+          }
+        ],
+        "expected_calibration_error": 0.19498500000000002
+      },
+      "log_loss_probability": 0.6717104411599425,
+      "positive_rate": 0.615,
+      "pr_auc_probability": 0.7199079687926514,
+      "roc_auc_probability": 0.5603420969274627,
+      "roc_auc_raw_score": 0.5603420969274627,
+      "row_count": 200,
+      "spearman_score_vs_label": 0.11325643631971638
+    }
+  },
+  "notes": [
+    "Public-outcome calibration is optional and additive.",
+    "Calibration does not replace the deterministic wildfire scoring engine.",
+    "Calibration is based on public observed outcomes, not carrier claims truth."
+  ],
+  "output_fields": {
+    "calibrated_damage_likelihood": "backward_compatible_runtime_field",
+    "empirical_damage_likelihood_proxy": "backward_compatible_runtime_field",
+    "empirical_loss_likelihood_proxy": "backward_compatible_runtime_field"
+  },
+  "parameters": {
+    "intercept": -1.95393703,
+    "slope": 5.23311007,
+    "x_scale": 100.0
+  },
+  "scope": {}
+}
