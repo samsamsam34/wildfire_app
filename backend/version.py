@@ -11,7 +11,7 @@ SCORING_MODEL_VERSION = "1.10.0"
 DEFAULT_RULESET_VERSION = "1.0.0"
 RULESET_LOGIC_VERSION = "1.1.0"
 FACTOR_SCHEMA_VERSION = "1.3.0"
-BENCHMARK_PACK_VERSION = "1.0.0"
+BENCHMARK_PACK_VERSION = "1.1.0"
 CALIBRATION_VERSION = "0.3.0"
 
 # Default dataset bundle marker when no explicit region data version is available.

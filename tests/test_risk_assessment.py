@@ -369,7 +369,7 @@ def _assert_core_contract(body: dict) -> None:
     assert isinstance(body["insurability_status_reasons"], list)
     assert isinstance(body["insurability_status_methodology_note"], str)
     assert "rule-based" in str(body["insurability_status_methodology_note"]).lower()
-    assert "not a guarantee" in str(body["insurability_status_methodology_note"]).lower()
+    assert "not a prediction or guarantee" in str(body["insurability_status_methodology_note"]).lower()
     assert isinstance(body["top_recommended_actions"], list)
     assert isinstance(body["top_risk_drivers_detailed"], list)
     assert isinstance(body["prioritized_mitigation_actions"], list)

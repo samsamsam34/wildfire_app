@@ -2,6 +2,39 @@
 
 This file tracks release-level governance changes for `WildfireRisk Advisor`.
 
+## [0.17.1] - 2026-04-17
+### Version changes
+- `product_version`: `0.17.1` (patch)
+- `api_version`: `1.4.0` (unchanged)
+- `scoring_model_version`: `1.9.0` (unchanged)
+- `ruleset_version`: tracked per assessment ruleset
+- `rules_logic_version`: `1.1.0` (unchanged)
+- `factor_schema_version`: `1.3.0` (unchanged)
+- `benchmark_pack_version`: `1.1.0` (patch; scenario pack updated to reflect expanded geocoding coverage)
+- `calibration_version`: `0.3.0` (unchanged)
+- `region_data_version`: tracked per assessment/region build
+- `data_bundle_version`: `unversioned` default unless overridden
+
+### Reason
+- Phase 1a/1b: Add US Census TIGER geocoder as primary provider ahead of Nominatim, with a configurable `GeocodeFallbackChain`. Add ZIP centroid validation to reject cross-state geocoding mismatches (e.g. Winthrop WA → Dutchess County NY).
+- Phase 2a: Add Regrid Terrain API parcel client with 90-day SQLite caching as a national on-demand fallback when no local parcel data exists. Add STRtree spatial index for O(log n) candidate pre-filtering on local parcel datasets. Properties outside prepared regions now receive a real parcel polygon (confidence 72) instead of a 25 m bounding-box approximation (confidence 18).
+
+### Expected effect on outputs
+- Geocoding precision improves for standard US residential addresses through Census TIGER interpolation as primary provider.
+- ZIP validation prevents cross-state geocode mismatches from reaching the scoring engine; affected requests now advance to the next provider or surface a validation failure.
+- Assessments for properties outside prepared regions that have `WF_REGRID_API_KEY` configured will receive a parcel-polygon-anchored result with confidence 72 rather than a bounding-box fallback.
+- No change to confidence or output shape for assessments within prepared regions.
+
+### Migration/interpretation notes
+- Set `WF_REGRID_API_KEY` to enable national parcel coverage; the system degrades gracefully to the existing bounding-box fallback when the key is absent.
+- Geocoding provider chain is configurable via `config/geocoding_config.yaml`; existing default behaviour (Nominatim) is preserved when Census TIGER returns no match.
+- `benchmark_pack_version` bump reflects updated scenario coverage; benchmark scores from `1.0.0` packs remain valid for comparison within the same scoring model version.
+
+### Historical comparison validity
+- `not_directly_comparable` when scoring/rules/schema dimensions differ.
+- `comparable_with_review` when data/calibration dimensions differ.
+- `directly_comparable` when governance dimensions match.
+
 ## [0.16.0] - 2026-03-11
 ### Version changes
 - `product_version`: `0.16.0` (minor)
