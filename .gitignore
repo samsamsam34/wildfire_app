@@ -41,14 +41,34 @@ htmlcov/
 *.db
 *.sqlite
 *.sqlite3
+*.db-shm
+*.db-wal
 *.log
 
 # IDE/editor files
 .vscode/
 .idea/
+.claude/
 *.swp
 *.swo
 *~
+
+# Local generated datasets and benchmark outputs
+data/
+benchmark/calibration/
+benchmark/event_backtest_results/
+benchmark/multi_region_runtime/
+benchmark/no_ground_truth_evaluation/
+benchmark/property_specificity_scorecard/
+benchmark/public_outcomes/calibration/
+benchmark/public_outcomes/calibration_dataset/
+benchmark/public_outcomes/evaluation_dataset/
+benchmark/public_outcomes/model_viability/
+benchmark/public_outcomes/normalized/
+benchmark/public_outcomes/synthetic_sensitivity/
+benchmark/public_outcomes/validation/
+benchmark/results/
+benchmark/tuning_results/
 
 # OS-generated files
 .DS_Store
