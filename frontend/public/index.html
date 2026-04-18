@@ -3486,6 +3486,12 @@
           const report = await api(`/report/${assessmentId}/homeowner`);
           if (!latestAssessment || latestAssessment.assessment_id !== assessmentId) return;
           latestHomeownerReport = report;
+          trackHomeownerFlowEvent("report_preview_opened", {
+            assessmentId,
+            metadata: {
+              source: "auto_preview",
+            },
+          });
           renderHomeownerReportPreview(report);
         } catch (err) {
           latestHomeownerReport = null;
@@ -3919,6 +3925,13 @@
         renderHomeownerDecisionFromAssessment(data);
         renderAssessmentMap(data?.assessment_id);
         renderImproveSectionFromAssessment(data);
+        trackHomeownerFlowEvent("result_viewed", {
+          assessmentId: data?.assessment_id,
+          metadata: {
+            scoring_status: scoringStatus || null,
+            risk_score_available: riskAvailable,
+          },
+        });
         loadHomeownerReportPreview(data?.assessment_id);
       }
 
@@ -3990,6 +4003,12 @@
         if (specificityKpiEl) specificityKpiEl.textContent = "Regional estimate";
         if (readinessKpiEl) readinessKpiEl.textContent = "Not available";
         if (firstActionKpiEl) firstActionKpiEl.textContent = "Review next step";
+        trackHomeownerFlowEvent("result_viewed", {
+          metadata: {
+            scoring_status: "limited_coverage",
+            reason: reasonText,
+          },
+        });
         setSubmodelTableRows(
           document.getElementById("submodels"),
           [],
@@ -4191,6 +4210,7 @@
           idaho: "ID",
           oregon: "OR",
           california: "CA",
+          colorado: "CO",
         };
         for (const [name, abbr] of Object.entries(map)) {
           if (lowered.includes(name)) return abbr;
@@ -4272,6 +4292,8 @@
           .replace(/\broad\b/g, "rd")
           .replace(/\bstreet\b/g, "st")
           .replace(/\bavenue\b/g, "ave")
+          .replace(/\bcalifornia\b/g, "ca")
+          .replace(/\bcolorado\b/g, "co")
           .replace(/\bwashington\b/g, "wa")
           .replace(/\s+/g, " ")
           .trim();
@@ -5040,6 +5062,11 @@
         if (verifyLocationMap) {
           setTimeout(() => verifyLocationMap.invalidateSize(), 0);
         }
+        trackHomeownerFlowEvent("address_verification_shown", {
+          metadata: {
+            has_pending_assessment: !!pendingAssessmentPayload,
+          },
+        });
         if (confirmBtn) confirmBtn.focus();
       }
 
@@ -5157,6 +5184,12 @@
           payload.selected_structure_id = null;
           payload.selected_structure_geometry = null;
         }
+        trackHomeownerFlowEvent("address_verification_confirmed", {
+          metadata: {
+            selection_source: verificationAcceptedSelectionSource || "suggested_geocode",
+            used_manual_point: verificationAcceptedSelectionSource === "map_click_fallback",
+          },
+        });
         closeAddressVerificationModal({ restoreFocus: false });
         pendingAssessmentPayload = null;
         verifiedAddressPayload = null;
@@ -5245,6 +5278,12 @@
           }
 
           setRequestStatus(reassess ? "Updating assessment..." : "Running assessment...");
+          trackHomeownerFlowEvent("assessment_submitted", {
+            metadata: {
+              reassess: !!reassess,
+              has_manual_anchor_point: !!payload?.property_anchor_point,
+            },
+          });
 
           const data = (reassess && latestAssessment)
             ? await api(`/risk/reassess/${latestAssessment.assessment_id}`, {
@@ -5362,7 +5401,7 @@
             simResultEl.textContent = "Running simulation...";
           }
 
-          trackHomeownerFlowEvent("homeowner_simulation_started", {
+          trackHomeownerFlowEvent("simulation_started", {
             metadata: {
               source,
               preset_id: presetId || null,
@@ -5442,7 +5481,7 @@
 
           setSimulationRunStatus("Simulation complete. Review your projected status and top action drivers below.", "success");
 
-          trackHomeownerFlowEvent("homeowner_simulation_completed", {
+          trackHomeownerFlowEvent("simulation_completed", {
             metadata: {
               source,
               preset_id: presetId || null,
@@ -5577,6 +5616,11 @@
           const blob = new Blob([String(html || "")], { type: "text/html;charset=utf-8" });
           const url = URL.createObjectURL(blob);
           window.open(url, "_blank", "noopener");
+          trackHomeownerFlowEvent("printable_report_opened", {
+            metadata: {
+              source: "printable_html",
+            },
+          });
           setTimeout(() => URL.revokeObjectURL(url), 5000);
           setReportActionStatus("Printable report opened in a new tab.", "success");
         } catch (err) {
@@ -5660,6 +5704,11 @@
           a.click();
           a.remove();
           URL.revokeObjectURL(url);
+          trackHomeownerFlowEvent("printable_report_opened", {
+            metadata: {
+              source: "pdf_download",
+            },
+          });
           setReportActionStatus("Homeowner PDF downloaded.", "success");
         } catch (err) {
           const message = toHomeownerFriendlyError(
@@ -5682,7 +5731,7 @@
           if (!panel) return;
           panel.addEventListener("toggle", () => {
             if (!panel.open) return;
-            trackHomeownerFlowEvent("homeowner_advanced_details_opened", {
+            trackHomeownerFlowEvent("advanced_details_opened", {
               metadata: { panel_id: panelId },
             });
           });
@@ -5725,6 +5774,12 @@
       document.getElementById("simulateBtn").addEventListener("click", runSimulation);
       document.getElementById("simulatePresetBtn")?.addEventListener("click", runSelectedSimulationPreset);
       document.getElementById("primaryDecisionCtaBtn")?.addEventListener("click", () => {
+        trackHomeownerFlowEvent("primary_cta_clicked", {
+          metadata: {
+            cta_id: "primaryDecisionCtaBtn",
+            cta_text: String(document.getElementById("primaryDecisionCtaBtn")?.textContent || "").trim() || null,
+          },
+        });
         openSimulationPlannerFromCta({ smooth: true });
       });
       document.getElementById("refreshImproveBtn")?.addEventListener("click", refreshImproveSuggestions);
