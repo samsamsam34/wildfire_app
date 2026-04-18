@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
-from backend.building_footprints import BuildingFootprintClient
+from backend.building_footprints import BuildingFootprintClient, compute_footprint_geometry_signals
+from backend.structure_classifier import classify_structures
 
 try:
     from shapely.geometry import Point as ShapelyPoint, shape as shapely_shape
@@ -523,3 +525,164 @@ def test_feature_properties_populated_on_nearest_match(tmp_path: Path) -> None:
     assert result.found is True
     assert result.feature_properties is not None
     assert result.feature_properties.get("prep_ring_30_100_veg") == pytest.approx(55.0)
+
+
+# ---------------------------------------------------------------------------
+# National index integration tests
+# ---------------------------------------------------------------------------
+
+def _make_polygon_feature(lon: float, lat: float, half: float = 0.0002) -> dict:
+    """Return a GeoJSON-style feature dict for a small square polygon."""
+    coords = [
+        [lon - half, lat + half],
+        [lon + half, lat + half],
+        [lon + half, lat - half],
+        [lon - half, lat - half],
+        [lon - half, lat + half],
+    ]
+    return {
+        "geometry": {"type": "Polygon", "coordinates": [coords]},
+        "properties": {"source": "overture", "building_class": "residential", "height_m": 5.0, "area_m2": 120.0},
+    }
+
+
+@pytest.mark.skipif(not _geo_ready(), reason="Requires shapely")
+def test_national_index_used_when_no_local_files() -> None:
+    """When no local files are configured, national index returns a match at confidence ≤ 0.88."""
+    mock_index = MagicMock()
+    mock_index.enabled = True
+    mock_index.get_footprints_near_point.return_value = [
+        _make_polygon_feature(-105.0, 40.0)
+    ]
+
+    client = BuildingFootprintClient(national_index=mock_index)
+    result = client.get_building_footprint(lat=40.0, lon=-105.0)
+
+    assert result.found is True
+    assert result.source == "national_index_overture"
+    assert result.confidence <= 0.88
+    assert result.match_status == "matched"
+
+
+@pytest.mark.skipif(not _geo_ready(), reason="Requires shapely")
+def test_national_index_empty_returns_provider_unavailable() -> None:
+    """When national index returns [] and no local files exist, result is provider_unavailable."""
+    mock_index = MagicMock()
+    mock_index.enabled = True
+    mock_index.get_footprints_near_point.return_value = []
+
+    client = BuildingFootprintClient(national_index=mock_index)
+    result = client.get_building_footprint(lat=40.0, lon=-105.0)
+
+    assert result.found is False
+    assert result.match_status == "provider_unavailable"
+
+
+def test_area_plausibility_score_thresholds() -> None:
+    """_area_plausibility_score applies correct thresholds without parcel."""
+    # Access as staticmethod via class
+    score = BuildingFootprintClient._area_plausibility_score
+
+    # < 15 m² → 0.3
+    assert score(12.0, parcel_available=False) == pytest.approx(0.3)
+    # 15–40 m² → 0.7
+    assert score(30.0, parcel_available=False) == pytest.approx(0.7)
+    # ≥ 40 m² → 1.0
+    assert score(50.0, parcel_available=False) == pytest.approx(1.0)
+    assert score(500.0, parcel_available=False) == pytest.approx(1.0)
+    # parcel_available=True → always 1.0 regardless of area
+    assert score(12.0, parcel_available=True) == pytest.approx(1.0)
+
+
+@pytest.mark.skipif(not _geo_ready(), reason="Requires shapely")
+def test_multiple_structures_on_parcel(tmp_path: Path) -> None:
+    """compute_footprint_geometry_signals returns multiple_structures label from parcel intersection."""
+    from shapely.geometry import Polygon
+
+    # Three footprints all within the parcel.
+    footprints = [
+        shapely_shape({"type": "Polygon", "coordinates": [[
+            [-105.0002, 40.0002], [-104.9998, 40.0002], [-104.9998, 39.9998],
+            [-105.0002, 39.9998], [-105.0002, 40.0002],
+        ]]}),
+        shapely_shape({"type": "Polygon", "coordinates": [[
+            [-105.0006, 40.0002], [-105.0004, 40.0002], [-105.0004, 39.9998],
+            [-105.0006, 39.9998], [-105.0006, 40.0002],
+        ]]}),
+        shapely_shape({"type": "Polygon", "coordinates": [[
+            [-105.001, 40.0002], [-105.0008, 40.0002], [-105.0008, 39.9998],
+            [-105.001, 39.9998], [-105.001, 40.0002],
+        ]]}),
+    ]
+    parcel_polygon = Polygon([
+        (-105.0012, 40.0004), (-104.9996, 40.0004),
+        (-104.9996, 39.9996), (-105.0012, 39.9996),
+        (-105.0012, 40.0004),
+    ])
+    subject_footprint = footprints[0]
+
+    signals = compute_footprint_geometry_signals(
+        subject_footprint,
+        parcel_polygon=parcel_polygon,
+        all_footprints=footprints,
+    )
+
+    assert signals["multiple_structures_on_parcel"] in {"multiple_structures", "complex_property"}
+
+
+@pytest.mark.skipif(not _geo_ready(), reason="Requires shapely")
+def test_classify_structures_primary_accessory_neighbor() -> None:
+    """classify_structures splits on-parcel vs off-parcel correctly."""
+    from shapely.geometry import Polygon
+
+    parcel = Polygon([(-105.001, 40.001), (-104.999, 40.001), (-104.999, 39.999), (-105.001, 39.999), (-105.001, 40.001)])
+    # On-parcel: primary + garage-sized structure
+    primary = shapely_shape({"type": "Polygon", "coordinates": [[
+        [-105.0002, 40.0002], [-104.9998, 40.0002], [-104.9998, 39.9998],
+        [-105.0002, 39.9998], [-105.0002, 40.0002],
+    ]]})
+    garage = shapely_shape({"type": "Polygon", "coordinates": [[
+        [-105.0005, 40.0005], [-105.0003, 40.0005], [-105.0003, 40.0003],
+        [-105.0005, 40.0003], [-105.0005, 40.0005],
+    ]]})
+    # Off-parcel neighbor
+    neighbor = shapely_shape({"type": "Polygon", "coordinates": [[
+        [-105.003, 40.003], [-105.002, 40.003], [-105.002, 40.002],
+        [-105.003, 40.002], [-105.003, 40.003],
+    ]]})
+
+    result = classify_structures(
+        parcel_polygon=parcel,
+        all_footprints=[primary, garage, neighbor],
+        subject_footprint=primary,
+    )
+
+    assert result.classification_basis == "parcel_derived"
+    assert len(result.accessory) == 1
+    assert len(result.neighbors) == 1
+    assert result.on_parcel_count == 2  # primary + garage
+    assert result.off_parcel_count == 1
+
+
+@pytest.mark.skipif(not _geo_ready(), reason="Requires shapely")
+def test_classify_structures_no_parcel_heuristic() -> None:
+    """Without parcel, all non-primary footprints are labeled neighbors (heuristic basis)."""
+    primary = shapely_shape({"type": "Polygon", "coordinates": [[
+        [-105.0002, 40.0002], [-104.9998, 40.0002], [-104.9998, 39.9998],
+        [-105.0002, 39.9998], [-105.0002, 40.0002],
+    ]]})
+    shed = shapely_shape({"type": "Polygon", "coordinates": [[
+        [-105.0005, 40.0005], [-105.0003, 40.0005], [-105.0003, 40.0003],
+        [-105.0005, 40.0003], [-105.0005, 40.0005],
+    ]]})
+
+    result = classify_structures(
+        parcel_polygon=None,
+        all_footprints=[primary, shed],
+        subject_footprint=primary,
+    )
+
+    assert result.classification_basis == "heuristic"
+    assert len(result.accessory) == 0
+    assert len(result.neighbors) == 1
+    assert result.off_parcel_count == 1

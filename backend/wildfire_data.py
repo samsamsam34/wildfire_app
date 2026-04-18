@@ -177,7 +177,31 @@ class WildfireDataClient:
             "false",
             "no",
         }
-        self.footprints = BuildingFootprintClient()
+        # Optional national building footprint index — enabled when duckdb is importable.
+        self._national_footprint_index = None
+        try:
+            import duckdb as _duckdb  # noqa: F401
+            from backend.national_footprint_index import NationalFootprintIndex  # noqa: PLC0415
+            self._national_footprint_index = NationalFootprintIndex(
+                cache_db_path=os.environ.get("WF_FOOTPRINT_CACHE_DB", "data/footprint_cache.db"),
+                enabled=True,
+            )
+            import logging as _logging
+            _logging.getLogger("wildfire_app.wildfire_data").info(
+                "National footprint index initialized (Overture/DuckDB)"
+            )
+        except ImportError:
+            import logging as _logging
+            _logging.getLogger("wildfire_app.wildfire_data").info(
+                "duckdb not available — national footprint index disabled"
+            )
+        except Exception as _exc:  # pragma: no cover
+            import logging as _logging
+            _logging.getLogger("wildfire_app.wildfire_data").warning(
+                "wildfire_data national_footprint_index_init_error error=%s", _exc
+            )
+
+        self.footprints = BuildingFootprintClient(national_index=self._national_footprint_index)
         self.whp_adapter = WHPAdapter()
         self.gridmet_adapter = GridMETAdapter()
         self.mtbs_adapter = MTBSAdapter()
@@ -2246,7 +2270,11 @@ class WildfireDataClient:
         if not source_paths:
             source_paths = [p for p in [footprint_path, fallback_footprint_path] if p]
         if source_paths:
-            footprint_client = BuildingFootprintClient(path=source_paths[0], extra_paths=source_paths[1:])
+            footprint_client = BuildingFootprintClient(
+                path=source_paths[0],
+                extra_paths=source_paths[1:],
+                national_index=self._national_footprint_index,
+            )
         source_label_map: dict[str, str] = {}
         if isinstance(footprint_source_labels, dict):
             for path_key, label in footprint_source_labels.items():

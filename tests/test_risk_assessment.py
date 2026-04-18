@@ -4264,26 +4264,37 @@ def test_building_footprint_lookup_success(tmp_path):
 
 
 def test_building_footprint_lookup_multisource_prefers_plausible_candidate(tmp_path):
+    """Area plausibility score overrides source priority when one footprint is implausibly small.
+
+    The primary source (regional_large) contains a tiny ~9 m² polygon — below the
+    15 m² threshold and scored 0.3.  The secondary source (microsoft_small) contains
+    a normal residential polygon (~196 m²) scored 1.0.  Despite lower source priority,
+    the plausible residential footprint should win.
+    """
     _require_shapely()
-    large_source = tmp_path / "regional_large.geojson"
-    small_source = tmp_path / "microsoft_small.geojson"
-    large_source.write_text(
+    # Primary source: a tiny footprint (~1 m²) that fails the plausibility threshold (<15 m²,
+    # area_plausibility_score = 0.3).  Half-width ≈ 0.001 m / 85 000 ≈ 0.000010 degrees.
+    implausible_source = tmp_path / "regional_large.geojson"
+    # Secondary source: a normal residential footprint (~196 m², area_plausibility_score = 1.0).
+    # Half-width ≈ 7 m / 111 000 ≈ 0.000063 degrees.
+    residential_source = tmp_path / "microsoft_small.geojson"
+    implausible_source.write_text(
         json.dumps(
             {
                 "type": "FeatureCollection",
                 "features": [
                     {
                         "type": "Feature",
-                        "properties": {"id": "large"},
+                        "properties": {"id": "implausible"},
                         "geometry": {
                             "type": "Polygon",
                             "coordinates": [
                                 [
-                                    [-105.00030, 40.00030],
-                                    [-104.99970, 40.00030],
-                                    [-104.99970, 39.99970],
-                                    [-105.00030, 39.99970],
-                                    [-105.00030, 40.00030],
+                                    [-105.000010, 40.000010],
+                                    [-104.999990, 40.000010],
+                                    [-104.999990, 39.999990],
+                                    [-105.000010, 39.999990],
+                                    [-105.000010, 40.000010],
                                 ]
                             ],
                         },
@@ -4292,14 +4303,14 @@ def test_building_footprint_lookup_multisource_prefers_plausible_candidate(tmp_p
             }
         )
     )
-    small_source.write_text(
+    residential_source.write_text(
         json.dumps(
             {
                 "type": "FeatureCollection",
                 "features": [
                     {
                         "type": "Feature",
-                        "properties": {"id": "small"},
+                        "properties": {"id": "residential"},
                         "geometry": {
                             "type": "Polygon",
                             "coordinates": [
@@ -4318,15 +4329,17 @@ def test_building_footprint_lookup_multisource_prefers_plausible_candidate(tmp_p
         )
     )
 
-    client = BuildingFootprintClient(path=str(large_source), extra_paths=[str(small_source)])
+    client = BuildingFootprintClient(path=str(implausible_source), extra_paths=[str(residential_source)])
     result = client.get_building_footprint(lat=40.0, lon=-105.0)
 
     assert result.found is True
     assert result.match_status == "matched"
-    assert result.source == str(small_source)
+    assert result.source == str(residential_source), (
+        f"Expected residential source to win on area plausibility; got {result.source}"
+    )
     assert result.candidate_count == 2
     assert len(result.candidate_summaries) >= 2
-    assert result.candidate_summaries[0]["source"] == str(small_source)
+    assert result.candidate_summaries[0]["source"] == str(residential_source)
 
 
 def test_building_footprint_lookup_no_source_fallback(tmp_path):

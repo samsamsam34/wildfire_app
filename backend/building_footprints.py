@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any, Optional
+
+if TYPE_CHECKING:
+    from backend.national_footprint_index import NationalFootprintIndex
 
 try:
     from pyproj import Transformer
@@ -19,6 +23,7 @@ except Exception:  # pragma: no cover - graceful fallback when geo deps are unav
     shape = None
     shapely_transform = None
 
+LOGGER = logging.getLogger("wildfire_app.building_footprints")
 
 FEET_TO_METERS = 0.3048
 RING_KEYS = ("ring_0_5_ft", "ring_5_30_ft", "ring_30_100_ft", "ring_100_300_ft")
@@ -39,6 +44,7 @@ class BuildingFootprintResult:
     candidate_summaries: list[dict[str, Any]] = field(default_factory=list)
     assumptions: list[str] = field(default_factory=list)
     feature_properties: dict[str, Any] | None = None
+    on_parcel_structure_count: int | None = None
 
 
 class BuildingFootprintClient:
@@ -47,6 +53,7 @@ class BuildingFootprintClient:
         path: str | None = None,
         max_search_m: float = 120.0,
         extra_paths: list[str] | None = None,
+        national_index: "NationalFootprintIndex | None" = None,
     ) -> None:
         configured = [
             path or "",
@@ -85,6 +92,7 @@ class BuildingFootprintClient:
                 ),
             )
         )
+        self._national_index = national_index
 
     @staticmethod
     def _env_float(name: str, default: float, *, min_value: float | None = None) -> float:
@@ -168,14 +176,38 @@ class BuildingFootprintClient:
         return float(max(0.0, geom_m.area))
 
     @staticmethod
-    def _residential_area_score(area_m2: float) -> float:
-        # Prefer residential-sized structures while allowing larger outbuildings.
-        if area_m2 <= 0:
-            return 0.0
-        target = 190.0
-        spread = 320.0
-        score = 1.0 - min(1.0, abs(area_m2 - target) / spread)
-        return max(0.0, score)
+    def _area_plausibility_score(area_m2: float, parcel_available: bool) -> float:
+        """Return a plausibility score (0–1) for a footprint based on its area.
+
+        When a parcel polygon is available, area-based scoring is disabled —
+        parcel intersection is a stronger signal and applying an area bias would
+        penalise large-but-legitimate structures (farmhouses, barns).
+
+        When no parcel is available a loose filter is applied:
+        * ``< 15 m²``: score 0.3  — too small to be a primary residence.
+        * ``15–40 m²``: score 0.7  — small but possible (cottage, ADU).
+        * ``≥ 40 m²``:  score 1.0  — no penalty for any larger structure.
+
+        Parameters
+        ----------
+        area_m2:
+            Footprint area in square metres.
+        parcel_available:
+            ``True`` if a parcel polygon was matched for this assessment.
+        """
+        if parcel_available:
+            return 1.0
+        if area_m2 < 15:
+            return 0.3
+        if area_m2 < 40:
+            return 0.7
+        return 1.0
+
+    # Keep the old name as an alias so external callers (e.g. tests that
+    # directly invoke _residential_area_score) don't break immediately.
+    # Deprecated — use _area_plausibility_score instead.
+    def _residential_area_score(self, area_m2: float) -> float:  # pragma: no cover
+        return self._area_plausibility_score(area_m2, parcel_available=False)
 
     def _all_source_features(self) -> list[dict[str, Any]]:
         features: list[dict[str, Any]] = []
@@ -199,6 +231,55 @@ class BuildingFootprintClient:
                 )
         return features
 
+    def _national_index_features(self, lat: float, lon: float) -> list[dict[str, Any]]:
+        """Fetch features from the national index and convert to internal format.
+
+        Returns a list in the same format as ``_all_source_features`` so the
+        matching logic can process them identically to local features.  Returns
+        an empty list when the national index is unavailable or returns nothing.
+        """
+        if self._national_index is None or not self._national_index.enabled:
+            return []
+        if shape is None:
+            return []
+
+        try:
+            raw_features = self._national_index.get_footprints_near_point(
+                lat, lon, radius_m=300.0
+            )
+        except Exception as exc:  # pragma: no cover
+            LOGGER.warning(
+                "building_footprints national_index_error lat=%.5f lon=%.5f error=%s",
+                lat, lon, exc,
+            )
+            return []
+
+        if not raw_features:
+            return []
+
+        result: list[dict[str, Any]] = []
+        for feat in raw_features:
+            geometry_raw = feat.get("geometry")
+            if not isinstance(geometry_raw, dict):
+                continue
+            try:
+                geom = self._primary_polygon(shape(geometry_raw))
+            except Exception:
+                continue
+            if geom.is_empty:
+                continue
+            props = dict(feat.get("properties") or {})
+            result.append(
+                {
+                    "geometry": geom,
+                    "source": "national_index_overture",
+                    "source_rank": 999,
+                    "properties": props,
+                    "structure_id": None,
+                }
+            )
+        return result
+
     def _candidate_summary(
         self,
         *,
@@ -213,7 +294,7 @@ class BuildingFootprintClient:
         distance_m = float(max(0.0, geom_m.distance(point_m)))
         centroid_distance_m = float(max(0.0, geom_m.centroid.distance(point_m)))
         area_m2 = self._geom_area_m2(geom)
-        area_score = self._residential_area_score(area_m2)
+        area_score = self._area_plausibility_score(area_m2, parcel_available=False)
         contains_point = bool(getattr(geom, "covers", lambda _p: False)(point_wgs84))
         centroid = geom.centroid
         return {
@@ -236,6 +317,169 @@ class BuildingFootprintClient:
         except Exception:
             return False
 
+    def _count_structures_on_parcel(
+        self,
+        all_features: list[dict[str, Any]],
+        parcel_polygon: Any,
+    ) -> int:
+        """Return the number of feature geometries that intersect the parcel."""
+        count = 0
+        for feat in all_features:
+            geom = feat.get("geometry") or feat.get("geom")
+            if geom is None:
+                continue
+            try:
+                if bool(geom.intersects(parcel_polygon)):
+                    count += 1
+            except Exception:
+                continue
+        return count
+
+    def _multiple_structures_label(self, count: int) -> str:
+        """Convert an on-parcel structure count to a classification label."""
+        if count == 1:
+            return "single_structure"
+        if count <= 3:
+            return "multiple_structures"
+        return "complex_property"
+
+    def _try_national_index_match(
+        self,
+        lat: float,
+        lon: float,
+        parcel_polygon: Any | None = None,
+        anchor_precision: str | None = None,
+    ) -> BuildingFootprintResult | None:
+        """Attempt to match a building footprint from the national Overture index.
+
+        Runs point-in-polygon then nearest-within-tolerance matching against
+        features fetched from the national index.  Returns a
+        :class:`BuildingFootprintResult` with confidence 0.88 (point-in-polygon
+        match) or 0.82 (nearest match) — slightly lower than local-file matches
+        (0.97 / 0.92) to reflect the absence of address-point cross-validation.
+
+        Returns ``None`` when the national index is unavailable, returns no
+        features, or no candidate falls within the match tolerance.
+        """
+        if self._national_index is None or not self._national_index.enabled:
+            return None
+        if not self._geo_ready():
+            return None
+
+        nat_features = self._national_index_features(lat, lon)
+        if not nat_features:
+            return None
+
+        point_wgs84 = Point(lon, lat)
+        to_3857 = Transformer.from_crs("EPSG:4326", "EPSG:3857", always_xy=True).transform
+        parcel_overlap_available = (
+            parcel_polygon is not None
+            and not getattr(parcel_polygon, "is_empty", True)
+        )
+        assumptions = ["Building footprint matched from national Overture index."]
+
+        search_features = list(nat_features)
+        if parcel_overlap_available:
+            parcel_intersecting = [
+                row
+                for row in nat_features
+                if bool(
+                    getattr(row["geometry"], "intersects", lambda _p: False)(parcel_polygon)
+                )
+            ]
+            if parcel_intersecting:
+                search_features = parcel_intersecting
+                assumptions.append(
+                    "Structure matching prioritized footprints intersecting the matched parcel."
+                )
+
+        # Phase 1: point-in-polygon.
+        containing = [
+            row
+            for row in search_features
+            if self._inside_polygon(row["geometry"], point_wgs84)
+        ]
+        if containing:
+            top_row = containing[0]
+            geom = top_row["geometry"]
+            c = geom.centroid
+
+            on_parcel_count: int | None = None
+            if parcel_overlap_available:
+                on_parcel_count = self._count_structures_on_parcel(
+                    nat_features, parcel_polygon
+                )
+
+            LOGGER.info(
+                "building_footprints national_index_match"
+                " method=point_in_footprint lat=%.5f lon=%.5f confidence=0.88",
+                lat, lon,
+            )
+            return BuildingFootprintResult(
+                found=True,
+                footprint=geom,
+                centroid=(float(c.y), float(c.x)),
+                source="national_index_overture",
+                confidence=0.88,
+                match_status="matched",
+                match_method="point_in_footprint",
+                matched_structure_id=None,
+                match_distance_m=0.0,
+                candidate_count=len(containing),
+                candidate_summaries=[],
+                assumptions=assumptions,
+                feature_properties=dict(top_row.get("properties") or {}),
+                on_parcel_structure_count=on_parcel_count,
+            )
+
+        # Phase 2: nearest within tolerance.
+        point_m = shapely_transform(to_3857, point_wgs84)
+        best_row: dict[str, Any] | None = None
+        best_dist = float("inf")
+        for row in search_features:
+            try:
+                geom_m = shapely_transform(to_3857, row["geometry"])
+                dist = float(max(0.0, geom_m.distance(point_m)))
+            except Exception:
+                continue
+            if dist < best_dist:
+                best_dist = dist
+                best_row = row
+
+        if best_row is None or best_dist > self.max_match_distance_m:
+            return None
+
+        nearest_geom = best_row["geometry"]
+        c = nearest_geom.centroid
+
+        on_parcel_count = None
+        if parcel_overlap_available:
+            on_parcel_count = self._count_structures_on_parcel(
+                nat_features, parcel_polygon
+            )
+
+        LOGGER.info(
+            "building_footprints national_index_match"
+            " method=nearest lat=%.5f lon=%.5f dist_m=%.1f confidence=0.82",
+            lat, lon, best_dist,
+        )
+        return BuildingFootprintResult(
+            found=True,
+            footprint=nearest_geom,
+            centroid=(float(c.y), float(c.x)),
+            source="national_index_overture",
+            confidence=0.82,
+            match_status="matched",
+            match_method="nearest_building_fallback",
+            matched_structure_id=None,
+            match_distance_m=round(best_dist, 2),
+            candidate_count=1,
+            candidate_summaries=[],
+            assumptions=assumptions,
+            feature_properties=dict(best_row.get("properties") or {}),
+            on_parcel_structure_count=on_parcel_count,
+        )
+
     def get_building_footprint(
         self,
         lat: float,
@@ -248,7 +492,16 @@ class BuildingFootprintClient:
         configured_paths = [p for p in self.paths if p]
         if not configured_paths or not any(self._file_exists(p) for p in configured_paths):
             assumptions.append("Building footprint source is not configured or missing.")
-            return BuildingFootprintResult(found=False, match_status="provider_unavailable", assumptions=assumptions)
+            # Try national index before giving up.
+            nat_result = self._try_national_index_match(
+                lat, lon, parcel_polygon=parcel_polygon, anchor_precision=anchor_precision
+            )
+            if nat_result is not None:
+                nat_result.assumptions = assumptions + nat_result.assumptions
+                return nat_result
+            return BuildingFootprintResult(
+                found=False, match_status="provider_unavailable", assumptions=assumptions
+            )
 
         if not self._geo_ready():
             assumptions.append("Building footprint analysis unavailable; geospatial dependencies missing.")
@@ -257,6 +510,13 @@ class BuildingFootprintClient:
         features = self._all_source_features()
         if not features:
             assumptions.append("No building footprints available in configured source(s).")
+            # Try national index before giving up.
+            nat_result = self._try_national_index_match(
+                lat, lon, parcel_polygon=parcel_polygon, anchor_precision=anchor_precision
+            )
+            if nat_result is not None:
+                nat_result.assumptions = assumptions + nat_result.assumptions
+                return nat_result
             return BuildingFootprintResult(
                 found=False,
                 source=self.path,
@@ -292,7 +552,7 @@ class BuildingFootprintClient:
 
         containing = [row for row in search_features if self._inside_polygon(row["geometry"], point_wgs84)]
         if containing:
-            # Deterministically pick best residential-sized containing polygon.
+            # Deterministically pick best containing polygon.
             def _contain_score(item: dict[str, Any]) -> tuple[float, float]:
                 geom = item["geometry"]
                 parcel_intersection_area_m2 = 0.0
@@ -302,8 +562,11 @@ class BuildingFootprintClient:
                     except Exception:
                         parcel_intersection_area_m2 = 0.0
                 area_m2 = self._geom_area_m2(geom)
-                residential_score = self._residential_area_score(area_m2) + min(1.0, area_m2 / 10_000.0) * 0.05
-                return parcel_intersection_area_m2, residential_score
+                area_score = (
+                    self._area_plausibility_score(area_m2, parcel_available=parcel_overlap_available)
+                    + min(1.0, area_m2 / 10_000.0) * 0.05
+                )
+                return parcel_intersection_area_m2, area_score
 
             ranked = sorted(
                 containing,
@@ -353,6 +616,12 @@ class BuildingFootprintClient:
                         candidate_summaries=candidate_summaries,
                         assumptions=assumptions,
                     )
+
+            # Count on-parcel structures when parcel is available.
+            on_parcel_count: int | None = None
+            if parcel_overlap_available:
+                on_parcel_count = self._count_structures_on_parcel(features, parcel_polygon)
+
             c = geom.centroid
             return BuildingFootprintResult(
                 found=True,
@@ -368,6 +637,7 @@ class BuildingFootprintClient:
                 candidate_summaries=candidate_summaries,
                 assumptions=assumptions,
                 feature_properties=dict(top_row.get("properties") or {}),
+                on_parcel_structure_count=on_parcel_count,
             )
 
         point_m = shapely_transform(to_3857, point_wgs84)
@@ -388,7 +658,9 @@ class BuildingFootprintClient:
                 continue
             centroid_distance = float(max(0.0, candidate_m.centroid.distance(point_m)))
             footprint_area_m2 = self._geom_area_m2(candidate_geom)
-            area_score = self._residential_area_score(footprint_area_m2)
+            area_score = self._area_plausibility_score(
+                footprint_area_m2, parcel_available=parcel_overlap_available
+            )
             parcel_overlap = False
             parcel_intersection_area_m2 = 0.0
             parcel_centroid_distance_m = centroid_distance
@@ -587,6 +859,12 @@ class BuildingFootprintClient:
                 confidence = min(confidence, 0.68)
             if normalized_precision == "unknown":
                 confidence = min(confidence, 0.64)
+
+        # Count on-parcel structures when parcel is available.
+        on_parcel_count = None
+        if parcel_overlap_available:
+            on_parcel_count = self._count_structures_on_parcel(features, parcel_polygon)
+
         nearest_geom = top["geom"]
         nearest_source = top["source"]
         c = nearest_geom.centroid
@@ -604,6 +882,7 @@ class BuildingFootprintClient:
             candidate_summaries=candidate_summaries,
             assumptions=assumptions,
             feature_properties=dict(top.get("properties") or {}),
+            on_parcel_structure_count=on_parcel_count,
         )
 
     def get_neighbor_structure_metrics(
@@ -743,6 +1022,7 @@ def compute_structure_rings(
 def compute_footprint_geometry_signals(
     footprint: Any,
     parcel_polygon: Any | None = None,
+    all_footprints: list[Any] | None = None,
 ) -> dict[str, float | str | None]:
     """Derive geometry signals from the structure footprint and optionally the parcel polygon.
 
@@ -752,7 +1032,21 @@ def compute_footprint_geometry_signals(
       footprint_long_axis_bearing_deg -- bearing (0–360°, clockwise from north) of the longer
                                          bounding-box axis; 0° means the structure runs N–S
       parcel_coverage_ratio          -- footprint area / parcel area (0–1); None when no parcel
-      multiple_structures_on_parcel  -- "unknown" always; reserved for future enumeration
+      multiple_structures_on_parcel  -- classification of on-parcel structure count when a parcel
+                                         and footprint list are available; ``"unknown"`` otherwise.
+
+    Parameters
+    ----------
+    footprint:
+        The primary structure geometry (Shapely).
+    parcel_polygon:
+        Matched parcel boundary, or ``None``.
+    all_footprints:
+        Optional list of Shapely geometries for all nearby structures.  When
+        provided together with ``parcel_polygon``, populates the
+        ``multiple_structures_on_parcel`` field with a data-derived value
+        (``"single_structure"``, ``"multiple_structures"``, or
+        ``"complex_property"``).
     """
     if not (Transformer and shapely_transform):
         return {
@@ -778,18 +1072,13 @@ def compute_footprint_geometry_signals(
             else None
         )
 
-        # Long-axis bearing from the minimum rotated rectangle (MRR).  The MRR
-        # correctly captures the true orientation of diagonal, L-shaped, or
-        # rotated footprints; the bounding box would give the wrong axis for
-        # anything not aligned with the cardinal grid.
+        # Long-axis bearing from the minimum rotated rectangle (MRR).
         footprint_long_axis_bearing_deg = None
         try:
             mrr = fp_m.minimum_rotated_rectangle
             if mrr is not None and not getattr(mrr, "is_empty", True):
                 coords = list(mrr.exterior.coords)
                 if len(coords) >= 4:
-                    # MRR exterior has 4 corners + closing point.  Identify the
-                    # longer of the two distinct sides — that is the long axis.
                     s1_dx = coords[1][0] - coords[0][0]
                     s1_dy = coords[1][1] - coords[0][1]
                     s2_dx = coords[2][0] - coords[1][0]
@@ -798,9 +1087,6 @@ def compute_footprint_geometry_signals(
                     len2 = _math.hypot(s2_dx, s2_dy)
                     axis_dx, axis_dy = (s1_dx, s1_dy) if len1 >= len2 else (s2_dx, s2_dy)
                     if _math.hypot(axis_dx, axis_dy) > 0:
-                        # Bearing clockwise from north: atan2(east, north).
-                        # In EPSG:3857 x=east, y=north, so atan2(dx, dy).
-                        # Fold to [0, 180) — axis bearing is not directional.
                         bearing = _math.degrees(_math.atan2(axis_dx, axis_dy)) % 180.0
                         footprint_long_axis_bearing_deg = round(bearing, 1)
         except Exception:
@@ -827,10 +1113,30 @@ def compute_footprint_geometry_signals(
             "multiple_structures_on_parcel": "unknown",
         }
 
+    # Determine multiple_structures_on_parcel when both parcel and footprint
+    # list are available.
+    multiple_structures_on_parcel: str = "unknown"
+    if parcel_polygon is not None and all_footprints is not None:
+        try:
+            count = 0
+            for fp in all_footprints:
+                if fp is None:
+                    continue
+                if bool(parcel_polygon.intersects(fp)):
+                    count += 1
+            if count == 1:
+                multiple_structures_on_parcel = "single_structure"
+            elif count <= 3:
+                multiple_structures_on_parcel = "multiple_structures"
+            elif count > 3:
+                multiple_structures_on_parcel = "complex_property"
+        except Exception:
+            multiple_structures_on_parcel = "unknown"
+
     return {
         "footprint_perimeter_m": footprint_perimeter_m,
         "footprint_compactness_ratio": footprint_compactness_ratio,
         "footprint_long_axis_bearing_deg": footprint_long_axis_bearing_deg,
         "parcel_coverage_ratio": parcel_coverage_ratio,
-        "multiple_structures_on_parcel": "unknown",
+        "multiple_structures_on_parcel": multiple_structures_on_parcel,
     }
