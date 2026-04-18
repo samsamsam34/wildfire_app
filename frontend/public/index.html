@@ -980,8 +980,8 @@
       </section>
 
       <section id="journeySection" class="card">
-        <h2>How This Page Works</h2>
-        <p class="section-intro">Start here for the main experience.</p>
+        <h2>Your Homeowner Flow</h2>
+        <p class="section-intro">This page is designed to guide one clear decision path from address to next steps.</p>
         <ol class="journey-list">
           <li>Assess your address</li>
           <li>Review your homeowner summary and recommended next step</li>
@@ -1090,10 +1090,10 @@
         </div>
 
         <div class="actions">
-          <button id="assessBtn" type="button">Run Assessment</button>
-          <button id="reassessBtn" type="button" class="secondary">Update With New Details</button>
+          <button id="assessBtn" type="button">Assess My Address</button>
+          <button id="reassessBtn" type="button" class="secondary">Re-run With Updated Details</button>
         </div>
-        <p id="requestStatus" class="status-line tone-muted">Idle.</p>
+        <p id="requestStatus" class="status-line tone-muted">Enter your address to begin.</p>
       </section>
 
       <section id="homeownerSummarySection" class="card homeowner-first-card">
@@ -1102,9 +1102,9 @@
             <h2>Step 3: Homeowner Summary</h2>
             <p class="section-help">Quick answer first: your status, why it matters, and what to do next.</p>
           </div>
-          <span id="homeownerStatusBadge" class="status-badge status-pending">Status pending</span>
+          <span id="homeownerStatusBadge" class="status-badge status-pending">Status not yet assessed</span>
         </div>
-        <p id="homeownerDecisionSummary" class="homeowner-first-summary">Run an assessment to see your homeowner status summary.</p>
+        <p id="homeownerDecisionSummary" class="homeowner-first-summary">Run an assessment to see your status, key drivers, and next steps.</p>
 
         <div class="homeowner-first-grid">
           <div class="homeowner-first-group">
@@ -1130,7 +1130,7 @@
         <p id="homeownerDecisionMethodology" class="muted">This screen is for homeowner screening guidance and next-step planning, not insurer-approval prediction.</p>
         <div class="decision-cta-block">
           <p class="decision-cta-label">Recommended next step</p>
-          <button id="primaryDecisionCtaBtn" type="button" class="decision-cta-btn">Run assessment to plan mitigation</button>
+          <button id="primaryDecisionCtaBtn" type="button" class="decision-cta-btn">Run assessment to see next steps</button>
           <p id="primaryDecisionCtaHint" class="decision-cta-hint muted">Complete an assessment first, then run a before/after mitigation simulation.</p>
           <p class="action-priority-note">This is the primary action. Additional report and diagnostic tools are available below.</p>
         </div>
@@ -1144,11 +1144,11 @@
 
       <section id="supportingInsightsSection" class="card secondary-panel">
         <details id="supportingInsightsPanel">
-          <summary>Supporting Risk Insights (Optional)</summary>
+          <summary>Risk Breakdown (Optional)</summary>
           <p class="section-help">Expanded score, drivers, and action context for homeowners who want more detail.</p>
           <div class="results mt-sm">
             <div class="card result-primary">
-              <h3>Supporting Risk Score</h3>
+              <h3>Risk Score Snapshot</h3>
               <p class="section-help">Risk blends site hazard and home ignition vulnerability when both components are supported by evidence.</p>
               <div id="riskScore" class="score">-</div>
               <div id="riskLabel" class="muted">Run an assessment to see your score.</div>
@@ -1171,23 +1171,23 @@
             </div>
 
             <div class="card">
-              <h3>Supporting Risk Drivers</h3>
+              <h3>Risk Drivers</h3>
               <p class="section-help">What's driving this result, based on observed local and regional evidence.</p>
               <div class="insight-group">
                 <div class="mini-label">Top risk drivers</div>
                 <h3>Around the Home</h3>
-                <ul id="propertyFindings"><li class="muted">No structure-specific findings yet.</li></ul>
-                <ul id="drivers"><li class="muted">No factors yet.</li></ul>
+                <ul id="propertyFindings"><li class="muted">Structure-specific findings will appear after assessment.</li></ul>
+                <ul id="drivers"><li class="muted">Risk drivers will appear after assessment.</li></ul>
               </div>
               <div class="insight-group">
                 <div class="mini-label">Protective factors</div>
                 <h3>What Is Helping Lower Risk</h3>
-                <ul id="protective"><li class="muted">No protective factors yet.</li></ul>
+                <ul id="protective"><li class="muted">Protective factors will appear after assessment.</li></ul>
               </div>
             </div>
 
             <div class="card">
-              <h3>Supporting Action Plan</h3>
+              <h3>Action Details</h3>
               <p class="section-help">What to do first: prioritized actions focused on reduction impact and practical effort.</p>
               <div class="mini-label">Recommended next steps</div>
               <p id="nextStepsText">Focus on the top actions first.</p>
@@ -1199,7 +1199,7 @@
 
       <section id="confidenceSection" class="card trust-card secondary-panel">
         <details id="confidenceDeepDivePanel">
-          <summary>Confidence Deep Dive (Optional)</summary>
+          <summary>Confidence & Limitations (Optional)</summary>
           <p class="section-help">How reliable this assessment is, and where data limits may affect precision.</p>
           <div class="trust-overview">
             <div class="trust-value">
@@ -1214,7 +1214,7 @@
           <p id="confidenceSummaryText" class="muted">Run an assessment to see confidence details.</p>
           <div class="result-divider"></div>
           <div class="mini-label">Limitations and trust notes</div>
-          <div id="flagsPrimary"><span class="pill">No trust notes yet</span></div>
+          <div id="flagsPrimary"><span class="pill">Trust notes will appear after assessment</span></div>
           <div class="result-divider"></div>
           <div class="mini-label">Measured vs Estimated</div>
           <ul id="homeownerLimitationsBlock"><li class="muted">Run an assessment to see what was observed, estimated, and missing.</li></ul>
@@ -1245,7 +1245,7 @@
           <div class="actions">
             <button id="simulatePresetBtn" type="button">Run Quick Simulation</button>
           </div>
-          <p id="simulationRunStatus" class="status-line tone-muted sim-run-status">Run an assessment, pick a preset, then run simulation.</p>
+          <p id="simulationRunStatus" class="status-line tone-muted sim-run-status">Run an assessment, choose a quick scenario, then run simulation.</p>
 
           <details id="simulationAdvancedPanel" class="mt-sm">
             <summary>Customize scenario (advanced)</summary>
@@ -1343,43 +1343,43 @@
             </div>
           </details>
 
-          <div id="simResult" class="sim-box muted">No simulation run yet.</div>
+          <div id="simResult" class="sim-box muted">No simulation yet. Run a quick scenario to compare before vs after.</div>
         </details>
       </section>
 
       <section id="improveSection" class="card secondary-panel">
         <details id="improvePanel">
-          <summary>Improve This Result (Optional Inputs)</summary>
-          <p>Use missing-input suggestions below, update home details above, then click <strong>Update With New Details</strong>.</p>
+          <summary>Improve Accuracy (Optional Inputs)</summary>
+          <p class="section-help">Add any missing details, then click <strong>Re-run With Updated Details</strong> to tighten this screening.</p>
           <h3 class="subsection-title">Suggested Improvements</h3>
-          <ul id="improveSuggestions"><li class="muted">No suggestions yet.</li></ul>
+          <ul id="improveSuggestions"><li class="muted">Suggestions will appear after assessment.</li></ul>
           <h3 class="subsection-title">Helpful Follow-Up Inputs</h3>
-          <ul id="improveInputs"><li class="muted">No follow-up inputs yet.</li></ul>
+          <ul id="improveInputs"><li class="muted">Follow-up inputs will appear when needed.</li></ul>
           <div class="actions actions-low-emphasis">
-            <button id="refreshImproveBtn" type="button" class="secondary">Refresh Suggestions</button>
+            <button id="refreshImproveBtn" type="button" class="secondary">Refresh Input Suggestions</button>
           </div>
-          <p id="improveStatus" class="status-line tone-muted">Optional input suggestions are ready when you need them.</p>
+          <p id="improveStatus" class="status-line tone-muted">Input suggestions will appear after assessment.</p>
         </details>
       </section>
 
       <section id="reportShareSection" class="card secondary-panel">
         <details id="reportSharePanel">
-          <summary>Report & Share (Optional)</summary>
+          <summary>Report Options (Optional)</summary>
           <p class="muted">See the homeowner-focused summary and shareable report formats.</p>
           <details id="homeownerReportPreviewPanel" class="mt-sm">
-            <summary>Detailed homeowner report preview</summary>
+            <summary>Homeowner report preview</summary>
             <p id="homeownerReportStatus" class="status-line tone-muted">Run an assessment to load the homeowner report preview.</p>
-            <ul id="homeownerReportHighlights"><li class="muted">No homeowner report preview yet.</li></ul>
+            <ul id="homeownerReportHighlights"><li class="muted">No report preview yet.</li></ul>
             <details id="homeownerReportMoreDetails" class="mt-sm">
               <summary>More details</summary>
-              <ul id="homeownerReportSecondary"><li class="muted">No additional details yet.</li></ul>
+              <ul id="homeownerReportSecondary"><li class="muted">Additional details will appear here when available.</li></ul>
             </details>
           </details>
           <div class="actions actions-low-emphasis">
             <button id="openReportBtn" type="button" class="secondary">Open Printable Report</button>
             <button id="downloadPdfBtn" type="button" class="secondary">Download Homeowner PDF</button>
           </div>
-          <p id="reportActionStatus" class="status-line tone-muted">Report actions will appear here after you run an assessment.</p>
+          <p id="reportActionStatus" class="status-line tone-muted">Report options will appear after assessment.</p>
         </details>
       </section>
 
@@ -1398,7 +1398,7 @@
 
       <section id="advancedSection" class="card advanced-secondary secondary-panel">
         <details id="advancedInternalDetailsPanel">
-          <summary>Advanced / Internal Details</summary>
+          <summary>Advanced Details (Optional)</summary>
           <p class="section-help">Use this panel for technical outputs beyond homeowner-first guidance.</p>
           <ul id="advancedCoverageList">
             <li>Subscore breakdowns and weighted factor contributions</li>
@@ -1423,23 +1423,23 @@
             </div>
             <div>
               <h3>What We Estimated</h3>
-              <ul id="assumptions"><li class="muted">No estimates shown yet.</li></ul>
+              <ul id="assumptions"><li class="muted">Estimate notes will appear after assessment.</li></ul>
             </div>
           </div>
           <h3 class="subsection-title">How to Improve Confidence</h3>
-          <ul id="confidenceActions"><li class="muted">No confidence guidance yet.</li></ul>
+          <ul id="confidenceActions"><li class="muted">Confidence guidance will appear after assessment.</li></ul>
 
           <h3 class="subsection-title">Technical Factor Breakdown</h3>
           <table>
             <thead><tr><th>Factor</th><th>Score</th><th>Contribution</th></tr></thead>
-            <tbody id="submodels"><tr><td colspan="3" class="muted">No data yet.</td></tr></tbody>
+            <tbody id="submodels"><tr><td colspan="3" class="muted">Technical factor details will appear after assessment.</td></tr></tbody>
           </table>
 
           <h3 class="subsection-title">Home Hardening Readiness (Primary)</h3>
           <p id="readinessText" class="muted">-</p>
 
           <h3 class="subsection-title">Property-Level Context</h3>
-          <p id="propertyContextText" class="muted">No property-level context available yet.</p>
+          <p id="propertyContextText" class="muted">Property-level context will appear after assessment.</p>
           <p id="regionResolutionText" class="muted" style="display:none;">Region resolution details unavailable.</p>
           <p id="geocodeDebugText" class="muted" style="display:none;">Geocode details unavailable.</p>
         </details>
@@ -1983,7 +1983,7 @@
           btn.disabled = shouldDisable;
         });
         if (!hasAssessment) {
-          setSimulationRunStatus("Run an assessment first to unlock before/after simulation.", "muted");
+          setSimulationRunStatus("Run an assessment first, then use before/after simulation.", "muted");
         }
       }
 
@@ -2130,8 +2130,8 @@
 
       async function runSelectedSimulationPreset() {
         if (!latestAssessment?.assessment_id) {
-          setSimulationRunStatus("Run an assessment first, then try a quick simulation preset.", "error");
-          showHomeownerToast("Run an assessment first, then use a quick simulation preset.", "error");
+          setSimulationRunStatus("Run an assessment first, then run a quick scenario.", "error");
+          showHomeownerToast("Run an assessment first, then run a quick scenario.", "error");
           return;
         }
         const plan = getSimulationPresetPlan(selectedSimulationPresetId);
@@ -2166,7 +2166,7 @@
         const hasAssessment = !!(latestAssessment && latestAssessment.assessment_id);
         btn.disabled = !hasAssessment;
         if (!hasAssessment) {
-          btn.textContent = "Run assessment to plan mitigation";
+          btn.textContent = "Run assessment to see next steps";
           hintEl.textContent = "Complete an assessment first, then run a before/after mitigation simulation.";
           return;
         }
@@ -2887,7 +2887,7 @@
 
         setListItems(improveSuggestionsEl, suggestions, {
           limit: 6,
-          fallbackText: "No improvement suggestions available yet.",
+          fallbackText: "No additional improvement suggestions are available yet.",
           renderItem: (li, item) => {
             li.textContent = String(item || "").trim();
           },
@@ -3013,12 +3013,12 @@
         ) return;
 
         const normalizedStatus = String(statusLabel || "").trim();
-        const badgeText = normalizedStatus || "Status pending";
+        const badgeText = normalizedStatus || "Status not yet assessed";
         badgeEl.textContent = badgeText;
         badgeEl.className = `status-badge ${homeownerStatusBadgeClass(normalizedStatus)}`;
 
         summaryEl.textContent = String(summary || "").trim()
-          || "Run an assessment to see your homeowner status summary.";
+          || "Run an assessment to see your homeowner status and next steps.";
 
         const reasonLines = topNonEmptyLines(reasons, 3);
         setListItems(reasonsEl, reasonLines, {
@@ -3150,7 +3150,7 @@
           limitations,
           methodology: methodology || "Rule-based screening guidance using observable wildfire and property factors; not a prediction or guarantee of insurer underwriting approval.",
           advancedRows: [
-            "Technical subscores, diagnostics, and compatibility outputs are available in Advanced / Internal Details.",
+            "Technical subscores, diagnostics, and compatibility outputs are available in Advanced Details.",
             showOperatorControls
               ? "Operator export and diagnostics tools are available in this mode."
               : "Operator export and diagnostics tools are hidden in homeowner mode.",
@@ -3172,10 +3172,10 @@
           statusEl.textContent = reason || "Run an assessment to load the homeowner report preview.";
         }
         if (highlightsEl) {
-          setListItems(highlightsEl, [], { fallbackText: "No homeowner report preview yet." });
+          setListItems(highlightsEl, [], { fallbackText: "No report preview yet." });
         }
         if (secondaryEl) {
-          setListItems(secondaryEl, [], { fallbackText: "No additional details yet." });
+          setListItems(secondaryEl, [], { fallbackText: "Additional details will appear here when available." });
         }
         if (moreDetailsEl) {
           moreDetailsEl.open = false;
@@ -3196,10 +3196,10 @@
         if (confidenceAtGlanceEl) confidenceAtGlanceEl.textContent = "Pending";
         if (specificityAtGlanceEl) specificityAtGlanceEl.textContent = "Pending";
         if (confidenceSummaryTextEl) confidenceSummaryTextEl.textContent = "Run an assessment to see confidence details.";
-        if (flagsPrimaryEl) setPillSpans(flagsPrimaryEl, [], "No trust notes yet");
+        if (flagsPrimaryEl) setPillSpans(flagsPrimaryEl, [], "Trust notes will appear after assessment.");
         renderHomeownerLimitationsBlock();
         renderHomeownerDecisionSnapshot({
-          summary: reason || "Run an assessment to see your homeowner status summary.",
+          summary: reason || "Run an assessment to see your homeowner status and next steps.",
         });
         const propertyContextMapHintEl = document.getElementById("propertyContextMapHint");
         if (propertyContextMapHintEl) {
@@ -3212,13 +3212,13 @@
         if (simResultEl) {
           clearNode(simResultEl);
           simResultEl.classList.add("muted");
-          simResultEl.textContent = "No simulation run yet.";
+          simResultEl.textContent = "No simulation yet. Run a quick scenario to compare before vs after.";
         }
         setPanelOpen("simulationAdvancedPanel", false);
-        setSimulationRunStatus("Run an assessment, pick a preset, then run simulation.", "muted");
+        setSimulationRunStatus("Run an assessment, choose a quick scenario, then run simulation.", "muted");
         syncAssessmentActionState();
-        setImproveStatus("Optional input suggestions are ready when you need them.", "muted");
-        setReportActionStatus("Report actions will appear here after you run an assessment.", "muted");
+        setImproveStatus("Input suggestions will appear after assessment.", "muted");
+        setReportActionStatus("Report options will appear after assessment.", "muted");
         showHomeownerToast("", "muted", { autoHideMs: 0 });
       }
 
@@ -3231,8 +3231,8 @@
 
         if (!report || typeof report !== "object") {
           statusEl.textContent = "We couldn’t load the report preview yet.";
-          setListItems(highlightsEl, [], { fallbackText: "No report preview available yet." });
-          setListItems(secondaryEl, [], { fallbackText: "No additional details yet." });
+          setListItems(highlightsEl, [], { fallbackText: "Report highlights will appear after assessment." });
+          setListItems(secondaryEl, [], { fallbackText: "Additional details will appear here when available." });
           if (moreDetailsEl) moreDetailsEl.open = false;
           return;
         }
@@ -3400,7 +3400,7 @@
         if (beforeAfterText) rows.push({ label: "What-if summary", value: beforeAfterText });
         if (limitations) rows.push({ label: "Confidence/limitations", value: limitations });
         setListItems(highlightsEl, rows, {
-          fallbackText: "No homeowner report highlights yet.",
+          fallbackText: "Report highlights will appear after assessment.",
           renderItem: (li, row) => {
             const label = String(row?.label || "").trim();
             const value = String(row?.value || "").trim();
@@ -3450,7 +3450,7 @@
           secondaryRows.push({ label: "Status methodology", value: statusMethodologyNote });
         }
         setListItems(secondaryEl, secondaryRows, {
-          fallbackText: "No additional details yet.",
+          fallbackText: "Additional details will appear here when available.",
           renderItem: (li, row) => {
             const label = String(row?.label || "").trim();
             const value = String(row?.value || "").trim();
@@ -3528,7 +3528,7 @@
         try {
           const options = await api(`/risk/improve/${latestAssessment.assessment_id}`);
           renderImproveSectionFromBlock(options);
-          setImproveStatus("Suggestions updated.", "success");
+          setImproveStatus("Input suggestions refreshed.", "success");
         } catch (err) {
           const message = toHomeownerFriendlyError(
             err?.message,
@@ -3564,13 +3564,13 @@
         if (simResultEl) {
           clearNode(simResultEl);
           simResultEl.classList.add("muted");
-          simResultEl.textContent = "No simulation run yet.";
+          simResultEl.textContent = "No simulation yet. Run a quick scenario to compare before vs after.";
         }
         setSimulationRunStatus("Choose a quick preset or customize a scenario, then run simulation.", "muted");
         setSimulationPresetSelection(selectedSimulationPresetId, { prefill: true });
         syncAssessmentActionState();
         setImproveStatus("Review suggested follow-up inputs or refresh this list.", "muted");
-        setReportActionStatus("Open the printable report or download the homeowner PDF.", "muted");
+        setReportActionStatus("Open a printable report or download your homeowner PDF.", "muted");
         if (
           pendingSelectedStructureAssessmentId
           && pendingSelectedStructureAssessmentId !== data?.assessment_id
@@ -3634,7 +3634,7 @@
           }
         }
 
-        document.getElementById("summaryText").textContent = data.explanation_summary || "No summary yet.";
+        document.getElementById("summaryText").textContent = data.explanation_summary || "A plain-language summary will appear once scoring is complete.";
         const propertyFindings = getPropertyFindings(data);
         const nearStructureDrivers = Array.isArray(data?.top_near_structure_risk_drivers)
           ? data.top_near_structure_risk_drivers
@@ -3686,13 +3686,13 @@
           setListItems(
             driversEl,
             (Array.isArray(data.top_risk_drivers) ? data.top_risk_drivers : []).slice(0, 3).map((v) => toHomeownerDriverText(v)),
-            { fallbackText: "No factors available yet." }
+            { fallbackText: "No major drivers were returned for this assessment." }
           );
         }
         setListItems(
           document.getElementById("protective"),
           (Array.isArray(data.top_protective_factors) ? data.top_protective_factors : []).slice(0, 3),
-          { fallbackText: "No factors available yet." }
+          { fallbackText: "No protective factors were identified yet." }
         );
 
         document.getElementById("nextStepsText").textContent = buildNextStepsHint(combinedFindings);
@@ -3730,7 +3730,7 @@
           });
         });
         setListItems(document.getElementById("mitigations"), mitigationRows, {
-          fallbackText: "No recommendations available yet.",
+          fallbackText: "No recommended actions are available yet.",
           renderItem: (li, row) => {
             const title = String(row?.title || "").trim();
             const detail = String(row?.detail || "").trim();
@@ -5294,7 +5294,7 @@
             : await api("/risk/assess", payload, "POST");
 
           renderAssessment(data);
-          setRequestStatus(`Assessment complete (ID: ${data.assessment_id || "unknown"}).`, "success");
+          setRequestStatus("Assessment complete. Review your status and next steps below.", "success");
         } catch (err) {
           console.error("Assessment request failed:", err);
           const detail = err?.detail && typeof err.detail === "object" ? err.detail : null;
@@ -5479,7 +5479,7 @@
             renderHomeownerDecisionFromAssessment(latestAssessment);
           }
 
-          setSimulationRunStatus("Simulation complete. Review your projected status and top action drivers below.", "success");
+          setSimulationRunStatus("Simulation complete. Review your projected status and top actions below.", "success");
 
           trackHomeownerFlowEvent("simulation_completed", {
             metadata: {
@@ -5605,7 +5605,7 @@
 
       async function openReportView() {
         if (!latestAssessment) {
-          const message = "Run an assessment first, then open the printable report.";
+          const message = "Run an assessment first, then open your printable report.";
           setReportActionStatus(message, "error");
           showHomeownerToast(message, "error");
           return;
@@ -5764,9 +5764,9 @@
       setSimulationPresetSelection("apply_top_actions", { prefill: true });
       setPanelOpen("simulationAdvancedPanel", false);
       syncAssessmentActionState();
-      setSimulationRunStatus("Run an assessment, pick a preset, then run simulation.", "muted");
-      setImproveStatus("Optional input suggestions are ready when you need them.", "muted");
-      setReportActionStatus("Report actions will appear here after you run an assessment.", "muted");
+      setSimulationRunStatus("Run an assessment, choose a quick scenario, then run simulation.", "muted");
+      setImproveStatus("Input suggestions will appear after assessment.", "muted");
+      setReportActionStatus("Report options will appear after assessment.", "muted");
       showHomeownerToast("", "muted", { autoHideMs: 0 });
 
       document.getElementById("assessBtn").addEventListener("click", startAddressVerificationFlow);
