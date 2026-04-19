@@ -805,6 +805,9 @@
       .modal-title {
         margin-bottom: 0.45rem;
       }
+      .verify-modal-intro {
+        margin-top: 0.08rem;
+      }
       .modal-grid {
         display: grid;
         grid-template-columns: 180px minmax(0, 1fr);
@@ -910,6 +913,22 @@
         border-radius: 10px;
         padding: 0.65rem 0.75rem;
         background: #fafaf9;
+      }
+      .verify-modal-cta {
+        margin-top: 0.82rem;
+      }
+      .verify-modal-cta button {
+        width: 100%;
+      }
+      .verify-cta-note {
+        margin-top: 0.4rem;
+        font-size: 0.82rem;
+      }
+      .verify-modal-secondary-actions {
+        margin-top: 0.45rem;
+      }
+      .verify-modal-secondary-actions button {
+        min-height: 38px;
       }
       .verify-manual summary {
         cursor: pointer;
@@ -1498,12 +1517,12 @@
       aria-labelledby="addressVerifyModalTitle"
     >
       <div class="modal-card" role="document">
-        <h3 id="addressVerifyModalTitle" class="modal-title">Confirm Home Location</h3>
-        <p class="muted">Use the suggested match below, or adjust only if it looks off.</p>
+        <h3 id="addressVerifyModalTitle" class="modal-title">Confirm your property location</h3>
+        <p class="muted verify-modal-intro">If this suggested match looks right, continue in one click. Adjust only if needed.</p>
         <div class="verify-primary-card">
           <div class="mini-label">Suggested match</div>
           <p id="verifyResolvedAddress" class="verify-primary-address">-</p>
-          <p id="verifyQuickStatus" class="verify-primary-status muted">This looks like the best match. Continue if it is correct.</p>
+          <p id="verifyQuickStatus" class="verify-primary-status muted">This looks like our best match. Continue if it is your property.</p>
         </div>
         <dl class="modal-grid verify-core-grid">
           <dt>You entered</dt>
@@ -1512,65 +1531,68 @@
           <dd id="verifyConfidence">-</dd>
         </dl>
         <details id="verifyAddressContextPanel" class="verify-optional-panel">
-          <summary>See match details</summary>
+          <summary>View match details</summary>
           <dl class="modal-grid">
             <dt>Coordinates</dt>
             <dd id="verifyCoordinates">-</dd>
             <dt>Address source</dt>
             <dd id="verifyGeocoderSource">-</dd>
-            <dt>Detailed coverage area</dt>
+            <dt>Coverage area</dt>
             <dd id="verifyPreparedRegion">-</dd>
           </dl>
         </details>
         <div class="verify-adjust-trigger">
-          <button id="openVerifyAdjustBtn" type="button" class="secondary">Need to adjust this location?</button>
+          <button id="openVerifyAdjustBtn" type="button" class="secondary">Need to adjust? Use map or search</button>
         </div>
         <details id="verifyAdjustLocationPanel" class="verify-optional-panel" style="display:none;">
-          <summary>Adjust location tools</summary>
-          <p class="verify-tip">Only adjust if the suggested location is clearly wrong.</p>
+          <summary>Adjust location (optional)</summary>
+          <p class="verify-tip">Use these tools only if the suggested match is not your property.</p>
           <div id="verifyLocationMap" aria-label="Address verification map"></div>
           <div id="verifyLiveLocationDetails" class="verify-live">
-            <div id="verifySelectedCoordinates">Current map point: -</div>
-            <div id="verifySelectionSource">Location to use: Suggested address match</div>
-            <div id="verifyDistanceFromSuggested">Distance from suggested: 0 m</div>
-            <div id="verifyCoverageStatus">Coverage status: checking...</div>
-            <div id="verifyApplyState">Selected location applied.</div>
+            <div id="verifySelectedCoordinates">Map pin: -</div>
+            <div id="verifySelectionSource">Location we’ll use: Suggested match</div>
+            <div id="verifyDistanceFromSuggested">Distance from suggested match: 0 m</div>
+            <div id="verifyCoverageStatus">Coverage check: checking...</div>
+            <div id="verifyApplyState">Suggested match is selected.</div>
           </div>
           <div class="verify-alt-toggle">
-            <button id="verifyShowManualOptionsBtn" type="button" class="secondary">Choose a different address match</button>
+            <button id="verifyShowManualOptionsBtn" type="button" class="secondary">Search for a different address</button>
           </div>
           <details id="verifyManualAddressSection" class="verify-manual" style="display:none;">
-            <summary>Find a different address match</summary>
+            <summary>Find a different match</summary>
             <div class="verify-manual-controls">
               <div>
-                <label for="verifyZipInput">ZIP code</label>
+                <label for="verifyZipInput">ZIP code (optional)</label>
                 <input id="verifyZipInput" type="text" placeholder="e.g., 98862" />
               </div>
               <div>
-                <label for="verifyLocalitySelect">Town / locality</label>
+                <label for="verifyLocalitySelect">City / town (optional)</label>
                 <select id="verifyLocalitySelect">
                   <option value="">Auto-detect</option>
                 </select>
               </div>
-              <button id="verifySearchCandidatesBtn" type="button" class="secondary">Find matches</button>
+              <button id="verifySearchCandidatesBtn" type="button" class="secondary">Search addresses</button>
             </div>
-            <div id="verifyCandidateStatus" class="verify-candidate-status">Search for your address and choose the best match.</div>
+            <div id="verifyCandidateStatus" class="verify-candidate-status">Search for your address, choose the best match, then continue.</div>
             <div id="verifyCandidateList" class="verify-candidate-list">
               <div class="verify-candidate-empty">No candidates loaded yet.</div>
             </div>
             <div class="verify-map-fallback">
-              <button id="verifyUseMapFallbackBtn" type="button" class="secondary">Can’t find it? Place the pin on your home</button>
+              <button id="verifyUseMapFallbackBtn" type="button" class="secondary">Can’t find it? Use the map pin</button>
             </div>
           </details>
         </details>
         <div id="verifyWarningBox" class="modal-warning" style="display:none;"></div>
         <p id="verifyModalError" class="modal-error" style="display:none;"></p>
-        <div class="actions">
-          <button id="confirmAddressBtn" type="button">Use suggested match and continue</button>
-          <button id="applyVerifyLocationBtn" type="button" class="secondary" style="display:none;">Use updated pin</button>
-          <button id="resetVerifyLocationBtn" type="button" class="secondary" style="display:none;">Reset to suggested match</button>
-          <button id="editAddressBtn" type="button" class="secondary">Edit address</button>
-          <button id="cancelAddressBtn" type="button" class="secondary">Close</button>
+        <div class="verify-modal-cta">
+          <button id="confirmAddressBtn" type="button">Continue with suggested match</button>
+          <p class="verify-cta-note muted">Most homeowners can continue with the suggested match.</p>
+        </div>
+        <div class="actions actions-low-emphasis verify-modal-secondary-actions">
+          <button id="applyVerifyLocationBtn" type="button" class="secondary" style="display:none;">Apply this pin</button>
+          <button id="resetVerifyLocationBtn" type="button" class="secondary" style="display:none;">Back to suggested match</button>
+          <button id="editAddressBtn" type="button" class="secondary">Edit entered address</button>
+          <button id="cancelAddressBtn" type="button" class="secondary">Cancel</button>
         </div>
       </div>
     </div>
@@ -2007,7 +2029,7 @@
 
       function openVerificationAdjustTools({ openManual = false } = {}) {
         setVerificationAdjustToolsVisible(true, { openPanel: true });
-        setFlowStatus("Address confirmation: adjust location only if the suggested match looks wrong.", "muted");
+        setFlowStatus("Address confirmation: adjust only if the suggested match looks wrong.", "muted");
         if (openManual) {
           setManualAddressSectionVisible(true);
           const manualSection = document.getElementById("verifyManualAddressSection");
@@ -4513,16 +4535,16 @@
         const selected = verificationPendingCoords;
         const suggested = verificationSuggestedCoords;
         if (hasMaterialAddressDifference(enteredAddress, resolvedAddress)) {
-          warnings.push("This match differs from what you entered. Confirm this is the right property.");
+          warnings.push("The suggested match differs from what you entered. Confirm this is the right property.");
         }
         if (confidence === "low" || confidence === "unknown") {
-          warnings.push("This address match is less certain than usual.");
+          warnings.push("Match confidence is lower than usual.");
         }
         if (verification?.geocode_outcome === "geocode_succeeded_untrusted") {
-          warnings.push("Automatic address matching was uncertain for this location.");
+          warnings.push("Automatic matching was uncertain for this location.");
         }
         if (verificationHasUnappliedPending) {
-          warnings.push("A new map point is selected but not applied yet.");
+          warnings.push("You moved the map pin but have not applied it yet.");
         }
         if (verificationPendingSelectionSource === "map_click_fallback" && selected) {
           warnings.push("You are using a manually placed map pin.");
@@ -4607,19 +4629,19 @@
           || verification?.coverage_available === false
           || verification?.covered === false
         );
-        let message = "This looks like the best available match. Continue if it is correct.";
+        let message = "This looks like our best available match. Continue if it is your property.";
         if (needsManual) {
-          message = "We could not confidently match this address. Choose a better match or place the pin on your home.";
+          message = "We need a quick confirmation. Choose a better match or use the map pin on your home.";
         } else if (confidence === "low" || confidence === "unknown") {
-          message = "Match confidence is limited. Please confirm this location before continuing.";
+          message = "Match confidence is lower than usual. Please confirm before continuing.";
         } else if (hasMaterialAddressDifference(enteredAddress, resolvedAddress)) {
-          message = "This result differs from the address you entered. Confirm this is the right property.";
+          message = "The suggested address differs from what you entered. Confirm this is your property.";
         }
         if (coverageLimited) {
-          message += " Detailed local coverage is limited here, so some results may be estimated.";
+          message += " Coverage is limited here, so some results may be estimated.";
         }
         if (verificationHasUnappliedPending) {
-          message = "You selected a new map point. Click \"Use updated pin\" before continuing.";
+          message = "You moved the pin. Click \"Apply this pin\" before continuing.";
         }
         quickStatusEl.textContent = message;
       }
@@ -4704,7 +4726,7 @@
               selectionSource: "manual_address_selection",
             });
             renderManualCandidateList(verificationManualCandidates);
-            setManualCandidateStatus("Address selected. Continue when this looks right.");
+            setManualCandidateStatus("Address selected. Continue if this is your property.");
           });
         });
       }
@@ -4718,7 +4740,7 @@
         const searchBtn = document.getElementById("verifySearchCandidatesBtn");
         if (searchBtn) searchBtn.disabled = true;
         if (statusMessage) {
-          setManualCandidateStatus("Finding likely address matches...");
+          setManualCandidateStatus("Searching for likely address matches...");
         }
         try {
           const result = await fetchManualAddressCandidates(
@@ -4736,8 +4758,8 @@
             setManualCandidateStatus("Select the correct address from the list, then continue.");
           } else {
             setManualCandidateStatus(result?.status === "outside_prepared_region"
-              ? "We found candidates, but detailed coverage is limited there. You can still place the pin manually."
-              : "No usable matches found. Place the pin on your home in the map.");
+              ? "We found possible matches, but detailed coverage is limited there. You can still use the map pin."
+              : "No close matches found. Use the map pin on your home.");
           }
         } catch (err) {
           verificationManualCandidates = [];
@@ -4763,11 +4785,11 @@
 
       function getLocationSourceLabel(source) {
         const sourceLabelMap = {
-          suggested_geocode: "Suggested address match",
-          manual_address_selection: "Manual address selection",
-          map_click_fallback: "Map click / drag",
+          suggested_geocode: "Suggested match",
+          manual_address_selection: "Searched address match",
+          map_click_fallback: "Map pin",
         };
-        return sourceLabelMap[String(source || "")] || "Suggested address match";
+        return sourceLabelMap[String(source || "")] || "Suggested match";
       }
 
       function getLocationToUse() {
@@ -4784,9 +4806,9 @@
         const confirmBtn = document.getElementById("confirmAddressBtn");
         if (!confirmBtn) return;
         if (verificationAcceptedSelectionSource === "suggested_geocode" && !verificationHasUnappliedPending) {
-          confirmBtn.textContent = "Use suggested match and continue";
+          confirmBtn.textContent = "Continue with suggested match";
         } else {
-          confirmBtn.textContent = "Use selected location and continue";
+          confirmBtn.textContent = "Continue with selected location";
         }
         confirmBtn.disabled = isAssessmentSubmitting || !getLocationToUse() || verificationHasUnappliedPending;
 
@@ -4815,7 +4837,7 @@
         const adjustPanel = document.getElementById("verifyAdjustLocationPanel");
         if (adjustPanel) adjustPanel.open = true;
         verificationSelectedCandidateId = null;
-        setManualCandidateStatus("Map selection is active. Place the pin on your home, then click \"Use updated pin\".");
+        setManualCandidateStatus("Map mode is active. Place the pin on your home, then click \"Apply this pin\".");
         if (!verificationPendingCoords && verifyLocationMap) {
           const center = verifyLocationMap.getCenter();
           setVerificationSelectedLocation({
@@ -4843,15 +4865,15 @@
         const suggested = verificationSuggestedCoords;
 
         if (!pending) {
-          coordsEl.textContent = "Current map point: -";
+          coordsEl.textContent = "Map pin: -";
         } else {
-          coordsEl.textContent = `Current map point: ${formatCoordinate(pending.latitude)}, ${formatCoordinate(pending.longitude)}`;
+          coordsEl.textContent = `Map pin: ${formatCoordinate(pending.latitude)}, ${formatCoordinate(pending.longitude)}`;
         }
 
         if (!accepted) {
-          sourceEl.textContent = "Location to use: none selected";
+          sourceEl.textContent = "Location we'll use: none selected";
         } else {
-          sourceEl.textContent = `Location to use: ${getLocationSourceLabel(verificationAcceptedSelectionSource)}`;
+          sourceEl.textContent = `Location we'll use: ${getLocationSourceLabel(verificationAcceptedSelectionSource)}`;
         }
 
         if (suggested && pending) {
@@ -4859,13 +4881,13 @@
             { lat: suggested.latitude, lon: suggested.longitude },
             { lat: pending.latitude, lon: pending.longitude }
           );
-          distanceEl.textContent = `Distance from suggested: ${distanceM.toFixed(distanceM >= 100 ? 0 : 1)} m`;
+          distanceEl.textContent = `Distance from suggested match: ${distanceM.toFixed(distanceM >= 100 ? 0 : 1)} m`;
         } else {
-          distanceEl.textContent = "Distance from suggested: n/a";
+          distanceEl.textContent = "Distance from suggested match: n/a";
         }
 
         if (!verificationCoverageResult) {
-          coverageEl.textContent = "Coverage status: checking...";
+          coverageEl.textContent = "Coverage check: checking...";
         } else {
           const coverage = verificationCoverageResult;
           const hasCoverageFlag = (
@@ -4875,23 +4897,23 @@
             || coverage?.covered === false
           );
           if (!hasCoverageFlag) {
-            coverageEl.textContent = "Coverage status: unknown (checking...)";
+            coverageEl.textContent = "Coverage check: still checking...";
           } else if (coverage.coverage_available === true || coverage.covered === true) {
             const regionName = coverage.display_name || coverage.selected_region_display_name || coverage.resolved_region_id || "unknown";
             const regionId = coverage.resolved_region_id || coverage.region_id || "";
-            coverageEl.textContent = `Coverage status: detailed local coverage available (${regionName}${regionId ? ` / ${regionId}` : ""})`;
+            coverageEl.textContent = `Coverage check: detailed local coverage available (${regionName}${regionId ? ` / ${regionId}` : ""})`;
           } else {
-            coverageEl.textContent = "Coverage status: detailed local coverage is limited here";
+            coverageEl.textContent = "Coverage check: detailed local coverage is limited here";
           }
         }
 
         if (verificationHasUnappliedPending) {
-          applyStateEl.textContent = "You selected a new point. Click \"Use updated pin\" to apply it.";
+          applyStateEl.textContent = "You moved the pin. Click \"Apply this pin\" to use it.";
           applyStateEl.style.color = "var(--warn)";
         } else {
           applyStateEl.textContent = accepted
             ? (verificationAcceptedSelectionSource === "suggested_geocode"
-              ? "Using the suggested address match."
+              ? "Using the suggested match."
               : "Using your selected location.")
             : "Select a valid location to continue.";
           applyStateEl.style.color = accepted ? "var(--good)" : "var(--muted)";
@@ -4907,12 +4929,12 @@
         if (!warningBox) return;
         const warnings = buildVerificationWarnings(enteredAddress, verification, verificationCoverageResult);
         if (verificationHasUnappliedPending) {
-          warnings.unshift("A new map point is selected but not applied yet.");
+          warnings.unshift("You moved the map pin but have not applied it yet.");
         }
         if (warnings.length > 0) {
           const compactWarnings = warnings.slice(0, 2);
           if (warnings.length > 2) {
-            compactWarnings.push(`+${warnings.length - 2} more checks in match details.`);
+            compactWarnings.push(`+${warnings.length - 2} more notes in match details.`);
           }
           warningBox.style.display = "block";
           warningBox.textContent = compactWarnings.join("\n");
@@ -4981,7 +5003,7 @@
         const lat = Number(latitude);
         const lon = Number(longitude);
         if (!isValidCoordinatePair(lat, lon)) {
-          setVerificationModalError("Selected location is invalid. Please choose a valid point.");
+          setVerificationModalError("This location is not valid. Please pick a valid map point.");
           return;
         }
         setVerificationModalError("");
@@ -5010,13 +5032,13 @@
 
       function applyVerificationPendingLocation() {
         if (!verificationPendingCoords) {
-          setVerificationModalError("Select a valid map point first.");
+          setVerificationModalError("Pick a valid map point first.");
           return;
         }
         const lat = Number(verificationPendingCoords.latitude);
         const lon = Number(verificationPendingCoords.longitude);
         if (!isValidCoordinatePair(lat, lon)) {
-          setVerificationModalError("Selected location is invalid. Please choose a valid point.");
+          setVerificationModalError("This location is not valid. Please pick a valid map point.");
           return;
         }
         verificationAcceptedCoords = { latitude: lat, longitude: lon };
@@ -5052,11 +5074,11 @@
               || coverage?.covered === false
             );
             if (!hasCoverageFlag) {
-              regionEl.textContent = "Detailed coverage area: checking...";
+              regionEl.textContent = "Coverage area: checking...";
             } else if (coverage?.coverage_available === true || coverage?.covered === true) {
               const regionName = coverage.display_name || coverage.selected_region_display_name || coverage.resolved_region_id || "unknown";
               const regionId = coverage.resolved_region_id || coverage.region_id || null;
-              regionEl.textContent = `Detailed coverage area: ${regionName}${regionId ? ` (${regionId})` : ""}`;
+              regionEl.textContent = `Coverage area: ${regionName}${regionId ? ` (${regionId})` : ""}`;
             } else {
               regionEl.textContent = "Detailed local coverage is limited for this location";
             }
@@ -5134,14 +5156,13 @@
         }
         if (geocoderSourceEl) geocoderSourceEl.textContent = geocoderSource;
         if (confidenceEl) {
-          const status = verification?.geocode_status || "unknown";
-          confidenceEl.textContent = `${String(confidence)} (status: ${status})`;
+          confidenceEl.textContent = humanizeToken(String(confidence || "unknown"));
         }
         if (regionEl) {
           if (!hasCoverageFlag) {
-            regionEl.textContent = "Detailed coverage area: checking...";
+            regionEl.textContent = "Coverage area: checking...";
           } else if (hasCoverage) {
-            regionEl.textContent = `Detailed coverage area: ${regionName || "unknown"}${regionId ? ` (${regionId})` : ""}`;
+            regionEl.textContent = `Coverage area: ${regionName || "unknown"}${regionId ? ` (${regionId})` : ""}`;
           } else {
             regionEl.textContent = "Detailed local coverage is limited for this location";
           }
@@ -5203,7 +5224,7 @@
           if (manualSection) manualSection.open = true;
         }
         if (shouldShowManual) {
-          setManualCandidateStatus("Please choose the best match before continuing.");
+          setManualCandidateStatus("Choose the best match below, then continue.");
         } else {
           setManualCandidateStatus("");
         }
