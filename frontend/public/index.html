@@ -1168,12 +1168,12 @@
           <p class="decision-cta-label">Recommended next step</p>
           <button id="primaryDecisionCtaBtn" type="button" class="decision-cta-btn">Run assessment to see next steps</button>
           <p id="primaryDecisionCtaHint" class="decision-cta-hint muted">Complete an assessment first, then run a before/after mitigation simulation.</p>
-          <p class="action-priority-note">This is the primary action. Additional report and diagnostic tools are available below.</p>
+          <p class="action-priority-note">This is the main next step. More report and detail options are available below.</p>
         </div>
         <details id="homeownerDecisionAdvancedDetails" class="mt-sm">
-          <summary>Advanced details</summary>
+          <summary>More detail (advanced)</summary>
           <ul id="homeownerDecisionAdvancedList">
-            <li class="muted">Subscores, diagnostics, evidence, and calibration-compatible details are preserved and available in advanced sections.</li>
+            <li class="muted">Detailed scores, evidence notes, and compatibility fields are preserved in advanced sections.</li>
           </ul>
         </details>
       </section>
@@ -1187,17 +1187,17 @@
 
       <section id="supportingInsightsSection" class="card secondary-panel more-options-item">
         <details id="supportingInsightsPanel">
-          <summary>Detailed risk breakdown</summary>
-          <p class="section-help">Expanded score, drivers, and action context for homeowners who want more detail.</p>
+          <summary>Risk details</summary>
+          <p class="section-help">See a deeper breakdown of your score, key drivers, and action context.</p>
           <div class="results mt-sm">
             <div class="card result-primary">
               <h3>Risk Score Snapshot</h3>
-              <p class="section-help">Risk blends site hazard and home ignition vulnerability when both components are supported by evidence.</p>
+              <p class="section-help">This score combines area wildfire exposure and home vulnerability when enough evidence is available.</p>
               <div id="riskScore" class="score">-</div>
               <div id="riskLabel" class="muted">Run an assessment to see your score.</div>
               <div class="summary-meta">
                 <div class="summary-item">
-                  <span>Assessment Specificity</span>
+                  <span>Estimate precision</span>
                   <strong id="specificityKpi">Pending</strong>
                 </div>
                 <div class="summary-item">
@@ -1215,7 +1215,7 @@
 
             <div class="card">
               <h3>Risk Drivers</h3>
-              <p class="section-help">What's driving this result, based on observed local and regional evidence.</p>
+              <p class="section-help">What is driving this result based on nearby conditions and property-level signals.</p>
               <div class="insight-group">
                 <div class="mini-label">Top risk drivers</div>
                 <h3>Around the Home</h3>
@@ -1231,7 +1231,7 @@
 
             <div class="card">
               <h3>Action Details</h3>
-              <p class="section-help">What to do first: prioritized actions focused on reduction impact and practical effort.</p>
+              <p class="section-help">Recommended actions ranked by impact and practical effort.</p>
               <div class="mini-label">Recommended next steps</div>
               <p id="nextStepsText">Focus on the top actions first.</p>
               <ul id="mitigations"><li class="muted">Recommendations will appear after assessment.</li></ul>
@@ -1243,14 +1243,14 @@
       <section id="confidenceSection" class="card trust-card secondary-panel more-options-item">
         <details id="confidenceDeepDivePanel">
           <summary>How certain this result is</summary>
-          <p class="section-help">How reliable this assessment is, and where data limits may affect precision.</p>
+          <p class="section-help">How reliable this estimate is, and where limited data may affect precision.</p>
           <div class="trust-overview">
             <div class="trust-value">
               <span>Assessment confidence</span>
               <strong id="confidenceAtGlance">Pending</strong>
             </div>
             <div class="trust-value">
-              <span>Specificity level</span>
+              <span>Precision level</span>
               <strong id="specificityAtGlance">Pending</strong>
             </div>
           </div>
@@ -1259,7 +1259,7 @@
           <div class="mini-label">Limitations and trust notes</div>
           <div id="flagsPrimary"><span class="pill">Trust notes will appear after assessment</span></div>
           <div class="result-divider"></div>
-          <div class="mini-label">Measured vs Estimated</div>
+          <div class="mini-label">What we confirmed vs estimated</div>
           <ul id="homeownerLimitationsBlock"><li class="muted">Run an assessment to see what was observed, estimated, and missing.</li></ul>
         </details>
       </section>
@@ -1291,8 +1291,8 @@
           <p id="simulationRunStatus" class="status-line tone-muted sim-run-status">Run an assessment, choose a quick scenario, then run simulation.</p>
 
           <details id="simulationAdvancedPanel" class="mt-sm">
-            <summary>Customize scenario (advanced)</summary>
-            <p class="section-help">Fine-tune scenario inputs manually. You can still run a custom simulation at any time.</p>
+            <summary>Customize scenario (optional details)</summary>
+            <p class="section-help">Adjust scenario inputs manually if you want a more custom what-if run.</p>
 
             <div class="row mt-sm">
               <div>
@@ -1392,7 +1392,7 @@
 
       <section id="improveSection" class="card secondary-panel more-options-item">
         <details id="improvePanel">
-          <summary>Improve this estimate (optional)</summary>
+          <summary>Improve estimate accuracy (optional)</summary>
           <p class="section-help">Add any missing details, then click <strong>Re-run With Updated Details</strong> to tighten this screening.</p>
           <h3 class="subsection-title">Suggested Improvements</h3>
           <ul id="improveSuggestions"><li class="muted">Suggestions will appear after assessment.</li></ul>
@@ -1412,7 +1412,7 @@
           <details id="homeownerReportPreviewPanel" class="mt-sm">
             <summary>Preview report highlights</summary>
             <p id="homeownerReportStatus" class="status-line tone-muted">Open this panel to load report highlights.</p>
-            <ul id="homeownerReportHighlights"><li class="muted">No report preview yet.</li></ul>
+            <ul id="homeownerReportHighlights"><li class="muted">No report highlights yet.</li></ul>
             <details id="homeownerReportMoreDetails" class="mt-sm">
               <summary>More report details</summary>
               <ul id="homeownerReportSecondary"><li class="muted">Additional details will appear here when available.</li></ul>
@@ -1428,7 +1428,7 @@
 
       <section id="mapSection" class="card secondary-panel more-options-item">
         <details id="mapPanel">
-          <summary>Property map (optional)</summary>
+          <summary>Property map view (optional)</summary>
           <p class="muted">See property geometry, defensible-space context, and nearby wildfire layers in one map view.</p>
           <div id="assessmentMap"></div>
           <p id="mapEmptyText" class="map-empty">Run an assessment to load map layers.</p>
@@ -1441,12 +1441,12 @@
 
       <section id="advancedSection" class="card advanced-secondary secondary-panel">
         <details id="advancedInternalDetailsPanel">
-          <summary>Technical details (advanced)</summary>
-          <p class="section-help">Use this panel for calibration-compatible and technical outputs beyond homeowner-first guidance.</p>
+          <summary>Advanced technical details</summary>
+          <p class="section-help">Use this panel for detailed model outputs beyond the homeowner summary.</p>
           <ul id="advancedCoverageList">
             <li>Factor subscores and weighted contributions</li>
-            <li>Confidence diagnostics, assumptions, and evidence context</li>
-            <li>Calibration-compatible and legacy compatibility outputs</li>
+            <li>Confidence diagnostics, assumptions, and evidence notes</li>
+            <li>Compatibility and legacy output fields</li>
           </ul>
           <div class="row" data-operator-only="true">
             <div>
@@ -1472,16 +1472,16 @@
           <h3 class="subsection-title">How to Improve Confidence</h3>
           <ul id="confidenceActions"><li class="muted">Confidence guidance will appear after assessment.</li></ul>
 
-          <h3 class="subsection-title">Technical Factor Breakdown</h3>
+          <h3 class="subsection-title">Factor score breakdown</h3>
           <table>
             <thead><tr><th>Factor</th><th>Score</th><th>Contribution</th></tr></thead>
-            <tbody id="submodels"><tr><td colspan="3" class="muted">Technical factor details will appear after assessment.</td></tr></tbody>
+            <tbody id="submodels"><tr><td colspan="3" class="muted">Detailed factor data will appear after assessment.</td></tr></tbody>
           </table>
 
-          <h3 class="subsection-title">Home Hardening Readiness (Primary)</h3>
+          <h3 class="subsection-title">Home hardening score</h3>
           <p id="readinessText" class="muted">-</p>
 
-          <h3 class="subsection-title">Property-Level Context</h3>
+          <h3 class="subsection-title">Property context</h3>
           <p id="propertyContextText" class="muted">Property-level context will appear after assessment.</p>
           <p id="regionResolutionText" class="muted" style="display:none;">Region resolution details unavailable.</p>
           <p id="geocodeDebugText" class="muted" style="display:none;">Geocode details unavailable.</p>
@@ -3203,7 +3203,7 @@
 
         const beforeAfterLines = [];
         if (beforeStatus && afterStatus) {
-          beforeAfterLines.push({ label: "Screening status shift", value: `${beforeStatus} → ${afterStatus}` });
+          beforeAfterLines.push({ label: "Status change", value: `${beforeStatus} → ${afterStatus}` });
         }
         if (beforeAfterSummary) {
           beforeAfterLines.push({ value: String(beforeAfterSummary).trim() });
@@ -3212,7 +3212,7 @@
           .map((row) => String(row?.action || "").trim())
           .find(Boolean);
         if (beforeAfterDriver) {
-          beforeAfterLines.push({ label: "Top action driving change", value: beforeAfterDriver });
+          beforeAfterLines.push({ label: "Top action behind this change", value: beforeAfterDriver });
         }
         clearNode(beforeAfterEl);
         if (beforeAfterLines.length === 0) {
@@ -3241,7 +3241,7 @@
 
         const advancedLines = topNonEmptyLines(advancedRows, 5);
         setListItems(advancedEl, advancedLines, {
-          fallbackText: "Subscores, diagnostics, evidence, and calibration-compatible details are preserved in advanced sections.",
+          fallbackText: "Detailed scores and evidence notes are available in advanced sections.",
         });
         updatePrimaryDecisionCta(normalizedStatus);
       }
@@ -3306,10 +3306,10 @@
           limitations,
           methodology: methodology || "Rule-based screening guidance using observable wildfire and property factors; not a prediction or guarantee of insurer underwriting approval.",
           advancedRows: [
-            "Technical subscores, diagnostics, and compatibility outputs are available in Advanced Details.",
+            "Detailed factor scores and compatibility fields are available in advanced details.",
             showOperatorControls
-              ? "Operator export and diagnostics tools are available in this mode."
-              : "Operator export and diagnostics tools are hidden in homeowner mode.",
+              ? "Operator export and internal diagnostics are available in this mode."
+              : "Operator export and internal diagnostics are hidden in homeowner mode.",
           ],
         });
       }
@@ -3329,7 +3329,7 @@
           statusEl.textContent = reason || "Open this panel to load report highlights.";
         }
         if (highlightsEl) {
-          setListItems(highlightsEl, [], { fallbackText: "No report preview yet." });
+          setListItems(highlightsEl, [], { fallbackText: "No report highlights yet." });
         }
         if (secondaryEl) {
           setListItems(secondaryEl, [], { fallbackText: "Additional details will appear here when available." });
@@ -3391,7 +3391,7 @@
         if (!statusEl || !highlightsEl || !secondaryEl) return;
 
         if (!report || typeof report !== "object") {
-          statusEl.textContent = "We couldn’t load the report preview yet.";
+          statusEl.textContent = "We couldn’t load report highlights yet.";
           setListItems(highlightsEl, [], { fallbackText: "Report highlights will appear after assessment." });
           setListItems(secondaryEl, [], { fallbackText: "Additional details will appear here when available." });
           if (moreDetailsEl) moreDetailsEl.open = false;
@@ -3472,16 +3472,16 @@
           advancedRows.push(advancedNote);
         }
         if (report?.internal_calibration_debug?.subscores && typeof report.internal_calibration_debug.subscores === "object") {
-          advancedRows.push("Subscores and weighted contributions are preserved for calibration and model review.");
+          advancedRows.push("Detailed factor scores and weighted impacts are available for advanced review.");
         }
         if (report?.internal_calibration_debug?.diagnostics && typeof report.internal_calibration_debug.diagnostics === "object") {
-          advancedRows.push("Diagnostics, confidence internals, and evidence-quality context are preserved.");
+          advancedRows.push("Detailed diagnostics and evidence-quality notes are available for advanced review.");
         }
         if (
           report?.metadata?.optional_public_outcome_calibration
           && typeof report.metadata.optional_public_outcome_calibration === "object"
         ) {
-          advancedRows.push("Optional public-outcome calibration metadata is included for advanced review.");
+          advancedRows.push("Additional calibration metadata is included for advanced review.");
         }
         advancedRows.push(
           showOperatorControls
@@ -3505,8 +3505,8 @@
         });
 
         statusEl.textContent = statusLabel
-          ? `${statusLabel}: ${headline || "homeowner report loaded."}`
-          : (headline || "Homeowner report loaded.");
+          ? `${statusLabel}: ${headline || "report highlights loaded."}`
+          : (headline || "Report highlights loaded.");
         const rows = [];
         if (statusLabel) {
           rows.push({ label: "Screening status", value: statusLabel, pill: true });
@@ -3517,7 +3517,7 @@
             .map((item) => String(item || "").trim())
             .filter(Boolean)
             .join("; ");
-          if (reasonsText) rows.push({ label: "Screening-status reasons", value: reasonsText });
+          if (reasonsText) rows.push({ label: "Why this status", value: reasonsText });
         }
         if (headline) {
           rows.push({ label: "Bottom line", value: `${headline}${riskBand ? ` (${riskBand})` : ""}` });
@@ -3526,7 +3526,7 @@
         const specificityMeaning = String(specificity?.what_this_means || "").trim();
         if (specificityHeadline || specificityMeaning) {
           rows.push({
-            label: "Specificity",
+            label: "Estimate precision",
             value: `${specificityHeadline || "Estimate"}${specificityMeaning ? ` — ${specificityMeaning}` : ""}`,
           });
         }
@@ -3544,7 +3544,7 @@
         }
         if (whatFirst) rows.push({ label: "What to do first", value: whatFirst });
         if (beforeStatus && afterStatus) {
-          rows.push({ label: "Screening status shift", value: `${beforeStatus} → ${afterStatus}` });
+          rows.push({ label: "Status change", value: `${beforeStatus} → ${afterStatus}` });
         }
         if (beforeAfterActions.length > 0) {
           const actionsText = beforeAfterActions
@@ -3558,8 +3558,8 @@
             .join("; ");
           if (actionsText) rows.push({ label: "Actions driving change", value: actionsText });
         }
-        if (beforeAfterText) rows.push({ label: "What-if summary", value: beforeAfterText });
-        if (limitations) rows.push({ label: "Confidence/limitations", value: limitations });
+        if (beforeAfterText) rows.push({ label: "Scenario summary", value: beforeAfterText });
+        if (limitations) rows.push({ label: "Confidence notes", value: limitations });
         setListItems(highlightsEl, rows, {
           fallbackText: "Report highlights will appear after assessment.",
           renderItem: (li, row) => {
@@ -3587,7 +3587,7 @@
         const secondaryRows = [];
         if (Array.isArray(confidence?.why_confidence_is_limited) && confidence.why_confidence_is_limited.length > 0) {
           secondaryRows.push({
-            label: "Confidence summary",
+            label: "What limits confidence",
             value: String(confidence.why_confidence_is_limited[0] || "").trim(),
           });
         }
@@ -3599,16 +3599,16 @@
         }
         if (focus?.advanced_details_hint) {
           secondaryRows.push({
-            label: "Advanced details",
+            label: "More detail",
             value: String(focus.advanced_details_hint || "").trim(),
           });
         }
         const advancedDetailsNote = String(report?.advanced_details?.note || "").trim();
         if (advancedDetailsNote) {
-          secondaryRows.push({ label: "Advanced section", value: advancedDetailsNote });
+          secondaryRows.push({ label: "Advanced section note", value: advancedDetailsNote });
         }
         if (statusMethodologyNote) {
-          secondaryRows.push({ label: "Status methodology", value: statusMethodologyNote });
+          secondaryRows.push({ label: "How status is interpreted", value: statusMethodologyNote });
         }
         setListItems(secondaryEl, secondaryRows, {
           fallbackText: "Additional details will appear here when available.",
@@ -3650,7 +3650,7 @@
           renderHomeownerReportPreview(latestHomeownerReport);
           return;
         }
-        statusEl.textContent = "Loading homeowner report preview...";
+        statusEl.textContent = "Loading report highlights...";
         setFlowStatus("Step 4 of 4: Loading report highlights...", "muted");
         try {
           const report = await api(`/report/${assessmentId}/homeowner`);
@@ -3670,7 +3670,7 @@
           reportPreviewLoadedAssessmentId = null;
           statusEl.textContent = toHomeownerFriendlyError(
             err?.message,
-            "We couldn’t load the report preview yet. You can still continue with your assessment results."
+            "We couldn’t load report highlights yet. You can still continue with your assessment results."
           );
           setListItems(highlightsEl, [], {
             fallbackText: "Try the printable report button again after rerunning the assessment.",
@@ -3944,8 +3944,8 @@
         } else {
           const fallbackScore = Number(data?.confidence_score);
           document.getElementById("confidenceText").textContent = Number.isFinite(fallbackScore)
-            ? `Confidence score: ${fallbackScore.toFixed(1)} / 100.`
-            : "Confidence score: not available.";
+            ? `Confidence estimate: ${fallbackScore.toFixed(1)} / 100.`
+            : "Confidence estimate: not available.";
         }
         const confidenceAtGlanceEl = document.getElementById("confidenceAtGlance");
         if (confidenceAtGlanceEl) {
@@ -3956,7 +3956,7 @@
             const fallbackScore = Number(data?.confidence_score);
             confidenceAtGlanceEl.textContent = Number.isFinite(fallbackScore)
               ? `Confidence (${fallbackScore.toFixed(1)}/100)`
-              : (confidenceHeadline || "Confidence unavailable");
+              : (confidenceHeadline || "Confidence not available");
           }
         }
 
@@ -3973,7 +3973,7 @@
           : (Array.isArray(data?.what_was_missing) ? data.what_was_missing : []);
         setListItems(document.getElementById("assumptions"), estimatedRows, {
           limit: 5,
-          fallbackText: "No estimate notes available.",
+          fallbackText: "No estimated items were listed.",
         });
         const confidenceActionRows = (Array.isArray(homeownerSummary?.confidence_improvement_actions) && homeownerSummary.confidence_improvement_actions.length > 0
           ? homeownerSummary.confidence_improvement_actions
@@ -3984,7 +3984,7 @@
               : (Array.isArray(data?.recommended_data_improvements) ? data.recommended_data_improvements : []))));
         setListItems(document.getElementById("confidenceActions"), confidenceActionRows, {
           limit: 6,
-          fallbackText: "No additional confidence actions are currently suggested.",
+          fallbackText: "No additional ways to improve confidence are currently suggested.",
         });
         renderHomeownerLimitationsBlock({
           observedRows,
@@ -4005,14 +4005,14 @@
         setPillSpans(document.getElementById("flags"), chips);
         const flagsPrimaryEl = document.getElementById("flagsPrimary");
         if (flagsPrimaryEl) {
-          setPillSpans(flagsPrimaryEl, chips, "No major limitations flagged");
+          setPillSpans(flagsPrimaryEl, chips, "No major confidence limits flagged");
         }
         const confidenceSummaryTextEl = document.getElementById("confidenceSummaryText");
         if (confidenceSummaryTextEl) {
           const firstLimitation = chips?.[0]?.detail || chips?.[0]?.label || "";
           const summary = String(confidenceHeadline || "").trim()
-            || (firstLimitation ? `Assessment confidence is influenced by: ${firstLimitation}` : "");
-          confidenceSummaryTextEl.textContent = summary || "Confidence details are available in the assessment output.";
+            || (firstLimitation ? `This estimate is limited by: ${firstLimitation}` : "");
+          confidenceSummaryTextEl.textContent = summary || "More confidence details are available below.";
         }
 
         const seenFactors = new Set();
@@ -4177,7 +4177,7 @@
         if (confidenceAtGlanceEl) confidenceAtGlanceEl.textContent = "Not available";
         if (specificityAtGlanceEl) specificityAtGlanceEl.textContent = "Regional estimate";
         if (confidenceSummaryTextEl) {
-          confidenceSummaryTextEl.textContent = "Detailed local coverage is limited for this address, so confidence and specificity are lower.";
+          confidenceSummaryTextEl.textContent = "Detailed local coverage is limited for this address, so confidence and precision are lower.";
         }
         if (flagsPrimaryEl) {
           setPillSpans(
