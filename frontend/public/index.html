@@ -23,6 +23,10 @@
         --warn: #b45309;
         --bad: #b91c1c;
         --shadow: 0 6px 20px rgba(19, 39, 54, 0.08);
+        --motion-fast: 220ms;
+        --motion-med: 360ms;
+        --motion-slow: 560ms;
+        --motion-ease: cubic-bezier(0.22, 0.61, 0.36, 1);
       }
       * {
         box-sizing: border-box;
@@ -63,6 +67,7 @@
         border-radius: 16px;
         padding: 1.05rem 1.05rem 1rem;
         box-shadow: var(--shadow);
+        transition: border-color var(--motion-fast) var(--motion-ease), box-shadow var(--motion-fast) var(--motion-ease), transform var(--motion-fast) var(--motion-ease);
       }
       .hero-card {
         position: relative;
@@ -172,6 +177,46 @@
       .homeowner-toast.show {
         display: block;
       }
+      .mobile-next-step-bar {
+        position: fixed;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        z-index: 1500;
+        border-top: 1px solid #d8e3ea;
+        background: rgba(255, 255, 255, 0.98);
+        box-shadow: 0 -8px 24px rgba(20, 36, 48, 0.16);
+        padding: 0.5rem 0.7rem calc(0.55rem + env(safe-area-inset-bottom));
+        transform: translateY(110%);
+        opacity: 0;
+        pointer-events: none;
+        transition: transform var(--motion-med) var(--motion-ease), opacity var(--motion-fast) var(--motion-ease);
+      }
+      .mobile-next-step-bar.show {
+        transform: translateY(0);
+        opacity: 1;
+        pointer-events: auto;
+      }
+      .mobile-next-step-inner {
+        margin: 0 auto;
+        max-width: 1140px;
+      }
+      .mobile-next-step-label {
+        font-size: 0.7rem;
+        text-transform: uppercase;
+        letter-spacing: 0.045em;
+        color: #6a8191;
+        font-weight: 700;
+      }
+      .mobile-next-step-summary {
+        margin-top: 0.16rem;
+        font-size: 0.86rem;
+        color: #233946;
+      }
+      .mobile-next-step-btn {
+        margin-top: 0.42rem;
+        width: 100%;
+      }
       .row {
         display: grid;
         gap: 0.72rem;
@@ -185,6 +230,7 @@
       .homeowner-first-card {
         border-color: #c6d9e3;
         background: linear-gradient(160deg, #ffffff 0%, #f4fafd 62%, #fffaf7 100%);
+        transition: border-color var(--motion-med) var(--motion-ease), box-shadow var(--motion-med) var(--motion-ease), transform var(--motion-med) var(--motion-ease);
       }
       .homeowner-first-head {
         display: flex;
@@ -259,6 +305,10 @@
         padding: 0.5rem 0.55rem;
         color: #344958;
         font-size: 0.92rem;
+        transition: border-color var(--motion-fast) var(--motion-ease), box-shadow var(--motion-fast) var(--motion-ease), transform var(--motion-fast) var(--motion-ease);
+      }
+      .before-after-callout.is-revealing {
+        animation: calloutReveal var(--motion-med) var(--motion-ease);
       }
       .homeowner-first-note {
         margin-top: 0.62rem;
@@ -288,6 +338,12 @@
       .homeowner-first-card.is-active {
         border-color: #d2a691;
         box-shadow: 0 8px 24px rgba(145, 56, 36, 0.17);
+      }
+      .homeowner-first-card.is-revealing {
+        animation: summaryReveal var(--motion-slow) var(--motion-ease);
+      }
+      .homeowner-first-card.is-active-pulse {
+        animation: sectionEmphasis 1200ms var(--motion-ease);
       }
       .homeowner-first-card.is-active .decision-cta-block {
         border-color: #d8ab93;
@@ -463,6 +519,10 @@
       .flow-status-line {
         margin-top: 0.52rem;
         font-size: 0.86rem;
+        transition: border-color var(--motion-fast) var(--motion-ease), background-color var(--motion-fast) var(--motion-ease), color var(--motion-fast) var(--motion-ease);
+      }
+      .flow-status-line.is-updated {
+        animation: flowStatusPulse var(--motion-med) var(--motion-ease);
       }
       .more-options-item {
         display: none;
@@ -697,6 +757,13 @@
       .sim-box {
         margin-top: 0.65rem;
         color: var(--text);
+        transition: border-color var(--motion-fast) var(--motion-ease), background-color var(--motion-fast) var(--motion-ease), box-shadow var(--motion-fast) var(--motion-ease), transform var(--motion-fast) var(--motion-ease), opacity var(--motion-fast) var(--motion-ease);
+      }
+      .sim-box.is-revealing {
+        animation: simulationReveal var(--motion-med) var(--motion-ease);
+      }
+      .sim-box.is-loading {
+        opacity: 0.9;
       }
       .simulation-preset-grid {
         margin-top: 0.5rem;
@@ -746,6 +813,97 @@
       }
       .sim-result-advanced {
         margin-top: 0.55rem;
+      }
+      #simulationPlannerSection.step-active {
+        border-color: #d6a893;
+        box-shadow: 0 9px 24px rgba(145, 56, 36, 0.14);
+      }
+      .card.panel-spotlight,
+      .modal-card.panel-spotlight {
+        border-color: #c7d9e4;
+        box-shadow: 0 9px 24px rgba(35, 79, 99, 0.12);
+      }
+      .secondary-panel details[open] > :not(summary),
+      .home-details-toggle[open] > :not(summary),
+      .verify-optional-panel[open] > :not(summary),
+      .verify-manual[open] > :not(summary) {
+        animation: panelReveal var(--motion-fast) var(--motion-ease);
+      }
+      @keyframes summaryReveal {
+        from {
+          opacity: 0.62;
+          transform: translateY(10px);
+        }
+        to {
+          opacity: 1;
+          transform: translateY(0);
+        }
+      }
+      @keyframes simulationReveal {
+        from {
+          opacity: 0.56;
+          transform: translateY(8px);
+        }
+        to {
+          opacity: 1;
+          transform: translateY(0);
+        }
+      }
+      @keyframes flowStatusPulse {
+        0% {
+          box-shadow: 0 0 0 0 rgba(35, 79, 99, 0.2);
+        }
+        100% {
+          box-shadow: 0 0 0 8px rgba(35, 79, 99, 0);
+        }
+      }
+      @keyframes sectionEmphasis {
+        0% {
+          transform: translateY(-1px);
+        }
+        45% {
+          transform: translateY(-3px);
+        }
+        100% {
+          transform: translateY(0);
+        }
+      }
+      @keyframes calloutReveal {
+        from {
+          opacity: 0.62;
+          transform: translateY(6px);
+        }
+        to {
+          opacity: 1;
+          transform: translateY(0);
+        }
+      }
+      @keyframes panelReveal {
+        from {
+          opacity: 0.72;
+          transform: translateY(-3px);
+        }
+        to {
+          opacity: 1;
+          transform: translateY(0);
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .card,
+        .modal-card,
+        .flow-status-line,
+        .homeowner-first-card,
+        .before-after-callout,
+        .sim-box,
+        .card.panel-spotlight,
+        .modal-card.panel-spotlight,
+        .secondary-panel details[open] > :not(summary),
+        .home-details-toggle[open] > :not(summary),
+        .verify-optional-panel[open] > :not(summary),
+        .verify-manual[open] > :not(summary) {
+          transition: none !important;
+          animation: none !important;
+        }
       }
       details {
         border-top: 1px solid var(--line);
@@ -801,6 +959,7 @@
         box-shadow: 0 12px 28px rgba(0, 0, 0, 0.2);
         max-height: calc(100dvh - 2rem);
         overflow-y: auto;
+        transition: border-color var(--motion-fast) var(--motion-ease), box-shadow var(--motion-fast) var(--motion-ease);
       }
       .modal-title {
         margin-bottom: 0.45rem;
@@ -1026,6 +1185,19 @@
           right: 0.8rem;
           bottom: 0.8rem;
           max-width: calc(100vw - 1.6rem);
+        }
+      }
+      @media (max-width: 860px) {
+        .mobile-next-step-visible .wrap {
+          padding-bottom: 7rem;
+        }
+        .mobile-next-step-visible .homeowner-toast {
+          bottom: calc(6.9rem + env(safe-area-inset-bottom));
+        }
+      }
+      @media (min-width: 861px) {
+        .mobile-next-step-bar {
+          display: none !important;
         }
       }
     </style>
@@ -1597,6 +1769,14 @@
       </div>
     </div>
 
+    <div id="mobileNextStepBar" class="mobile-next-step-bar" aria-live="polite" hidden>
+      <div class="mobile-next-step-inner">
+        <div class="mobile-next-step-label">Next best step</div>
+        <p id="mobileNextStepSummary" class="mobile-next-step-summary">Run an assessment to unlock next steps.</p>
+        <button id="mobileNextStepBtn" type="button" class="mobile-next-step-btn">Run assessment</button>
+      </div>
+    </div>
+
     <p id="homeownerToast" class="status-line tone-muted homeowner-toast" role="status" aria-live="polite"></p>
 
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
@@ -1654,6 +1834,8 @@
       let homeownerToastTimer = null;
       let reportPreviewLoadedAssessmentId = null;
       let homeownerSummaryFocusTimer = null;
+      let mobileNextStepAction = "";
+      const motionClassTimers = new WeakMap();
 
       const mapLayerStyle = {
         property_anchor_point: {
@@ -1946,24 +2128,52 @@
         });
       }
 
+      function prefersReducedMotion() {
+        return !!(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
+      }
+
+      function applyTransientMotionClass(el, className, durationMs = 900) {
+        if (!el || !className || prefersReducedMotion()) return;
+        const timers = motionClassTimers.get(el) || {};
+        if (timers[className]) {
+          clearTimeout(timers[className]);
+        }
+        el.classList.remove(className);
+        // Force style recalculation so repeated class adds retrigger animation.
+        void el.offsetWidth;
+        el.classList.add(className);
+        timers[className] = setTimeout(() => {
+          el.classList.remove(className);
+          delete timers[className];
+        }, durationMs);
+        motionClassTimers.set(el, timers);
+      }
+
       function setFlowStatus(message, tone = "muted") {
         const el = document.getElementById("flowStatusLine");
         if (!el) return;
         el.textContent = String(message || "").trim();
         applyToneClass(el, tone);
+        if (el.textContent) {
+          applyTransientMotionClass(el, "is-updated", 620);
+        }
       }
 
       function setHomeownerSummaryActive(active = false) {
         const section = document.getElementById("homeownerSummarySection");
         if (!section) return;
         section.classList.toggle("is-active", !!active);
+        if (active) {
+          applyTransientMotionClass(section, "is-active-pulse", 1300);
+        }
       }
 
       function focusHomeownerSummary({ smooth = true } = {}) {
         const section = document.getElementById("homeownerSummarySection");
         if (!section) return;
         section.setAttribute("tabindex", "-1");
-        section.scrollIntoView({ behavior: smooth ? "smooth" : "auto", block: "start" });
+        const useSmoothScroll = !!smooth && !prefersReducedMotion();
+        section.scrollIntoView({ behavior: useSmoothScroll ? "smooth" : "auto", block: "start" });
         try {
           section.focus({ preventScroll: true });
         } catch (_err) {
@@ -1973,6 +2183,7 @@
           clearTimeout(homeownerSummaryFocusTimer);
         }
         setHomeownerSummaryActive(true);
+        applyTransientMotionClass(section, "is-revealing", 700);
         homeownerSummaryFocusTimer = setTimeout(() => {
           setHomeownerSummaryActive(!!latestAssessment?.assessment_id);
           homeownerSummaryFocusTimer = null;
@@ -2160,6 +2371,7 @@
         if (!hasAssessment) {
           setSimulationRunStatus("Run an assessment first, then use before/after simulation.", "muted");
         }
+        updateMobileNextStepBar();
       }
 
       function setScenarioSelectValue(selectId, value, otherInputId = null) {
@@ -2317,13 +2529,96 @@
         });
       }
 
+      function isMobileViewport() {
+        return !!(window.matchMedia && window.matchMedia("(max-width: 860px)").matches);
+      }
+
+      function setMobileNextStepBarVisibility(visible) {
+        const bar = document.getElementById("mobileNextStepBar");
+        if (!bar) return;
+        const shouldShow = !!visible;
+        bar.hidden = !shouldShow;
+        bar.classList.toggle("show", shouldShow);
+        document.body.classList.toggle("mobile-next-step-visible", shouldShow);
+      }
+
+      function openReportOptionsFromSticky({ smooth = true } = {}) {
+        setPanelOpen("moreOptionsHubPanel", true);
+        syncMoreOptionsHubState();
+        setPanelOpen("reportSharePanel", true);
+        const target = document.getElementById("reportShareSection");
+        if (target && typeof target.scrollIntoView === "function") {
+          const useSmoothScroll = !!smooth && !prefersReducedMotion();
+          target.scrollIntoView({ behavior: useSmoothScroll ? "smooth" : "auto", block: "start" });
+        }
+        setFlowStatus("Step 4 of 4: Review or share your report.", "muted");
+      }
+
+      function updateMobileNextStepBar() {
+        const bar = document.getElementById("mobileNextStepBar");
+        const summaryEl = document.getElementById("mobileNextStepSummary");
+        const btn = document.getElementById("mobileNextStepBtn");
+        if (!bar || !summaryEl || !btn) return;
+
+        const hasAssessment = !!(latestAssessment && latestAssessment.assessment_id);
+        const hasSimulationResult = !!(
+          latestSimulationSummary
+          && (
+            String(latestSimulationSummary.summary || "").trim()
+            || String(latestSimulationSummary.projected_insurability_status || "").trim()
+          )
+        );
+        const shouldShow = isMobileViewport() && hasAssessment && !addressVerificationModalOpen;
+        if (!shouldShow) {
+          mobileNextStepAction = "";
+          setMobileNextStepBarVisibility(false);
+          return;
+        }
+
+        if (hasSimulationResult) {
+          summaryEl.textContent = "Before/after results are ready. Review report options to save or share.";
+          btn.textContent = "Review Report Options";
+          mobileNextStepAction = "review_report_options";
+          btn.disabled = isAssessmentSubmitting || isAddressVerificationPending;
+        } else {
+          summaryEl.textContent = isSimulationSubmitting
+            ? "Simulation is running. Your updated before/after result is on the way."
+            : "Run a quick before/after simulation to see how your status could change.";
+          btn.textContent = isSimulationSubmitting ? "Simulation Running..." : "Run Quick Simulation";
+          mobileNextStepAction = "run_quick_simulation";
+          btn.disabled = isSimulationSubmitting || isAssessmentSubmitting || isAddressVerificationPending;
+        }
+
+        setMobileNextStepBarVisibility(true);
+      }
+
+      function handleMobileNextStepAction() {
+        if (!mobileNextStepAction) return;
+        trackHomeownerFlowEvent("primary_cta_clicked", {
+          metadata: {
+            cta_id: "mobileNextStepBtn",
+            cta_action: mobileNextStepAction,
+            cta_text: String(document.getElementById("mobileNextStepBtn")?.textContent || "").trim() || null,
+          },
+        });
+        if (mobileNextStepAction === "review_report_options") {
+          openReportOptionsFromSticky({ smooth: true });
+          return;
+        }
+        openSimulationPlannerFromCta({ smooth: true });
+      }
+
       function openSimulationPlannerFromCta({ smooth = true } = {}) {
         setPanelOpen("simulationPlannerPanel", true);
         setSimulationPresetSelection(selectedSimulationPresetId);
         setFlowStatus("Step 3 of 4: Run a before/after simulation.", "muted");
         const target = document.getElementById("simulationPlannerSection");
+        if (target) {
+          applyTransientMotionClass(target, "step-active", 1600);
+        }
         if (target && typeof target.scrollIntoView === "function") {
-          target.scrollIntoView({ behavior: smooth ? "smooth" : "auto", block: "start" });
+          const useSmoothScroll = !!smooth && !prefersReducedMotion();
+          target.scrollIntoView({ behavior: useSmoothScroll ? "smooth" : "auto", block: "start" });
         }
         const quickRunBtn = document.getElementById("simulatePresetBtn");
         if (quickRunBtn && typeof quickRunBtn.focus === "function") {
@@ -2339,13 +2634,17 @@
         const btn = document.getElementById("primaryDecisionCtaBtn");
         const hintEl = document.getElementById("primaryDecisionCtaHint");
         const wrap = document.querySelector(".wrap");
-        if (!btn || !hintEl) return;
+        if (!btn || !hintEl) {
+          updateMobileNextStepBar();
+          return;
+        }
         const hasAssessment = !!(latestAssessment && latestAssessment.assessment_id);
         if (wrap) wrap.classList.toggle("cta-priority", hasAssessment);
         btn.disabled = !hasAssessment;
         if (!hasAssessment) {
           btn.textContent = "Run assessment to see next steps";
           hintEl.textContent = "Complete an assessment first, then run a before/after mitigation simulation.";
+          updateMobileNextStepBar();
           return;
         }
         btn.textContent = "Plan My Before/After Scenario";
@@ -2359,6 +2658,7 @@
         } else {
           hintEl.textContent = "Open the simulation planner to estimate how mitigation could change your screening status.";
         }
+        updateMobileNextStepBar();
       }
 
       function buildPopupContent({ title = "", lines = [] } = {}) {
@@ -3254,6 +3554,7 @@
             }
             beforeAfterEl.appendChild(line);
           });
+          applyTransientMotionClass(beforeAfterEl, "is-revealing", 640);
         }
 
         confidenceEl.textContent = String(limitations || "").trim()
@@ -3394,6 +3695,8 @@
         if (simResultEl) {
           clearNode(simResultEl);
           simResultEl.classList.add("muted");
+          simResultEl.classList.remove("is-loading");
+          simResultEl.classList.remove("is-revealing");
           simResultEl.textContent = "No simulation yet. Run a quick scenario to compare before vs after.";
         }
         setPanelOpen("simulationAdvancedPanel", false);
@@ -3768,6 +4071,8 @@
         if (simResultEl) {
           clearNode(simResultEl);
           simResultEl.classList.add("muted");
+          simResultEl.classList.remove("is-loading");
+          simResultEl.classList.remove("is-revealing");
           simResultEl.textContent = "No simulation yet. Run a quick scenario to compare before vs after.";
         }
         setSimulationRunStatus("Choose a quick preset or customize a scenario, then run simulation.", "muted");
@@ -4495,6 +4800,7 @@
         if (!hasAssessment) setHomeownerSummaryActive(false);
         syncSecondaryActionState();
         syncSimulationActionState();
+        updateMobileNextStepBar();
       }
 
       function formatCoordinate(value) {
@@ -5606,6 +5912,8 @@
           if (simResultEl) {
             clearNode(simResultEl);
             simResultEl.classList.add("muted");
+            simResultEl.classList.add("is-loading");
+            simResultEl.classList.remove("is-revealing");
             simResultEl.textContent = "Running simulation...";
           }
 
@@ -5689,6 +5997,7 @@
 
           setSimulationRunStatus("Simulation complete. Review your projected status and top actions below.", "success");
           setFlowStatus("Step 3 of 4 complete: Review your before/after results.", "success");
+          applyTransientMotionClass(document.getElementById("simulationPlannerSection"), "step-active", 1700);
 
           trackHomeownerFlowEvent("simulation_completed", {
             metadata: {
@@ -5703,6 +6012,7 @@
           if (simResultEl) {
             clearNode(simResultEl);
             simResultEl.classList.remove("muted");
+            simResultEl.classList.remove("is-loading");
 
             const headline = document.createElement("p");
             headline.className = "sim-result-headline";
@@ -5792,6 +6102,7 @@
             );
 
             simResultEl.appendChild(details);
+            applyTransientMotionClass(simResultEl, "is-revealing", 760);
           }
         } catch (err) {
           const message = toHomeownerFriendlyError(
@@ -5803,6 +6114,7 @@
           if (simResultEl) {
             clearNode(simResultEl);
             simResultEl.classList.add("muted");
+            simResultEl.classList.remove("is-loading");
             simResultEl.textContent = message;
           }
           showHomeownerToast(message, "error");
@@ -5954,7 +6266,39 @@
         });
       }
 
+      function wirePanelMotionCues() {
+        const motionPanelIds = [
+          "moreOptionsHubPanel",
+          "supportingInsightsPanel",
+          "confidenceDeepDivePanel",
+          "simulationPlannerPanel",
+          "simulationAdvancedPanel",
+          "improvePanel",
+          "reportSharePanel",
+          "homeownerReportPreviewPanel",
+          "homeownerReportMoreDetails",
+          "mapPanel",
+          "homeownerDecisionAdvancedDetails",
+          "advancedInternalDetailsPanel",
+          "verifyAddressContextPanel",
+          "verifyAdjustLocationPanel",
+          "verifyManualAddressSection",
+        ];
+        motionPanelIds.forEach((panelId) => {
+          const panel = document.getElementById(panelId);
+          if (!panel || panel.dataset.motionCueBound === "true") return;
+          panel.dataset.motionCueBound = "true";
+          panel.addEventListener("toggle", () => {
+            if (!panel.open) return;
+            const target = panel.closest("section") || panel.closest(".card") || panel.closest(".modal-card");
+            if (!target) return;
+            applyTransientMotionClass(target, "panel-spotlight", 700);
+          });
+        });
+      }
+
       wireAdvancedDetailsTracking();
+      wirePanelMotionCues();
 
       bindOtherInput("roof_type", "roof_type_other");
       bindOtherInput("vent_type", "vent_type_other");
@@ -6007,6 +6351,7 @@
       setImproveStatus("Input suggestions will appear after assessment.", "muted");
       setReportActionStatus("Report options will appear after assessment.", "muted");
       setFlowStatus("Step 1 of 4: Enter your address to begin.", "muted");
+      updateMobileNextStepBar();
       showHomeownerToast("", "muted", { autoHideMs: 0 });
 
       document.getElementById("assessBtn").addEventListener("click", startAddressVerificationFlow);
@@ -6022,6 +6367,7 @@
         });
         openSimulationPlannerFromCta({ smooth: true });
       });
+      document.getElementById("mobileNextStepBtn")?.addEventListener("click", handleMobileNextStepAction);
       document.getElementById("refreshImproveBtn")?.addEventListener("click", refreshImproveSuggestions);
       document.getElementById("openReportBtn").addEventListener("click", openReportView);
       document.getElementById("exportReportBtn").addEventListener("click", exportReport);
@@ -6068,6 +6414,9 @@
         if (evt.target?.id === "addressVerifyModal") {
           cancelAddressVerification();
         }
+      });
+      window.addEventListener("resize", () => {
+        updateMobileNextStepBar();
       });
       document.addEventListener("keydown", (evt) => {
         if (!addressVerificationModalOpen) return;
