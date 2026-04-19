@@ -1598,22 +1598,24 @@
 
       <section id="reportShareSection" class="card secondary-panel more-options-item">
         <details id="reportSharePanel">
-          <summary>Save or share report (optional)</summary>
-          <p class="muted">See the homeowner-focused summary and shareable report formats.</p>
+          <summary>Review your full report</summary>
+          <p class="muted">Save or share your results with homeowner-friendly report formats.</p>
+          <p class="section-help">Best after reviewing your status and before/after simulation.</p>
           <details id="homeownerReportPreviewPanel" class="mt-sm">
-            <summary>Preview report highlights</summary>
-            <p id="homeownerReportStatus" class="status-line tone-muted">Open this panel to load report highlights.</p>
+            <summary>See report highlights</summary>
+            <p id="homeownerReportStatus" class="status-line tone-muted">Open this section to load report highlights.</p>
             <ul id="homeownerReportHighlights"><li class="muted">No report highlights yet.</li></ul>
             <details id="homeownerReportMoreDetails" class="mt-sm">
-              <summary>More report details</summary>
+              <summary>See more report detail</summary>
               <ul id="homeownerReportSecondary"><li class="muted">Additional details will appear here when available.</li></ul>
             </details>
           </details>
+          <div class="mini-label mt-sm">Save or share your results</div>
           <div class="actions actions-low-emphasis">
-            <button id="openReportBtn" type="button" class="secondary">Open Printable Report</button>
-            <button id="downloadPdfBtn" type="button" class="secondary">Download Homeowner PDF</button>
+            <button id="openReportBtn" type="button" class="secondary">Open Full Report</button>
+            <button id="downloadPdfBtn" type="button" class="secondary">Download Homeowner-Friendly PDF</button>
           </div>
-          <p id="reportActionStatus" class="status-line tone-muted">Report options will appear after assessment.</p>
+          <p id="reportActionStatus" class="status-line tone-muted">Report review actions will appear after assessment.</p>
         </details>
       </section>
 
@@ -2551,7 +2553,7 @@
           const useSmoothScroll = !!smooth && !prefersReducedMotion();
           target.scrollIntoView({ behavior: useSmoothScroll ? "smooth" : "auto", block: "start" });
         }
-        setFlowStatus("Step 4 of 4: Review or share your report.", "muted");
+        setFlowStatus("Step 4 of 4: Review your full report and save or share results.", "muted");
       }
 
       function updateMobileNextStepBar() {
@@ -2576,7 +2578,7 @@
         }
 
         if (hasSimulationResult) {
-          summaryEl.textContent = "Before/after results are ready. Review report options to save or share.";
+          summaryEl.textContent = "Before/after results are ready. Review your full report and save or share.";
           btn.textContent = "Review Report Options";
           mobileNextStepAction = "review_report_options";
           btn.disabled = isAssessmentSubmitting || isAddressVerificationPending;
@@ -3649,7 +3651,7 @@
         const moreDetailsEl = document.getElementById("homeownerReportMoreDetails");
         const reportPreviewPanelEl = document.getElementById("homeownerReportPreviewPanel");
         if (statusEl) {
-          statusEl.textContent = reason || "Open this panel to load report highlights.";
+          statusEl.textContent = reason || "Open this section to load report highlights.";
         }
         if (highlightsEl) {
           setListItems(highlightsEl, [], { fallbackText: "No report highlights yet." });
@@ -3703,7 +3705,7 @@
         setSimulationRunStatus("Run an assessment, choose a quick scenario, then run simulation.", "muted");
         syncAssessmentActionState();
         setImproveStatus("Input suggestions will appear after assessment.", "muted");
-        setReportActionStatus("Report options will appear after assessment.", "muted");
+        setReportActionStatus("Report review actions will appear after assessment.", "muted");
         setFlowStatus("Step 1 of 4: Enter your address to begin.", "muted");
         showHomeownerToast("", "muted", { autoHideMs: 0 });
       }
@@ -3998,7 +4000,7 @@
             "We couldn’t load report highlights yet. You can still continue with your assessment results."
           );
           setListItems(highlightsEl, [], {
-            fallbackText: "Try the printable report button again after rerunning the assessment.",
+            fallbackText: "Try opening the full report again after rerunning the assessment.",
           });
           setFlowStatus("We couldn’t load report highlights right now.", "error");
         }
@@ -4049,7 +4051,7 @@
       function renderAssessment(data) {
         const resolution = data?.region_resolution || {};
         if (resolution?.coverage_available === false && resolution?.reason === "no_prepared_region_for_location") {
-          resetHomeownerJourneyPanels("Report preview is limited because detailed local coverage is still expanding for this location.");
+          resetHomeownerJourneyPanels("Report highlights are limited because detailed local coverage is still expanding for this location.");
           renderUncoveredLocationState({
             coverage_available: false,
             resolved_region_id: null,
@@ -4081,7 +4083,7 @@
         syncMoreOptionsHubState();
         syncAssessmentActionState();
         setImproveStatus("Review suggested follow-up inputs or refresh this list.", "muted");
-        setReportActionStatus("Open report options when you are ready to save or share.", "muted");
+        setReportActionStatus("Open your report section when you are ready to save or share.", "muted");
         if (
           pendingSelectedStructureAssessmentId
           && pendingSelectedStructureAssessmentId !== data?.assessment_id
@@ -4451,7 +4453,7 @@
       function renderUncoveredLocationState(detail) {
         latestAssessment = null;
         latestMapPayload = null;
-        resetHomeownerJourneyPanels("Report preview is limited for this location right now.");
+        resetHomeownerJourneyPanels("Report highlights are limited for this location right now.");
         updateAssessmentPrimaryActions();
         syncMoreOptionsHubState();
         setFlowStatus("Assessment complete with limited local coverage.", "error");
@@ -4581,7 +4583,7 @@
 
         latestAssessment = null;
         latestMapPayload = null;
-        resetHomeownerJourneyPanels("Report preview is paused until we can confirm your address location.");
+        resetHomeownerJourneyPanels("Report highlights are paused until we can confirm your address location.");
         updateAssessmentPrimaryActions();
         syncMoreOptionsHubState();
         setFlowStatus("Address confirmation is still needed before we can score this property.", "error");
@@ -6127,14 +6129,14 @@
 
       async function openReportView() {
         if (!latestAssessment) {
-          const message = "Run an assessment first, then open your printable report.";
+          const message = "Run an assessment first, then review your full report.";
           setReportActionStatus(message, "error");
           showHomeownerToast(message, "error");
           return;
         }
         try {
-          setReportActionStatus("Opening printable report...", "muted");
-          setFlowStatus("Step 4 of 4: Opening printable report...", "muted");
+          setReportActionStatus("Opening your full report...", "muted");
+          setFlowStatus("Step 4 of 4: Opening your full report...", "muted");
           const html = await api(`/report/${latestAssessment.assessment_id}/view?audience=homeowner`);
           const blob = new Blob([String(html || "")], { type: "text/html;charset=utf-8" });
           const url = URL.createObjectURL(blob);
@@ -6145,12 +6147,12 @@
             },
           });
           setTimeout(() => URL.revokeObjectURL(url), 5000);
-          setReportActionStatus("Printable report opened in a new tab.", "success");
-          setFlowStatus("Step 4 of 4: Printable report opened.", "success");
+          setReportActionStatus("Full report opened in a new tab.", "success");
+          setFlowStatus("Step 4 of 4: Full report opened.", "success");
         } catch (err) {
           const message = toHomeownerFriendlyError(
             err?.message,
-            "We couldn’t open the printable report right now. Please try again."
+            "We couldn’t open your full report right now. Please try again."
           );
           setReportActionStatus(message, "error");
           setFlowStatus(message, "error");
@@ -6185,7 +6187,7 @@
 
       async function downloadHomeownerPdf() {
         if (!latestAssessment) {
-          const message = "Run an assessment first, then download your PDF.";
+          const message = "Run an assessment first, then download your homeowner-friendly report.";
           setReportActionStatus(message, "error");
           showHomeownerToast(message, "error");
           return;
@@ -6199,8 +6201,8 @@
         }
 
         try {
-          setReportActionStatus("Preparing your homeowner PDF...", "muted");
-          setFlowStatus("Step 4 of 4: Preparing your PDF...", "muted");
+          setReportActionStatus("Preparing your homeowner-friendly PDF...", "muted");
+          setFlowStatus("Step 4 of 4: Preparing your homeowner-friendly PDF...", "muted");
           const res = await fetch(`${apiBase}/report/${latestAssessment.assessment_id}/homeowner/pdf`, {
             method: "GET",
             headers: { "X-API-Key": key },
@@ -6235,12 +6237,12 @@
               source: "pdf_download",
             },
           });
-          setReportActionStatus("Homeowner PDF downloaded.", "success");
-          setFlowStatus("Step 4 of 4: Homeowner PDF downloaded.", "success");
+          setReportActionStatus("Homeowner-friendly PDF downloaded.", "success");
+          setFlowStatus("Step 4 of 4: Homeowner-friendly PDF downloaded.", "success");
         } catch (err) {
           const message = toHomeownerFriendlyError(
             err?.message,
-            "We couldn’t download the homeowner PDF right now. Please try again."
+            "We couldn’t download the homeowner-friendly PDF right now. Please try again."
           );
           setReportActionStatus(message, "error");
           setFlowStatus(message, "error");
@@ -6331,7 +6333,7 @@
           return;
         }
         if (reportPreviewLoadedAssessmentId !== latestAssessment.assessment_id) {
-          statusEl.textContent = "Open report highlights to load the preview.";
+          statusEl.textContent = "Open report highlights to review your summary.";
         }
       });
 
@@ -6349,7 +6351,7 @@
       syncMoreOptionsHubState();
       setSimulationRunStatus("Run an assessment, choose a quick scenario, then run simulation.", "muted");
       setImproveStatus("Input suggestions will appear after assessment.", "muted");
-      setReportActionStatus("Report options will appear after assessment.", "muted");
+      setReportActionStatus("Report review actions will appear after assessment.", "muted");
       setFlowStatus("Step 1 of 4: Enter your address to begin.", "muted");
       updateMobileNextStepBar();
       showHomeownerToast("", "muted", { autoHideMs: 0 });
