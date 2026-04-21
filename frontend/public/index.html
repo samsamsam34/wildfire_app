@@ -551,6 +551,28 @@
       .wrap.more-options-open .more-options-item {
         display: block;
       }
+      .more-details-stack {
+        margin-top: 0.58rem;
+        display: grid;
+        gap: 0.58rem;
+      }
+      .more-details-item {
+        border: 1px solid var(--line-soft);
+        border-radius: 12px;
+        background: #fbfdff;
+        padding: 0.68rem 0.74rem 0.72rem;
+        box-shadow: none;
+      }
+      .more-details-item details {
+        border-top: none;
+        padding-top: 0;
+      }
+      .more-details-item summary {
+        margin-bottom: 0;
+      }
+      .more-details-item details[open] summary {
+        margin-bottom: 0.48rem;
+      }
       #assessmentMap {
         height: 360px;
         border: 1px solid #d5e1e8;
@@ -1401,91 +1423,143 @@
 
       <section id="moreOptionsHubSection" class="card secondary-panel" style="display:none;">
         <details id="moreOptionsHubPanel">
-          <summary>More options (optional)</summary>
-          <p class="section-help">Open deeper report, map, and supporting detail sections when you want more context.</p>
-        </details>
-      </section>
-
-      <section id="supportingInsightsSection" class="card secondary-panel more-options-item">
-        <details id="supportingInsightsPanel">
-          <summary>Why this result (deeper context)</summary>
-          <p class="section-help">Use this section when you want deeper context beyond your top summary drivers and actions.</p>
-          <div class="results mt-sm">
-            <div class="card result-primary">
-              <h3>How this score was built</h3>
-              <p class="section-help">This blends area wildfire pressure with property vulnerability when enough detail is available.</p>
-              <div id="riskScore" class="score">-</div>
-              <div id="riskLabel" class="muted">Run an assessment to see your score.</div>
-              <div class="summary-meta">
-                <div class="summary-item">
-                  <span>How precise this estimate is</span>
-                  <strong id="specificityKpi">Pending</strong>
+          <summary>More details (optional)</summary>
+          <p class="section-help">See more about this property, your confidence level, map context, and additional report tools.</p>
+          <div class="more-details-stack">
+            <section id="reportShareSection" class="secondary-panel more-options-item more-details-item">
+              <details id="reportSharePanel">
+                <summary>Review your full report</summary>
+                <p class="muted">Save or share your results with homeowner-friendly report formats.</p>
+                <p class="section-help">Best after reviewing your status and before/after simulation.</p>
+                <details id="homeownerReportPreviewPanel" class="mt-sm">
+                  <summary>Report highlights for deeper review</summary>
+                  <p id="homeownerReportStatus" class="status-line status-secondary tone-muted">Open this section to load deeper report highlights.</p>
+                  <ul id="homeownerReportHighlights"><li class="muted">No report highlights yet.</li></ul>
+                  <details id="homeownerReportMoreDetails" class="mt-sm">
+                    <summary>Methodology and deeper notes</summary>
+                    <ul id="homeownerReportSecondary"><li class="muted">Additional details will appear here when available.</li></ul>
+                  </details>
+                </details>
+                <div class="mini-label mt-sm">Save or share your results</div>
+                <div class="actions actions-low-emphasis">
+                  <button id="openReportBtn" type="button" class="secondary">Open Full Report</button>
+                  <button id="downloadPdfBtn" type="button" class="secondary">Download Homeowner-Friendly PDF</button>
                 </div>
-                <div class="summary-item">
-                  <span>Home readiness</span>
-                  <strong id="readinessKpi">Pending</strong>
+                <p id="reportActionStatus" class="status-line status-secondary tone-muted">Report review actions will appear after assessment.</p>
+              </details>
+            </section>
+
+            <section id="supportingInsightsSection" class="secondary-panel more-options-item more-details-item">
+              <details id="supportingInsightsPanel">
+                <summary>Why this result (deeper context)</summary>
+                <p class="section-help">Use this section when you want deeper context beyond your top summary drivers and actions.</p>
+                <div class="results mt-sm">
+                  <div class="card result-primary">
+                    <h3>How this score was built</h3>
+                    <p class="section-help">This blends area wildfire pressure with property vulnerability when enough detail is available.</p>
+                    <div id="riskScore" class="score">-</div>
+                    <div id="riskLabel" class="muted">Run an assessment to see your score.</div>
+                    <div class="summary-meta">
+                      <div class="summary-item">
+                        <span>How precise this estimate is</span>
+                        <strong id="specificityKpi">Pending</strong>
+                      </div>
+                      <div class="summary-item">
+                        <span>Home readiness</span>
+                        <strong id="readinessKpi">Pending</strong>
+                      </div>
+                    </div>
+                    <div class="next-step-callout">
+                      <span>Most important first step</span>
+                      <strong id="firstActionKpi">Run assessment</strong>
+                    </div>
+                    <p id="regionDebugInline" class="muted debug-inline">Region: unresolved</p>
+                    <p id="summaryText" class="mt-sm">We’ll explain how local and property factors shaped this score.</p>
+                  </div>
+
+                  <div class="card">
+                    <h3>What is raising or lowering risk</h3>
+                    <p class="section-help">This expands the “why” behind your result with broader factor context.</p>
+                    <div class="insight-group">
+                      <div class="mini-label">Near-structure context</div>
+                      <h3>What we found around the home</h3>
+                      <ul id="propertyFindings"><li class="muted">Structure-specific findings will appear after assessment.</li></ul>
+                    </div>
+                    <div class="insight-group">
+                      <div class="mini-label">Area-wide context</div>
+                      <h3>Broader wildfire pressure</h3>
+                      <ul id="drivers"><li class="muted">Risk drivers will appear after assessment.</li></ul>
+                    </div>
+                    <div class="insight-group">
+                      <div class="mini-label">Protective factors</div>
+                      <h3>What is helping lower risk</h3>
+                      <ul id="protective"><li class="muted">Protective factors will appear after assessment.</li></ul>
+                    </div>
+                  </div>
+
+                  <div class="card">
+                    <h3>Action planning detail</h3>
+                    <p class="section-help">This is the longer action plan view, including impact and effort context.</p>
+                    <div class="mini-label">Recommended action sequence</div>
+                    <p id="nextStepsText">Focus on the top actions first.</p>
+                    <ul id="mitigations"><li class="muted">Recommendations will appear after assessment.</li></ul>
+                  </div>
                 </div>
-              </div>
-              <div class="next-step-callout">
-                <span>Most important first step</span>
-                <strong id="firstActionKpi">Run assessment</strong>
-              </div>
-              <p id="regionDebugInline" class="muted debug-inline">Region: unresolved</p>
-              <p id="summaryText" class="mt-sm">We’ll explain how local and property factors shaped this score.</p>
-            </div>
+              </details>
+            </section>
 
-            <div class="card">
-              <h3>What is raising or lowering risk</h3>
-              <p class="section-help">This expands the “why” behind your result with broader factor context.</p>
-              <div class="insight-group">
-                <div class="mini-label">Near-structure context</div>
-                <h3>What we found around the home</h3>
-                <ul id="propertyFindings"><li class="muted">Structure-specific findings will appear after assessment.</li></ul>
-              </div>
-              <div class="insight-group">
-                <div class="mini-label">Area-wide context</div>
-                <h3>Broader wildfire pressure</h3>
-                <ul id="drivers"><li class="muted">Risk drivers will appear after assessment.</li></ul>
-              </div>
-              <div class="insight-group">
-                <div class="mini-label">Protective factors</div>
-                <h3>What is helping lower risk</h3>
-                <ul id="protective"><li class="muted">Protective factors will appear after assessment.</li></ul>
-              </div>
-            </div>
+            <section id="confidenceSection" class="trust-card secondary-panel more-options-item more-details-item">
+              <details id="confidenceDeepDivePanel">
+                <summary>How certain this result is</summary>
+                <p class="section-help">How reliable this estimate is, and where limited data may affect precision.</p>
+                <div class="trust-overview">
+                  <div class="trust-value">
+                    <span>Assessment confidence</span>
+                    <strong id="confidenceAtGlance">Pending</strong>
+                  </div>
+                  <div class="trust-value">
+                    <span>How precise this estimate is</span>
+                    <strong id="specificityAtGlance">Pending</strong>
+                  </div>
+                </div>
+                <p id="confidenceSummaryText" class="muted">Run an assessment to see confidence details.</p>
+                <div class="result-divider"></div>
+                <div class="mini-label">Limitations and trust notes</div>
+                <div id="flagsPrimary"><span class="pill">Trust notes will appear after assessment</span></div>
+                <div class="result-divider"></div>
+                <div class="mini-label">What we confirmed vs estimated</div>
+                <ul id="homeownerLimitationsBlock"><li class="muted">Run an assessment to see what was observed, estimated, and missing.</li></ul>
+              </details>
+            </section>
 
-            <div class="card">
-              <h3>Action planning detail</h3>
-              <p class="section-help">This is the longer action plan view, including impact and effort context.</p>
-              <div class="mini-label">Recommended action sequence</div>
-              <p id="nextStepsText">Focus on the top actions first.</p>
-              <ul id="mitigations"><li class="muted">Recommendations will appear after assessment.</li></ul>
-            </div>
+            <section id="improveSection" class="secondary-panel more-options-item more-details-item">
+              <details id="improvePanel">
+                <summary>Improve estimate accuracy (optional)</summary>
+                <p class="section-help">Add any missing details, then click <strong>Re-run With Updated Details</strong> to tighten this screening.</p>
+                <h3 class="subsection-title">Suggested Improvements</h3>
+                <ul id="improveSuggestions"><li class="muted">Suggestions will appear after assessment.</li></ul>
+                <h3 class="subsection-title">Helpful Follow-Up Inputs</h3>
+                <ul id="improveInputs"><li class="muted">Follow-up inputs will appear when needed.</li></ul>
+                <div class="actions actions-low-emphasis">
+                  <button id="refreshImproveBtn" type="button" class="secondary">Refresh Input Suggestions</button>
+                </div>
+                <p id="improveStatus" class="status-line status-secondary tone-muted">Input suggestions will appear after assessment.</p>
+              </details>
+            </section>
+
+            <section id="mapSection" class="secondary-panel more-options-item more-details-item">
+              <details id="mapPanel">
+                <summary>Property map view (optional)</summary>
+                <p class="muted">See property geometry, defensible-space context, and nearby wildfire layers in one map view.</p>
+                <div id="assessmentMap"></div>
+                <p id="mapEmptyText" class="map-empty">Run an assessment to load map layers.</p>
+                <div id="mapLayerToggles" class="map-toggles"></div>
+                <p id="mapLimitationsText" class="muted map-note">Map limitations will appear here when needed.</p>
+                <p id="propertyContextMapHint" class="muted map-note">Property context summary will appear here after assessment.</p>
+                <div id="mapDebugPanel" class="map-debug" data-operator-only="true" style="display:none;"></div>
+              </details>
+            </section>
           </div>
-        </details>
-      </section>
-
-      <section id="confidenceSection" class="card trust-card secondary-panel more-options-item">
-        <details id="confidenceDeepDivePanel">
-          <summary>How certain this result is</summary>
-          <p class="section-help">How reliable this estimate is, and where limited data may affect precision.</p>
-          <div class="trust-overview">
-            <div class="trust-value">
-              <span>Assessment confidence</span>
-              <strong id="confidenceAtGlance">Pending</strong>
-            </div>
-            <div class="trust-value">
-              <span>How precise this estimate is</span>
-              <strong id="specificityAtGlance">Pending</strong>
-            </div>
-          </div>
-          <p id="confidenceSummaryText" class="muted">Run an assessment to see confidence details.</p>
-          <div class="result-divider"></div>
-          <div class="mini-label">Limitations and trust notes</div>
-          <div id="flagsPrimary"><span class="pill">Trust notes will appear after assessment</span></div>
-          <div class="result-divider"></div>
-          <div class="mini-label">What we confirmed vs estimated</div>
-          <ul id="homeownerLimitationsBlock"><li class="muted">Run an assessment to see what was observed, estimated, and missing.</li></ul>
         </details>
       </section>
 
@@ -1612,57 +1686,6 @@
           </details>
 
           <div id="simResult" class="sim-box muted">No simulation yet. Run a quick scenario to compare before vs after.</div>
-        </details>
-      </section>
-
-      <section id="improveSection" class="card secondary-panel more-options-item">
-        <details id="improvePanel">
-          <summary>Improve estimate accuracy (optional)</summary>
-          <p class="section-help">Add any missing details, then click <strong>Re-run With Updated Details</strong> to tighten this screening.</p>
-          <h3 class="subsection-title">Suggested Improvements</h3>
-          <ul id="improveSuggestions"><li class="muted">Suggestions will appear after assessment.</li></ul>
-          <h3 class="subsection-title">Helpful Follow-Up Inputs</h3>
-          <ul id="improveInputs"><li class="muted">Follow-up inputs will appear when needed.</li></ul>
-          <div class="actions actions-low-emphasis">
-            <button id="refreshImproveBtn" type="button" class="secondary">Refresh Input Suggestions</button>
-          </div>
-          <p id="improveStatus" class="status-line status-secondary tone-muted">Input suggestions will appear after assessment.</p>
-        </details>
-      </section>
-
-      <section id="reportShareSection" class="card secondary-panel more-options-item">
-        <details id="reportSharePanel">
-          <summary>Review your full report</summary>
-          <p class="muted">Save or share your results with homeowner-friendly report formats.</p>
-          <p class="section-help">Best after reviewing your status and before/after simulation.</p>
-          <details id="homeownerReportPreviewPanel" class="mt-sm">
-            <summary>Report highlights for deeper review</summary>
-            <p id="homeownerReportStatus" class="status-line status-secondary tone-muted">Open this section to load deeper report highlights.</p>
-            <ul id="homeownerReportHighlights"><li class="muted">No report highlights yet.</li></ul>
-            <details id="homeownerReportMoreDetails" class="mt-sm">
-              <summary>Methodology and deeper notes</summary>
-              <ul id="homeownerReportSecondary"><li class="muted">Additional details will appear here when available.</li></ul>
-            </details>
-          </details>
-          <div class="mini-label mt-sm">Save or share your results</div>
-          <div class="actions actions-low-emphasis">
-            <button id="openReportBtn" type="button" class="secondary">Open Full Report</button>
-            <button id="downloadPdfBtn" type="button" class="secondary">Download Homeowner-Friendly PDF</button>
-          </div>
-          <p id="reportActionStatus" class="status-line status-secondary tone-muted">Report review actions will appear after assessment.</p>
-        </details>
-      </section>
-
-      <section id="mapSection" class="card secondary-panel more-options-item">
-        <details id="mapPanel">
-          <summary>Property map view (optional)</summary>
-          <p class="muted">See property geometry, defensible-space context, and nearby wildfire layers in one map view.</p>
-          <div id="assessmentMap"></div>
-          <p id="mapEmptyText" class="map-empty">Run an assessment to load map layers.</p>
-          <div id="mapLayerToggles" class="map-toggles"></div>
-          <p id="mapLimitationsText" class="muted map-note">Map limitations will appear here when needed.</p>
-          <p id="propertyContextMapHint" class="muted map-note">Property context summary will appear here after assessment.</p>
-          <div id="mapDebugPanel" class="map-debug" data-operator-only="true" style="display:none;"></div>
         </details>
       </section>
 
