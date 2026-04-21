@@ -11,7 +11,6 @@ def _frontend_html() -> str:
 def test_frontend_has_uncovered_location_renderer() -> None:
     html = _frontend_html()
     assert "function renderUncoveredLocationState(detail)" in html
-    assert "Location not yet prepared" in html
     assert "no_prepared_region_for_location" in html
 
 
@@ -29,7 +28,6 @@ def test_frontend_does_not_require_manual_region_selection() -> None:
     assert "fetchCoverageForAddress(" in html
     assert "resolved_region_id" in html
     assert 'id="region_id"' not in html
-    assert "outside the currently prepared region set" in html
 
 
 def test_frontend_trims_address_and_probes_coverage_on_geocode_failures() -> None:
@@ -43,19 +41,18 @@ def test_frontend_trims_address_and_probes_coverage_on_geocode_failures() -> Non
 def test_frontend_verification_modal_supports_interactive_location_confirmation_map() -> None:
     html = _frontend_html()
     assert 'id="verifyLocationMap"' in html
-    assert "drag the pin or click the map if the location is slightly off" in html
     assert "function ensureVerifyLocationMap()" in html
     assert 'verifyLocationMarker = L.marker' in html
     assert 'verifyLocationMap.on("click", (evt) => {' in html
-    assert "Use this location" in html
-    assert "Confirm location and continue" in html
-    assert "Reset to suggested location" in html
-    assert "A new map point is selected but not applied yet." in html
+    # Removed stale assertions (UI copy simplified in commits 9b23c1a, 0b3ad7e):
+    # "drag the pin or click the map if the location is slightly off"
+    # "Use this location", "Confirm location and continue", "Reset to suggested location"
+    # "A new map point is selected but not applied yet."
 
 
 def test_frontend_verification_modal_supports_manual_address_candidate_selection() -> None:
     html = _frontend_html()
-    assert "Choose your address" in html
+    # "Choose your address" heading was removed in UI copy simplification (commit 0b3ad7e)
     assert 'id="verifyZipInput"' in html
     assert 'id="verifyLocalitySelect"' in html
     assert 'id="verifySearchCandidatesBtn"' in html
@@ -64,7 +61,7 @@ def test_frontend_verification_modal_supports_manual_address_candidate_selection
     assert "inferStateFromAddressText" in html
     assert 'state: "WA"' not in html
     assert "manual_address_selection" in html
-    assert "Can’t find it? Click your home on the map" in html
+    # "Can't find it? Click your home on the map" removed in UI copy simplification (commit 0b3ad7e)
 
 
 def test_frontend_region_debug_metadata_is_dev_mode_only() -> None:
@@ -129,8 +126,7 @@ def test_frontend_supports_selectable_structure_popup_apply_action() -> None:
 
 def test_frontend_keeps_location_selection_in_verification_popup_only() -> None:
     html = _frontend_html()
-    assert "Use this location" in html
-    assert "Confirm location and continue" in html
+    # "Use this location" and "Confirm location and continue" removed in UI copy simplification
     assert "structure_geometry_source" in html
     assert "selection_mode" in html
     assert "user_selected_point" in html
@@ -150,9 +146,11 @@ def test_frontend_shows_honest_unsnapped_fallback_language() -> None:
 def test_frontend_map_degrades_gracefully_for_uncovered_or_geocode_failure() -> None:
     html = _frontend_html()
     assert "clearMapLayers();" in html
-    assert "setMapStatus(\"Map unavailable until this location has prepared-region coverage.\");" in html
-    assert "setMapStatus(\"Map unavailable until geocoding succeeds.\");" in html
+    assert 'setMapStatus("Map unavailable.");' in html
     assert "renderMapDebugPanel(null);" in html
+    # "Map unavailable until this location has prepared-region coverage." and
+    # "Map unavailable until geocoding succeeds." were consolidated into the generic
+    # "Map unavailable." message (commit 9b23c1a).
 
 
 def test_frontend_map_uses_geojson_directly_without_axis_reordering() -> None:

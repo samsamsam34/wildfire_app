@@ -833,7 +833,18 @@ class BuildingFootprintClient:
                 second_distance = float(candidates[1]["distance_m"])
                 score_gap = float(top.get("score") or 0.0) - float(candidates[1].get("score") or 0.0)
                 area_gap = abs(float(top.get("area_score") or 0.0) - float(candidates[1].get("area_score") or 0.0))
-                if (second_distance - top_distance) <= float(self.ambiguity_gap_m) and score_gap < 0.08 and area_gap < 0.18:
+                # Derive the max score_gap that pure distance can produce within the ambiguity window.
+                # Formula: (gap / max_match_dist) * dist_weight + (gap / max_search) * centroid_weight
+                # e.g. (6/35)*0.75 + (6/120)*0.15 = 0.1286 + 0.0075 = 0.1361
+                # The old hard-coded 0.08 was calibrated for the Gaussian area scorer which produced
+                # continuous differentiation; the step-function scorer assigns identical area_score to
+                # any two footprints in the same bucket, so area no longer separates candidates and
+                # the threshold must cover the full ambiguity window using distance components only.
+                _amb_threshold = (
+                    (self.ambiguity_gap_m / max(self.max_match_distance_m, 1.0)) * 0.75
+                    + (self.ambiguity_gap_m / max(self.max_search_m, 1.0)) * 0.15
+                )
+                if (second_distance - top_distance) <= float(self.ambiguity_gap_m) and score_gap < _amb_threshold and area_gap < 0.18:
                     assumptions.append(
                         "Multiple nearby structures were similarly plausible; using geocoded point fallback."
                     )
