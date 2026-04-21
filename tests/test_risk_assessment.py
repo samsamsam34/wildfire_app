@@ -5633,8 +5633,10 @@ def test_collect_context_missing_layers_does_not_silently_default_to_neutral():
     from unittest.mock import patch
     client = WildfireDataClient()
     client.paths = {k: "" for k in client.paths.keys()}
-    client._landfire_cog_client = None  # disable COG fallback so all sources are truly absent
-    # bypass feature bundle cache to prevent stale COG-populated entries from a prior run
+    client._landfire_cog_client = None   # disable LANDFIRE WCS fallback
+    client._nlcd_client = None           # disable NLCD wildland distance fallback
+    client._fire_history_client = None   # disable national MTBS fallback
+    # bypass feature bundle cache to prevent stale entries from a prior run
     with patch.object(client.feature_bundle_cache, "load", return_value=None):
         ctx = client.collect_context(40.0, -105.0)
 
