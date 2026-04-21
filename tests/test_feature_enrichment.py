@@ -204,3 +204,128 @@ def test_disabled_cog_client_degrades_gracefully(tmp_path: Path) -> None:
     assert ctx is not None, "collect_context must return a WildfireContext, not raise"
     assert ctx.fuel_index is None, "fuel_index should be None when local file and COG both absent"
     assert ctx.canopy_index is None, "canopy_index should be None when local file and COG both absent"
+
+
+# ---------------------------------------------------------------------------
+# Helpers for national fire history + NLCD integration tests
+# ---------------------------------------------------------------------------
+
+def _run_collect_context_national(
+    tmp_path: Path,
+    *,
+    fire_history_client,
+    nlcd_client,
+):
+    """Run collect_context with national clients injected and all local paths empty."""
+    from backend.wildfire_data import WildfireDataClient
+    from unittest.mock import MagicMock, patch
+
+    anchor = _minimal_anchor()
+    footprint_result = _null_footprint_result()
+
+    mock_resolver_instance = MagicMock()
+    mock_resolver_instance.resolve.return_value = anchor
+    mock_footprints = MagicMock()
+    mock_footprints.get_building_footprint.return_value = footprint_result
+    mock_footprints.compute_structure_rings.return_value = (None, [], [])
+    mock_footprints.get_neighbor_structure_metrics.return_value = None
+
+    with (
+        patch("backend.wildfire_data.PropertyAnchorResolver", return_value=mock_resolver_instance),
+        patch("backend.wildfire_data.BuildingFootprintClient", return_value=mock_footprints),
+    ):
+        client = WildfireDataClient()
+        client._landfire_cog_client = None
+        client._fire_history_client = fire_history_client
+        client._nlcd_client = nlcd_client
+
+        with (
+            patch.object(client, "_sample_layer_value_detailed",
+                         return_value=(None, "not_configured", "No path")),
+            patch.object(client, "_sample_circle", return_value=[]),
+            patch.object(client, "_sample_layer_value", return_value=(None, "not_configured")),
+            patch.object(client, "_file_exists", return_value=False),
+            patch.object(client, "_historical_fire_metrics", return_value=(None, None, "missing")),
+            patch.object(client, "_wildland_distance_metrics", return_value=(None, None)),
+            patch.object(client.feature_bundle_cache, "load", return_value=None),
+            # Disable real MTBSAdapter so it doesn't mask the national client
+            patch.object(client.mtbs_adapter, "summarize",
+                         return_value=MagicMock(status="missing", notes=[], source_dataset=None,
+                                                nearest_perimeter_km=None, intersects_prior_burn=False,
+                                                nearby_high_severity=False, fire_history_index=None)),
+        ):
+            return client.collect_context(46.87, -113.99)
+
+
+# ---------------------------------------------------------------------------
+# Test 4: Fire history national fallback populates historic_fire_index
+# ---------------------------------------------------------------------------
+
+def test_fire_history_national_fallback_populates_index(tmp_path: Path) -> None:
+    """When local MTBS data is absent and fire_history_client returns data,
+    historic_fire_index is populated and source is tagged 'national_mtbs'."""
+    from unittest.mock import MagicMock
+    from backend.national_fire_history_client import FireHistoryResult
+
+    mock_fh = MagicMock()
+    mock_fh.query_fire_history.return_value = FireHistoryResult(
+        burned_within_radius=True,
+        most_recent_fire_year=2018,
+        most_recent_fire_severity="moderate",
+        fire_count_30yr=2,
+        fire_count_all=3,
+        nearest_fire_distance_m=0.0,
+        fires_within_radius=[{"year": 2018, "name": "TEST", "severity": "moderate",
+                               "distance_m": 0.0, "area_acres": 5000.0}],
+        data_available=True,
+        radius_m=5000.0,
+    )
+
+    ctx = _run_collect_context_national(tmp_path, fire_history_client=mock_fh, nlcd_client=None)
+
+    assert ctx is not None
+    assert ctx.historic_fire_index is not None, "historic_fire_index should be populated from national MTBS"
+    assert any("national" in s.lower() or "MTBS" in s for s in ctx.data_sources), (
+        "data_sources should reference national MTBS fallback"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test 5: Wildland distance national fallback populates wildland_distance_index
+# ---------------------------------------------------------------------------
+
+def test_wildland_distance_national_fallback_populates_index(tmp_path: Path) -> None:
+    """When local rasters are absent and nlcd_client returns a distance,
+    wildland_distance_index is populated and tagged with national NLCD source."""
+    from unittest.mock import MagicMock
+
+    mock_nlcd = MagicMock()
+    mock_nlcd.get_wildland_distance_m.return_value = 350.0  # 350 m to nearest wildland
+
+    ctx = _run_collect_context_national(tmp_path, fire_history_client=None, nlcd_client=mock_nlcd)
+
+    assert ctx is not None
+    assert ctx.wildland_distance is not None, "wildland_distance should be populated from NLCD"
+    assert ctx.wildland_distance_index is not None
+    # wildland_distance_index = 100 - (350/2000)*100 = 82.5
+    assert abs(ctx.wildland_distance_index - 82.5) < 2.0, (
+        f"Expected ~82.5, got {ctx.wildland_distance_index}"
+    )
+    assert any("NLCD" in s or "nlcd" in s.lower() or "national" in s.lower()
+               for s in ctx.data_sources), (
+        "data_sources should reference national NLCD fallback"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test 6: Both national clients disabled → graceful degradation
+# ---------------------------------------------------------------------------
+
+def test_both_national_clients_disabled_degrades_gracefully(tmp_path: Path) -> None:
+    """When fire_history_client and nlcd_client are both None, assessment completes."""
+    ctx = _run_collect_context_national(tmp_path, fire_history_client=None, nlcd_client=None)
+
+    assert ctx is not None, "collect_context must not raise when national clients are absent"
+    # Without local rasters or national clients, both should be None
+    assert ctx.historic_fire_index is None
+    assert ctx.wildland_distance_index is None

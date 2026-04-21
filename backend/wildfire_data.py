@@ -230,6 +230,45 @@ class WildfireDataClient:
                     "wildfire_data landfire_cog_client_init_error error=%s", _exc
                 )
 
+        # National fire history client (MTBS GeoPackage).
+        self._fire_history_client = None
+        _mtbs_gpkg = os.environ.get("WF_MTBS_GPKG_PATH", "data/national/mtbs_perimeters.gpkg")
+        try:
+            from backend.national_fire_history_client import NationalFireHistoryClient  # noqa: PLC0415
+            self._fire_history_client = NationalFireHistoryClient(mtbs_gpkg_path=_mtbs_gpkg)
+            if self._fire_history_client.enabled:
+                import logging as _logging
+                _logging.getLogger("wildfire_app.wildfire_data").info(
+                    "National MTBS fire history client initialized path=%s", _mtbs_gpkg
+                )
+        except Exception as _exc:  # pragma: no cover
+            import logging as _logging
+            _logging.getLogger("wildfire_app.wildfire_data").warning(
+                "wildfire_data national_fire_history_client_init_error error=%s", _exc
+            )
+
+        # National NLCD wildland distance client.
+        self._nlcd_client = None
+        _nlcd_enabled = os.environ.get("WF_NLCD_COG_ENABLED", "true").strip().lower() not in {
+            "0", "false", "no",
+        }
+        if _nlcd_enabled:
+            try:
+                from backend.national_nlcd_client import NationalNLCDClient  # noqa: PLC0415
+                self._nlcd_client = NationalNLCDClient(
+                    cache_db_path=os.environ.get("WF_NLCD_CACHE_DB", "data/nlcd_cache.db"),
+                    enabled=True,
+                )
+                import logging as _logging
+                _logging.getLogger("wildfire_app.wildfire_data").info(
+                    "National NLCD wildland distance client initialized"
+                )
+            except Exception as _exc:  # pragma: no cover
+                import logging as _logging
+                _logging.getLogger("wildfire_app.wildfire_data").warning(
+                    "wildfire_data national_nlcd_client_init_error error=%s", _exc
+                )
+
         # Optional Regrid parcel API client — enabled only when WF_REGRID_API_KEY is set.
         self._regrid_client = None
         _regrid_api_key = os.environ.get("WF_REGRID_API_KEY", "").strip()
@@ -4991,7 +5030,22 @@ class WildfireDataClient:
         if wildland_distance is not None:
             sources.append("Distance to wildland vegetation (derived)")
         else:
-            assumptions.append("Fuel/canopy rasters missing; wildland distance unavailable.")
+            # National NLCD fallback: query MRLC WCS when local rasters are absent.
+            if self._nlcd_client is not None:
+                _nlcd_dist = self._nlcd_client.get_wildland_distance_m(lat, lon)
+                if _nlcd_dist is not None:
+                    wildland_distance = _nlcd_dist
+                    wildland_distance_index = round(
+                        max(0.0, min(100.0, 100.0 - (_nlcd_dist / 2000.0) * 100.0)), 1
+                    )
+                    sources.append("National NLCD wildland distance (national fallback)")
+                    import logging as _logging
+                    _logging.getLogger("wildfire_app.wildfire_data").info(
+                        "wildfire_data nlcd_wildland_fallback lat=%.4f lon=%.4f dist_m=%.1f",
+                        lat, lon, _nlcd_dist,
+                    )
+            if wildland_distance is None:
+                assumptions.append("Fuel/canopy rasters missing; wildland distance unavailable.")
 
         mtbs_summary = self.mtbs_adapter.summarize(
             lat=lat,
@@ -5065,6 +5119,61 @@ class WildfireDataClient:
                 ),
                 failure_reason="MTBS severity context unavailable; perimeter fallback used.",
             )
+
+        # National MTBS fallback: query local GPKG when both the regional adapter
+        # and the legacy perimeter-file path returned nothing.
+        if fire_history_status != "ok" and self._fire_history_client is not None:
+            _fhr = self._fire_history_client.query_fire_history(lat, lon)
+            if _fhr.data_available:
+                _fh_nearest_km = (
+                    round(_fhr.nearest_fire_distance_m / 1000.0, 2)
+                    if _fhr.nearest_fire_distance_m is not None
+                    else None
+                )
+                # Score using the same formula as MTBSAdapter
+                _fh_score = 0.0
+                if _fhr.burned_within_radius:
+                    _fh_score += 45.0
+                if _fh_nearest_km is not None:
+                    _fh_score += max(0.0, 40.0 - min(_fh_nearest_km, 20.0) * 2.0)
+                _fh_score += min(20.0, _fhr.fire_count_30yr * 4.0)
+                historic_fire_distance = _fh_nearest_km
+                historic_fire_index = round(max(0.0, min(100.0, _fh_score)), 1)
+                fire_history_status = "ok"
+                historical_fire_context.update({
+                    "source": "national_mtbs",
+                    "status": "ok",
+                    "nearest_perimeter_km": _fh_nearest_km,
+                    "intersects_prior_burn": _fhr.burned_within_radius,
+                    "nearby_high_severity": any(
+                        f.get("severity") == "high" for f in _fhr.fires_within_radius
+                    ),
+                    "fire_count_30yr": _fhr.fire_count_30yr,
+                    "most_recent_year": _fhr.most_recent_fire_year,
+                    "notes": ["National MTBS GeoPackage fire history."],
+                })
+                sources.append("National MTBS fire history (national fallback)")
+                update_layer_audit(
+                    layer_audit,
+                    "fire_perimeters",
+                    sample_attempted=True,
+                    sample_succeeded=True,
+                    coverage_status="observed",
+                    raw_value_preview=_fh_nearest_km,
+                    note="source=national_mtbs",
+                )
+                import logging as _logging
+                _logging.getLogger("wildfire_app.wildfire_data").info(
+                    "wildfire_data national_mtbs_fallback lat=%.4f lon=%.4f fires=%d score=%.1f",
+                    lat, lon, _fhr.fire_count_all, historic_fire_index,
+                )
+            # Remove "unavailable" assumption added above if national client succeeded
+            if fire_history_status == "ok":
+                try:
+                    assumptions.remove("Historical perimeter layer unavailable; recurrence unavailable.")
+                except ValueError:
+                    pass
+
         environmental_layer_status["fire_history"] = fire_history_status
 
         access_summary = self.osm_adapter.summarize(

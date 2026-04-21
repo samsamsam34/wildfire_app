@@ -9,6 +9,10 @@ pyproj==3.7.1
 shapely==2.1.1
 duckdb>=0.10.0
 
+# National MTBS fire history client (backend/national_fire_history_client.py)
+# Requires numpy 2.x-compatible fiona/pyogrio. Degrades gracefully if absent.
+geopandas>=1.0.0
+
 # YAML config parsing (backend/scoring_config.py, backend/geocoding_fallback_chain.py)
 PyYAML==6.0.2
 
