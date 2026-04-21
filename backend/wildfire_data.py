@@ -208,6 +208,28 @@ class WildfireDataClient:
         self.osm_adapter = OSMRoadAdapter()
         self.feature_bundle_cache = FeatureBundleCache()
 
+        # Optional LANDFIRE WCS COG client — enabled by default; disable via env var.
+        self._landfire_cog_client = None
+        _lf_enabled = os.environ.get("WF_LANDFIRE_COG_ENABLED", "true").strip().lower() not in {
+            "0", "false", "no",
+        }
+        if _lf_enabled:
+            try:
+                from backend.landfire_cog_client import LandfireCOGClient  # noqa: PLC0415
+                self._landfire_cog_client = LandfireCOGClient(
+                    cache_db_path=os.environ.get("WF_LANDFIRE_CACHE_DB", "data/landfire_cache.db"),
+                    enabled=True,
+                )
+                import logging as _logging
+                _logging.getLogger("wildfire_app.wildfire_data").info(
+                    "LANDFIRE WCS COG client initialized (national raster fallback enabled)"
+                )
+            except Exception as _exc:  # pragma: no cover
+                import logging as _logging
+                _logging.getLogger("wildfire_app.wildfire_data").warning(
+                    "wildfire_data landfire_cog_client_init_error error=%s", _exc
+                )
+
         # Optional Regrid parcel API client — enabled only when WF_REGRID_API_KEY is set.
         self._regrid_client = None
         _regrid_api_key = os.environ.get("WF_REGRID_API_KEY", "").strip()
@@ -4607,6 +4629,27 @@ class WildfireDataClient:
             else:
                 assumptions.append("Slope/aspect rasters missing and DEM not configured.")
 
+        # COG fallback: if slope is still missing, try LANDFIRE WCS (national coverage).
+        # Runs only when local files and DEM both failed — never displaces a good local read.
+        if slope is None and self._landfire_cog_client is not None:
+            _cog_topo = self._landfire_cog_client.sample_point(lat, lon, ["slope", "aspect"])
+            if _cog_topo.get("slope") is not None:
+                slope = _cog_topo["slope"]
+                slope_status_detail = "ok"
+                sources.append("LANDFIRE WCS slope (COG fallback)")
+                update_layer_audit(
+                    layer_audit,
+                    "slope",
+                    sample_attempted=True,
+                    sample_succeeded=True,
+                    coverage_status="observed",
+                    raw_value_preview=round(float(slope), 2),
+                    note="Slope sampled from LANDFIRE WCS national COG fallback.",
+                )
+            if aspect is None and _cog_topo.get("aspect") is not None:
+                aspect = _cog_topo["aspect"]
+                aspect_status_detail = "ok"
+
         if slope_status_detail not in {"ok", "ok_nearby"}:
             update_layer_audit(
                 layer_audit,
@@ -4733,6 +4776,45 @@ class WildfireDataClient:
             )
             assumptions.append("Fuel model unavailable within 100m neighborhood.")
 
+        # COG fallback: if fuel_index is still None, try LANDFIRE WCS (national coverage).
+        # Provides a single-point fuel model code when no local raster covers this location.
+        if fuel_index is None and self._landfire_cog_client is not None:
+            _cog_fuel = self._landfire_cog_client.sample_point(lat, lon, ["fuel"])
+            _cog_fuel_val = _cog_fuel.get("fuel")
+            if _cog_fuel_val is not None:
+                fuel_center = _cog_fuel_val
+                fuel_center_index = self._fuel_combustibility_index([_cog_fuel_val])
+                fuel_index = fuel_center_index
+                fuel_model = round(float(_cog_fuel_val), 2)
+                environmental_layer_status["fuel"] = "ok"
+                sources.append("LANDFIRE WCS fuel model (COG fallback)")
+                try:
+                    assumptions.remove("Fuel model unavailable within 100m neighborhood.")
+                except ValueError:
+                    pass
+                assumptions.append(
+                    "Fuel model sampled from LANDFIRE WCS national COG fallback (single point; no 100m neighborhood radius)."
+                )
+                update_layer_audit(
+                    layer_audit,
+                    "fuel",
+                    sample_attempted=True,
+                    sample_succeeded=True,
+                    coverage_status="observed",
+                    raw_value_preview=round(float(_cog_fuel_val), 2),
+                    note="Single-point fuel model sampled from LANDFIRE WCS COG fallback.",
+                )
+                fuel_feature_details.update(
+                    {
+                        "neighborhood_index": None,
+                        "point_index": fuel_center_index,
+                        "local_percentile": None,
+                        "blended_index": fuel_index,
+                        "scope": "neighborhood_level",
+                        "cog_source": "landfire_wcs",
+                    }
+                )
+
         canopy_path = runtime_paths["canopy"]
         canopy_center, canopy_status_detail, canopy_reason = self._sample_layer_value_detailed(canopy_path, lat, lon)
         canopy_samples = self._sample_circle(canopy_path, lat, lon, radius_m=100.0) if self._file_exists(canopy_path) else []
@@ -4805,6 +4887,44 @@ class WildfireDataClient:
                 failure_reason=canopy_reason,
             )
             assumptions.append("Canopy density unavailable within 100m neighborhood.")
+
+        # COG fallback: if canopy_index is still None, try LANDFIRE WCS (national coverage).
+        if canopy_index is None and self._landfire_cog_client is not None:
+            _cog_canopy = self._landfire_cog_client.sample_point(lat, lon, ["canopy"])
+            _cog_canopy_val = _cog_canopy.get("canopy")
+            if _cog_canopy_val is not None:
+                canopy_center = _cog_canopy_val
+                canopy_center_index = self._to_index(float(_cog_canopy_val), 0.0, 100.0)
+                canopy_index = canopy_center_index
+                canopy_cover = round(float(_cog_canopy_val), 2)
+                environmental_layer_status["canopy"] = "ok"
+                sources.append("LANDFIRE WCS canopy cover (COG fallback)")
+                try:
+                    assumptions.remove("Canopy density unavailable within 100m neighborhood.")
+                except ValueError:
+                    pass
+                assumptions.append(
+                    "Canopy cover sampled from LANDFIRE WCS national COG fallback (single point; no 100m neighborhood radius)."
+                )
+                update_layer_audit(
+                    layer_audit,
+                    "canopy",
+                    sample_attempted=True,
+                    sample_succeeded=True,
+                    coverage_status="observed",
+                    raw_value_preview=round(float(_cog_canopy_val), 2),
+                    note="Single-point canopy cover sampled from LANDFIRE WCS COG fallback.",
+                )
+                canopy_feature_details.update(
+                    {
+                        "neighborhood_index": None,
+                        "point_index": canopy_center_index,
+                        "local_percentile": None,
+                        "blended_index": canopy_index,
+                        "scope": "neighborhood_level",
+                        "cog_source": "landfire_wcs",
+                    }
+                )
 
         moisture_context: dict[str, Any] = {
             "source": None,

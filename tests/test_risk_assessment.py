@@ -5630,9 +5630,13 @@ def test_environmental_data_completeness_scoring_helper():
 
 
 def test_collect_context_missing_layers_does_not_silently_default_to_neutral():
+    from unittest.mock import patch
     client = WildfireDataClient()
     client.paths = {k: "" for k in client.paths.keys()}
-    ctx = client.collect_context(40.0, -105.0)
+    client._landfire_cog_client = None  # disable COG fallback so all sources are truly absent
+    # bypass feature bundle cache to prevent stale COG-populated entries from a prior run
+    with patch.object(client.feature_bundle_cache, "load", return_value=None):
+        ctx = client.collect_context(40.0, -105.0)
 
     assert ctx.burn_probability_index is None
     assert ctx.hazard_severity_index is None
