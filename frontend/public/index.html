@@ -4166,6 +4166,8 @@
         reportPreviewLoadedAssessmentId = null;
         latestHomeownerReport = null;
         collapseSecondaryPanels();
+        // Homeowner-first flow: reveal quick simulation controls immediately after assessment.
+        setPanelOpen("simulationPlannerPanel", true);
         setPanelOpen("simulationAdvancedPanel", false);
         const simResultEl = document.getElementById("simResult");
         if (simResultEl) {
