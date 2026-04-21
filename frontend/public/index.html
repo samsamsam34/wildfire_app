@@ -362,6 +362,22 @@
         font-size: 0.83rem;
         color: #6d8290;
       }
+      .post-simulation-action-row {
+        margin-top: 0.62rem;
+        padding-top: 0.58rem;
+        border-top: 1px solid #ecd9ce;
+      }
+      .post-simulation-action-row .actions {
+        margin-top: 0.42rem;
+      }
+      .post-simulation-action-row .actions button {
+        min-height: 40px;
+      }
+      .post-simulation-action-note {
+        margin-top: 0.4rem;
+        font-size: 0.82rem;
+        color: #6d8290;
+      }
       .result-primary {
         border-color: #c7d6e0;
         background: linear-gradient(180deg, #ffffff 0%, #f8fbfd 100%);
@@ -1365,6 +1381,15 @@
           <button id="primaryDecisionCtaBtn" type="button" class="decision-cta-btn">Run assessment to see next steps</button>
           <p id="primaryDecisionCtaHint" class="decision-cta-hint muted">Complete an assessment first, then run a before/after mitigation simulation.</p>
           <p id="primaryDecisionCtaPriorityNote" class="action-priority-note">This is the main next step. More report and detail options are available below.</p>
+          <div id="postSimulationActionRow" class="post-simulation-action-row" hidden>
+            <div class="mini-label">After simulation: review and share</div>
+            <div class="actions">
+              <button id="postSimOpenReportBtn" type="button">Review Full Report</button>
+              <button id="postSimDownloadPdfBtn" type="button" class="secondary">Download Homeowner-Friendly PDF</button>
+              <button id="postSimShareOptionsBtn" type="button" class="secondary">Save or Share Options</button>
+            </div>
+            <p class="post-simulation-action-note">Detailed report highlights remain optional and load only when opened.</p>
+          </div>
         </div>
         <details id="homeownerDecisionAdvancedDetails" class="mt-sm">
           <summary>More detail (optional advanced)</summary>
@@ -2734,21 +2759,39 @@
         const labelEl = document.getElementById("primaryDecisionCtaLabel");
         const hintEl = document.getElementById("primaryDecisionCtaHint");
         const priorityNoteEl = document.getElementById("primaryDecisionCtaPriorityNote");
+        const postSimActionRowEl = document.getElementById("postSimulationActionRow");
+        const postSimOpenReportBtn = document.getElementById("postSimOpenReportBtn");
+        const postSimDownloadPdfBtn = document.getElementById("postSimDownloadPdfBtn");
+        const postSimShareOptionsBtn = document.getElementById("postSimShareOptionsBtn");
         const wrap = document.querySelector(".wrap");
+        const hasPostSimActionRow = !!(
+          postSimActionRowEl
+          && postSimOpenReportBtn
+          && postSimDownloadPdfBtn
+          && postSimShareOptionsBtn
+        );
         if (!btn || !hintEl || !labelEl || !priorityNoteEl) {
           updateMobileNextStepBar();
           return;
         }
         const hasAssessment = !!(latestAssessment && latestAssessment.assessment_id);
         const hasSimulationResult = hasCompletedSimulationSummary();
+        const isBusy = isAssessmentSubmitting || isAddressVerificationPending || isSimulationSubmitting;
         if (wrap) wrap.classList.toggle("cta-priority", hasAssessment);
         btn.disabled = !hasAssessment || isAssessmentSubmitting || isAddressVerificationPending;
+        btn.style.display = "";
+        if (postSimActionRowEl) postSimActionRowEl.hidden = true;
         if (!hasAssessment) {
           primaryDecisionAction = "";
           labelEl.textContent = "Recommended next step";
           btn.textContent = "Run assessment to see next steps";
           hintEl.textContent = "Complete an assessment first, then run a before/after mitigation simulation.";
           priorityNoteEl.textContent = "This is the main next step. More report and detail options are available below.";
+          if (hasPostSimActionRow) {
+            postSimOpenReportBtn.disabled = true;
+            postSimDownloadPdfBtn.disabled = true;
+            postSimShareOptionsBtn.disabled = true;
+          }
           updateMobileNextStepBar();
           return;
         }
@@ -2757,8 +2800,15 @@
           labelEl.textContent = "Recommended next step after simulation";
           btn.textContent = "Review Full Report Options";
           hintEl.textContent = "Your before/after result is ready. Review your full report, then save or share.";
-          priorityNoteEl.textContent = "This is now the main next step. Simulation details stay available below if you want to rerun.";
-          btn.disabled = isAssessmentSubmitting || isAddressVerificationPending;
+          priorityNoteEl.textContent = "Report actions are ready below. Simulation details stay available if you want to rerun.";
+          btn.disabled = isBusy;
+          if (hasPostSimActionRow) {
+            btn.style.display = "none";
+            postSimActionRowEl.hidden = false;
+            postSimOpenReportBtn.disabled = isBusy;
+            postSimDownloadPdfBtn.disabled = isBusy;
+            postSimShareOptionsBtn.disabled = isBusy;
+          }
           updateMobileNextStepBar();
           return;
         }
@@ -2781,6 +2831,11 @@
           hintEl.textContent = "Open the simulation planner to estimate how mitigation could change your screening status.";
         }
         priorityNoteEl.textContent = "This is the main next step. More report and detail options are available below.";
+        if (hasPostSimActionRow) {
+          postSimOpenReportBtn.disabled = isBusy;
+          postSimDownloadPdfBtn.disabled = isBusy;
+          postSimShareOptionsBtn.disabled = isBusy;
+        }
         updateMobileNextStepBar();
       }
 
@@ -4886,7 +4941,15 @@
         const hasAssessment = !!(latestAssessment && latestAssessment.assessment_id);
         const busy = isAddressVerificationPending || isAssessmentSubmitting || isSimulationSubmitting;
         const disableOptionalActions = busy || !hasAssessment;
-        ["refreshImproveBtn", "openReportBtn", "downloadPdfBtn", "exportReportBtn"].forEach((id) => {
+        [
+          "refreshImproveBtn",
+          "openReportBtn",
+          "downloadPdfBtn",
+          "exportReportBtn",
+          "postSimOpenReportBtn",
+          "postSimDownloadPdfBtn",
+          "postSimShareOptionsBtn",
+        ].forEach((id) => {
           const el = document.getElementById(id);
           if (!el) return;
           el.disabled = disableOptionalActions;
@@ -6579,6 +6642,36 @@
           return;
         }
         openSimulationPlannerFromCta({ smooth: true });
+      });
+      document.getElementById("postSimOpenReportBtn")?.addEventListener("click", () => {
+        trackHomeownerFlowEvent("primary_cta_clicked", {
+          metadata: {
+            cta_id: "postSimOpenReportBtn",
+            cta_action: "open_full_report",
+            cta_text: "Review Full Report",
+          },
+        });
+        openReportView();
+      });
+      document.getElementById("postSimDownloadPdfBtn")?.addEventListener("click", () => {
+        trackHomeownerFlowEvent("primary_cta_clicked", {
+          metadata: {
+            cta_id: "postSimDownloadPdfBtn",
+            cta_action: "download_homeowner_pdf",
+            cta_text: "Download Homeowner-Friendly PDF",
+          },
+        });
+        downloadHomeownerPdf();
+      });
+      document.getElementById("postSimShareOptionsBtn")?.addEventListener("click", () => {
+        trackHomeownerFlowEvent("primary_cta_clicked", {
+          metadata: {
+            cta_id: "postSimShareOptionsBtn",
+            cta_action: "review_report_options",
+            cta_text: "Save or Share Options",
+          },
+        });
+        openReportOptionsFromSticky({ smooth: true });
       });
       document.getElementById("mobileNextStepBtn")?.addEventListener("click", handleMobileNextStepAction);
       document.getElementById("refreshImproveBtn")?.addEventListener("click", refreshImproveSuggestions);
