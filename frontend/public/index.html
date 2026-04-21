@@ -1812,17 +1812,19 @@
         </div>
         <details id="verifyAdjustLocationPanel" class="verify-optional-panel" style="display:none;">
           <summary>Adjust location (optional)</summary>
-          <p class="verify-tip">Use these tools only if the suggested match is not your property.</p>
-          <div id="verifyLocationMap" aria-label="Address verification map"></div>
-          <div id="verifyLiveLocationDetails" class="verify-live">
-            <div id="verifySelectedCoordinates">Map pin: -</div>
-            <div id="verifySelectionSource">Location we’ll use: Suggested match</div>
-            <div id="verifyDistanceFromSuggested">Distance from suggested match: 0 m</div>
-            <div id="verifyCoverageStatus">Coverage check: checking...</div>
-            <div id="verifyApplyState">Suggested match is selected.</div>
+          <p id="verifyAdjustModeHint" class="verify-tip">Choose the best address match first. Use the map only if needed.</p>
+          <div id="verifyMapModeArea" style="display:none;">
+            <div id="verifyLocationMap" aria-label="Address verification map"></div>
+            <div id="verifyLiveLocationDetails" class="verify-live">
+              <div id="verifySelectedCoordinates">Map pin: -</div>
+              <div id="verifySelectionSource">Location we’ll use: Suggested match</div>
+              <div id="verifyDistanceFromSuggested">Distance from suggested match: 0 m</div>
+              <div id="verifyCoverageStatus">Coverage check: checking...</div>
+              <div id="verifyApplyState">Suggested match is selected.</div>
+            </div>
           </div>
           <div class="verify-alt-toggle">
-            <button id="verifyShowManualOptionsBtn" type="button" class="secondary">Search for a different address</button>
+            <button id="verifyShowManualOptionsBtn" type="button" class="secondary" style="display:none;">Search for a different address instead</button>
           </div>
           <details id="verifyManualAddressSection" class="verify-manual" style="display:none;">
             <summary>Find a different match</summary>
@@ -1844,7 +1846,7 @@
               <div class="verify-candidate-empty">No candidates loaded yet.</div>
             </div>
             <div class="verify-map-fallback">
-              <button id="verifyUseMapFallbackBtn" type="button" class="secondary">Can’t find it? Use the map pin</button>
+              <button id="verifyUseMapFallbackBtn" type="button" class="secondary">Can’t find it? Use the map pin instead</button>
             </div>
           </details>
         </details>
@@ -1932,6 +1934,7 @@
       let primaryDecisionAction = "";
       let verificationFastPathTimer = null;
       let verificationFastPathEligible = false;
+      let verificationFallbackMode = "candidate";
       const motionClassTimers = new WeakMap();
       const verificationUnresolvedStatuses = new Set([
         "candidates_found_but_not_safe_enough",
@@ -2342,6 +2345,10 @@
           }
           if (!show) {
             adjustPanel.open = false;
+            verificationFallbackMode = "candidate";
+            const mapArea = document.getElementById("verifyMapModeArea");
+            if (mapArea) mapArea.style.display = "none";
+            setManualAddressSectionVisible(false);
           }
         }
         if (triggerBtn) {
@@ -2349,26 +2356,21 @@
         }
       }
 
-      function openVerificationAdjustTools({ openManual = false } = {}) {
+      function openVerificationAdjustTools({ openManual = false, fallbackMode = "candidate" } = {}) {
         setVerificationModalMode({ fastPathEligible: false });
         setVerificationAdjustToolsVisible(true, { openPanel: true });
         setFlowStatus("Address confirmation: adjust only if the suggested match looks wrong.", "muted");
-        if (openManual) {
-          setManualAddressSectionVisible(true);
-          const manualSection = document.getElementById("verifyManualAddressSection");
-          if (manualSection) manualSection.open = true;
+        const targetMode = openManual ? "candidate" : fallbackMode;
+        setVerificationFallbackMode(targetMode);
+        if (
+          targetMode === "candidate"
+          && !openManual
+          && pendingAssessmentPayload?.address
+          && verificationManualCandidates.length === 0
+        ) {
+          runManualAddressCandidateSearch({ statusMessage: false });
         }
-        const map = ensureVerifyLocationMap();
-        if (map) {
-          if (verificationPendingCoords) {
-            map.setView([verificationPendingCoords.latitude, verificationPendingCoords.longitude], 16);
-            renderVerifyLocationMarker();
-          } else {
-            map.setView([47.45, -120.95], 8);
-          }
-          setTimeout(() => map.invalidateSize(), 0);
-        }
-        if (verificationPendingCoords) {
+        if (targetMode === "map" && verificationPendingCoords) {
           scheduleVerificationCoverageRefresh();
         }
       }
@@ -5221,10 +5223,48 @@
         if (!shouldShow) {
           section.open = false;
         }
-        const toggleBtn = document.getElementById("verifyShowManualOptionsBtn");
-        if (toggleBtn) {
-          toggleBtn.style.display = shouldShow ? "none" : "inline-flex";
+      }
+
+      function setVerificationFallbackMode(mode = "candidate") {
+        verificationFallbackMode = mode === "map" ? "map" : "candidate";
+        const mapArea = document.getElementById("verifyMapModeArea");
+        const modeHintEl = document.getElementById("verifyAdjustModeHint");
+        const manualSection = document.getElementById("verifyManualAddressSection");
+        const switchToSearchBtn = document.getElementById("verifyShowManualOptionsBtn");
+        const switchToMapBtn = document.getElementById("verifyUseMapFallbackBtn");
+
+        if (verificationFallbackMode === "map") {
+          if (mapArea) mapArea.style.display = "block";
+          setManualAddressSectionVisible(false);
+          if (switchToSearchBtn) {
+            switchToSearchBtn.style.display = "inline-flex";
+            switchToSearchBtn.textContent = "Search for a different address instead";
+          }
+          if (switchToMapBtn) switchToMapBtn.style.display = "none";
+          if (modeHintEl) {
+            modeHintEl.textContent = "Step 1: Place the pin on your property. Step 2: Apply the pin, then continue.";
+          }
+          const map = ensureVerifyLocationMap();
+          if (map) {
+            if (verificationPendingCoords) {
+              map.setView([verificationPendingCoords.latitude, verificationPendingCoords.longitude], 16);
+              renderVerifyLocationMarker();
+            } else {
+              map.setView([47.45, -120.95], 8);
+            }
+            setTimeout(() => map.invalidateSize(), 0);
+          }
+        } else {
+          if (mapArea) mapArea.style.display = "none";
+          setManualAddressSectionVisible(true);
+          if (manualSection) manualSection.open = true;
+          if (switchToSearchBtn) switchToSearchBtn.style.display = "none";
+          if (switchToMapBtn) switchToMapBtn.style.display = "inline-flex";
+          if (modeHintEl) {
+            modeHintEl.textContent = "Step 1: Pick the best address match. Step 2: Continue if it looks right.";
+          }
         }
+        setConfirmAddressButtonState();
       }
 
       function updateVerificationQuickStatus(enteredAddress = "", verification = null) {
@@ -5340,6 +5380,7 @@
               refreshCoverage: true,
               selectionSource: "manual_address_selection",
             });
+            applyVerificationPendingLocation();
             renderManualCandidateList(verificationManualCandidates);
             setManualCandidateStatus("Address selected. Continue if this is your property.");
           });
@@ -5437,6 +5478,7 @@
         const resetBtn = document.getElementById("resetVerifyLocationBtn");
         const adjustPanel = document.getElementById("verifyAdjustLocationPanel");
         const panelOpen = !!adjustPanel?.open;
+        const mapModeActive = verificationFallbackMode === "map";
         const movedFromSuggested = (
           verificationSuggestedCoords
           && verificationAcceptedCoords
@@ -5445,11 +5487,11 @@
         const pendingValid = verificationPendingCoords
           && isValidCoordinatePair(Number(verificationPendingCoords.latitude), Number(verificationPendingCoords.longitude));
         if (applyBtn) {
-          applyBtn.style.display = (panelOpen || verificationHasUnappliedPending) ? "inline-flex" : "none";
+          applyBtn.style.display = (mapModeActive && (panelOpen || verificationHasUnappliedPending)) ? "inline-flex" : "none";
           applyBtn.disabled = isAssessmentSubmitting || !pendingValid || !verificationHasUnappliedPending;
         }
         if (resetBtn) {
-          resetBtn.style.display = (panelOpen || verificationHasUnappliedPending || movedFromSuggested) ? "inline-flex" : "none";
+          resetBtn.style.display = (mapModeActive && (panelOpen || verificationHasUnappliedPending || movedFromSuggested)) ? "inline-flex" : "none";
           resetBtn.disabled = isAssessmentSubmitting || !verificationSuggestedCoords;
         }
       }
@@ -5457,8 +5499,9 @@
       function activateMapClickFallback() {
         const adjustPanel = document.getElementById("verifyAdjustLocationPanel");
         if (adjustPanel) adjustPanel.open = true;
+        setVerificationFallbackMode("map");
         verificationSelectedCandidateId = null;
-        setManualCandidateStatus("Map mode is active. Place the pin on your home, then click \"Apply this pin\".");
+        setFlowStatus("Address confirmation: place the pin on your property, then apply it and continue.", "muted");
         if (!verificationPendingCoords && verifyLocationMap) {
           const center = verifyLocationMap.getCenter();
           setVerificationSelectedLocation({
@@ -5553,10 +5596,8 @@
           warnings.unshift("You moved the map pin but have not applied it yet.");
         }
         if (warnings.length > 0) {
-          const compactWarnings = warnings.slice(0, 2);
-          if (warnings.length > 2) {
-            compactWarnings.push(`+${warnings.length - 2} more notes in match details.`);
-          }
+          const maxWarnings = verificationFallbackMode === "map" ? 2 : 1;
+          const compactWarnings = warnings.slice(0, maxWarnings);
           warningBox.style.display = "block";
           warningBox.textContent = compactWarnings.join("\n");
         } else {
@@ -5831,14 +5872,18 @@
         const contextPanel = document.getElementById("verifyAddressContextPanel");
         if (contextPanel) contextPanel.open = false;
         setVerificationAdjustToolsVisible(shouldShowManual, { openPanel: shouldShowManual });
-        setManualAddressSectionVisible(shouldShowManual);
         if (shouldShowManual) {
-          const manualSection = document.getElementById("verifyManualAddressSection");
-          if (manualSection) manualSection.open = true;
-        }
-        if (shouldShowManual) {
-          setManualCandidateStatus("Choose the best match below, then continue.");
+          setVerificationFallbackMode("candidate");
+          setManualCandidateStatus("Choose the best address match, then continue.");
         } else {
+          verificationFallbackMode = "candidate";
+          setManualAddressSectionVisible(false);
+          const mapArea = document.getElementById("verifyMapModeArea");
+          if (mapArea) mapArea.style.display = "none";
+          const switchToSearchBtn = document.getElementById("verifyShowManualOptionsBtn");
+          if (switchToSearchBtn) switchToSearchBtn.style.display = "none";
+          const switchToMapBtn = document.getElementById("verifyUseMapFallbackBtn");
+          if (switchToMapBtn) switchToMapBtn.style.display = "inline-flex";
           setManualCandidateStatus("");
         }
         setVerificationModalMode({ fastPathEligible: !!fastPathEligible && !shouldShowManual });
@@ -5848,7 +5893,7 @@
         updateVerificationLiveDetails();
         renderVerificationWarnings(enteredAddress, verification);
         if (shouldShowManual) {
-          openVerificationAdjustTools({ openManual: true });
+          openVerificationAdjustTools({ fallbackMode: "candidate", openManual: true });
         }
       }
 
