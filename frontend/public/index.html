@@ -1367,9 +1367,9 @@
           <p id="primaryDecisionCtaPriorityNote" class="action-priority-note">This is the main next step. More report and detail options are available below.</p>
         </div>
         <details id="homeownerDecisionAdvancedDetails" class="mt-sm">
-          <summary>More detail (advanced)</summary>
+          <summary>More detail (optional advanced)</summary>
           <ul id="homeownerDecisionAdvancedList">
-            <li class="muted">Detailed scores, evidence notes, and compatibility fields are preserved in advanced sections.</li>
+            <li class="muted">Underlying scores, evidence notes, and compatibility fields are preserved in advanced sections.</li>
           </ul>
         </details>
       </section>
@@ -1383,52 +1383,56 @@
 
       <section id="supportingInsightsSection" class="card secondary-panel more-options-item">
         <details id="supportingInsightsPanel">
-          <summary>Risk details</summary>
-          <p class="section-help">See a deeper breakdown of your score, key drivers, and action context.</p>
+          <summary>Why this result (deeper context)</summary>
+          <p class="section-help">Use this section when you want deeper context beyond your top summary drivers and actions.</p>
           <div class="results mt-sm">
             <div class="card result-primary">
-              <h3>Risk Score Snapshot</h3>
-              <p class="section-help">This score combines area wildfire exposure and home vulnerability when enough evidence is available.</p>
+              <h3>How this score was built</h3>
+              <p class="section-help">This blends area wildfire pressure with property vulnerability when enough detail is available.</p>
               <div id="riskScore" class="score">-</div>
               <div id="riskLabel" class="muted">Run an assessment to see your score.</div>
               <div class="summary-meta">
                 <div class="summary-item">
-                  <span>Estimate precision</span>
+                  <span>How precise this estimate is</span>
                   <strong id="specificityKpi">Pending</strong>
                 </div>
                 <div class="summary-item">
-                  <span>Home Readiness</span>
+                  <span>Home readiness</span>
                   <strong id="readinessKpi">Pending</strong>
                 </div>
               </div>
               <div class="next-step-callout">
-                <span>What To Do First</span>
+                <span>Most important first step</span>
                 <strong id="firstActionKpi">Run assessment</strong>
               </div>
               <p id="regionDebugInline" class="muted debug-inline">Region: unresolved</p>
-              <p id="summaryText" class="mt-sm">We'll explain your score in plain language here.</p>
+              <p id="summaryText" class="mt-sm">We’ll explain how local and property factors shaped this score.</p>
             </div>
 
             <div class="card">
-              <h3>Risk Drivers</h3>
-              <p class="section-help">What is driving this result based on nearby conditions and property-level signals.</p>
+              <h3>What is raising or lowering risk</h3>
+              <p class="section-help">This expands the “why” behind your result with broader factor context.</p>
               <div class="insight-group">
-                <div class="mini-label">Top risk drivers</div>
-                <h3>Around the Home</h3>
+                <div class="mini-label">Near-structure context</div>
+                <h3>What we found around the home</h3>
                 <ul id="propertyFindings"><li class="muted">Structure-specific findings will appear after assessment.</li></ul>
+              </div>
+              <div class="insight-group">
+                <div class="mini-label">Area-wide context</div>
+                <h3>Broader wildfire pressure</h3>
                 <ul id="drivers"><li class="muted">Risk drivers will appear after assessment.</li></ul>
               </div>
               <div class="insight-group">
                 <div class="mini-label">Protective factors</div>
-                <h3>What Is Helping Lower Risk</h3>
+                <h3>What is helping lower risk</h3>
                 <ul id="protective"><li class="muted">Protective factors will appear after assessment.</li></ul>
               </div>
             </div>
 
             <div class="card">
-              <h3>Action Details</h3>
-              <p class="section-help">Recommended actions ranked by impact and practical effort.</p>
-              <div class="mini-label">Recommended next steps</div>
+              <h3>Action planning detail</h3>
+              <p class="section-help">This is the longer action plan view, including impact and effort context.</p>
+              <div class="mini-label">Recommended action sequence</div>
               <p id="nextStepsText">Focus on the top actions first.</p>
               <ul id="mitigations"><li class="muted">Recommendations will appear after assessment.</li></ul>
             </div>
@@ -1446,7 +1450,7 @@
               <strong id="confidenceAtGlance">Pending</strong>
             </div>
             <div class="trust-value">
-              <span>Precision level</span>
+              <span>How precise this estimate is</span>
               <strong id="specificityAtGlance">Pending</strong>
             </div>
           </div>
@@ -1487,7 +1491,7 @@
           <p id="simulationRunStatus" class="status-line status-secondary tone-muted sim-run-status">Run an assessment, choose a quick scenario, then run simulation.</p>
 
           <details id="simulationAdvancedPanel" class="mt-sm">
-            <summary>Customize scenario (optional details)</summary>
+            <summary>Customize this scenario (optional advanced)</summary>
             <p class="section-help">Adjust scenario inputs manually if you want a more custom what-if run.</p>
 
             <div class="row mt-sm">
@@ -1573,12 +1577,12 @@
             </div>
 
             <div class="mt-sm">
-              <label>Scenario confirmed fields (optional, comma separated)</label>
+              <label>Confirmed scenario details (optional field list)</label>
               <input id="scenario_confirmed_fields" placeholder="roof_type, vent_type, defensible_space_ft" />
             </div>
 
             <div class="actions">
-              <button id="simulateBtn" type="button" class="secondary">Run Custom Simulation</button>
+              <button id="simulateBtn" type="button" class="secondary">Run Customized Scenario</button>
             </div>
           </details>
 
@@ -1607,11 +1611,11 @@
           <p class="muted">Save or share your results with homeowner-friendly report formats.</p>
           <p class="section-help">Best after reviewing your status and before/after simulation.</p>
           <details id="homeownerReportPreviewPanel" class="mt-sm">
-            <summary>See report highlights</summary>
-            <p id="homeownerReportStatus" class="status-line status-secondary tone-muted">Open this section to load report highlights.</p>
+            <summary>Report highlights for deeper review</summary>
+            <p id="homeownerReportStatus" class="status-line status-secondary tone-muted">Open this section to load deeper report highlights.</p>
             <ul id="homeownerReportHighlights"><li class="muted">No report highlights yet.</li></ul>
             <details id="homeownerReportMoreDetails" class="mt-sm">
-              <summary>See more report detail</summary>
+              <summary>Methodology and deeper notes</summary>
               <ul id="homeownerReportSecondary"><li class="muted">Additional details will appear here when available.</li></ul>
             </details>
           </details>
@@ -1639,7 +1643,7 @@
 
       <section id="advancedSection" class="card advanced-secondary secondary-panel">
         <details id="advancedInternalDetailsPanel">
-          <summary>Advanced technical details</summary>
+          <summary>Advanced details and diagnostics</summary>
           <p class="section-help">Use this panel for detailed model outputs beyond the homeowner summary.</p>
           <ul id="advancedCoverageList">
             <li>Factor subscores and weighted contributions</li>
@@ -1670,7 +1674,7 @@
           <h3 class="subsection-title">How to Improve Confidence</h3>
           <ul id="confidenceActions"><li class="muted">Confidence guidance will appear after assessment.</li></ul>
 
-          <h3 class="subsection-title">Factor score breakdown</h3>
+          <h3 class="subsection-title">Detailed factor scoring (advanced)</h3>
           <table>
             <thead><tr><th>Factor</th><th>Score</th><th>Contribution</th></tr></thead>
             <tbody id="submodels"><tr><td colspan="3" class="muted">Detailed factor data will appear after assessment.</td></tr></tbody>
@@ -3766,7 +3770,7 @@
         const secondaryEl = document.getElementById("homeownerReportSecondary");
         const moreDetailsEl = document.getElementById("homeownerReportMoreDetails");
         const reportPreviewPanelEl = document.getElementById("homeownerReportPreviewPanel");
-        setHomeownerReportStatus(reason || "Open this section to load report highlights.", "muted");
+        setHomeownerReportStatus(reason || "Open this section to load deeper report highlights.", "muted");
         if (highlightsEl) {
           setListItems(highlightsEl, [], { fallbackText: "No report highlights yet." });
         }
@@ -3831,7 +3835,7 @@
         if (!highlightsEl || !secondaryEl) return;
 
         if (!report || typeof report !== "object") {
-          setHomeownerReportStatus("We couldn’t load report highlights yet.", "error");
+          setHomeownerReportStatus("We couldn’t load deeper report highlights yet.", "error");
           setListItems(highlightsEl, [], { fallbackText: "Report highlights will appear after assessment." });
           setListItems(secondaryEl, [], { fallbackText: "Additional details will appear here when available." });
           if (moreDetailsEl) moreDetailsEl.open = false;
@@ -3945,44 +3949,18 @@
         });
 
         setHomeownerReportStatus(statusLabel
-          ? `${statusLabel}: ${headline || "report highlights loaded."}`
-          : (headline || "Report highlights loaded."), "success");
+          ? `${statusLabel}: ${headline || "deeper report highlights are ready."}`
+          : (headline || "Deeper report highlights are ready."), "success");
         const rows = [];
-        if (statusLabel) {
-          rows.push({ label: "Screening status", value: statusLabel, pill: true });
-        }
-        if (statusReasons.length > 0) {
-          const reasonsText = statusReasons
-            .slice(0, 3)
-            .map((item) => String(item || "").trim())
-            .filter(Boolean)
-            .join("; ");
-          if (reasonsText) rows.push({ label: "Why this status", value: reasonsText });
-        }
-        if (headline) {
-          rows.push({ label: "Bottom line", value: `${headline}${riskBand ? ` (${riskBand})` : ""}` });
-        }
         const specificityHeadline = String(specificity?.headline || "").trim();
         const specificityMeaning = String(specificity?.what_this_means || "").trim();
         if (specificityHeadline || specificityMeaning) {
           rows.push({
-            label: "Estimate precision",
+            label: "How precise this estimate is",
             value: `${specificityHeadline || "Estimate"}${specificityMeaning ? ` — ${specificityMeaning}` : ""}`,
           });
         }
-        if (topDrivers.length > 0) {
-          const text = topDrivers.slice(0, 3).map((item) => String(item)).filter(Boolean).join("; ");
-          if (text) rows.push({ label: "Top 3 risk drivers", value: text });
-        }
-        if (topActions.length > 0) {
-          const text = topActions
-            .slice(0, 3)
-            .map((item) => String(item?.action || item?.title || "").trim())
-            .filter(Boolean)
-            .join("; ");
-          if (text) rows.push({ label: "Top 3 next actions", value: text });
-        }
-        if (whatFirst) rows.push({ label: "What to do first", value: whatFirst });
+        if (whatFirst) rows.push({ label: "Most important first step", value: whatFirst });
         if (beforeStatus && afterStatus) {
           rows.push({ label: "Status change", value: `${beforeStatus} → ${afterStatus}` });
         }
@@ -3998,7 +3976,7 @@
             .join("; ");
           if (actionsText) rows.push({ label: "Actions driving change", value: actionsText });
         }
-        if (beforeAfterText) rows.push({ label: "Scenario summary", value: beforeAfterText });
+        if (beforeAfterText) rows.push({ label: "Scenario outcome summary", value: beforeAfterText });
         if (limitations) rows.push({ label: "Confidence notes", value: limitations });
         setListItems(highlightsEl, rows, {
           fallbackText: "Report highlights will appear after assessment.",
@@ -4033,22 +4011,22 @@
         }
         if (lowDiff && typeof lowDiff === "object") {
           secondaryRows.push({
-            label: "Nearby-home comparison",
+            label: "How this compares to nearby homes",
             value: String(lowDiff.why_nearby_properties_may_appear_similar || "Result is based mostly on shared neighborhood conditions.").trim(),
           });
         }
         if (focus?.advanced_details_hint) {
           secondaryRows.push({
-            label: "More detail",
+            label: "What this report adds",
             value: String(focus.advanced_details_hint || "").trim(),
           });
         }
         const advancedDetailsNote = String(report?.advanced_details?.note || "").trim();
         if (advancedDetailsNote) {
-          secondaryRows.push({ label: "Advanced section note", value: advancedDetailsNote });
+          secondaryRows.push({ label: "Advanced details available", value: advancedDetailsNote });
         }
         if (statusMethodologyNote) {
-          secondaryRows.push({ label: "How status is interpreted", value: statusMethodologyNote });
+          secondaryRows.push({ label: "How this status is determined", value: statusMethodologyNote });
         }
         setListItems(secondaryEl, secondaryRows, {
           fallbackText: "Additional details will appear here when available.",
@@ -4089,7 +4067,7 @@
           renderHomeownerReportPreview(latestHomeownerReport);
           return;
         }
-        setHomeownerReportStatus("Loading report highlights...", "muted");
+        setHomeownerReportStatus("Loading deeper report highlights...", "muted");
         setFlowStatus("Step 4 of 4: Loading report highlights...", "muted");
         try {
           const report = await api(`/report/${assessmentId}/homeowner`);
@@ -4109,7 +4087,7 @@
           reportPreviewLoadedAssessmentId = null;
           setHomeownerReportStatus(toHomeownerFriendlyError(
             err?.message,
-            "We couldn’t load report highlights yet. You can still continue with your assessment results."
+            "We couldn’t load deeper report highlights yet. You can still continue with your assessment results."
           ), "error");
           setListItems(highlightsEl, [], {
             fallbackText: "Try opening the full report again after rerunning the assessment.",
@@ -6281,7 +6259,7 @@
             const details = document.createElement("details");
             details.className = "sim-result-advanced";
             const summary = document.createElement("summary");
-            summary.textContent = "Detailed score changes (advanced)";
+            summary.textContent = "What changed in this scenario (advanced)";
             details.appendChild(summary);
 
             const addDetailLine = (label, value) => {
@@ -6303,7 +6281,7 @@
             );
             addDetailLine("What changed", changedRows.length > 0 ? changedRows.join("; ") : "No changes detected.");
             addDetailLine(
-              "Actions resolved",
+              "Actions included in this scenario",
               resolvedActions.length > 0 ? resolvedActions.join("; ") : "No specific actions resolved yet."
             );
             addDetailLine(
@@ -6538,12 +6516,12 @@
 
       document.getElementById("reportSharePanel")?.addEventListener("toggle", () => {
         if (!latestAssessment?.assessment_id) {
-          setHomeownerReportStatus("Run an assessment first to preview report highlights.", "muted");
+          setHomeownerReportStatus("Run an assessment first to preview deeper report highlights.", "muted");
           refreshSecondaryStatusVisibility();
           return;
         }
         if (reportPreviewLoadedAssessmentId !== latestAssessment.assessment_id) {
-          setHomeownerReportStatus("Open report highlights to review your summary.", "muted");
+          setHomeownerReportStatus("Open report highlights to review deeper details.", "muted");
         }
         refreshSecondaryStatusVisibility();
       });
