@@ -1356,10 +1356,10 @@
         <p id="homeownerDecisionConfidence" class="homeowner-first-note muted">Confidence and limitations summary will appear here.</p>
         <p id="homeownerDecisionMethodology" class="muted">This screen is for homeowner screening guidance and next-step planning, not insurer-approval prediction.</p>
         <div class="decision-cta-block">
-          <p class="decision-cta-label">Recommended next step</p>
+          <p id="primaryDecisionCtaLabel" class="decision-cta-label">Recommended next step</p>
           <button id="primaryDecisionCtaBtn" type="button" class="decision-cta-btn">Run assessment to see next steps</button>
           <p id="primaryDecisionCtaHint" class="decision-cta-hint muted">Complete an assessment first, then run a before/after mitigation simulation.</p>
-          <p class="action-priority-note">This is the main next step. More report and detail options are available below.</p>
+          <p id="primaryDecisionCtaPriorityNote" class="action-priority-note">This is the main next step. More report and detail options are available below.</p>
         </div>
         <details id="homeownerDecisionAdvancedDetails" class="mt-sm">
           <summary>More detail (advanced)</summary>
@@ -1837,6 +1837,7 @@
       let reportPreviewLoadedAssessmentId = null;
       let homeownerSummaryFocusTimer = null;
       let mobileNextStepAction = "";
+      let primaryDecisionAction = "";
       let verificationFastPathTimer = null;
       let verificationFastPathEligible = false;
       const motionClassTimers = new WeakMap();
@@ -2383,6 +2384,7 @@
         if (!hasAssessment) {
           setSimulationRunStatus("Run an assessment first, then use before/after simulation.", "muted");
         }
+        updatePrimaryDecisionCta(currentHomeownerStatusLabel());
         updateMobileNextStepBar();
       }
 
@@ -2566,6 +2568,23 @@
         setFlowStatus("Step 4 of 4: Review your full report and save or share results.", "muted");
       }
 
+      function hasCompletedSimulationSummary() {
+        return !!(
+          latestSimulationSummary
+          && (
+            String(latestSimulationSummary.summary || "").trim()
+            || String(latestSimulationSummary.projected_insurability_status || "").trim()
+          )
+        );
+      }
+
+      function currentHomeownerStatusLabel() {
+        const badge = document.getElementById("homeownerStatusBadge");
+        const raw = String(badge?.textContent || "").trim();
+        if (!raw || raw.toLowerCase() === "status not yet assessed") return "";
+        return raw;
+      }
+
       function updateMobileNextStepBar() {
         const bar = document.getElementById("mobileNextStepBar");
         const summaryEl = document.getElementById("mobileNextStepSummary");
@@ -2573,13 +2592,7 @@
         if (!bar || !summaryEl || !btn) return;
 
         const hasAssessment = !!(latestAssessment && latestAssessment.assessment_id);
-        const hasSimulationResult = !!(
-          latestSimulationSummary
-          && (
-            String(latestSimulationSummary.summary || "").trim()
-            || String(latestSimulationSummary.projected_insurability_status || "").trim()
-          )
-        );
+        const hasSimulationResult = hasCompletedSimulationSummary();
         const shouldShow = isMobileViewport() && hasAssessment && !addressVerificationModalOpen;
         if (!shouldShow) {
           mobileNextStepAction = "";
@@ -2644,22 +2657,45 @@
 
       function updatePrimaryDecisionCta(statusLabel = "") {
         const btn = document.getElementById("primaryDecisionCtaBtn");
+        const labelEl = document.getElementById("primaryDecisionCtaLabel");
         const hintEl = document.getElementById("primaryDecisionCtaHint");
+        const priorityNoteEl = document.getElementById("primaryDecisionCtaPriorityNote");
         const wrap = document.querySelector(".wrap");
-        if (!btn || !hintEl) {
+        if (!btn || !hintEl || !labelEl || !priorityNoteEl) {
           updateMobileNextStepBar();
           return;
         }
         const hasAssessment = !!(latestAssessment && latestAssessment.assessment_id);
+        const hasSimulationResult = hasCompletedSimulationSummary();
         if (wrap) wrap.classList.toggle("cta-priority", hasAssessment);
-        btn.disabled = !hasAssessment;
+        btn.disabled = !hasAssessment || isAssessmentSubmitting || isAddressVerificationPending;
         if (!hasAssessment) {
+          primaryDecisionAction = "";
+          labelEl.textContent = "Recommended next step";
           btn.textContent = "Run assessment to see next steps";
           hintEl.textContent = "Complete an assessment first, then run a before/after mitigation simulation.";
+          priorityNoteEl.textContent = "This is the main next step. More report and detail options are available below.";
           updateMobileNextStepBar();
           return;
         }
+        if (hasSimulationResult) {
+          primaryDecisionAction = "review_report_options";
+          labelEl.textContent = "Recommended next step after simulation";
+          btn.textContent = "Review Full Report Options";
+          hintEl.textContent = "Your before/after result is ready. Review your full report, then save or share.";
+          priorityNoteEl.textContent = "This is now the main next step. Simulation details stay available below if you want to rerun.";
+          btn.disabled = isAssessmentSubmitting || isAddressVerificationPending;
+          updateMobileNextStepBar();
+          return;
+        }
+
+        primaryDecisionAction = "run_quick_simulation";
+        labelEl.textContent = "Recommended next step";
         btn.textContent = "Plan My Before/After Scenario";
+        if (isSimulationSubmitting) {
+          btn.textContent = "Simulation Running...";
+          btn.disabled = true;
+        }
         const normalized = String(statusLabel || "").trim().toLowerCase();
         if (normalized === "high risk of insurance issues") {
           hintEl.textContent = "Start with top actions in the simulation planner to see the strongest possible status shift.";
@@ -2670,6 +2706,7 @@
         } else {
           hintEl.textContent = "Open the simulation planner to estimate how mitigation could change your screening status.";
         }
+        priorityNoteEl.textContent = "This is the main next step. More report and detail options are available below.";
         updateMobileNextStepBar();
       }
 
@@ -6463,12 +6500,18 @@
       document.getElementById("simulateBtn").addEventListener("click", runSimulation);
       document.getElementById("simulatePresetBtn")?.addEventListener("click", runSelectedSimulationPreset);
       document.getElementById("primaryDecisionCtaBtn")?.addEventListener("click", () => {
+        const ctaAction = primaryDecisionAction || "run_quick_simulation";
         trackHomeownerFlowEvent("primary_cta_clicked", {
           metadata: {
             cta_id: "primaryDecisionCtaBtn",
+            cta_action: ctaAction,
             cta_text: String(document.getElementById("primaryDecisionCtaBtn")?.textContent || "").trim() || null,
           },
         });
+        if (ctaAction === "review_report_options") {
+          openReportOptionsFromSticky({ smooth: true });
+          return;
+        }
         openSimulationPlannerFromCta({ smooth: true });
       });
       document.getElementById("mobileNextStepBtn")?.addEventListener("click", handleMobileNextStepAction);
