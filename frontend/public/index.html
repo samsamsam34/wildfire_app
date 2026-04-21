@@ -152,6 +152,11 @@
         color: var(--muted);
         font-size: 0.86rem;
       }
+      .status-line.status-secondary {
+        font-size: 0.82rem;
+        border-style: dashed;
+        background: #fbfdff;
+      }
       .tone-muted {
         color: var(--muted);
       }
@@ -1319,7 +1324,7 @@
           <button id="assessBtn" type="button">Assess My Address</button>
           <button id="reassessBtn" type="button" class="secondary" style="display:none;">Re-run With Updated Details</button>
         </div>
-        <p id="requestStatus" class="status-line tone-muted">Enter your address to begin.</p>
+        <p id="requestStatus" class="status-line status-secondary tone-muted">Enter your address to begin.</p>
         <p id="flowStatusLine" class="status-line tone-muted flow-status-line">Step 1 of 4: Enter your address to begin.</p>
       </section>
 
@@ -1479,7 +1484,7 @@
           <div class="actions">
             <button id="simulatePresetBtn" type="button">Run Quick Simulation</button>
           </div>
-          <p id="simulationRunStatus" class="status-line tone-muted sim-run-status">Run an assessment, choose a quick scenario, then run simulation.</p>
+          <p id="simulationRunStatus" class="status-line status-secondary tone-muted sim-run-status">Run an assessment, choose a quick scenario, then run simulation.</p>
 
           <details id="simulationAdvancedPanel" class="mt-sm">
             <summary>Customize scenario (optional details)</summary>
@@ -1592,7 +1597,7 @@
           <div class="actions actions-low-emphasis">
             <button id="refreshImproveBtn" type="button" class="secondary">Refresh Input Suggestions</button>
           </div>
-          <p id="improveStatus" class="status-line tone-muted">Input suggestions will appear after assessment.</p>
+          <p id="improveStatus" class="status-line status-secondary tone-muted">Input suggestions will appear after assessment.</p>
         </details>
       </section>
 
@@ -1603,7 +1608,7 @@
           <p class="section-help">Best after reviewing your status and before/after simulation.</p>
           <details id="homeownerReportPreviewPanel" class="mt-sm">
             <summary>See report highlights</summary>
-            <p id="homeownerReportStatus" class="status-line tone-muted">Open this section to load report highlights.</p>
+            <p id="homeownerReportStatus" class="status-line status-secondary tone-muted">Open this section to load report highlights.</p>
             <ul id="homeownerReportHighlights"><li class="muted">No report highlights yet.</li></ul>
             <details id="homeownerReportMoreDetails" class="mt-sm">
               <summary>See more report detail</summary>
@@ -1615,7 +1620,7 @@
             <button id="openReportBtn" type="button" class="secondary">Open Full Report</button>
             <button id="downloadPdfBtn" type="button" class="secondary">Download Homeowner-Friendly PDF</button>
           </div>
-          <p id="reportActionStatus" class="status-line tone-muted">Report review actions will appear after assessment.</p>
+          <p id="reportActionStatus" class="status-line status-secondary tone-muted">Report review actions will appear after assessment.</p>
         </details>
       </section>
 
@@ -2230,6 +2235,7 @@
         if (wrap) {
           wrap.classList.toggle("more-options-open", !!(hasAssessment && hubPanel?.open));
         }
+        refreshSecondaryStatusVisibility();
       }
 
       function setVerificationAdjustToolsVisible(visible, { openPanel = false } = {}) {
@@ -2338,6 +2344,12 @@
           applyToneClass(el, "muted");
           return;
         }
+        if (isHomeownerMode && tone !== "error") {
+          el.textContent = "";
+          el.classList.remove("show");
+          applyToneClass(el, "muted");
+          return;
+        }
         el.textContent = text;
         applyToneClass(el, tone);
         el.classList.add("show");
@@ -2350,11 +2362,59 @@
         }
       }
 
+      function isActionableStatusTone(tone = "muted") {
+        return tone === "error" || tone === "success";
+      }
+
+      function isDetailsPanelOpen(panelId = "") {
+        const panel = document.getElementById(String(panelId || "").trim());
+        return !!(panel && typeof panel.open === "boolean" && panel.open);
+      }
+
+      function applySecondaryStatusVisibility(el, { tone = "muted", panelId = "", alwaysShow = false } = {}) {
+        if (!el) return;
+        const normalizedTone = tone === "error" ? "error" : tone === "success" ? "success" : "muted";
+        const normalizedPanelId = String(panelId || "").trim();
+        const text = String(el.textContent || "").trim();
+        if (normalizedPanelId) {
+          el.dataset.statusPanelId = normalizedPanelId;
+        } else {
+          delete el.dataset.statusPanelId;
+        }
+        el.dataset.statusTone = normalizedTone;
+
+        let shouldShow = !!text;
+        if (isHomeownerMode && !alwaysShow) {
+          if (!isActionableStatusTone(normalizedTone)) {
+            shouldShow = !!text && (!!normalizedPanelId && isDetailsPanelOpen(normalizedPanelId));
+          }
+        }
+        el.style.display = shouldShow ? "" : "none";
+      }
+
+      function refreshSecondaryStatusVisibility() {
+        [
+          "requestStatus",
+          "simulationRunStatus",
+          "improveStatus",
+          "reportActionStatus",
+          "homeownerReportStatus",
+        ].forEach((id) => {
+          const el = document.getElementById(id);
+          if (!el) return;
+          applySecondaryStatusVisibility(el, {
+            tone: String(el.dataset.statusTone || "muted"),
+            panelId: String(el.dataset.statusPanelId || ""),
+          });
+        });
+      }
+
       function setImproveStatus(message, tone = "muted") {
         const el = document.getElementById("improveStatus");
         if (!el) return;
         el.textContent = String(message || "").trim();
         applyToneClass(el, tone);
+        applySecondaryStatusVisibility(el, { tone, panelId: "improvePanel" });
       }
 
       function setReportActionStatus(message, tone = "muted") {
@@ -2362,6 +2422,7 @@
         if (!el) return;
         el.textContent = String(message || "").trim();
         applyToneClass(el, tone);
+        applySecondaryStatusVisibility(el, { tone, panelId: "reportSharePanel" });
       }
 
       function setSimulationRunStatus(message, tone = "muted") {
@@ -2369,6 +2430,15 @@
         if (!el) return;
         el.textContent = String(message || "").trim();
         applyToneClass(el, tone);
+        applySecondaryStatusVisibility(el, { tone, panelId: "simulationPlannerPanel" });
+      }
+
+      function setHomeownerReportStatus(message, tone = "muted") {
+        const el = document.getElementById("homeownerReportStatus");
+        if (!el) return;
+        el.textContent = String(message || "").trim();
+        applyToneClass(el, tone);
+        applySecondaryStatusVisibility(el, { tone, panelId: "homeownerReportPreviewPanel" });
       }
 
       function syncSimulationActionState() {
@@ -3692,14 +3762,11 @@
         reportPreviewLoadedAssessmentId = null;
         isSimulationSubmitting = false;
         collapseSecondaryPanels();
-        const statusEl = document.getElementById("homeownerReportStatus");
         const highlightsEl = document.getElementById("homeownerReportHighlights");
         const secondaryEl = document.getElementById("homeownerReportSecondary");
         const moreDetailsEl = document.getElementById("homeownerReportMoreDetails");
         const reportPreviewPanelEl = document.getElementById("homeownerReportPreviewPanel");
-        if (statusEl) {
-          statusEl.textContent = reason || "Open this section to load report highlights.";
-        }
+        setHomeownerReportStatus(reason || "Open this section to load report highlights.", "muted");
         if (highlightsEl) {
           setListItems(highlightsEl, [], { fallbackText: "No report highlights yet." });
         }
@@ -3758,14 +3825,13 @@
       }
 
       function renderHomeownerReportPreview(report) {
-        const statusEl = document.getElementById("homeownerReportStatus");
         const highlightsEl = document.getElementById("homeownerReportHighlights");
         const secondaryEl = document.getElementById("homeownerReportSecondary");
         const moreDetailsEl = document.getElementById("homeownerReportMoreDetails");
-        if (!statusEl || !highlightsEl || !secondaryEl) return;
+        if (!highlightsEl || !secondaryEl) return;
 
         if (!report || typeof report !== "object") {
-          statusEl.textContent = "We couldn’t load report highlights yet.";
+          setHomeownerReportStatus("We couldn’t load report highlights yet.", "error");
           setListItems(highlightsEl, [], { fallbackText: "Report highlights will appear after assessment." });
           setListItems(secondaryEl, [], { fallbackText: "Additional details will appear here when available." });
           if (moreDetailsEl) moreDetailsEl.open = false;
@@ -3878,9 +3944,9 @@
           advancedRows,
         });
 
-        statusEl.textContent = statusLabel
+        setHomeownerReportStatus(statusLabel
           ? `${statusLabel}: ${headline || "report highlights loaded."}`
-          : (headline || "Report highlights loaded.");
+          : (headline || "Report highlights loaded."), "success");
         const rows = [];
         if (statusLabel) {
           rows.push({ label: "Screening status", value: statusLabel, pill: true });
@@ -4013,9 +4079,8 @@
       }
 
       async function loadHomeownerReportPreview(assessmentId, { source = "manual_preview" } = {}) {
-        const statusEl = document.getElementById("homeownerReportStatus");
         const highlightsEl = document.getElementById("homeownerReportHighlights");
-        if (!assessmentId || !statusEl || !highlightsEl) return;
+        if (!assessmentId || !highlightsEl) return;
         if (
           reportPreviewLoadedAssessmentId === assessmentId
           && latestHomeownerReport
@@ -4024,7 +4089,7 @@
           renderHomeownerReportPreview(latestHomeownerReport);
           return;
         }
-        statusEl.textContent = "Loading report highlights...";
+        setHomeownerReportStatus("Loading report highlights...", "muted");
         setFlowStatus("Step 4 of 4: Loading report highlights...", "muted");
         try {
           const report = await api(`/report/${assessmentId}/homeowner`);
@@ -4042,10 +4107,10 @@
         } catch (err) {
           latestHomeownerReport = null;
           reportPreviewLoadedAssessmentId = null;
-          statusEl.textContent = toHomeownerFriendlyError(
+          setHomeownerReportStatus(toHomeownerFriendlyError(
             err?.message,
             "We couldn’t load report highlights yet. You can still continue with your assessment results."
-          );
+          ), "error");
           setListItems(highlightsEl, [], {
             fallbackText: "Try opening the full report again after rerunning the assessment.",
           });
@@ -5907,12 +5972,17 @@
         return payload;
       }
 
-      function setRequestStatus(message, tone = "muted") {
+      function setRequestStatus(message, tone = "muted", { showInline = false } = {}) {
         const el = document.getElementById("requestStatus");
         if (!el) return;
         const text = String(message || "").trim();
         el.textContent = text;
         applyToneClass(el, tone);
+        const visibilityTone = tone === "error" ? "error" : "muted";
+        applySecondaryStatusVisibility(el, {
+          tone: visibilityTone,
+          alwaysShow: !!showInline,
+        });
         if (text) setFlowStatus(text, tone);
       }
 
@@ -6463,23 +6533,29 @@
       document.getElementById("moreOptionsHubPanel")?.addEventListener("toggle", () => {
         syncMoreOptionsHubState();
       });
+      document.getElementById("simulationPlannerPanel")?.addEventListener("toggle", refreshSecondaryStatusVisibility);
+      document.getElementById("improvePanel")?.addEventListener("toggle", refreshSecondaryStatusVisibility);
 
       document.getElementById("reportSharePanel")?.addEventListener("toggle", () => {
-        const statusEl = document.getElementById("homeownerReportStatus");
-        if (!statusEl) return;
         if (!latestAssessment?.assessment_id) {
-          statusEl.textContent = "Run an assessment first to preview report highlights.";
+          setHomeownerReportStatus("Run an assessment first to preview report highlights.", "muted");
+          refreshSecondaryStatusVisibility();
           return;
         }
         if (reportPreviewLoadedAssessmentId !== latestAssessment.assessment_id) {
-          statusEl.textContent = "Open report highlights to review your summary.";
+          setHomeownerReportStatus("Open report highlights to review your summary.", "muted");
         }
+        refreshSecondaryStatusVisibility();
       });
 
       document.getElementById("homeownerReportPreviewPanel")?.addEventListener("toggle", (evt) => {
         const panel = evt?.target;
-        if (!panel?.open) return;
+        if (!panel?.open) {
+          refreshSecondaryStatusVisibility();
+          return;
+        }
         maybeLoadHomeownerReportPreview("panel_open");
+        refreshSecondaryStatusVisibility();
       });
 
       collapseSecondaryPanels();
@@ -6494,6 +6570,7 @@
       setFlowStatus("Step 1 of 4: Enter your address to begin.", "muted");
       updateMobileNextStepBar();
       showHomeownerToast("", "muted", { autoHideMs: 0 });
+      refreshSecondaryStatusVisibility();
 
       document.getElementById("assessBtn").addEventListener("click", startAddressVerificationFlow);
       document.getElementById("reassessBtn").addEventListener("click", () => runAssessment(true));
