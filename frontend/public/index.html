@@ -49,18 +49,11 @@
         display: grid;
         gap: 0.95rem;
       }
-      #heroSection { order: 1; }
-      #addressSection { order: 2; }
-      #homeDetailsSection { order: 3; }
-      #homeownerSummarySection { order: 4; }
-      #simulationPlannerSection { order: 5; }
-      #moreOptionsHubSection { order: 6; }
-      #reportShareSection { order: 7; }
-      #supportingInsightsSection { order: 8; }
-      #confidenceSection { order: 9; }
-      #improveSection { order: 10; }
-      #mapSection { order: 11; }
-      #advancedSection { order: 12; }
+      #topEntrySection { order: 1; }
+      #homeownerSummarySection { order: 2; }
+      #simulationPlannerSection { order: 3; }
+      #moreOptionsHubSection { order: 4; }
+      #advancedSection { order: 5; }
       .card {
         background: var(--card);
         border: 1px solid var(--line);
@@ -82,6 +75,44 @@
         inset: 0;
         pointer-events: none;
         background: linear-gradient(120deg, rgba(255, 255, 255, 0.55), rgba(255, 255, 255, 0));
+      }
+      .top-entry-card {
+        padding-bottom: 0.9rem;
+      }
+      .top-entry-main {
+        display: grid;
+        grid-template-columns: minmax(0, 1.25fr) minmax(280px, 1fr);
+        gap: 0.85rem;
+        align-items: start;
+      }
+      .top-entry-address {
+        border: 1px solid #d8e3ea;
+        border-radius: 12px;
+        background: #ffffff;
+        padding: 0.72rem 0.75rem;
+      }
+      .top-entry-address h2 {
+        margin-bottom: 0.3rem;
+      }
+      .top-entry-address .section-intro {
+        margin-bottom: 0.45rem;
+      }
+      .top-home-details {
+        margin-top: 0.62rem;
+      }
+      .top-entry-actions {
+        margin-top: 0.68rem;
+      }
+      .top-entry-card.has-assessment {
+        border-color: #d7e2e9;
+        background: linear-gradient(180deg, #ffffff 0%, #fbfdff 100%);
+        box-shadow: 0 4px 14px rgba(19, 39, 54, 0.06);
+      }
+      .top-entry-card.has-assessment .top-entry-intro {
+        opacity: 0.84;
+      }
+      .top-entry-card.has-assessment .hero-flow-note {
+        display: none;
       }
       .hero-copy-compact {
         margin-top: 0.18rem;
@@ -1210,6 +1241,13 @@
         .facts-grid {
           grid-template-columns: 1fr;
         }
+        .top-entry-main {
+          grid-template-columns: 1fr;
+          gap: 0.65rem;
+        }
+        .top-entry-address {
+          padding: 0.62rem 0.65rem;
+        }
         .actions button {
           width: 100%;
         }
@@ -1247,30 +1285,26 @@
   </head>
   <body>
     <div class="wrap">
-      <section id="heroSection" class="card hero-card">
-        <span class="hero-eyebrow">Homeowner Assessment</span>
-        <h1>Check Your Wildfire Insurance Risk</h1>
-        <p class="section-help hero-copy-compact">
-          Start with your address, review your status and top drivers, then run a quick before/after simulation to plan next steps.
-        </p>
-        <p class="hero-flow-note">This is a screening assessment using observable property and wildfire risk factors.</p>
-      </section>
-
-      <section id="addressSection" class="card">
-        <h2>Step 1: Enter Your Address</h2>
-        <p class="section-intro">Use a full street address with city, state, and ZIP for the best match quality.</p>
-        <div>
-          <label>Address</label>
-          <input id="address" placeholder="123 Main St, Boulder, CO" />
+      <section id="topEntrySection" class="card hero-card top-entry-card">
+        <div class="top-entry-main">
+          <div class="top-entry-intro">
+            <span class="hero-eyebrow">Homeowner Assessment</span>
+            <h1>Check Your Wildfire Insurance Risk</h1>
+            <p class="section-help hero-copy-compact">
+              Start with your address, review your status and top drivers, then run a quick before/after simulation to plan next steps.
+            </p>
+            <p class="hero-flow-note">This is a screening assessment using observable property and wildfire risk factors.</p>
+          </div>
+          <div class="top-entry-address">
+            <h2>Start with your address</h2>
+            <p class="section-intro">Use a full street address with city, state, and ZIP for the best match quality.</p>
+            <div>
+              <label>Address</label>
+              <input id="address" placeholder="123 Main St, Boulder, CO" />
+            </div>
+          </div>
         </div>
-      </section>
-
-      <section id="homeDetailsSection" class="card facts-card">
-        <div class="facts-head">
-          <h2>Step 2: Add Home Details</h2>
-          <span class="optional-badge">Optional</span>
-        </div>
-        <details id="homeDetailsPanel" class="home-details-toggle">
+        <details id="homeDetailsPanel" class="home-details-toggle top-home-details">
           <summary>Add optional home details to improve accuracy</summary>
           <p class="facts-help">If you know a few details about your home, they can improve the estimate. It's okay to leave anything as Unsure.</p>
           <p class="facts-why">Why this helps: details like roof type and defensible space can improve accuracy and recommendations.</p>
@@ -1358,7 +1392,7 @@
           </div>
         </details>
 
-        <div class="actions">
+        <div class="actions top-entry-actions">
           <button id="assessBtn" type="button">Assess My Address</button>
           <button id="reassessBtn" type="button" class="secondary" style="display:none;">Re-run With Updated Details</button>
         </div>
@@ -2263,6 +2297,13 @@
         const reassessBtn = document.getElementById("reassessBtn");
         if (!reassessBtn) return;
         reassessBtn.style.display = latestAssessment?.assessment_id ? "inline-flex" : "none";
+      }
+
+      function syncTopEntrySectionState() {
+        const topEntrySection = document.getElementById("topEntrySection");
+        if (!topEntrySection) return;
+        const hasAssessment = !!(latestAssessment && latestAssessment.assessment_id);
+        topEntrySection.classList.toggle("has-assessment", hasAssessment);
       }
 
       function syncMoreOptionsHubState() {
@@ -4984,6 +5025,7 @@
         const hasAssessment = !!(latestAssessment && latestAssessment.assessment_id);
         setAssessmentActionsDisabled(busy, busy || !hasAssessment);
         updateAssessmentPrimaryActions();
+        syncTopEntrySectionState();
         syncMoreOptionsHubState();
         if (!hasAssessment) setHomeownerSummaryActive(false);
         syncSecondaryActionState();
