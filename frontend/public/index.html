@@ -1449,9 +1449,8 @@
             <div class="actions">
               <button id="postSimOpenReportBtn" type="button">Review Full Report</button>
               <button id="postSimDownloadPdfBtn" type="button" class="secondary">Download Homeowner-Friendly PDF</button>
-              <button id="postSimShareOptionsBtn" type="button" class="secondary">Save or Share Options</button>
             </div>
-            <p class="post-simulation-action-note">Detailed report highlights remain optional and load only when opened.</p>
+            <p class="post-simulation-action-note">Optional report highlights remain available below and load only when opened.</p>
           </div>
         </div>
         <details id="homeownerDecisionAdvancedDetails" class="mt-sm">
@@ -1468,25 +1467,20 @@
           <p class="section-help">See more about this property, your confidence level, map context, and additional report tools.</p>
           <div class="more-details-stack">
             <section id="reportShareSection" class="secondary-panel more-options-item more-details-item">
-              <details id="reportSharePanel">
-                <summary>Review your full report</summary>
-                <p class="muted">Save or share your results with homeowner-friendly report formats.</p>
-                <p class="section-help">Best after reviewing your status and before/after simulation.</p>
-                <details id="homeownerReportPreviewPanel" class="mt-sm">
-                  <summary>Report highlights for deeper review</summary>
-                  <p id="homeownerReportStatus" class="status-line status-secondary tone-muted">Open this section to load deeper report highlights.</p>
-                  <ul id="homeownerReportHighlights"><li class="muted">No report highlights yet.</li></ul>
-                  <details id="homeownerReportMoreDetails" class="mt-sm">
-                    <summary>Methodology and deeper notes</summary>
-                    <ul id="homeownerReportSecondary"><li class="muted">Additional details will appear here when available.</li></ul>
-                  </details>
-                </details>
-                <div class="mini-label mt-sm">Save or share your results</div>
-                <div class="actions actions-low-emphasis">
-                  <button id="openReportBtn" type="button" class="secondary">Open Full Report</button>
-                  <button id="downloadPdfBtn" type="button" class="secondary">Download Homeowner-Friendly PDF</button>
-                </div>
-                <p id="reportActionStatus" class="status-line status-secondary tone-muted">Report review actions will appear after assessment.</p>
+              <h3>Review your full report</h3>
+              <p class="muted">Save or share your results with homeowner-friendly report formats.</p>
+              <p class="section-help">Best after reviewing your status and before/after simulation.</p>
+              <div class="actions actions-low-emphasis">
+                <button id="openReportBtn" type="button">Open Full Report</button>
+                <button id="downloadPdfBtn" type="button" class="secondary">Download Homeowner-Friendly PDF</button>
+              </div>
+              <p id="reportActionStatus" class="status-line status-secondary tone-muted">Report review actions will appear after assessment.</p>
+              <details id="homeownerReportPreviewPanel" class="mt-sm">
+                <summary>Preview report highlights (optional)</summary>
+                <p id="homeownerReportStatus" class="status-line status-secondary tone-muted">Open this section to load report highlights.</p>
+                <ul id="homeownerReportHighlights"><li class="muted">No report highlights yet.</li></ul>
+                <p class="mini-label mt-sm">Deeper report notes</p>
+                <ul id="homeownerReportSecondary"><li class="muted">Additional details will appear here when available.</li></ul>
               </details>
             </section>
 
@@ -2201,7 +2195,6 @@
         "confidenceDeepDivePanel",
         "simulationPlannerPanel",
         "improvePanel",
-        "reportSharePanel",
         "mapPanel",
         "advancedInternalDetailsPanel",
       ];
@@ -2522,7 +2515,7 @@
         if (!el) return;
         el.textContent = String(message || "").trim();
         applyToneClass(el, tone);
-        applySecondaryStatusVisibility(el, { tone, panelId: "reportSharePanel" });
+        applySecondaryStatusVisibility(el, { tone, panelId: "moreOptionsHubPanel" });
       }
 
       function setSimulationRunStatus(message, tone = "muted") {
@@ -2729,7 +2722,6 @@
       function openReportOptionsFromSticky({ smooth = true } = {}) {
         setPanelOpen("moreOptionsHubPanel", true);
         syncMoreOptionsHubState();
-        setPanelOpen("reportSharePanel", true);
         const target = document.getElementById("reportShareSection");
         if (target && typeof target.scrollIntoView === "function") {
           const useSmoothScroll = !!smooth && !prefersReducedMotion();
@@ -2833,13 +2825,11 @@
         const postSimActionRowEl = document.getElementById("postSimulationActionRow");
         const postSimOpenReportBtn = document.getElementById("postSimOpenReportBtn");
         const postSimDownloadPdfBtn = document.getElementById("postSimDownloadPdfBtn");
-        const postSimShareOptionsBtn = document.getElementById("postSimShareOptionsBtn");
         const wrap = document.querySelector(".wrap");
         const hasPostSimActionRow = !!(
           postSimActionRowEl
           && postSimOpenReportBtn
           && postSimDownloadPdfBtn
-          && postSimShareOptionsBtn
         );
         if (!btn || !hintEl || !labelEl || !priorityNoteEl) {
           updateMobileNextStepBar();
@@ -2861,7 +2851,6 @@
           if (hasPostSimActionRow) {
             postSimOpenReportBtn.disabled = true;
             postSimDownloadPdfBtn.disabled = true;
-            postSimShareOptionsBtn.disabled = true;
           }
           updateMobileNextStepBar();
           return;
@@ -2878,7 +2867,6 @@
             postSimActionRowEl.hidden = false;
             postSimOpenReportBtn.disabled = isBusy;
             postSimDownloadPdfBtn.disabled = isBusy;
-            postSimShareOptionsBtn.disabled = isBusy;
           }
           updateMobileNextStepBar();
           return;
@@ -2905,7 +2893,6 @@
         if (hasPostSimActionRow) {
           postSimOpenReportBtn.disabled = isBusy;
           postSimDownloadPdfBtn.disabled = isBusy;
-          postSimShareOptionsBtn.disabled = isBusy;
         }
         updateMobileNextStepBar();
       }
@@ -3894,7 +3881,6 @@
         collapseSecondaryPanels();
         const highlightsEl = document.getElementById("homeownerReportHighlights");
         const secondaryEl = document.getElementById("homeownerReportSecondary");
-        const moreDetailsEl = document.getElementById("homeownerReportMoreDetails");
         const reportPreviewPanelEl = document.getElementById("homeownerReportPreviewPanel");
         setHomeownerReportStatus(reason || "Open this section to load deeper report highlights.", "muted");
         if (highlightsEl) {
@@ -3902,9 +3888,6 @@
         }
         if (secondaryEl) {
           setListItems(secondaryEl, [], { fallbackText: "Additional details will appear here when available." });
-        }
-        if (moreDetailsEl) {
-          moreDetailsEl.open = false;
         }
         if (reportPreviewPanelEl) {
           reportPreviewPanelEl.open = false;
@@ -3957,14 +3940,12 @@
       function renderHomeownerReportPreview(report) {
         const highlightsEl = document.getElementById("homeownerReportHighlights");
         const secondaryEl = document.getElementById("homeownerReportSecondary");
-        const moreDetailsEl = document.getElementById("homeownerReportMoreDetails");
         if (!highlightsEl || !secondaryEl) return;
 
         if (!report || typeof report !== "object") {
           setHomeownerReportStatus("We couldn’t load deeper report highlights yet.", "error");
           setListItems(highlightsEl, [], { fallbackText: "Report highlights will appear after assessment." });
           setListItems(secondaryEl, [], { fallbackText: "Additional details will appear here when available." });
-          if (moreDetailsEl) moreDetailsEl.open = false;
           return;
         }
 
@@ -5019,7 +5000,6 @@
           "exportReportBtn",
           "postSimOpenReportBtn",
           "postSimDownloadPdfBtn",
-          "postSimShareOptionsBtn",
         ].forEach((id) => {
           const el = document.getElementById(id);
           if (!el) return;
@@ -6587,7 +6567,6 @@
         const trackedPanels = [
           "homeownerDecisionAdvancedDetails",
           "advancedInternalDetailsPanel",
-          "homeownerReportMoreDetails",
         ];
         trackedPanels.forEach((panelId) => {
           const panel = document.getElementById(panelId);
@@ -6609,9 +6588,7 @@
           "simulationPlannerPanel",
           "simulationAdvancedPanel",
           "improvePanel",
-          "reportSharePanel",
           "homeownerReportPreviewPanel",
-          "homeownerReportMoreDetails",
           "mapPanel",
           "homeownerDecisionAdvancedDetails",
           "advancedInternalDetailsPanel",
@@ -6656,21 +6633,18 @@
 
       document.getElementById("moreOptionsHubPanel")?.addEventListener("toggle", () => {
         syncMoreOptionsHubState();
-      });
-      document.getElementById("simulationPlannerPanel")?.addEventListener("toggle", refreshSecondaryStatusVisibility);
-      document.getElementById("improvePanel")?.addEventListener("toggle", refreshSecondaryStatusVisibility);
-
-      document.getElementById("reportSharePanel")?.addEventListener("toggle", () => {
         if (!latestAssessment?.assessment_id) {
-          setHomeownerReportStatus("Run an assessment first to preview deeper report highlights.", "muted");
+          setHomeownerReportStatus("Run an assessment first to preview report highlights.", "muted");
           refreshSecondaryStatusVisibility();
           return;
         }
         if (reportPreviewLoadedAssessmentId !== latestAssessment.assessment_id) {
-          setHomeownerReportStatus("Open report highlights to review deeper details.", "muted");
+          setHomeownerReportStatus("Open report highlights to review details before downloading.", "muted");
         }
         refreshSecondaryStatusVisibility();
       });
+      document.getElementById("simulationPlannerPanel")?.addEventListener("toggle", refreshSecondaryStatusVisibility);
+      document.getElementById("improvePanel")?.addEventListener("toggle", refreshSecondaryStatusVisibility);
 
       document.getElementById("homeownerReportPreviewPanel")?.addEventListener("toggle", (evt) => {
         const panel = evt?.target;
@@ -6734,16 +6708,6 @@
           },
         });
         downloadHomeownerPdf();
-      });
-      document.getElementById("postSimShareOptionsBtn")?.addEventListener("click", () => {
-        trackHomeownerFlowEvent("primary_cta_clicked", {
-          metadata: {
-            cta_id: "postSimShareOptionsBtn",
-            cta_action: "review_report_options",
-            cta_text: "Save or Share Options",
-          },
-        });
-        openReportOptionsFromSticky({ smooth: true });
       });
       document.getElementById("mobileNextStepBtn")?.addEventListener("click", handleMobileNextStepAction);
       document.getElementById("refreshImproveBtn")?.addEventListener("click", refreshImproveSuggestions);
