@@ -1692,7 +1692,7 @@
     >
       <div class="modal-card" role="document">
         <h3 id="addressVerifyModalTitle" class="modal-title">Confirm your property location</h3>
-        <p class="muted verify-modal-intro">If this suggested match looks right, continue in one click. Adjust only if needed.</p>
+        <p id="verifyModalIntro" class="muted verify-modal-intro">If this suggested match looks right, continue in one click. Adjust only if needed.</p>
         <div class="verify-primary-card">
           <div class="mini-label">Suggested match</div>
           <p id="verifyResolvedAddress" class="verify-primary-address">-</p>
@@ -1760,7 +1760,7 @@
         <p id="verifyModalError" class="modal-error" style="display:none;"></p>
         <div class="verify-modal-cta">
           <button id="confirmAddressBtn" type="button">Continue with suggested match</button>
-          <p class="verify-cta-note muted">Most homeowners can continue with the suggested match.</p>
+          <p id="verifyCtaNote" class="verify-cta-note muted">Most homeowners can continue with the suggested match.</p>
         </div>
         <div class="actions actions-low-emphasis verify-modal-secondary-actions">
           <button id="applyVerifyLocationBtn" type="button" class="secondary" style="display:none;">Apply this pin</button>
@@ -1837,7 +1837,16 @@
       let reportPreviewLoadedAssessmentId = null;
       let homeownerSummaryFocusTimer = null;
       let mobileNextStepAction = "";
+      let verificationFastPathTimer = null;
+      let verificationFastPathEligible = false;
       const motionClassTimers = new WeakMap();
+      const verificationUnresolvedStatuses = new Set([
+        "candidates_found_but_not_safe_enough",
+        "ambiguous_conflict",
+        "address_unresolved_needs_manual_selection",
+        "address_candidates_conflict_needs_manual_selection",
+      ]);
+      const verificationFastPathAutoContinueMs = 900;
 
       const mapLayerStyle = {
         property_anchor_point: {
@@ -2241,6 +2250,7 @@
       }
 
       function openVerificationAdjustTools({ openManual = false } = {}) {
+        setVerificationModalMode({ fastPathEligible: false });
         setVerificationAdjustToolsVisible(true, { openPanel: true });
         setFlowStatus("Address confirmation: adjust only if the suggested match looks wrong.", "muted");
         if (openManual) {
@@ -4831,6 +4841,108 @@
         return a !== b;
       }
 
+      function clearVerificationFastPathTimer() {
+        if (!verificationFastPathTimer) return;
+        clearTimeout(verificationFastPathTimer);
+        verificationFastPathTimer = null;
+      }
+
+      function verificationRequiresManualSelection(verification) {
+        return !!(
+          verification?.needs_user_confirmation
+          || verificationUnresolvedStatuses.has(String(verification?.resolution_status || "").toLowerCase())
+          || verificationUnresolvedStatuses.has(String(verification?.final_status || "").toLowerCase())
+          || String(verification?.error_class || "").toLowerCase() === "address_unresolved"
+        );
+      }
+
+      function verificationConfidenceScore(verification) {
+        const numericCandidates = [
+          verification?.match_confidence,
+          verification?.confidence_score,
+          verification?.confidence,
+        ];
+        for (const raw of numericCandidates) {
+          const n = Number(raw);
+          if (!Number.isFinite(n)) continue;
+          if (n > 1) return Math.max(0, Math.min(1, n / 100));
+          return Math.max(0, Math.min(1, n));
+        }
+        const text = String(
+          verification?.final_location_confidence
+          || verification?.geocode_trust_tier
+          || verification?.match_confidence
+          || ""
+        ).trim().toLowerCase();
+        if (!text) return 0;
+        if (/(very[_\s-]?high|exact|trusted|rooftop|parcel)/.test(text)) return 0.95;
+        if (/(high|good)/.test(text) && !/(low|unknown|untrusted)/.test(text)) return 0.9;
+        if (/(medium|moderate)/.test(text)) return 0.7;
+        if (/(low|unknown|untrusted)/.test(text)) return 0.3;
+        return 0.5;
+      }
+
+      function evaluateVerificationFastPath(enteredAddress, verification) {
+        const geocodeAccepted = String(verification?.geocode_status || "").toLowerCase() === "accepted";
+        const lat = Number(verification?.latitude);
+        const lon = Number(verification?.longitude);
+        const hasCoordinates = isValidCoordinatePair(lat, lon);
+        const needsManualSelection = verificationRequiresManualSelection(verification);
+        const geocodeOutcome = String(verification?.geocode_outcome || "").toLowerCase();
+        const isUntrustedOutcome = geocodeOutcome.includes("untrusted");
+        const resolvedAddress = verification?.normalized_address || verification?.display_name || "";
+        const addressDiffers = hasMaterialAddressDifference(enteredAddress, resolvedAddress);
+        const confidenceScore = verificationConfidenceScore(verification);
+        const confidenceStrong = confidenceScore >= 0.85;
+        const eligible = (
+          geocodeAccepted
+          && hasCoordinates
+          && !needsManualSelection
+          && !isUntrustedOutcome
+          && !addressDiffers
+          && confidenceStrong
+        );
+        return {
+          eligible,
+          confidenceScore,
+        };
+      }
+
+      function setVerificationModalMode({ fastPathEligible = false } = {}) {
+        verificationFastPathEligible = !!fastPathEligible;
+        clearVerificationFastPathTimer();
+        const titleEl = document.getElementById("addressVerifyModalTitle");
+        const introEl = document.getElementById("verifyModalIntro");
+        const ctaNoteEl = document.getElementById("verifyCtaNote");
+        if (titleEl) {
+          titleEl.textContent = verificationFastPathEligible
+            ? "Address looks like a strong match"
+            : "Confirm your property location";
+        }
+        if (introEl) {
+          introEl.textContent = verificationFastPathEligible
+            ? "This appears to be a strong match. We’ll continue automatically unless you need to adjust."
+            : "If this suggested match looks right, continue in one click. Adjust only if needed.";
+        }
+        if (ctaNoteEl) {
+          ctaNoteEl.textContent = verificationFastPathEligible
+            ? "Continuing automatically. Use “Need to adjust?” only if this is not your property."
+            : "Most homeowners can continue with the suggested match.";
+        }
+        setConfirmAddressButtonState();
+      }
+
+      function scheduleVerificationFastPathAutoContinue(delayMs = verificationFastPathAutoContinueMs) {
+        if (!verificationFastPathEligible) return;
+        clearVerificationFastPathTimer();
+        verificationFastPathTimer = setTimeout(() => {
+          verificationFastPathTimer = null;
+          if (!verificationFastPathEligible || !addressVerificationModalOpen || isAssessmentSubmitting) return;
+          if (verificationHasUnappliedPending) return;
+          confirmVerifiedAddressAndRunAssessment();
+        }, Math.max(250, Number(delayMs) || verificationFastPathAutoContinueMs));
+      }
+
       function buildVerificationWarnings(enteredAddress, verification, coverageResult = null) {
         const warnings = [];
         const resolvedAddress = verification?.normalized_address || verification?.display_name || "";
@@ -4881,6 +4993,7 @@
         const errorEl = document.getElementById("verifyModalError");
         if (!errorEl) return;
         if (message) {
+          clearVerificationFastPathTimer();
           errorEl.style.display = "block";
           errorEl.textContent = String(message);
         } else {
@@ -4919,18 +5032,7 @@
           || verification?.match_confidence
           || "unknown"
         ).toLowerCase();
-        const unresolvedStatus = new Set([
-          "address_unresolved_needs_manual_selection",
-          "address_candidates_conflict_needs_manual_selection",
-          "candidates_found_but_not_safe_enough",
-          "ambiguous_conflict",
-        ]);
-        const needsManual = !!(
-          verification?.needs_user_confirmation
-          || unresolvedStatus.has(String(verification?.resolution_status || "").toLowerCase())
-          || unresolvedStatus.has(String(verification?.final_status || "").toLowerCase())
-          || String(verification?.error_class || "").toLowerCase() === "address_unresolved"
-        );
+        const needsManual = verificationRequiresManualSelection(verification);
         const coverageLimited = (
           verificationCoverageResult?.coverage_available === false
           || verificationCoverageResult?.covered === false
@@ -5113,7 +5215,13 @@
       function setConfirmAddressButtonState() {
         const confirmBtn = document.getElementById("confirmAddressBtn");
         if (!confirmBtn) return;
-        if (verificationAcceptedSelectionSource === "suggested_geocode" && !verificationHasUnappliedPending) {
+        if (
+          verificationFastPathEligible
+          && verificationAcceptedSelectionSource === "suggested_geocode"
+          && !verificationHasUnappliedPending
+        ) {
+          confirmBtn.textContent = "Continue and run assessment";
+        } else if (verificationAcceptedSelectionSource === "suggested_geocode" && !verificationHasUnappliedPending) {
           confirmBtn.textContent = "Continue with suggested match";
         } else {
           confirmBtn.textContent = "Continue with selected location";
@@ -5318,6 +5426,9 @@
         verificationPendingCoords = { latitude: lat, longitude: lon };
         if (selectionSource) {
           verificationPendingSelectionSource = String(selectionSource);
+          if (verificationPendingSelectionSource !== "suggested_geocode") {
+            setVerificationModalMode({ fastPathEligible: false });
+          }
         }
         verificationHasUnappliedPending = !coordinatesMatch(verificationPendingCoords, verificationAcceptedCoords)
           || verificationPendingSelectionSource !== verificationAcceptedSelectionSource;
@@ -5430,7 +5541,7 @@
         applyVerificationPendingLocation();
       }
 
-      function renderAddressVerificationModal(assessmentPayload, verification) {
+      function renderAddressVerificationModal(assessmentPayload, verification, { fastPathEligible = false } = {}) {
         const enteredAddressEl = document.getElementById("verifyEnteredAddress");
         const resolvedAddressEl = document.getElementById("verifyResolvedAddress");
         const coordinatesEl = document.getElementById("verifyCoordinates");
@@ -5511,18 +5622,7 @@
         }
         renderLocalityOptions([], "");
         renderManualCandidateList([]);
-        const unresolvedStatus = new Set([
-          "address_unresolved_needs_manual_selection",
-          "address_candidates_conflict_needs_manual_selection",
-          "candidates_found_but_not_safe_enough",
-          "ambiguous_conflict",
-        ]);
-        const shouldShowManual = !!(
-          verification?.needs_user_confirmation
-          || unresolvedStatus.has(String(verification?.resolution_status || "").toLowerCase())
-          || unresolvedStatus.has(String(verification?.final_status || "").toLowerCase())
-          || String(verification?.error_class || "").toLowerCase() === "address_unresolved"
-        );
+        const shouldShowManual = verificationRequiresManualSelection(verification);
         const contextPanel = document.getElementById("verifyAddressContextPanel");
         if (contextPanel) contextPanel.open = false;
         setVerificationAdjustToolsVisible(shouldShowManual, { openPanel: shouldShowManual });
@@ -5536,6 +5636,7 @@
         } else {
           setManualCandidateStatus("");
         }
+        setVerificationModalMode({ fastPathEligible: !!fastPathEligible && !shouldShowManual });
         clearVerificationCoverageDebounce();
         setVerificationModalError("");
         updateVerificationQuickStatus(enteredAddress, verification);
@@ -5552,6 +5653,8 @@
         modal.classList.remove("open");
         modal.setAttribute("aria-hidden", "true");
         addressVerificationModalOpen = false;
+        clearVerificationFastPathTimer();
+        verificationFastPathEligible = false;
         clearVerificationCoverageDebounce();
         invalidateVerificationCoverageRequests();
         syncAssessmentActionState();
@@ -5561,7 +5664,7 @@
         previousFocusElement = null;
       }
 
-      function openAddressVerificationModal() {
+      function openAddressVerificationModal({ fastPathEligible = false } = {}) {
         const modal = document.getElementById("addressVerifyModal");
         const confirmBtn = document.getElementById("confirmAddressBtn");
         if (!modal) return;
@@ -5576,9 +5679,15 @@
         trackHomeownerFlowEvent("address_verification_shown", {
           metadata: {
             has_pending_assessment: !!pendingAssessmentPayload,
+            fast_path_eligible: !!fastPathEligible,
           },
         });
-        setFlowStatus("Step 1 of 4: Confirm your address match.", "muted");
+        if (fastPathEligible) {
+          setFlowStatus("Step 1 of 4: Strong address match found. Continuing unless you adjust.", "muted");
+          scheduleVerificationFastPathAutoContinue();
+        } else {
+          setFlowStatus("Step 1 of 4: Confirm your address match.", "muted");
+        }
         if (confirmBtn) confirmBtn.focus();
       }
 
@@ -5599,24 +5708,15 @@
           const geocodeAccepted = String(verification?.geocode_status || "").toLowerCase() === "accepted";
           const lat = Number(verification?.latitude);
           const lon = Number(verification?.longitude);
-          const hasCoordinates = Number.isFinite(lat) && Number.isFinite(lon);
-          const unresolvedStatus = new Set([
-            "candidates_found_but_not_safe_enough",
-            "ambiguous_conflict",
-            "address_unresolved_needs_manual_selection",
-            "address_candidates_conflict_needs_manual_selection",
-          ]);
-          const shouldOpenManualSelection = !!(
-            verification?.needs_user_confirmation
-            || unresolvedStatus.has(String(verification?.resolution_status || "").toLowerCase())
-            || unresolvedStatus.has(String(verification?.final_status || "").toLowerCase())
-            || String(verification?.error_class || "").toLowerCase() === "address_unresolved"
-          );
+          const hasCoordinates = isValidCoordinatePair(lat, lon);
+          const shouldOpenManualSelection = verificationRequiresManualSelection(verification);
+          const fastPath = evaluateVerificationFastPath(payload.address, verification);
+          const shouldUseFastPath = !!(fastPath?.eligible && !shouldOpenManualSelection);
 
           pendingAssessmentPayload = { ...payload };
           verifiedAddressPayload = verification;
-          renderAddressVerificationModal(payload, verification);
-          openAddressVerificationModal();
+          renderAddressVerificationModal(payload, verification, { fastPathEligible: shouldUseFastPath });
+          openAddressVerificationModal({ fastPathEligible: shouldUseFastPath });
           if (shouldOpenManualSelection) {
             await runManualAddressCandidateSearch({ statusMessage: false });
             setRequestStatus(
@@ -5632,21 +5732,19 @@
             setRequestStatus(reason);
             return;
           }
+          if (shouldUseFastPath) {
+            setRequestStatus("Address looks good. Continuing automatically unless you choose to adjust.", "success");
+            return;
+          }
           setRequestStatus("Address looks good. Confirm to continue.");
         } catch (err) {
           const detail = err?.detail && typeof err.detail === "object" ? err.detail : null;
-          const unresolvedStatus = new Set([
-            "candidates_found_but_not_safe_enough",
-            "ambiguous_conflict",
-            "address_unresolved_needs_manual_selection",
-            "address_candidates_conflict_needs_manual_selection",
-          ]);
           const canManualResolve = !!(
             detail
             && (
               detail.needs_user_confirmation
-              || unresolvedStatus.has(String(detail.resolution_status || "").toLowerCase())
-              || unresolvedStatus.has(String(detail.final_status || "").toLowerCase())
+              || verificationUnresolvedStatuses.has(String(detail.resolution_status || "").toLowerCase())
+              || verificationUnresolvedStatuses.has(String(detail.final_status || "").toLowerCase())
               || String(detail.error_class || "").toLowerCase() === "address_unresolved"
               || Number(detail.candidates_found) > 0
             )
@@ -5654,8 +5752,8 @@
           if (canManualResolve) {
             pendingAssessmentPayload = { ...payload };
             verifiedAddressPayload = detail;
-            renderAddressVerificationModal(payload, detail);
-            openAddressVerificationModal();
+            renderAddressVerificationModal(payload, detail, { fastPathEligible: false });
+            openAddressVerificationModal({ fastPathEligible: false });
             await runManualAddressCandidateSearch({ statusMessage: false });
             setRequestStatus(
               "We need a quick confirmation of this location before continuing."
@@ -5676,6 +5774,8 @@
 
       async function confirmVerifiedAddressAndRunAssessment() {
         if (!pendingAssessmentPayload || isAssessmentSubmitting) return;
+        clearVerificationFastPathTimer();
+        verificationFastPathEligible = false;
         const locationToUse = getLocationToUse();
         if (!locationToUse) {
           setVerificationModalError("Select a valid location before continuing.");
@@ -5721,6 +5821,8 @@
       }
 
       function cancelAddressVerification() {
+        clearVerificationFastPathTimer();
+        verificationFastPathEligible = false;
         pendingAssessmentPayload = null;
         verifiedAddressPayload = null;
         verificationSuggestedCoords = null;
@@ -6394,6 +6496,10 @@
           setTimeout(() => verifyLocationMap.invalidateSize(), 0);
         }
         setConfirmAddressButtonState();
+      });
+      document.getElementById("verifyAddressContextPanel")?.addEventListener("toggle", (evt) => {
+        if (!evt?.target?.open) return;
+        setVerificationModalMode({ fastPathEligible: false });
       });
       document.getElementById("verifySearchCandidatesBtn")?.addEventListener("click", () => {
         runManualAddressCandidateSearch({ statusMessage: true });
