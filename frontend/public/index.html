@@ -4064,6 +4064,13 @@
           && latestHomeownerReport
           && typeof latestHomeownerReport === "object"
         ) {
+          trackHomeownerFlowEvent("report_preview_opened", {
+            assessmentId,
+            metadata: {
+              source,
+              cache_hit: true,
+            },
+          });
           renderHomeownerReportPreview(latestHomeownerReport);
           return;
         }
@@ -4078,6 +4085,7 @@
             assessmentId,
             metadata: {
               source,
+              cache_hit: false,
             },
           });
           renderHomeownerReportPreview(report);
@@ -5019,7 +5027,7 @@
           verificationFastPathTimer = null;
           if (!verificationFastPathEligible || !addressVerificationModalOpen || isAssessmentSubmitting) return;
           if (verificationHasUnappliedPending) return;
-          confirmVerifiedAddressAndRunAssessment();
+          confirmVerifiedAddressAndRunAssessment({ confirmationMode: "auto_fast_path" });
         }, Math.max(250, Number(delayMs) || verificationFastPathAutoContinueMs));
       }
 
@@ -5852,7 +5860,7 @@
         }
       }
 
-      async function confirmVerifiedAddressAndRunAssessment() {
+      async function confirmVerifiedAddressAndRunAssessment({ confirmationMode = "manual_confirm" } = {}) {
         if (!pendingAssessmentPayload || isAssessmentSubmitting) return;
         clearVerificationFastPathTimer();
         verificationFastPathEligible = false;
@@ -5880,6 +5888,7 @@
           metadata: {
             selection_source: verificationAcceptedSelectionSource || "suggested_geocode",
             used_manual_point: verificationAcceptedSelectionSource === "map_click_fallback",
+            confirmation_mode: String(confirmationMode || "manual_confirm"),
           },
         });
         closeAddressVerificationModal({ restoreFocus: false });
