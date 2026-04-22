@@ -1418,7 +1418,7 @@
       <section id="homeownerSummarySection" class="card homeowner-first-card">
         <div class="homeowner-first-head">
           <div>
-            <h2>Step 3: Homeowner Summary</h2>
+            <h2>Step 2: Homeowner Summary</h2>
             <p class="section-help">Quick answer first: your status, why it matters, and what to do next.</p>
           </div>
           <span id="homeownerStatusBadge" class="status-badge status-pending">Status not yet assessed</span>
@@ -1462,7 +1462,7 @@
           </div>
         </div>
         <details id="homeownerDecisionAdvancedDetails" class="mt-sm">
-          <summary>More detail (optional advanced)</summary>
+          <summary>More context (optional)</summary>
           <ul id="homeownerDecisionAdvancedList">
             <li class="muted">Underlying scores, evidence notes, and compatibility fields are preserved in advanced sections.</li>
           </ul>
@@ -1472,7 +1472,7 @@
       <section id="moreOptionsHubSection" class="card secondary-panel" style="display:none;">
         <details id="moreOptionsHubPanel">
           <summary>More details (optional)</summary>
-          <p class="section-help">See more about this property, your confidence level, map context, and additional report tools.</p>
+          <p class="section-help">See more context about this property, what we could confirm, map context, and optional report tools.</p>
           <div class="more-details-stack">
             <section id="reportShareSection" class="secondary-panel more-options-item more-details-item">
               <h3>Review your full report</h3>
@@ -1490,21 +1490,21 @@
                 <summary>Preview report highlights (optional)</summary>
                 <p id="homeownerReportStatus" class="status-line status-secondary tone-muted">Open this section to load report highlights.</p>
                 <ul id="homeownerReportHighlights"><li class="muted">No report highlights yet.</li></ul>
-                <p class="mini-label mt-sm">Deeper report notes</p>
+                <p class="mini-label mt-sm">More report notes</p>
                 <ul id="homeownerReportSecondary"><li class="muted">Additional details will appear here when available.</li></ul>
               </details>
             </section>
 
             <section id="supportingInsightsSection" class="secondary-panel more-options-item more-details-item">
               <details id="supportingInsightsPanel">
-                <summary>Why this result (deeper context)</summary>
-                <p class="section-help">Use this section when you want deeper context beyond your top summary drivers and actions.</p>
+                <summary>Why this property looks riskier (more context)</summary>
+                <p class="section-help">Use this section for more context behind your top summary drivers and actions.</p>
                 <div class="results mt-sm">
                   <div class="card result-primary">
-                    <h3>How this score was built</h3>
-                    <p class="section-help">This blends area wildfire pressure with property vulnerability when enough detail is available.</p>
+                    <h3>Why this property looks riskier or safer</h3>
+                    <p class="section-help">This combines area wildfire pressure with property conditions when enough detail is available.</p>
                     <div id="riskScore" class="score">-</div>
-                    <div id="riskLabel" class="muted">Run an assessment to see your score.</div>
+                    <div id="riskLabel" class="muted">Run an assessment to see your risk level.</div>
                     <div class="summary-meta">
                       <div class="summary-item">
                         <span>How precise this estimate is</span>
@@ -1520,7 +1520,7 @@
                       <strong id="firstActionKpi">Run assessment</strong>
                     </div>
                     <p id="regionDebugInline" class="muted debug-inline">Region: unresolved</p>
-                    <p id="summaryText" class="mt-sm">We’ll explain how local and property factors shaped this score.</p>
+                    <p id="summaryText" class="mt-sm">We’ll explain how local and property factors shaped this result.</p>
                   </div>
 
                   <div class="card">
@@ -1544,7 +1544,7 @@
                   </div>
 
                   <div class="card">
-                    <h3>Action planning detail</h3>
+                    <h3>Action plan details</h3>
                     <p class="section-help">This is the longer action plan view, including impact and effort context.</p>
                     <div class="mini-label">Recommended action sequence</div>
                     <p id="nextStepsText">Focus on the top actions first.</p>
@@ -1560,7 +1560,7 @@
                 <p class="section-help">How reliable this estimate is, and where limited data may affect precision.</p>
                 <div class="trust-overview">
                   <div class="trust-value">
-                    <span>Assessment confidence</span>
+                    <span>How confident this estimate is</span>
                     <strong id="confidenceAtGlance">Pending</strong>
                   </div>
                   <div class="trust-value">
@@ -1568,9 +1568,9 @@
                     <strong id="specificityAtGlance">Pending</strong>
                   </div>
                 </div>
-                <p id="confidenceSummaryText" class="muted">Run an assessment to see confidence details.</p>
+                <p id="confidenceSummaryText" class="muted">Run an assessment to see what we could confirm.</p>
                 <div class="result-divider"></div>
-                <div class="mini-label">Limitations and trust notes</div>
+                <div class="mini-label">What may limit this estimate</div>
                 <div id="flagsPrimary"><span class="pill">Trust notes will appear after assessment</span></div>
                 <div class="result-divider"></div>
                 <div class="mini-label">What we confirmed vs estimated</div>
@@ -1580,8 +1580,8 @@
 
             <section id="improveSection" class="secondary-panel more-options-item more-details-item">
               <details id="improvePanel">
-                <summary>Improve estimate accuracy (optional)</summary>
-                <p class="section-help">Add any missing details, then click <strong>Re-run With Updated Details</strong> to tighten this screening.</p>
+                <summary>Improve this estimate (optional)</summary>
+                <p class="section-help">Add any missing details, then click <strong>Re-run With Updated Details</strong> to sharpen this screening.</p>
                 <h3 class="subsection-title">Suggested Improvements</h3>
                 <ul id="improveSuggestions"><li class="muted">Suggestions will appear after assessment.</li></ul>
                 <h3 class="subsection-title">Helpful Follow-Up Inputs</h3>
@@ -1636,8 +1636,8 @@
           <p id="simulationRunStatus" class="status-line status-secondary tone-muted sim-run-status">Run an assessment, choose a quick scenario, then run simulation.</p>
 
           <details id="simulationAdvancedPanel" class="mt-sm">
-            <summary>Customize this scenario (optional advanced)</summary>
-            <p class="section-help">Adjust scenario inputs manually if you want a more custom what-if run.</p>
+            <summary>Customize this scenario (more options)</summary>
+            <p class="section-help">Adjust scenario inputs manually if you want a custom what-if run.</p>
 
             <div class="row mt-sm">
               <div>
@@ -1722,7 +1722,7 @@
             </div>
 
             <div class="mt-sm">
-              <label>Confirmed scenario details (optional field list)</label>
+              <label>Confirmed scenario details (optional)</label>
               <input id="scenario_confirmed_fields" placeholder="roof_type, vent_type, defensible_space_ft" />
             </div>
 
@@ -1738,9 +1738,9 @@
       <section id="advancedSection" class="card advanced-secondary secondary-panel">
         <details id="advancedInternalDetailsPanel">
           <summary>Advanced details and diagnostics</summary>
-          <p class="section-help">Use this panel for detailed model outputs beyond the homeowner summary.</p>
+          <p class="section-help">Use this panel for technical outputs beyond the homeowner summary.</p>
           <ul id="advancedCoverageList">
-            <li>Factor subscores and weighted contributions</li>
+            <li>Detailed factor breakdowns and weighted contributions</li>
             <li>Confidence diagnostics, assumptions, and evidence notes</li>
             <li>Compatibility and legacy output fields</li>
           </ul>
@@ -1768,10 +1768,10 @@
           <h3 class="subsection-title">How to Improve Confidence</h3>
           <ul id="confidenceActions"><li class="muted">Confidence guidance will appear after assessment.</li></ul>
 
-          <h3 class="subsection-title">Detailed factor scoring (advanced)</h3>
+          <h3 class="subsection-title">Detailed factor breakdown (advanced)</h3>
           <table>
             <thead><tr><th>Factor</th><th>Score</th><th>Contribution</th></tr></thead>
-            <tbody id="submodels"><tr><td colspan="3" class="muted">Detailed factor data will appear after assessment.</td></tr></tbody>
+            <tbody id="submodels"><tr><td colspan="3" class="muted">Detailed factor breakdown will appear after assessment.</td></tr></tbody>
           </table>
 
           <h3 class="subsection-title">Home hardening score</h3>
@@ -2740,7 +2740,7 @@
           const useSmoothScroll = !!smooth && !prefersReducedMotion();
           target.scrollIntoView({ behavior: useSmoothScroll ? "smooth" : "auto", block: "start" });
         }
-        setFlowStatus("Step 4 of 4: Review your full report and save or share results.", "muted");
+        setFlowStatus("Step 4 of 4: Review your full report and save or share.", "muted");
       }
 
       function hasCompletedSimulationSummary() {
@@ -2824,7 +2824,7 @@
       function openSimulationPlannerFromCta({ smooth = true } = {}) {
         setPanelOpen("simulationPlannerPanel", true);
         setSimulationPresetSelection(selectedSimulationPresetId);
-        setFlowStatus("Step 3 of 4: Run a before/after simulation.", "muted");
+        setFlowStatus("Step 3 of 4: Run your before/after scenario.", "muted");
         const target = document.getElementById("simulationPlannerSection");
         if (target) {
           applyTransientMotionClass(target, "step-active", 1600);
@@ -3830,7 +3830,7 @@
 
         const advancedLines = topNonEmptyLines(advancedRows, 5);
         setListItems(advancedEl, advancedLines, {
-          fallbackText: "Detailed scores and evidence notes are available in advanced sections.",
+          fallbackText: "Detailed risk breakdowns and evidence notes are available in advanced sections.",
         });
         updatePrimaryDecisionCta(normalizedStatus);
       }
@@ -3895,7 +3895,7 @@
           limitations,
           methodology: methodology || "Rule-based screening guidance using observable wildfire and property factors; not a prediction or guarantee of insurer underwriting approval.",
           advancedRows: [
-            "Detailed factor scores and compatibility fields are available in advanced details.",
+            "Detailed factor breakdowns and compatibility fields are available in advanced details.",
             showOperatorControls
               ? "Operator export and internal diagnostics are available in this mode."
               : "Operator export and internal diagnostics are hidden in homeowner mode.",
@@ -3934,7 +3934,7 @@
         if (firstActionKpiEl) firstActionKpiEl.textContent = "Run assessment";
         if (confidenceAtGlanceEl) confidenceAtGlanceEl.textContent = "Pending";
         if (specificityAtGlanceEl) specificityAtGlanceEl.textContent = "Pending";
-        if (confidenceSummaryTextEl) confidenceSummaryTextEl.textContent = "Run an assessment to see confidence details.";
+        if (confidenceSummaryTextEl) confidenceSummaryTextEl.textContent = "Run an assessment to see what we could confirm.";
         if (flagsPrimaryEl) setPillSpans(flagsPrimaryEl, [], "Trust notes will appear after assessment.");
         renderHomeownerLimitationsBlock();
         renderHomeownerDecisionSnapshot({
@@ -4053,7 +4053,7 @@
           advancedRows.push(advancedNote);
         }
         if (report?.internal_calibration_debug?.subscores && typeof report.internal_calibration_debug.subscores === "object") {
-          advancedRows.push("Detailed factor scores and weighted impacts are available for advanced review.");
+          advancedRows.push("Detailed factor breakdowns and weighted impacts are available for advanced review.");
         }
         if (report?.internal_calibration_debug?.diagnostics && typeof report.internal_calibration_debug.diagnostics === "object") {
           advancedRows.push("Detailed diagnostics and evidence-quality notes are available for advanced review.");
@@ -4113,7 +4113,7 @@
             .join("; ");
           if (actionsText) rows.push({ label: "Actions driving change", value: actionsText });
         }
-        if (beforeAfterText) rows.push({ label: "Scenario outcome summary", value: beforeAfterText });
+        if (beforeAfterText) rows.push({ label: "What changed in this scenario", value: beforeAfterText });
         if (limitations) rows.push({ label: "Confidence notes", value: limitations });
         setListItems(highlightsEl, rows, {
           fallbackText: "Report highlights will appear after assessment.",
@@ -4142,7 +4142,7 @@
         const secondaryRows = [];
         if (Array.isArray(confidence?.why_confidence_is_limited) && confidence.why_confidence_is_limited.length > 0) {
           secondaryRows.push({
-            label: "What limits confidence",
+            label: "What may limit this estimate",
             value: String(confidence.why_confidence_is_limited[0] || "").trim(),
           });
         }
@@ -4163,7 +4163,7 @@
           secondaryRows.push({ label: "Advanced details available", value: advancedDetailsNote });
         }
         if (statusMethodologyNote) {
-          secondaryRows.push({ label: "How this status is determined", value: statusMethodologyNote });
+          secondaryRows.push({ label: "How this status was estimated", value: statusMethodologyNote });
         }
         setListItems(secondaryEl, secondaryRows, {
           fallbackText: "Additional details will appear here when available.",
@@ -4369,7 +4369,7 @@
         } else {
           scoreEl.textContent = "—";
           scoreEl.className = "score warn";
-          document.getElementById("riskLabel").textContent = "Not enough data to score";
+          document.getElementById("riskLabel").textContent = "Not enough data for a property estimate";
         }
         const regionInlineEl = document.getElementById("regionDebugInline");
         if (regionInlineEl) {
@@ -4384,7 +4384,7 @@
           }
         }
 
-        document.getElementById("summaryText").textContent = data.explanation_summary || "A plain-language summary will appear once scoring is complete.";
+        document.getElementById("summaryText").textContent = data.explanation_summary || "A plain-language summary will appear once the assessment is complete.";
         const propertyFindings = getPropertyFindings(data);
         const nearStructureDrivers = Array.isArray(data?.top_near_structure_risk_drivers)
           ? data.top_near_structure_risk_drivers
@@ -4396,11 +4396,11 @@
         const propertyFindingsEl = document.getElementById("propertyFindings");
         if (scoringStatus === "insufficient_data_to_score") {
           setListItems(propertyFindingsEl, [], {
-            fallbackText: "We found some relevant signals, but not enough verified inputs to produce structure-level findings.",
+            fallbackText: "We found relevant signals, but not enough confirmed home details for structure-level findings.",
           });
         } else if (!computedComponents.includes("home_ignition_vulnerability")) {
           setListItems(propertyFindingsEl, [], {
-            fallbackText: "Near-structure findings are preliminary because Home Ignition Vulnerability could not be computed.",
+            fallbackText: "Near-home findings are preliminary because some property details are still estimated.",
           });
         } else {
           setListItems(propertyFindingsEl, combinedFindings, {
@@ -4414,7 +4414,7 @@
         const driversEl = document.getElementById("drivers");
         if (scoringStatus === "insufficient_data_to_score") {
           setListItems(driversEl, [], {
-            fallbackText: "We found some relevant signals, but not enough verified inputs to compute a reliable score.",
+            fallbackText: "We found relevant signals, but not enough confirmed details for a reliable risk estimate.",
           });
         } else if (rankedDrivers.length > 0) {
           setListItems(driversEl, rankedDrivers, {
@@ -4600,7 +4600,7 @@
             const contributionText = Number.isFinite(contributionVal) ? contributionVal.toFixed(2) : "n/a";
             return { factor: factorLabel, score: scoreText, contribution: contributionText };
           });
-        setSubmodelTableRows(document.getElementById("submodels"), submodelRows, "No factor data.");
+        setSubmodelTableRows(document.getElementById("submodels"), submodelRows, "No detailed factors available yet.");
 
         const readinessValue = (
           data.home_hardening_readiness !== null && data.home_hardening_readiness !== undefined
@@ -4683,7 +4683,7 @@
             risk_score_available: riskAvailable,
           },
         });
-        setFlowStatus("Step 2 of 4: Review your homeowner summary and next step.", "success");
+        setFlowStatus("Step 2 of 4: Review your homeowner summary and next best step.", "success");
         focusHomeownerSummary({ smooth: true });
       }
 
@@ -4720,7 +4720,7 @@
           fallbackText: "Detailed local coverage is limited for this location.",
         });
         setListItems(document.getElementById("drivers"), [], {
-          fallbackText: "Some risk factors could not be scored at full detail for this location.",
+          fallbackText: "Some risk factors could not be estimated at full detail for this location.",
         });
         setListItems(document.getElementById("protective"), [], {
           fallbackText: "Protective factors will appear once we have fuller local coverage.",
@@ -4767,7 +4767,7 @@
         setSubmodelTableRows(
           document.getElementById("submodels"),
           [],
-          "Detailed factor scores are limited until local coverage improves."
+          "Detailed factor breakdown is limited until local coverage improves."
         );
         document.getElementById("readinessText").textContent = "Home hardening readiness: limited due to reduced local coverage";
         document.getElementById("propertyContextText").textContent = recommendation;
@@ -4823,7 +4823,7 @@
         resetHomeownerJourneyPanels("Report highlights are paused until we can confirm your address location.");
         updateAssessmentPrimaryActions();
         syncMoreOptionsHubState();
-        setFlowStatus("Address confirmation is still needed before we can score this property.", "error");
+        setFlowStatus("Address confirmation is still needed before we can assess this property.", "error");
         const scoreEl = document.getElementById("riskScore");
         scoreEl.textContent = "—";
         scoreEl.className = "score warn";
@@ -4836,7 +4836,7 @@
           fallbackText: "We still need a confident location match for this address.",
         });
         setListItems(document.getElementById("drivers"), [], {
-          fallbackText: "Property-level scoring needs a confirmed location.",
+          fallbackText: "Property-level assessment needs a confirmed location.",
         });
         setListItems(document.getElementById("protective"), [], {
           fallbackText: "Protective factors will appear after location confirmation.",
@@ -4871,7 +4871,7 @@
         setSubmodelTableRows(
           document.getElementById("submodels"),
           [],
-          "Detailed factor scores will appear after address confirmation."
+          "Detailed factor breakdown will appear after address confirmation."
         );
         document.getElementById("readinessText").textContent = "Home hardening readiness: not computed";
         document.getElementById("propertyContextText").textContent = "Location-specific context will populate after address confirmation.";
@@ -5964,7 +5964,7 @@
           setFlowStatus("Step 1 of 4: Strong address match found. Continuing unless you adjust.", "muted");
           scheduleVerificationFastPathAutoContinue();
         } else {
-          setFlowStatus("Step 1 of 4: Confirm your address match.", "muted");
+          setFlowStatus("Step 1 of 4: Confirm your address.", "muted");
         }
         if (confirmBtn) confirmBtn.focus();
       }
@@ -6095,7 +6095,7 @@
         verificationManualCandidates = [];
         verificationSelectedCandidateId = null;
         verificationInferredLocalities = [];
-        setFlowStatus("Step 1 of 4 complete: Address confirmed. Running assessment...", "muted");
+        setFlowStatus("Step 1 of 4 complete: Address confirmed. Running your assessment...", "muted");
         await runAssessment(false, payload);
       }
 
@@ -6296,7 +6296,7 @@
           };
 
           setSimulationRunStatus("Running before/after simulation...", "muted");
-          setFlowStatus("Step 3 of 4: Running your before/after simulation...", "muted");
+          setFlowStatus("Step 3 of 4: Running your before/after scenario...", "muted");
           if (simResultEl) {
             clearNode(simResultEl);
             simResultEl.classList.add("muted");
@@ -6384,7 +6384,7 @@
           }
 
           setSimulationRunStatus("Simulation complete. Review your projected status and top actions below.", "success");
-          setFlowStatus("Step 3 of 4 complete: Review your before/after results.", "success");
+          setFlowStatus("Step 3 of 4 complete: Review what changed.", "success");
           applyTransientMotionClass(document.getElementById("simulationPlannerSection"), "step-active", 1700);
 
           trackHomeownerFlowEvent("simulation_completed", {
