@@ -573,6 +573,14 @@
         opacity: 0.88;
         box-shadow: none;
       }
+      .simulation-primary-actions button {
+        opacity: 0.9;
+        box-shadow: none;
+      }
+      .simulation-primary-actions button:hover {
+        opacity: 0.95;
+        box-shadow: 0 2px 7px rgba(35, 79, 99, 0.12);
+      }
       #requestStatus {
         font-size: 0.86rem;
       }
@@ -1470,10 +1478,13 @@
               <h3>Review your full report</h3>
               <p class="muted">Save or share your results with homeowner-friendly report formats.</p>
               <p class="section-help">Best after reviewing your status and before/after simulation.</p>
-              <div class="actions actions-low-emphasis">
+              <div id="reportPrimaryActions" class="actions actions-low-emphasis">
                 <button id="openReportBtn" type="button">Open Full Report</button>
                 <button id="downloadPdfBtn" type="button" class="secondary">Download Homeowner-Friendly PDF</button>
               </div>
+              <p id="reportActionHierarchyHint" class="section-help muted" style="display:none;">
+                Your main report actions are shown above in the homeowner summary.
+              </p>
               <p id="reportActionStatus" class="status-line status-secondary tone-muted">Report review actions will appear after assessment.</p>
               <details id="homeownerReportPreviewPanel" class="mt-sm">
                 <summary>Preview report highlights (optional)</summary>
@@ -1619,8 +1630,8 @@
             </button>
           </div>
           <p id="simulationPresetHint" class="sim-preset-hint muted">Choose a quick scenario to prefill the simulation.</p>
-          <div class="actions">
-            <button id="simulatePresetBtn" type="button">Run Quick Simulation</button>
+          <div class="actions simulation-primary-actions">
+            <button id="simulatePresetBtn" type="button" class="secondary">Run Quick Simulation</button>
           </div>
           <p id="simulationRunStatus" class="status-line status-secondary tone-muted sim-run-status">Run an assessment, choose a quick scenario, then run simulation.</p>
 
@@ -2749,6 +2760,19 @@
         return raw;
       }
 
+      function syncReportActionHierarchy(hasSimulationResult = hasCompletedSimulationSummary()) {
+        const actionWrap = document.getElementById("reportPrimaryActions");
+        const hierarchyHint = document.getElementById("reportActionHierarchyHint");
+        if (!actionWrap || !hierarchyHint) return;
+        if (hasSimulationResult) {
+          actionWrap.style.display = "none";
+          hierarchyHint.style.display = "block";
+        } else {
+          actionWrap.style.display = "";
+          hierarchyHint.style.display = "none";
+        }
+      }
+
       function updateMobileNextStepBar() {
         const bar = document.getElementById("mobileNextStepBar");
         const summaryEl = document.getElementById("mobileNextStepSummary");
@@ -2834,6 +2858,7 @@
           && postSimDownloadPdfBtn
         );
         if (!btn || !hintEl || !labelEl || !priorityNoteEl) {
+          syncReportActionHierarchy(false);
           updateMobileNextStepBar();
           return;
         }
@@ -2845,6 +2870,7 @@
         btn.style.display = "";
         if (postSimActionRowEl) postSimActionRowEl.hidden = true;
         if (!hasAssessment) {
+          syncReportActionHierarchy(false);
           primaryDecisionAction = "";
           labelEl.textContent = "Recommended next step";
           btn.textContent = "Run assessment to see next steps";
@@ -2858,6 +2884,7 @@
           return;
         }
         if (hasSimulationResult) {
+          syncReportActionHierarchy(true);
           primaryDecisionAction = "review_report_options";
           labelEl.textContent = "Recommended next step after simulation";
           btn.textContent = "Review Full Report Options";
@@ -2874,6 +2901,7 @@
           return;
         }
 
+        syncReportActionHierarchy(false);
         primaryDecisionAction = "run_quick_simulation";
         labelEl.textContent = "Recommended next step";
         btn.textContent = "Plan My Before/After Scenario";
