@@ -599,16 +599,20 @@
         display: block;
       }
       .more-details-stack {
-        margin-top: 0.58rem;
+        margin-top: 0.62rem;
         display: grid;
-        gap: 0.58rem;
+        gap: 0.78rem;
       }
       .more-details-item {
-        border: 1px solid #edf2f5;
-        border-radius: 12px;
-        background: #fbfdfe;
-        padding: 0.68rem 0.74rem 0.72rem;
+        border: 0;
+        border-radius: 0;
+        background: transparent;
+        padding: 0.16rem 0 0.2rem;
         box-shadow: none;
+      }
+      .more-details-item + .more-details-item {
+        border-top: 1px solid #e6edf3;
+        padding-top: 0.86rem;
       }
       .more-details-item details {
         border-top: none;
@@ -618,7 +622,35 @@
         margin-bottom: 0;
       }
       .more-details-item details[open] summary {
-        margin-bottom: 0.48rem;
+        margin-bottom: 0.58rem;
+      }
+      .more-options-item .card {
+        border: 0;
+        border-radius: 0;
+        background: transparent;
+        box-shadow: none;
+        padding: 0.36rem 0;
+      }
+      .more-options-item .results {
+        gap: 0.72rem;
+      }
+      .more-options-item .results > .card + .card {
+        border-top: 1px solid #ebf1f5;
+        margin-top: 0.08rem;
+        padding-top: 0.78rem;
+      }
+      .more-options-item .result-primary {
+        border: 1px solid #e8eff4;
+        border-radius: 10px;
+        background: #fcfeff;
+        padding: 0.74rem 0.78rem 0.72rem;
+      }
+      .more-options-item .section-help {
+        font-size: 0.86rem;
+        margin-top: 0.18rem;
+      }
+      .more-options-item h3 {
+        margin-bottom: 0.28rem;
       }
       #assessmentMap {
         height: 360px;
@@ -729,8 +761,8 @@
         font-size: 0.97rem;
       }
       .result-divider {
-        border-top: 1px solid var(--line-soft);
-        margin: 0.62rem 0 0.48rem;
+        border-top: 1px solid #edf3f6;
+        margin: 0.72rem 0 0.56rem;
       }
       .mini-label {
         font-size: 0.8rem;
@@ -739,23 +771,29 @@
         font-weight: 600;
       }
       .insight-group {
-        border: 1px solid #edf2f5;
-        border-radius: 11px;
-        padding: 0.54rem 0.62rem 0.5rem;
-        background: #fbfdfe;
-        margin-top: 0.52rem;
+        border: 0;
+        border-top: 1px solid #edf2f5;
+        border-radius: 0;
+        padding: 0.5rem 0 0.44rem;
+        background: transparent;
+        margin-top: 0.42rem;
+      }
+      .insight-group:first-of-type {
+        border-top: 0;
+        margin-top: 0.3rem;
+        padding-top: 0.05rem;
       }
       .insight-group ul {
-        margin-top: 0.28rem;
+        margin-top: 0.26rem;
       }
       .insight-group h3 {
-        margin-top: 0.28rem;
+        margin-top: 0.22rem;
       }
       .summary-item {
-        border: 1px solid #edf2f5;
-        background: #fbfdfe;
-        border-radius: 10px;
-        padding: 0.52rem 0.62rem;
+        border: 0;
+        background: #f7fafc;
+        border-radius: 9px;
+        padding: 0.46rem 0.56rem;
       }
       .summary-item span {
         display: block;
@@ -780,12 +818,12 @@
         margin-bottom: 0.32rem;
       }
       #mitigations li {
-        border: 1px solid #edf2f5;
-        border-left: 4px solid #de7c5f;
+        border: 0;
+        border-left: 3px solid #de7c5f;
         border-radius: 10px;
-        background: #fbfdfd;
+        background: #fcfdfd;
         list-style-position: inside;
-        padding: 0.5rem 0.55rem;
+        padding: 0.44rem 0.5rem;
       }
       .muted {
         color: var(--muted);
@@ -808,14 +846,14 @@
       .trust-overview {
         display: grid;
         grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-        gap: 0.55rem;
-        margin-top: 0.66rem;
+        gap: 0.48rem;
+        margin-top: 0.6rem;
       }
       .trust-value {
-        border: 1px solid #edf2f5;
-        border-radius: 10px;
-        background: #fbfdfe;
-        padding: 0.52rem 0.62rem;
+        border: 0;
+        border-radius: 9px;
+        background: #f7fafc;
+        padding: 0.46rem 0.56rem;
       }
       .trust-value span {
         display: block;
@@ -835,9 +873,19 @@
       #flagsPrimary {
         margin-top: 0.42rem;
       }
+      .more-options-item .status-line.status-secondary {
+        border: 0;
+        background: transparent;
+        padding: 0.2rem 0;
+        margin-top: 0.42rem;
+      }
+      .more-options-item .mini-label {
+        font-size: 0.76rem;
+        color: #607988;
+      }
       .advanced-secondary {
-        border-color: #e1e9ee;
-        background: #fcfdff;
+        border-color: #e5ecf1;
+        background: #fbfdfe;
         box-shadow: none;
       }
       .advanced-secondary details {
