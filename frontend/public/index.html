@@ -263,6 +263,10 @@
         box-shadow: 0 6px 16px rgba(16, 33, 44, 0.09);
         padding: 0.55rem 0.62rem 0.6rem;
       }
+      .desktop-next-step-cue.is-dominant {
+        border-color: #d2a691;
+        box-shadow: 0 8px 20px rgba(145, 56, 36, 0.18);
+      }
       .desktop-next-step-cue[hidden] {
         display: none !important;
       }
@@ -387,11 +391,18 @@
         background: #fffaf7;
         padding: 0.62rem 0.68rem;
       }
+      .decision-cta-block.is-demoted {
+        border-color: #dce6ee;
+        background: #f8fbfd;
+      }
       .decision-cta-label {
         font-size: 0.8rem;
         letter-spacing: 0.01em;
         color: #7f4637;
         font-weight: 600;
+      }
+      .decision-cta-block.is-demoted .decision-cta-label {
+        color: #4f6878;
       }
       .decision-cta-btn {
         margin-top: 0.45rem;
@@ -400,6 +411,9 @@
         min-height: 44px;
         font-size: 0.96rem;
         box-shadow: 0 6px 14px rgba(145, 56, 36, 0.21);
+      }
+      .decision-cta-block.is-demoted .decision-cta-btn {
+        box-shadow: none;
       }
       .homeowner-first-card.is-active {
         border-color: #d2a691;
@@ -433,6 +447,10 @@
       }
       .post-simulation-action-row .actions button {
         min-height: 40px;
+      }
+      .post-simulation-action-row.is-demoted .actions button {
+        box-shadow: none;
+        opacity: 0.88;
       }
       .post-simulation-action-note {
         margin-top: 0.4rem;
@@ -1562,7 +1580,7 @@
               <p class="muted">Save or share your results with homeowner-friendly report formats.</p>
               <p class="section-help">Best after reviewing your status and before/after simulation.</p>
               <div id="reportPrimaryActions" class="actions actions-low-emphasis">
-                <button id="openReportBtn" type="button">Open Full Report</button>
+                <button id="openReportBtn" type="button" class="secondary">Open Full Report</button>
                 <button id="downloadPdfBtn" type="button" class="secondary">Download Homeowner-Friendly PDF</button>
               </div>
               <p id="reportActionHierarchyHint" class="section-help muted" style="display:none;">
@@ -2899,6 +2917,33 @@
         }
       }
 
+      function syncSingleDominantCta() {
+        const hasAssessment = !!(latestAssessment && latestAssessment.assessment_id);
+        const hasSimulationResult = hasCompletedSimulationSummary();
+        const desktopCueVisible = !isMobileViewport() && hasAssessment && !addressVerificationModalOpen;
+
+        const decisionCtaBlock = document.querySelector(".decision-cta-block");
+        const summaryBtn = document.getElementById("primaryDecisionCtaBtn");
+        const postSimActionRowEl = document.getElementById("postSimulationActionRow");
+        const postSimOpenReportBtn = document.getElementById("postSimOpenReportBtn");
+
+        const summaryIsPrimary = hasAssessment && !hasSimulationResult && !desktopCueVisible;
+        const reportIsPrimary = hasAssessment && hasSimulationResult && !desktopCueVisible;
+
+        if (decisionCtaBlock) {
+          decisionCtaBlock.classList.toggle("is-demoted", desktopCueVisible);
+        }
+        if (summaryBtn) {
+          summaryBtn.classList.toggle("secondary", !summaryIsPrimary);
+        }
+        if (postSimOpenReportBtn) {
+          postSimOpenReportBtn.classList.toggle("secondary", !reportIsPrimary);
+        }
+        if (postSimActionRowEl) {
+          postSimActionRowEl.classList.toggle("is-demoted", desktopCueVisible);
+        }
+      }
+
       function updateMobileNextStepBar() {
         const bar = document.getElementById("mobileNextStepBar");
         const summaryEl = document.getElementById("mobileNextStepSummary");
@@ -2941,7 +2986,10 @@
         const shouldShow = !isMobileViewport() && hasAssessment && !addressVerificationModalOpen;
         if (!shouldShow) {
           desktopNextStepAction = "";
+          cue.classList.remove("is-dominant");
+          btn.classList.add("secondary");
           cue.hidden = true;
+          syncSingleDominantCta();
           return;
         }
         if (hasSimulationResult) {
@@ -2957,7 +3005,10 @@
           desktopNextStepAction = "run_quick_simulation";
           btn.disabled = isSimulationSubmitting || isAssessmentSubmitting || isAddressVerificationPending;
         }
+        cue.classList.add("is-dominant");
+        btn.classList.remove("secondary");
         cue.hidden = false;
+        syncSingleDominantCta();
       }
 
       function handleMobileNextStepAction() {
@@ -3032,6 +3083,7 @@
           syncReportActionHierarchy(false);
           updateMobileNextStepBar();
           updateDesktopNextStepCue();
+          syncSingleDominantCta();
           return;
         }
         const hasAssessment = !!(latestAssessment && latestAssessment.assessment_id);
@@ -3054,6 +3106,7 @@
           }
           updateMobileNextStepBar();
           updateDesktopNextStepCue();
+          syncSingleDominantCta();
           return;
         }
         if (hasSimulationResult) {
@@ -3072,6 +3125,7 @@
           }
           updateMobileNextStepBar();
           updateDesktopNextStepCue();
+          syncSingleDominantCta();
           return;
         }
 
@@ -3100,6 +3154,7 @@
         }
         updateMobileNextStepBar();
         updateDesktopNextStepCue();
+        syncSingleDominantCta();
       }
 
       function buildPopupContent({ title = "", lines = [] } = {}) {
