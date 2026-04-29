@@ -4158,6 +4158,38 @@
         return [];
       }
 
+      function normalizeComparableText(value) {
+        return String(value || "")
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, " ")
+          .trim();
+      }
+
+      function toFiniteNumber(value) {
+        const n = Number(value);
+        return Number.isFinite(n) ? n : null;
+      }
+
+      function sentenceCaseText(value) {
+        const text = String(value || "").trim();
+        if (!text) return "";
+        return text.charAt(0).toUpperCase() + text.slice(1);
+      }
+
+      function buildWildfireRiskDeltaLine(deltaValue) {
+        const delta = toFiniteNumber(deltaValue);
+        if (delta === null || Math.abs(delta) < 0.05) return "";
+        const direction = delta < 0 ? "decreased" : "increased";
+        return `Wildfire risk score ${direction} by ${Math.abs(delta).toFixed(1)} points.`;
+      }
+
+      function buildReadinessDeltaLine(deltaValue) {
+        const delta = toFiniteNumber(deltaValue);
+        if (delta === null || Math.abs(delta) < 0.05) return "";
+        const direction = delta > 0 ? "improved" : "worsened";
+        return `Home hardening readiness ${direction} by ${Math.abs(delta).toFixed(1)} points.`;
+      }
+
       function renderHomeownerDecisionSnapshot({
         statusLabel = "",
         summary = "",
@@ -4168,6 +4200,8 @@
         beforeStatus = "",
         afterStatus = "",
         beforeAfterActions = [],
+        beforeAfterRiskDelta = null,
+        beforeAfterReadinessDelta = null,
         limitations = "",
         methodology = "",
         advancedRows = [],
@@ -4237,16 +4271,45 @@
         });
 
         const beforeAfterLines = [];
-        if (beforeStatus && afterStatus) {
-          beforeAfterLines.push({ label: "Status change", value: `${beforeStatus} → ${afterStatus}` });
+        const normalizedBeforeStatus = normalizeComparableText(beforeStatus);
+        const normalizedAfterStatus = normalizeComparableText(afterStatus);
+        const hasBothStatuses = !!(normalizedBeforeStatus && normalizedAfterStatus);
+        const statusUnchanged = hasBothStatuses && normalizedBeforeStatus === normalizedAfterStatus;
+        if (hasBothStatuses) {
+          if (statusUnchanged) {
+            beforeAfterLines.push({ label: "Status stayed", value: beforeStatus });
+          } else {
+            beforeAfterLines.push({ label: "Status changed", value: `${beforeStatus} → ${afterStatus}` });
+          }
         }
-        if (beforeAfterSummary) {
-          beforeAfterLines.push({ value: String(beforeAfterSummary).trim() });
+        const riskDeltaLine = buildWildfireRiskDeltaLine(beforeAfterRiskDelta);
+        const readinessDeltaLine = buildReadinessDeltaLine(beforeAfterReadinessDelta);
+        if (statusUnchanged) {
+          if (riskDeltaLine) beforeAfterLines.push({ value: riskDeltaLine });
+          if (readinessDeltaLine) beforeAfterLines.push({ value: readinessDeltaLine });
+        }
+        const normalizedSummaryText = sentenceCaseText(beforeAfterSummary);
+        if (normalizedSummaryText) {
+          const summaryWithoutTrailingPeriod = normalizedSummaryText.replace(/[.?!]\s*$/, "");
+          const summaryAlreadyCoveredByDeltas = statusUnchanged && [riskDeltaLine, readinessDeltaLine]
+            .filter(Boolean)
+            .some((line) => normalizeComparableText(summaryWithoutTrailingPeriod) === normalizeComparableText(line.replace(/[.?!]\s*$/, "")));
+          if (!summaryAlreadyCoveredByDeltas) {
+            beforeAfterLines.push({ value: normalizedSummaryText });
+          }
         }
         const beforeAfterDriver = (Array.isArray(beforeAfterActions) ? beforeAfterActions : [])
           .map((row) => String(row?.action || "").trim())
           .find(Boolean);
-        if (beforeAfterDriver) {
+        const summaryNormalized = normalizeComparableText(normalizedSummaryText);
+        const actionNormalized = normalizeComparableText(beforeAfterDriver);
+        const actionAlreadyCoveredInSummary = !!(
+          summaryNormalized
+          && actionNormalized
+          && actionNormalized.length >= 8
+          && summaryNormalized.includes(actionNormalized)
+        );
+        if (beforeAfterDriver && !actionAlreadyCoveredInSummary) {
           beforeAfterLines.push({ label: "Top action behind this change", value: beforeAfterDriver });
         }
         clearNode(beforeAfterEl);
@@ -4369,6 +4432,8 @@
           beforeStatus: String(beforeAfter?.current_insurability_status || "").trim(),
           afterStatus: String(beforeAfter?.projected_insurability_status || "").trim(),
           beforeAfterActions: Array.isArray(beforeAfter?.top_actions_driving_change) ? beforeAfter.top_actions_driving_change : [],
+          beforeAfterRiskDelta: beforeAfter?.wildfire_risk_score_delta,
+          beforeAfterReadinessDelta: beforeAfter?.home_hardening_readiness_delta,
           limitations,
           methodology: methodology || "Rule-based screening guidance using observable wildfire and property factors; not a prediction or guarantee of insurer underwriting approval.",
           advancedRows: [
@@ -4532,6 +4597,8 @@
         const beforeAfterActions = Array.isArray(beforeAfter?.top_actions_driving_change)
           ? beforeAfter.top_actions_driving_change
           : [];
+        const beforeAfterRiskDelta = beforeAfter?.wildfire_risk_score_delta ?? latestSimulationSummary?.wildfire_risk_score_delta;
+        const beforeAfterReadinessDelta = beforeAfter?.home_hardening_readiness_delta ?? latestSimulationSummary?.home_hardening_readiness_delta;
         const snapshot = (focus?.limitations_snapshot && typeof focus.limitations_snapshot === "object")
           ? focus.limitations_snapshot
           : {};
@@ -4568,6 +4635,8 @@
           beforeStatus,
           afterStatus,
           beforeAfterActions,
+          beforeAfterRiskDelta,
+          beforeAfterReadinessDelta,
           limitations,
           methodology: statusMethodologyNote,
           advancedRows,
@@ -4586,8 +4655,22 @@
           });
         }
         if (whatFirst) rows.push({ label: "Most important first step", value: whatFirst });
-        if (beforeStatus && afterStatus) {
-          rows.push({ label: "Status change", value: `${beforeStatus} → ${afterStatus}` });
+        const beforeStatusNormalized = normalizeComparableText(beforeStatus);
+        const afterStatusNormalized = normalizeComparableText(afterStatus);
+        const hasBothStatuses = !!(beforeStatusNormalized && afterStatusNormalized);
+        const statusUnchanged = hasBothStatuses && beforeStatusNormalized === afterStatusNormalized;
+        if (hasBothStatuses) {
+          if (statusUnchanged) {
+            rows.push({ label: "Status stayed", value: beforeStatus });
+          } else {
+            rows.push({ label: "Status changed", value: `${beforeStatus} → ${afterStatus}` });
+          }
+        }
+        if (statusUnchanged) {
+          const riskDeltaLine = buildWildfireRiskDeltaLine(beforeAfterRiskDelta);
+          const readinessDeltaLine = buildReadinessDeltaLine(beforeAfterReadinessDelta);
+          if (riskDeltaLine) rows.push({ label: "Risk score change", value: riskDeltaLine });
+          if (readinessDeltaLine) rows.push({ label: "Readiness change", value: readinessDeltaLine });
         }
         if (beforeAfterActions.length > 0) {
           const actionsText = beforeAfterActions
@@ -4599,7 +4682,9 @@
             })
             .filter(Boolean)
             .join("; ");
-          if (actionsText) rows.push({ label: "Actions driving change", value: actionsText });
+          if (actionsText && !normalizeComparableText(beforeAfterText).includes(normalizeComparableText(actionsText))) {
+            rows.push({ label: "Actions driving change", value: actionsText });
+          }
         }
         if (beforeAfterText) rows.push({ label: "What changed in this scenario", value: beforeAfterText });
         if (limitations) rows.push({ label: "Confidence notes", value: limitations });
@@ -7151,10 +7236,27 @@
 
             const headline = document.createElement("p");
             headline.className = "sim-result-headline";
-            const statusShiftText = (statusBefore && statusAfter)
-              ? `Status shift: ${statusBefore} → ${statusAfter}.`
-              : "";
-            headline.textContent = `${statusShiftText} ${changeSummary}`.trim();
+            const beforeStatusNormalized = normalizeComparableText(statusBefore);
+            const afterStatusNormalized = normalizeComparableText(statusAfter);
+            const hasBothStatuses = !!(beforeStatusNormalized && afterStatusNormalized);
+            const statusUnchanged = hasBothStatuses && beforeStatusNormalized === afterStatusNormalized;
+            let statusShiftText = "";
+            if (hasBothStatuses) {
+              statusShiftText = statusUnchanged
+                ? `Status stayed ${statusBefore}.`
+                : `Status changed: ${statusBefore} → ${statusAfter}.`;
+            }
+            const normalizedChangeSummary = sentenceCaseText(changeSummary);
+            const riskDeltaLine = buildWildfireRiskDeltaLine(delta?.wildfire_risk_score_delta);
+            const readinessDeltaLine = buildReadinessDeltaLine(hardeningDelta);
+            const headlineSegments = [];
+            if (statusShiftText) headlineSegments.push(statusShiftText);
+            if (normalizedChangeSummary) headlineSegments.push(normalizedChangeSummary);
+            if (statusUnchanged) {
+              if (riskDeltaLine) headlineSegments.push(riskDeltaLine);
+              if (readinessDeltaLine) headlineSegments.push(readinessDeltaLine);
+            }
+            headline.textContent = headlineSegments.join(" ").trim() || "Simulation complete.";
             simResultEl.appendChild(headline);
 
             const kpiGrid = document.createElement("div");
