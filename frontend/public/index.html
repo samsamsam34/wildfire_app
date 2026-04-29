@@ -2019,7 +2019,7 @@
         <div id="verifyWarningBox" class="modal-warning" style="display:none;"></div>
         <p id="verifyModalError" class="modal-error" style="display:none;"></p>
         <div class="verify-modal-cta">
-          <button id="confirmAddressBtn" type="button">Continue with suggested match</button>
+          <button id="confirmAddressBtn" type="button">Use suggested address and continue</button>
           <p id="verifyCtaNote" class="verify-cta-note muted">Most homeowners can continue with the suggested match.</p>
         </div>
         <div class="actions actions-low-emphasis verify-modal-secondary-actions">
@@ -2120,7 +2120,8 @@
         "address_unresolved_needs_manual_selection",
         "address_candidates_conflict_needs_manual_selection",
       ]);
-      const verificationFastPathAutoContinueMs = 900;
+      const verificationFastPathAutoContinueEnabled = false;
+      const verificationFastPathAutoContinueMs = 4000;
 
       const mapLayerStyle = {
         property_anchor_point: {
@@ -5776,18 +5777,19 @@
         }
         if (introEl) {
           introEl.textContent = verificationFastPathEligible
-            ? "This appears to be a strong match. We’ll continue automatically unless you need to adjust."
+            ? "This appears to be a strong match. Review it and continue when you’re ready."
             : "If this suggested match looks right, continue in one click. Adjust only if needed.";
         }
         if (ctaNoteEl) {
           ctaNoteEl.textContent = verificationFastPathEligible
-            ? "Continuing automatically. Use “Need to adjust?” only if this is not your property."
+            ? "Take a moment to confirm this suggested match, then continue."
             : "Most homeowners can continue with the suggested match.";
         }
         setConfirmAddressButtonState();
       }
 
       function scheduleVerificationFastPathAutoContinue(delayMs = verificationFastPathAutoContinueMs) {
+        if (!verificationFastPathAutoContinueEnabled) return;
         if (!verificationFastPathEligible) return;
         clearVerificationFastPathTimer();
         verificationFastPathTimer = setTimeout(() => {
@@ -6268,13 +6270,13 @@
           && verificationAcceptedSelectionSource === "suggested_geocode"
           && !verificationHasUnappliedPending
         ) {
-          confirmBtn.textContent = "Continue and run assessment";
+          confirmBtn.textContent = "Use suggested address and continue";
         } else if (verificationAcceptedSelectionSource === "manual_address_selection" && !verificationHasUnappliedPending) {
           confirmBtn.textContent = "Use this address";
         } else if (verificationAcceptedSelectionSource === "map_click_fallback" && !verificationHasUnappliedPending) {
           confirmBtn.textContent = "Use this map location";
         } else if (verificationAcceptedSelectionSource === "suggested_geocode" && !verificationHasUnappliedPending) {
-          confirmBtn.textContent = "Continue with suggested match";
+          confirmBtn.textContent = "Use suggested address and continue";
         } else {
           confirmBtn.textContent = "Continue with selected location";
         }
@@ -6738,8 +6740,10 @@
           },
         });
         if (fastPathEligible) {
-          setFlowStatus("Step 1 of 4: Strong address match found. Continuing unless you adjust.", "muted");
-          scheduleVerificationFastPathAutoContinue();
+          setFlowStatus("Step 1 of 4: Strong address match found. Confirm to continue.", "muted");
+          if (verificationFastPathAutoContinueEnabled) {
+            scheduleVerificationFastPathAutoContinue();
+          }
         } else {
           setFlowStatus("Step 1 of 4: Confirm your address.", "muted");
         }
@@ -6797,7 +6801,7 @@
             return;
           }
           if (shouldUseFastPath) {
-            setRequestStatus("Address looks good. Continuing automatically unless you choose to adjust.", "success");
+            setRequestStatus("Address looks good. Confirm to continue.", "success");
             return;
           }
           setRequestStatus("Address looks good. Confirm to continue.");
