@@ -269,6 +269,29 @@ class WildfireDataClient:
                     "wildfire_data national_nlcd_client_init_error error=%s", _exc
                 )
 
+        # National elevation client (USGS 3DEP COG) — tertiary slope fallback.
+        # Priority: local raster → local DEM → LANDFIRE WCS COG → 3DEP COG (this client).
+        self._elevation_client = None
+        _elev_enabled = os.environ.get("WF_ELEVATION_COG_ENABLED", "true").strip().lower() not in {
+            "0", "false", "no",
+        }
+        if _elev_enabled:
+            try:
+                from backend.national_elevation_client import NationalElevationClient  # noqa: PLC0415
+                self._elevation_client = NationalElevationClient(
+                    cache_db_path=os.environ.get("WF_ELEVATION_CACHE_DB", "data/elevation_cache.db"),
+                    enabled=True,
+                )
+                import logging as _logging
+                _logging.getLogger("wildfire_app.wildfire_data").info(
+                    "National 3DEP elevation client initialized (tertiary slope fallback)"
+                )
+            except Exception as _exc:  # pragma: no cover
+                import logging as _logging
+                _logging.getLogger("wildfire_app.wildfire_data").warning(
+                    "wildfire_data national_elevation_client_init_error error=%s", _exc
+                )
+
         # Optional Regrid parcel API client — enabled only when WF_REGRID_API_KEY is set.
         self._regrid_client = None
         _regrid_api_key = os.environ.get("WF_REGRID_API_KEY", "").strip()
@@ -4687,6 +4710,32 @@ class WildfireDataClient:
                 )
             if aspect is None and _cog_topo.get("aspect") is not None:
                 aspect = _cog_topo["aspect"]
+                aspect_status_detail = "ok"
+
+        # 3DEP tertiary fallback: if slope is still missing after LANDFIRE WCS, try USGS 3DEP.
+        # Uses rasterio range requests against the national seamless VRT (10 m resolution).
+        if slope is None and self._elevation_client is not None:
+            _3dep_slope, _3dep_aspect = self._elevation_client.get_slope_and_aspect(lat, lon)
+            if _3dep_slope is not None:
+                slope = _3dep_slope
+                slope_status_detail = "ok"
+                sources.append("USGS 3DEP slope (national COG fallback)")
+                update_layer_audit(
+                    layer_audit,
+                    "slope",
+                    sample_attempted=True,
+                    sample_succeeded=True,
+                    coverage_status="observed",
+                    raw_value_preview=round(float(slope), 2),
+                    note="Slope derived from USGS 3DEP national elevation COG.",
+                )
+                import logging as _logging
+                _logging.getLogger("wildfire_app.wildfire_data").info(
+                    "wildfire_data 3dep_slope_fallback lat=%.4f lon=%.4f slope_deg=%.2f",
+                    lat, lon, slope,
+                )
+            if aspect is None and _3dep_aspect is not None:
+                aspect = _3dep_aspect
                 aspect_status_detail = "ok"
 
         if slope_status_detail not in {"ok", "ok_nearby"}:

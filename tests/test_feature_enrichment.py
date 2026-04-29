@@ -329,3 +329,153 @@ def test_both_national_clients_disabled_degrades_gracefully(tmp_path: Path) -> N
     # Without local rasters or national clients, both should be None
     assert ctx.historic_fire_index is None
     assert ctx.wildland_distance_index is None
+
+
+# ---------------------------------------------------------------------------
+# Helpers for elevation national integration tests
+# ---------------------------------------------------------------------------
+
+def _run_collect_context_with_elevation(
+    tmp_path: Path,
+    *,
+    elevation_client,
+):
+    """Run collect_context with elevation client injected and all local paths empty."""
+    from backend.wildfire_data import WildfireDataClient
+    from unittest.mock import MagicMock, patch
+
+    anchor = _minimal_anchor()
+    footprint_result = _null_footprint_result()
+
+    mock_resolver_instance = MagicMock()
+    mock_resolver_instance.resolve.return_value = anchor
+    mock_footprints = MagicMock()
+    mock_footprints.get_building_footprint.return_value = footprint_result
+    mock_footprints.compute_structure_rings.return_value = (None, [], [])
+    mock_footprints.get_neighbor_structure_metrics.return_value = None
+
+    with (
+        patch("backend.wildfire_data.PropertyAnchorResolver", return_value=mock_resolver_instance),
+        patch("backend.wildfire_data.BuildingFootprintClient", return_value=mock_footprints),
+    ):
+        client = WildfireDataClient()
+        client._landfire_cog_client = None
+        client._fire_history_client = None
+        client._nlcd_client = None
+        client._elevation_client = elevation_client
+
+        with (
+            patch.object(client, "_sample_layer_value_detailed",
+                         return_value=(None, "not_configured", "No path")),
+            patch.object(client, "_sample_circle", return_value=[]),
+            patch.object(client, "_sample_layer_value", return_value=(None, "not_configured")),
+            patch.object(client, "_file_exists", return_value=False),
+            patch.object(client, "_historical_fire_metrics", return_value=(None, None, "missing")),
+            patch.object(client, "_wildland_distance_metrics", return_value=(None, None)),
+            patch.object(client.feature_bundle_cache, "load", return_value=None),
+            patch.object(client.mtbs_adapter, "summarize",
+                         return_value=MagicMock(status="missing", notes=[], source_dataset=None,
+                                                nearest_perimeter_km=None, intersects_prior_burn=False,
+                                                nearby_high_severity=False, fire_history_index=None)),
+        ):
+            return client.collect_context(46.87, -113.99)
+
+
+def _run_collect_context_with_local_slope(
+    tmp_path: Path,
+    *,
+    elevation_client,
+    slope_val: float,
+):
+    """Run collect_context with a local slope value available and elevation client injected."""
+    from backend.wildfire_data import WildfireDataClient
+    from unittest.mock import MagicMock, patch
+
+    anchor = _minimal_anchor()
+    footprint_result = _null_footprint_result()
+
+    mock_resolver_instance = MagicMock()
+    mock_resolver_instance.resolve.return_value = anchor
+    mock_footprints = MagicMock()
+    mock_footprints.get_building_footprint.return_value = footprint_result
+    mock_footprints.compute_structure_rings.return_value = (None, [], [])
+    mock_footprints.get_neighbor_structure_metrics.return_value = None
+
+    def _fake_sample_detail(path, lat, lon):
+        if "slope" in str(path):
+            return (slope_val, "ok", None)
+        return (None, "not_configured", "No path")
+
+    with (
+        patch("backend.wildfire_data.PropertyAnchorResolver", return_value=mock_resolver_instance),
+        patch("backend.wildfire_data.BuildingFootprintClient", return_value=mock_footprints),
+    ):
+        client = WildfireDataClient()
+        client._landfire_cog_client = None
+        client._fire_history_client = None
+        client._nlcd_client = None
+        client._elevation_client = elevation_client
+
+        with (
+            patch.object(client, "_sample_layer_value_detailed", side_effect=_fake_sample_detail),
+            patch.object(client, "_sample_circle", return_value=[]),
+            patch.object(client, "_sample_layer_value", return_value=(None, "not_configured")),
+            # _file_exists returns True for slope path so the local raster path is exercised
+            patch.object(client, "_file_exists", side_effect=lambda p: "slope" in str(p)),
+            patch.object(client, "_historical_fire_metrics", return_value=(None, None, "missing")),
+            patch.object(client, "_wildland_distance_metrics", return_value=(None, None)),
+            patch.object(client.feature_bundle_cache, "load", return_value=None),
+            patch.object(client.mtbs_adapter, "summarize",
+                         return_value=MagicMock(status="missing", notes=[], source_dataset=None,
+                                                nearest_perimeter_km=None, intersects_prior_burn=False,
+                                                nearby_high_severity=False, fire_history_index=None)),
+        ):
+            return client.collect_context(46.87, -113.99)
+
+
+# ---------------------------------------------------------------------------
+# Test 7: No local slope, elevation_client returns (15.5, 180.0) → slope_index set
+# ---------------------------------------------------------------------------
+
+def test_elevation_fallback_populates_slope_index(tmp_path: Path) -> None:
+    """When local slope is absent, 3DEP elevation_client populates slope_index."""
+    from unittest.mock import MagicMock
+
+    mock_elev = MagicMock()
+    mock_elev.get_slope_and_aspect.return_value = (15.5, 180.0)
+
+    ctx = _run_collect_context_with_elevation(tmp_path, elevation_client=mock_elev)
+
+    assert ctx is not None
+    assert ctx.slope_index is not None, "slope_index should be populated from 3DEP fallback"
+    # slope_index = _to_index(15.5, 0.0, 45.0) = (15.5/45.0)*100 = 34.4
+    expected = round((15.5 / 45.0) * 100.0, 1)
+    assert abs(ctx.slope_index - expected) < 1.0, (
+        f"Expected slope_index ≈ {expected}, got {ctx.slope_index}"
+    )
+    assert any(
+        "3dep" in s.lower() or "3DEP" in s or "elevation" in s.lower() or "national" in s.lower()
+        for s in ctx.data_sources
+    ), "data_sources should reference 3DEP national elevation fallback"
+
+
+# ---------------------------------------------------------------------------
+# Test 8: Local slope present → elevation_client NOT called
+# ---------------------------------------------------------------------------
+
+def test_elevation_client_not_called_when_local_slope_present(tmp_path: Path) -> None:
+    """When local slope raster succeeds, elevation_client.get_slope_and_aspect is not called."""
+    from unittest.mock import MagicMock
+
+    mock_elev = MagicMock()
+    mock_elev.get_slope_and_aspect.return_value = (99.0, 0.0)  # should never be used
+
+    ctx = _run_collect_context_with_local_slope(
+        tmp_path, elevation_client=mock_elev, slope_val=12.0
+    )
+
+    assert ctx is not None
+    assert ctx.slope_index is not None, "slope_index should be set from local raster"
+    assert mock_elev.get_slope_and_aspect.call_count == 0, (
+        "elevation_client must not be called when local slope raster succeeds"
+    )

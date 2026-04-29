@@ -5636,6 +5636,7 @@ def test_collect_context_missing_layers_does_not_silently_default_to_neutral():
     client._landfire_cog_client = None   # disable LANDFIRE WCS fallback
     client._nlcd_client = None           # disable NLCD wildland distance fallback
     client._fire_history_client = None   # disable national MTBS fallback
+    client._elevation_client = None      # disable 3DEP slope fallback
     # bypass feature bundle cache to prevent stale entries from a prior run
     with patch.object(client.feature_bundle_cache, "load", return_value=None):
         ctx = client.collect_context(40.0, -105.0)
