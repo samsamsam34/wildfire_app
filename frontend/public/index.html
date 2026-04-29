@@ -4150,6 +4150,14 @@
           .slice(0, limit);
       }
 
+      function firstNonEmptyArray(...sources) {
+        for (const source of sources) {
+          if (!Array.isArray(source)) continue;
+          if (source.length > 0) return source;
+        }
+        return [];
+      }
+
       function renderHomeownerDecisionSnapshot({
         statusLabel = "",
         summary = "",
@@ -4192,15 +4200,25 @@
 
         summaryEl.textContent = String(summary || "").trim()
           || "Run an assessment to see your homeowner status and next steps.";
+        const hasAssessment = !!(latestAssessment && latestAssessment.assessment_id);
+        const noReasonsText = hasAssessment
+          ? "No strong reasons were returned for this assessment."
+          : "Reasons will appear after assessment.";
+        const noDriversText = hasAssessment
+          ? "No top risk drivers were available from this result."
+          : "Top drivers will appear after assessment.";
+        const noActionsText = hasAssessment
+          ? "No prioritized actions were returned for this assessment."
+          : "Top actions will appear after assessment.";
 
         const reasonLines = topNonEmptyLines(reasons, 3);
         setListItems(reasonsEl, reasonLines, {
-          fallbackText: "Reasons will appear after assessment.",
+          fallbackText: noReasonsText,
         });
 
         const driverLines = topNonEmptyLines(drivers, 3);
         setListItems(driversEl, driverLines, {
-          fallbackText: "Top drivers will appear after assessment.",
+          fallbackText: noDriversText,
         });
 
         const actionLines = (Array.isArray(actions) ? actions : [])
@@ -4215,7 +4233,7 @@
           })
           .filter(Boolean);
         setListItems(actionsEl, actionLines, {
-          fallbackText: "Top actions will appear after assessment.",
+          fallbackText: noActionsText,
         });
 
         const beforeAfterLines = [];
@@ -4292,10 +4310,12 @@
           || homeownerSummary?.insurability_status
           || ""
         ).trim();
+        const reasonRows = firstNonEmptyArray(
+          data?.insurability_status_reasons,
+          homeownerSummary?.insurability_status_reasons,
+        );
         const reasons = topNonEmptyLines(
-          data?.insurability_status_reasons
-          || homeownerSummary?.insurability_status_reasons
-          || [],
+          reasonRows,
           3,
         );
         const summary = String(
@@ -4303,15 +4323,26 @@
           || homeownerSummary?.headline_risk_summary
           || ""
         ).trim();
+        const driverRows = firstNonEmptyArray(
+          data?.top_risk_drivers,
+          homeownerSummary?.top_risk_drivers,
+          data?.property_findings,
+        );
         const drivers = topNonEmptyLines(
-          data?.top_risk_drivers
-          || homeownerSummary?.top_risk_drivers
-          || [],
+          driverRows,
           3,
         ).map((line) => toHomeownerDriverText(line));
-        const actions = Array.isArray(data?.prioritized_mitigation_actions) && data.prioritized_mitigation_actions.length > 0
-          ? data.prioritized_mitigation_actions.slice(0, 3)
-          : topNonEmptyLines(data?.top_recommended_actions || [], 3);
+        const prioritizedActions = firstNonEmptyArray(
+          data?.prioritized_mitigation_actions,
+          homeownerSummary?.prioritized_mitigation_actions,
+        );
+        const recommendedActionRows = firstNonEmptyArray(
+          data?.top_recommended_actions,
+          homeownerSummary?.top_recommended_actions,
+        );
+        const actions = prioritizedActions.length > 0
+          ? prioritizedActions.slice(0, 3)
+          : topNonEmptyLines(recommendedActionRows, 3);
         const rawLimitations = String(
           confidence?.headline
           || data?.why_this_result_is_limited
@@ -4430,6 +4461,9 @@
         const focus = (report?.homeowner_focus_summary && typeof report.homeowner_focus_summary === "object")
           ? report.homeowner_focus_summary
           : {};
+        const assessmentSummary = (latestAssessment?.homeowner_summary && typeof latestAssessment.homeowner_summary === "object")
+          ? latestAssessment.homeowner_summary
+          : {};
         const overall = (firstScreen?.overall_wildfire_risk && typeof firstScreen.overall_wildfire_risk === "object")
           ? firstScreen.overall_wildfire_risk
           : {};
@@ -4441,34 +4475,41 @@
           focus?.insurability_status
           || report?.insurability_status
           || focus?.status_label
+          || latestAssessment?.insurability_status
+          || assessmentSummary?.insurability_status
           || ""
         ).trim();
-        const statusReasons = Array.isArray(focus?.insurability_status_reasons) && focus.insurability_status_reasons.length > 0
-          ? focus.insurability_status_reasons
-          : (Array.isArray(report?.insurability_status_reasons) ? report.insurability_status_reasons : []);
+        const statusReasons = firstNonEmptyArray(
+          focus?.insurability_status_reasons,
+          report?.insurability_status_reasons,
+          latestAssessment?.insurability_status_reasons,
+          assessmentSummary?.insurability_status_reasons,
+        );
         const statusMethodologyNote = String(
           focus?.insurability_status_methodology_note
           || report?.insurability_status_methodology_note
+          || latestAssessment?.insurability_status_methodology_note
+          || assessmentSummary?.insurability_status_methodology_note
           || ""
         ).trim();
         const riskBand = String(overall?.risk_band || report?.score_summary?.wildfire_risk_band || "").trim();
         const whatFirst = String(firstScreen?.what_to_do_first?.action || report?.what_to_do_first?.action || report?.what_to_do_first?.title || "").trim();
-        const focusActions = Array.isArray(focus?.top_recommended_actions)
-          ? focus.top_recommended_actions
-          : [];
-        const topActions = focusActions.length > 0
-          ? focusActions
-          : (Array.isArray(firstScreen?.top_actions)
-          ? firstScreen.top_actions
-          : (Array.isArray(report?.prioritized_actions) ? report.prioritized_actions : []));
-        const focusDrivers = Array.isArray(focus?.top_risk_drivers)
-          ? focus.top_risk_drivers
-          : [];
-        const topDrivers = focusDrivers.length > 0
-          ? focusDrivers
-          : (Array.isArray(firstScreen?.top_risk_drivers)
-          ? firstScreen.top_risk_drivers
-          : (Array.isArray(report?.top_risk_drivers) ? report.top_risk_drivers : []));
+        const topActions = firstNonEmptyArray(
+          focus?.top_recommended_actions,
+          firstScreen?.top_actions,
+          report?.prioritized_actions,
+          latestAssessment?.prioritized_mitigation_actions,
+          latestAssessment?.top_recommended_actions,
+          assessmentSummary?.top_recommended_actions,
+        );
+        const topDrivers = firstNonEmptyArray(
+          focus?.top_risk_drivers,
+          firstScreen?.top_risk_drivers,
+          report?.top_risk_drivers,
+          latestAssessment?.top_risk_drivers,
+          assessmentSummary?.top_risk_drivers,
+          latestAssessment?.property_findings,
+        );
         const limitations = String(
           focus?.confidence_limitations_summary
           || firstScreen?.limitations_note
