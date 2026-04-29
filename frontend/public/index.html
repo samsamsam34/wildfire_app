@@ -2069,6 +2069,7 @@
       let latestHomeownerReport = null;
       let latestSimulationSummary = null;
       let latestMapPayload = null;
+      let latestMapViewportSeed = null;
       let assessmentMap = null;
       let mapBaseLayer = null;
       let mapLayerInstances = {};
@@ -2226,6 +2227,29 @@
         },
       };
 
+      const mapFocusLayerPriority = [
+        "user_selected_point",
+        "property_point",
+        "assessed_property_display_point",
+        "property_anchor_point",
+        "matched_structure_centroid",
+        "selectable_structure_footprints",
+        "parcel_address_point",
+        "geocoded_address_point",
+      ];
+      const mapBroadLayerHints = [
+        "fire_perimeter",
+        "wildfire_hazard",
+        "hazard",
+        "fuel",
+        "vegetation",
+        "drought",
+      ];
+      const defaultMapFallbackCenter = { latitude: 39.2, longitude: -105.5 };
+      const defaultMapFallbackZoom = 12;
+      const defaultPropertyMapZoom = 16;
+      const mapMaxInitialFocusDiagonalMeters = 60000;
+
       function ensureMap(center) {
         if (!window.L) return null;
         if (!assessmentMap) {
@@ -2242,7 +2266,7 @@
           }
         }
         if (center && Number.isFinite(center.latitude) && Number.isFinite(center.longitude)) {
-          assessmentMap.setView([center.latitude, center.longitude], 16);
+          assessmentMap.setView([center.latitude, center.longitude], defaultPropertyMapZoom);
         }
         return assessmentMap;
       }
@@ -2255,6 +2279,97 @@
           }
         });
         mapLayerInstances = {};
+      }
+
+      function mapLayerIsBroadContext(layerKey) {
+        const normalized = String(layerKey || "").toLowerCase();
+        if (!normalized) return false;
+        return mapBroadLayerHints.some((hint) => normalized.includes(hint));
+      }
+
+      function mapLayerFocusRank(layerKey) {
+        const normalized = String(layerKey || "").toLowerCase();
+        return mapFocusLayerPriority.findIndex((key) => key === normalized);
+      }
+
+      function mergeBoundsList(boundsList) {
+        const valid = (Array.isArray(boundsList) ? boundsList : []).filter((b) => b && b.isValid && b.isValid());
+        if (valid.length === 0) return null;
+        let merged = valid[0];
+        for (let i = 1; i < valid.length; i++) merged = merged.extend(valid[i]);
+        return merged && merged.isValid && merged.isValid() ? merged : null;
+      }
+
+      function boundsDiagonalMeters(bounds) {
+        if (!bounds || !bounds.isValid || !bounds.isValid()) return null;
+        const sw = bounds.getSouthWest();
+        const ne = bounds.getNorthEast();
+        if (!sw || !ne) return null;
+        return haversineMeters(
+          { lat: Number(sw.lat), lon: Number(sw.lng) },
+          { lat: Number(ne.lat), lon: Number(ne.lng) }
+        );
+      }
+
+      function buildMapViewportSeed(payloadCenter, layerBoundsMeta) {
+        const layerRows = Array.isArray(layerBoundsMeta) ? layerBoundsMeta : [];
+        const focusRows = layerRows
+          .map((row) => ({
+            ...row,
+            rank: mapLayerFocusRank(row?.layerKey),
+          }))
+          .filter((row) => row.rank >= 0)
+          .sort((a, b) => a.rank - b.rank);
+        const contextRows = layerRows.filter((row) => row.defaultVisible && !mapLayerIsBroadContext(row.layerKey));
+        const allDefaultVisibleRows = layerRows.filter((row) => row.defaultVisible);
+        const mergedFocusBounds = mergeBoundsList(focusRows.map((row) => row.bounds));
+        const mergedContextBounds = mergeBoundsList(contextRows.map((row) => row.bounds));
+        const mergedAllVisibleBounds = mergeBoundsList(allDefaultVisibleRows.map((row) => row.bounds));
+        return {
+          center: payloadCenter && Number.isFinite(payloadCenter.latitude) && Number.isFinite(payloadCenter.longitude)
+            ? payloadCenter
+            : null,
+          focusBounds: mergedFocusBounds,
+          contextBounds: mergedContextBounds,
+          defaultVisibleBounds: mergedAllVisibleBounds,
+        };
+      }
+
+      function applyAssessmentMapViewport(seed) {
+        if (!assessmentMap || !seed) return;
+        const preferredBounds = seed.focusBounds || seed.contextBounds || seed.defaultVisibleBounds || null;
+        const preferredDiagonal = boundsDiagonalMeters(preferredBounds);
+        if (preferredBounds && (preferredDiagonal === null || preferredDiagonal <= mapMaxInitialFocusDiagonalMeters)) {
+          assessmentMap.fitBounds(preferredBounds.pad(0.15));
+          return;
+        }
+        const center = seed.center || defaultMapFallbackCenter;
+        const fallbackZoom = seed.center ? defaultPropertyMapZoom : defaultMapFallbackZoom;
+        assessmentMap.setView([center.latitude, center.longitude], fallbackZoom);
+      }
+
+      function isAssessmentMapPanelVisible() {
+        const mapPanel = document.getElementById("mapPanel");
+        const hubPanel = document.getElementById("moreOptionsHubPanel");
+        const mapEl = document.getElementById("assessmentMap");
+        if (!mapPanel?.open) return false;
+        if (hubPanel && !hubPanel.open) return false;
+        if (!mapEl) return false;
+        return mapEl.getClientRects().length > 0;
+      }
+
+      function invalidateAssessmentMapSize({ refocus = false } = {}) {
+        if (!assessmentMap || !isAssessmentMapPanelVisible()) return;
+        const run = () => {
+          assessmentMap.invalidateSize();
+          if (refocus && latestMapViewportSeed) {
+            applyAssessmentMapViewport(latestMapViewportSeed);
+          }
+        };
+        requestAnimationFrame(() => {
+          run();
+          setTimeout(run, 180);
+        });
       }
 
       function setMapStatus(message) {
@@ -3678,11 +3793,13 @@
       async function renderAssessmentMap(assessmentId) {
         if (!assessmentId) {
           latestMapPayload = null;
+          latestMapViewportSeed = null;
           setMapStatus("Run an assessment to load map layers.");
           return;
         }
         if (!window.L) {
           latestMapPayload = null;
+          latestMapViewportSeed = null;
           setMapStatus("Map library unavailable in this browser context.");
           setMapLimitations(["Leaflet could not be loaded; map rendering is unavailable."]);
           return;
@@ -3699,19 +3816,26 @@
           }
 
           clearMapLayers();
-          const bounds = [];
+          const layerBoundsMeta = [];
           const data = payload.data || {};
           (payload.layers || []).forEach(layer => {
             const fc = data[layer.layer_key];
             const leafletLayer = layer.available ? buildLeafletLayer(layer.layer_key, fc) : null;
             if (!leafletLayer) return;
+            leafletLayer.__layerKey = layer.layer_key;
             mapLayerInstances[layer.layer_key] = leafletLayer;
             if (layer.default_visible) {
               leafletLayer.addTo(map);
             }
             try {
               const lb = leafletLayer.getBounds && leafletLayer.getBounds();
-              if (lb && lb.isValid && lb.isValid()) bounds.push(lb);
+              if (lb && lb.isValid && lb.isValid()) {
+                layerBoundsMeta.push({
+                  layerKey: String(layer.layer_key || ""),
+                  bounds: lb,
+                  defaultVisible: !!layer.default_visible,
+                });
+              }
             } catch (_err) {
               // ignore bounds errors for malformed/sparse features
             }
@@ -3722,16 +3846,13 @@
           renderMapDebugPanel(payload);
           setMapStatus("Map loaded.");
 
-          if (bounds.length > 0) {
-            let merged = bounds[0];
-            for (let i = 1; i < bounds.length; i++) merged = merged.extend(bounds[i]);
-            map.fitBounds(merged.pad(0.15));
-          } else if (payload.center) {
-            map.setView([payload.center.latitude, payload.center.longitude], 16);
-          }
+          latestMapViewportSeed = buildMapViewportSeed(payload.center || null, layerBoundsMeta);
+          applyAssessmentMapViewport(latestMapViewportSeed);
+          invalidateAssessmentMapSize({ refocus: false });
         } catch (err) {
           console.error("Map payload failed:", err);
           latestMapPayload = null;
+          latestMapViewportSeed = null;
           setMapStatus("We couldn’t load the map for this assessment.");
           setMapLimitations([toHomeownerFriendlyError(err?.message, "Map details are temporarily unavailable.")]);
           renderMapDebugPanel(null);
@@ -7573,6 +7694,11 @@
       document.getElementById("moreOptionsHubPanel")?.addEventListener("toggle", () => {
         syncMoreOptionsHubState();
         refreshSecondaryStatusVisibility();
+        invalidateAssessmentMapSize({ refocus: false });
+      });
+      document.getElementById("mapPanel")?.addEventListener("toggle", () => {
+        refreshSecondaryStatusVisibility();
+        invalidateAssessmentMapSize({ refocus: false });
       });
       document.getElementById("simulationPlannerPanel")?.addEventListener("toggle", refreshSecondaryStatusVisibility);
       document.getElementById("improvePanel")?.addEventListener("toggle", refreshSecondaryStatusVisibility);
