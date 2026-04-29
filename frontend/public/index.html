@@ -1634,13 +1634,16 @@
             <button id="reportInlineDownloadBtn" type="button" class="context-link-btn">Download homeowner-friendly PDF</button>
           </div>
           <p id="reportActionStatus" class="status-line status-secondary tone-muted">Report review actions will appear after simulation.</p>
-          <details id="homeownerReportPreviewPanel" class="mt-sm">
-            <summary>Preview report highlights (optional)</summary>
-            <p id="homeownerReportStatus" class="status-line status-secondary tone-muted">Open this section to load report highlights.</p>
+          <div id="homeownerReportPreviewPanel" class="mt-sm">
+            <p class="mini-label">Report highlights (optional)</p>
+            <p id="homeownerReportStatus" class="status-line status-secondary tone-muted">Load highlights to see a short report preview.</p>
+            <div class="actions actions-low-emphasis">
+              <button id="loadReportHighlightsBtn" type="button" class="context-link-btn">Load report highlights</button>
+            </div>
             <ul id="homeownerReportHighlights"><li class="muted">No report highlights yet.</li></ul>
             <p class="mini-label mt-sm">More report notes</p>
             <ul id="homeownerReportSecondary"><li class="muted">Additional details will appear here when available.</li></ul>
-          </details>
+          </div>
         </section>
       </section>
 
@@ -2834,7 +2837,9 @@
 
       function isDetailsPanelOpen(panelId = "") {
         const panel = document.getElementById(String(panelId || "").trim());
-        return !!(panel && typeof panel.open === "boolean" && panel.open);
+        if (!panel) return false;
+        if (typeof panel.open === "boolean") return !!panel.open;
+        return panel.style.display !== "none" && panel.getClientRects().length > 0;
       }
 
       function applySecondaryStatusVisibility(el, { tone = "muted", panelId = "", alwaysShow = false } = {}) {
@@ -3139,9 +3144,6 @@
             : "Primary report action is above. If you're in this section, use the link here.";
           if (reportPreviewPanel) {
             reportPreviewPanel.style.display = reportDetailsUnlocked ? "" : "none";
-            if (!reportDetailsUnlocked) {
-              reportPreviewPanel.open = false;
-            }
           }
         } else {
           actionWrap.style.display = "";
@@ -4574,16 +4576,12 @@
         collapseSecondaryPanels();
         const highlightsEl = document.getElementById("homeownerReportHighlights");
         const secondaryEl = document.getElementById("homeownerReportSecondary");
-        const reportPreviewPanelEl = document.getElementById("homeownerReportPreviewPanel");
-        setHomeownerReportStatus(reason || "Open this section to load report highlights.", "muted");
+        setHomeownerReportStatus(reason || "Load highlights to see a short report preview.", "muted");
         if (highlightsEl) {
           setListItems(highlightsEl, [], { fallbackText: "No report highlights yet." });
         }
         if (secondaryEl) {
           setListItems(secondaryEl, [], { fallbackText: "Additional details will appear here when available." });
-        }
-        if (reportPreviewPanelEl) {
-          reportPreviewPanelEl.open = false;
         }
         const specificityKpiEl = document.getElementById("specificityKpi");
         const readinessKpiEl = document.getElementById("readinessKpi");
@@ -7515,10 +7513,6 @@
           setTimeout(() => URL.revokeObjectURL(url), 5000);
           setReportActionStatus("Full report opened in a new tab.", "success");
           setFlowStatus("Step 4 of 4: Full report opened.", "success");
-          const previewPanel = document.getElementById("homeownerReportPreviewPanel");
-          if (previewPanel && typeof previewPanel.open === "boolean") {
-            previewPanel.open = true;
-          }
           maybeLoadHomeownerReportPreview("after_full_report_open");
         } catch (err) {
           const message = toHomeownerFriendlyError(
@@ -7643,7 +7637,6 @@
           "moreOptionsHubPanel",
           "simulationPlannerPanel",
           "simulationAdvancedPanel",
-          "homeownerReportPreviewPanel",
           "homeownerDecisionAdvancedDetails",
           "advancedInternalDetailsPanel",
           "verifyAddressContextPanel",
@@ -7692,13 +7685,8 @@
       });
       document.getElementById("simulationPlannerPanel")?.addEventListener("toggle", refreshSecondaryStatusVisibility);
 
-      document.getElementById("homeownerReportPreviewPanel")?.addEventListener("toggle", (evt) => {
-        const panel = evt?.target;
-        if (!panel?.open) {
-          refreshSecondaryStatusVisibility();
-          return;
-        }
-        maybeLoadHomeownerReportPreview("panel_open");
+      document.getElementById("loadReportHighlightsBtn")?.addEventListener("click", () => {
+        maybeLoadHomeownerReportPreview("manual_preview_button");
         refreshSecondaryStatusVisibility();
       });
 
