@@ -695,6 +695,17 @@
         background: #fcfeff;
         padding: 0.74rem 0.78rem 0.72rem;
       }
+      .more-options-item .insight-group + .insight-group {
+        border-top: 1px solid #edf2f7;
+        margin-top: 0.56rem;
+        padding-top: 0.56rem;
+      }
+      .more-options-item .insight-group h3 {
+        margin-top: 0.08rem;
+      }
+      .more-options-item .insight-group .mini-label {
+        margin-bottom: 0.06rem;
+      }
       .more-options-item .section-help {
         font-size: 0.86rem;
         margin-top: 0.18rem;
@@ -1195,6 +1206,11 @@
         font-size: 0.86rem;
         white-space: pre-line;
       }
+      .modal-warning.is-guidance {
+        border-color: #d6e3ec;
+        background: #f6fbff;
+        color: #1f4a62;
+      }
       .modal-error {
         margin-top: 0.65rem;
         color: var(--bad);
@@ -1598,6 +1614,9 @@
           <p id="reportActionHierarchyHint" class="section-help muted" style="display:none;">
             Your main report actions are shown above in the homeowner summary.
           </p>
+          <div id="reportInlineActionRow" class="actions actions-low-emphasis">
+            <button id="reportInlineOpenBtn" type="button" class="secondary">Open full report</button>
+          </div>
           <p id="reportActionStatus" class="status-line status-secondary tone-muted">Report review actions will appear after simulation.</p>
           <details id="homeownerReportPreviewPanel" class="mt-sm">
             <summary>Preview report highlights (optional)</summary>
@@ -1617,11 +1636,11 @@
             <section id="supportingInsightsSection" class="secondary-panel more-options-item more-details-item">
               <details id="supportingInsightsPanel">
                 <summary>Why this property looks riskier (more context)</summary>
-                <p class="section-help">Use this section for more context behind your top summary drivers and actions.</p>
+                <p class="section-help">Quick context behind your result, followed by optional deeper details.</p>
                 <div class="results mt-sm">
                   <div class="card result-primary">
-                    <h3>Why this property looks riskier or safer</h3>
-                    <p class="section-help">This combines area wildfire pressure with property conditions when enough detail is available.</p>
+                    <h3>Quick property context</h3>
+                    <p class="section-help">Combines local wildfire pressure with property conditions when enough detail is available.</p>
                     <div id="riskScore" class="score">-</div>
                     <div id="riskLabel" class="muted">Run an assessment to see your risk level.</div>
                     <div class="summary-meta">
@@ -1643,29 +1662,29 @@
                   </div>
 
                   <div class="card">
-                    <h3>What is raising or lowering risk</h3>
-                    <p class="section-help">This expands the “why” behind your result with broader factor context.</p>
+                    <h3>What is most affecting this result</h3>
+                    <p class="section-help">Top findings first. Expand lists only if you want deeper context.</p>
                     <div class="insight-group">
-                      <div class="mini-label">Near-structure context</div>
+                      <div class="mini-label">Closest to the home</div>
                       <h3>What we found around the home</h3>
                       <ul id="propertyFindings"><li class="muted">Structure-specific findings will appear after assessment.</li></ul>
                     </div>
                     <div class="insight-group">
-                      <div class="mini-label">Area-wide context</div>
-                      <h3>Broader wildfire pressure</h3>
+                      <div class="mini-label">Nearby area</div>
+                      <h3>Broader wildfire pressure nearby</h3>
                       <ul id="drivers"><li class="muted">Risk drivers will appear after assessment.</li></ul>
                     </div>
                     <div class="insight-group">
-                      <div class="mini-label">Protective factors</div>
-                      <h3>What is helping lower risk</h3>
+                      <div class="mini-label">What helps</div>
+                      <h3>Factors helping lower risk</h3>
                       <ul id="protective"><li class="muted">Protective factors will appear after assessment.</li></ul>
                     </div>
                   </div>
 
                   <div class="card">
                     <h3>Action plan details</h3>
-                    <p class="section-help">This is the longer action plan view, including impact and effort context.</p>
-                    <div class="mini-label">Recommended action sequence</div>
+                    <p class="section-help">Shows the first actions to prioritize, then optional extra steps.</p>
+                    <div class="mini-label">Recommended sequence</div>
                     <p id="nextStepsText">Focus on the top actions first.</p>
                     <ul id="mitigations"><li class="muted">Recommendations will appear after assessment.</li></ul>
                   </div>
@@ -2077,6 +2096,10 @@
       let verificationFastPathEligible = false;
       let verificationFallbackMode = "candidate";
       let verificationManualSearchExpanded = false;
+      let verificationFastPathTracked = false;
+      let verificationManualPathTracked = false;
+      let verificationModalErrorMessage = "";
+      let verificationManualStatusMessage = "";
       const motionClassTimers = new WeakMap();
       const verificationUnresolvedStatuses = new Set([
         "candidates_found_but_not_safe_enough",
@@ -2563,6 +2586,15 @@
         setVerificationAdjustToolsVisible(true, { openPanel: true });
         const targetMode = openManual ? "candidate" : (fallbackMode || "candidate");
         verificationManualSearchExpanded = targetMode === "search";
+        if (!verificationManualPathTracked) {
+          verificationManualPathTracked = true;
+          trackHomeownerFlowEvent("verification_manual_path_used", {
+            metadata: {
+              trigger: "user_opened_adjust_tools",
+              target_mode: targetMode,
+            },
+          });
+        }
         if (targetMode === "map") {
           setFlowStatus("Address confirmation: Step 3 of 3. Place the map pin, apply it, then continue.", "muted");
         } else if (targetMode === "search") {
@@ -2967,15 +2999,17 @@
       function syncReportActionHierarchy(hasSimulationResult = hasCompletedSimulationSummary()) {
         const actionWrap = document.getElementById("reportPrimaryActions");
         const hierarchyHint = document.getElementById("reportActionHierarchyHint");
+        const inlineActionRow = document.getElementById("reportInlineActionRow");
         const reportPreviewPanel = document.getElementById("homeownerReportPreviewPanel");
         if (!actionWrap || !hierarchyHint) return;
         if (hasSimulationResult) {
           const reportDetailsUnlocked = !!reportPrimarySurfaceOpened;
           actionWrap.style.display = "none";
+          if (inlineActionRow) inlineActionRow.style.display = "";
           hierarchyHint.style.display = "block";
           hierarchyHint.textContent = reportDetailsUnlocked
             ? "You opened your report path above. Optional highlights are now available below."
-            : "Use the main “Review Full Report” action above first. Optional highlights appear after that step.";
+            : "Primary report action is in the summary above. You can also open the full report here.";
           if (reportPreviewPanel) {
             reportPreviewPanel.style.display = reportDetailsUnlocked ? "" : "none";
             if (!reportDetailsUnlocked) {
@@ -2984,6 +3018,7 @@
           }
         } else {
           actionWrap.style.display = "";
+          if (inlineActionRow) inlineActionRow.style.display = "none";
           hierarchyHint.style.display = "none";
           if (reportPreviewPanel) {
             reportPreviewPanel.style.display = "";
@@ -3095,7 +3130,7 @@
           },
         });
         if (mobileNextStepAction === "open_full_report" || mobileNextStepAction === "review_report_options") {
-          openReportView();
+          openReportView({ source: "mobile_next_step" });
           return;
         }
         openSimulationPlannerFromCta({ smooth: true });
@@ -3111,7 +3146,7 @@
           },
         });
         if (desktopNextStepAction === "open_full_report") {
-          openReportView();
+          openReportView({ source: "desktop_next_step" });
           return;
         }
         openSimulationPlannerFromCta({ smooth: true });
@@ -4774,19 +4809,23 @@
         if (scoringStatus === "insufficient_data_to_score") {
           setListItems(propertyFindingsEl, [], {
             fallbackText: "We found relevant signals, but not enough confirmed home details for structure-level findings.",
-            shortModeCount: 3,
+            shortModeCount: 2,
+            shortModeLabel: "See more nearby findings",
+            shortModeCollapseLabel: "Show fewer nearby findings",
           });
         } else if (!computedComponents.includes("home_ignition_vulnerability")) {
           setListItems(propertyFindingsEl, [], {
             fallbackText: "Near-home findings are preliminary because some property details are still estimated.",
-            shortModeCount: 3,
+            shortModeCount: 2,
+            shortModeLabel: "See more nearby findings",
+            shortModeCollapseLabel: "Show fewer nearby findings",
           });
         } else {
           setListItems(propertyFindingsEl, combinedFindings, {
             fallbackText: "No structure-specific findings available for this assessment.",
-            shortModeCount: 3,
-            shortModeLabel: "See more context around the home",
-            shortModeCollapseLabel: "Show fewer context items",
+            shortModeCount: 2,
+            shortModeLabel: "See more nearby findings",
+            shortModeCollapseLabel: "Show fewer nearby findings",
           });
         }
 
@@ -4797,10 +4836,16 @@
         if (scoringStatus === "insufficient_data_to_score") {
           setListItems(driversEl, [], {
             fallbackText: "We found relevant signals, but not enough confirmed details for a reliable risk estimate.",
+            shortModeCount: 2,
+            shortModeLabel: "See more nearby drivers",
+            shortModeCollapseLabel: "Show fewer nearby drivers",
           });
         } else if (rankedDrivers.length > 0) {
           setListItems(driversEl, rankedDrivers, {
-            limit: 3,
+            limit: 5,
+            shortModeCount: 2,
+            shortModeLabel: "See more nearby drivers",
+            shortModeCollapseLabel: "Show fewer nearby drivers",
             renderItem: (li, driver) => {
               const factorText = String(driver?.factor || "risk factor").replace(/_/g, " ");
               const impact = String(driver?.impact || "medium").trim();
@@ -4817,14 +4862,24 @@
         } else {
           setListItems(
             driversEl,
-            (Array.isArray(data.top_risk_drivers) ? data.top_risk_drivers : []).slice(0, 3).map((v) => toHomeownerDriverText(v)),
-            { fallbackText: "No major drivers were returned for this assessment." }
+            (Array.isArray(data.top_risk_drivers) ? data.top_risk_drivers : []).slice(0, 5).map((v) => toHomeownerDriverText(v)),
+            {
+              fallbackText: "No major drivers were returned for this assessment.",
+              shortModeCount: 2,
+              shortModeLabel: "See more nearby drivers",
+              shortModeCollapseLabel: "Show fewer nearby drivers",
+            }
           );
         }
         setListItems(
           document.getElementById("protective"),
-          (Array.isArray(data.top_protective_factors) ? data.top_protective_factors : []).slice(0, 3),
-          { fallbackText: "No protective factors were identified yet." }
+          (Array.isArray(data.top_protective_factors) ? data.top_protective_factors : []).slice(0, 5),
+          {
+            fallbackText: "No protective factors were identified yet.",
+            shortModeCount: 2,
+            shortModeLabel: "See more helpful factors",
+            shortModeCollapseLabel: "Show fewer helpful factors",
+          }
         );
 
         document.getElementById("nextStepsText").textContent = buildNextStepsHint(combinedFindings);
@@ -4863,7 +4918,7 @@
         });
         setListItems(document.getElementById("mitigations"), mitigationRows, {
           fallbackText: "No recommended actions are available yet.",
-          shortModeCount: 3,
+          shortModeCount: 2,
           shortModeLabel: "See full action list",
           shortModeCollapseLabel: "Show fewer actions",
           renderItem: (li, row) => {
@@ -5430,6 +5485,7 @@
         [
           "refreshImproveBtn",
           "openReportBtn",
+          "reportInlineOpenBtn",
           "downloadPdfBtn",
           "exportReportBtn",
           "postSimOpenReportBtn",
@@ -5632,20 +5688,113 @@
       function setVerificationModalError(message) {
         const errorEl = document.getElementById("verifyModalError");
         if (!errorEl) return;
-        if (message) {
+        const normalizedMessage = String(message || "").trim();
+        verificationModalErrorMessage = normalizedMessage;
+        if (normalizedMessage) {
           clearVerificationFastPathTimer();
           errorEl.style.display = "block";
-          errorEl.textContent = String(message);
+          errorEl.textContent = normalizedMessage;
         } else {
           errorEl.style.display = "none";
           errorEl.textContent = "";
         }
+        syncVerificationGuidanceMessage();
       }
 
       function setManualCandidateStatus(message) {
+        verificationManualStatusMessage = String(message || "").trim();
         const el = document.getElementById("verifyCandidateStatus");
-        if (!el) return;
-        el.textContent = String(message || "");
+        if (el) {
+          el.textContent = verificationManualStatusMessage;
+          el.style.display = "none";
+        }
+        syncVerificationGuidanceMessage();
+      }
+
+      function getVerificationPrimaryInstruction() {
+        const requiresManual = verificationRequiresManualSelection(verifiedAddressPayload);
+        if (verificationHasUnappliedPending) {
+          return verificationFallbackMode === "map"
+            ? "Apply this pin to continue."
+            : "Apply your selected location to continue.";
+        }
+        if (requiresManual) {
+          if (verificationFallbackMode === "map") {
+            return "Place the pin on your property, then click \"Apply this pin.\"";
+          }
+          if (verificationFallbackMode === "search") {
+            return "Search again, choose the best address, then continue.";
+          }
+          if (verificationSelectedCandidateId) {
+            return "Use this address to continue.";
+          }
+          return "Choose the correct address from the list to continue.";
+        }
+        if (verificationFastPathEligible) {
+          return "Continue with the suggested match to run your assessment.";
+        }
+        return "If the suggested match looks right, continue.";
+      }
+
+      function getVerificationContextHint() {
+        if (verificationManualStatusMessage) return verificationManualStatusMessage;
+        if (verificationFallbackMode === "search") {
+          return "If these results still look wrong, try the map.";
+        }
+        if (verificationFallbackMode === "map") {
+          return "Use the map only if address choices could not resolve your property.";
+        }
+        return "";
+      }
+
+      function syncVerificationGuidanceMessage(enteredAddress = pendingAssessmentPayload?.address || "", verification = verifiedAddressPayload || null) {
+        const warningBox = document.getElementById("verifyWarningBox");
+        if (!warningBox) return;
+        const modeHintEl = document.getElementById("verifyAdjustModeHint");
+        const candidateStepNoteEl = document.getElementById("verifyCandidateStepNote");
+        const candidateStatusEl = document.getElementById("verifyCandidateStatus");
+        const quickStatusEl = document.getElementById("verifyQuickStatus");
+        const errorEl = document.getElementById("verifyModalError");
+
+        if (modeHintEl) modeHintEl.style.display = "none";
+        if (candidateStepNoteEl) candidateStepNoteEl.style.display = "none";
+        if (candidateStatusEl) candidateStatusEl.style.display = "none";
+
+        const warnings = (
+          verification && enteredAddress
+            ? buildVerificationWarnings(enteredAddress, verification, verificationCoverageResult)
+            : []
+        );
+        const warningMessage = String(warnings?.[0] || "").trim();
+        const hasError = !!String(verificationModalErrorMessage || "").trim();
+        const hasWarning = !!warningMessage;
+
+        if (quickStatusEl) {
+          const requiresManual = verificationRequiresManualSelection(verification);
+          quickStatusEl.style.display = (!requiresManual && !hasError && !hasWarning) ? "block" : "none";
+        }
+
+        if (hasError) {
+          warningBox.style.display = "none";
+          warningBox.textContent = "";
+          warningBox.classList.remove("is-guidance");
+          if (errorEl) errorEl.style.display = "block";
+          return;
+        }
+
+        const guidanceMessage = hasWarning
+          ? warningMessage
+          : String(getVerificationContextHint() || getVerificationPrimaryInstruction() || "").trim();
+        if (!guidanceMessage) {
+          warningBox.style.display = "none";
+          warningBox.textContent = "";
+          warningBox.classList.remove("is-guidance");
+          return;
+        }
+
+        warningBox.style.display = "block";
+        warningBox.textContent = guidanceMessage;
+        warningBox.classList.toggle("is-guidance", !hasWarning);
       }
 
       function setManualAddressSectionVisible(visible) {
@@ -5739,6 +5888,7 @@
           }
         }
         setConfirmAddressButtonState();
+        syncVerificationGuidanceMessage();
       }
 
       function updateVerificationQuickStatus(enteredAddress = "", verification = null) {
@@ -5758,19 +5908,19 @@
           || verification?.coverage_available === false
           || verification?.covered === false
         );
-        let message = "This looks like our best available match. Continue if it is your property.";
+        let message = "This looks like our best available match.";
         if (needsManual) {
-          message = "We need a quick confirmation. Step 1: choose an address match. Step 2 (if needed): broaden search. Step 3: use the map only if still needed.";
+          message = "A quick location adjustment is needed before continuing.";
         } else if (confidence === "low" || confidence === "unknown") {
-          message = "Match confidence is lower than usual. Please confirm before continuing.";
+          message = "Match confidence is lower than usual.";
         } else if (hasMaterialAddressDifference(enteredAddress, resolvedAddress)) {
-          message = "The suggested address differs from what you entered. Confirm this is your property.";
+          message = "The suggested address differs from what you entered.";
         }
         if (coverageLimited) {
-          message += " Coverage is limited here, so some results may be estimated.";
+          message += " Detailed coverage is limited here.";
         }
         if (verificationHasUnappliedPending) {
-          message = "You moved the pin. Click \"Apply this pin\" before continuing.";
+          message = "Map pin moved. Apply it to continue.";
         }
         quickStatusEl.textContent = message;
       }
@@ -6087,29 +6237,7 @@
       }
 
       function renderVerificationWarnings(enteredAddress, verification) {
-        const warningBox = document.getElementById("verifyWarningBox");
-        if (!warningBox) return;
-        const warnings = buildVerificationWarnings(enteredAddress, verification, verificationCoverageResult);
-        if (verificationHasUnappliedPending) {
-          warnings.unshift("You moved the map pin but have not applied it yet.");
-        }
-        let contextualWarning = warnings[0] || "";
-        if (!contextualWarning) {
-          if (verificationFallbackMode === "candidate") {
-            contextualWarning = "Choose the best address match first. Use other options only if needed.";
-          } else if (verificationFallbackMode === "search") {
-            contextualWarning = "Search by ZIP or city if the first match list was not right.";
-          } else {
-            contextualWarning = "Apply this map pin before continuing.";
-          }
-        }
-        if (contextualWarning) {
-          warningBox.style.display = "block";
-          warningBox.textContent = contextualWarning;
-        } else {
-          warningBox.style.display = "none";
-          warningBox.textContent = "";
-        }
+        syncVerificationGuidanceMessage(enteredAddress, verification);
       }
 
       function renderVerifyLocationMarker() {
@@ -6369,6 +6497,10 @@
         verificationSelectedCandidateId = null;
         verificationInferredLocalities = [];
         verificationManualSearchExpanded = false;
+        verificationFastPathTracked = false;
+        verificationManualPathTracked = false;
+        verificationManualStatusMessage = "";
+        verificationModalErrorMessage = "";
         const zipInput = document.getElementById("verifyZipInput");
         if (zipInput) {
           zipInput.value = extractZip5(verification?.normalized_address || enteredAddress || "");
@@ -6440,6 +6572,12 @@
             fast_path_eligible: !!fastPathEligible,
           },
         });
+        trackHomeownerFlowEvent("verification_shown", {
+          metadata: {
+            has_pending_assessment: !!pendingAssessmentPayload,
+            fast_path_eligible: !!fastPathEligible,
+          },
+        });
         if (fastPathEligible) {
           setFlowStatus("Step 1 of 4: Strong address match found. Continuing unless you adjust.", "muted");
           scheduleVerificationFastPathAutoContinue();
@@ -6476,6 +6614,15 @@
           renderAddressVerificationModal(payload, verification, { fastPathEligible: shouldUseFastPath });
           openAddressVerificationModal({ fastPathEligible: shouldUseFastPath });
           if (shouldOpenManualSelection) {
+            if (!verificationManualPathTracked) {
+              verificationManualPathTracked = true;
+              trackHomeownerFlowEvent("verification_manual_path_used", {
+                metadata: {
+                  trigger: "manual_selection_required",
+                  resolution_status: String(verification?.resolution_status || verification?.final_status || "").trim() || null,
+                },
+              });
+            }
             await runManualAddressCandidateSearch({ statusMessage: false });
             setRequestStatus(
               "Please confirm the correct property match, then continue."
@@ -6512,6 +6659,15 @@
             verifiedAddressPayload = detail;
             renderAddressVerificationModal(payload, detail, { fastPathEligible: false });
             openAddressVerificationModal({ fastPathEligible: false });
+            if (!verificationManualPathTracked) {
+              verificationManualPathTracked = true;
+              trackHomeownerFlowEvent("verification_manual_path_used", {
+                metadata: {
+                  trigger: "manual_resolution_from_error",
+                  resolution_status: String(detail?.resolution_status || detail?.final_status || detail?.error_class || "").trim() || null,
+                },
+              });
+            }
             await runManualAddressCandidateSearch({ statusMessage: false });
             setRequestStatus(
               "We need a quick confirmation of this location before continuing."
@@ -6533,6 +6689,7 @@
       async function confirmVerifiedAddressAndRunAssessment({ confirmationMode = "manual_confirm" } = {}) {
         if (!pendingAssessmentPayload || isAssessmentSubmitting) return;
         clearVerificationFastPathTimer();
+        const wasFastPathEligible = verificationFastPathEligible;
         verificationFastPathEligible = false;
         const locationToUse = getLocationToUse();
         if (!locationToUse) {
@@ -6561,6 +6718,30 @@
             confirmation_mode: String(confirmationMode || "manual_confirm"),
           },
         });
+        trackHomeownerFlowEvent("verification_confirmed", {
+          metadata: {
+            selection_source: verificationAcceptedSelectionSource || "suggested_geocode",
+            used_manual_point: verificationAcceptedSelectionSource === "map_click_fallback",
+            confirmation_mode: String(confirmationMode || "manual_confirm"),
+          },
+        });
+        if (!verificationFastPathTracked && (
+          String(confirmationMode || "") === "auto_fast_path"
+          || (
+            wasFastPathEligible
+            && (verificationAcceptedSelectionSource || "suggested_geocode") === "suggested_geocode"
+          )
+        )) {
+          verificationFastPathTracked = true;
+          trackHomeownerFlowEvent("verification_fast_path_used", {
+            metadata: {
+              trigger: String(confirmationMode || "") === "auto_fast_path"
+                ? "auto_continue_confirmed"
+                : "manual_confirm_on_fast_path",
+              confirmation_mode: String(confirmationMode || "manual_confirm"),
+            },
+          });
+        }
         closeAddressVerificationModal({ restoreFocus: false });
         pendingAssessmentPayload = null;
         verifiedAddressPayload = null;
@@ -6579,7 +6760,17 @@
         await runAssessment(false, payload);
       }
 
-      function cancelAddressVerification() {
+      function cancelAddressVerification(reason = "user_cancelled") {
+        if (addressVerificationModalOpen) {
+          trackHomeownerFlowEvent("verification_abandoned", {
+            metadata: {
+              reason: String(reason || "user_cancelled"),
+              had_pending_assessment: !!pendingAssessmentPayload,
+              fast_path_eligible: !!verificationFastPathEligible,
+              manual_path_opened: !!verificationManualPathTracked,
+            },
+          });
+        }
         clearVerificationFastPathTimer();
         verificationFastPathEligible = false;
         pendingAssessmentPayload = null;
@@ -6995,13 +7186,19 @@
         }
       }
 
-      async function openReportView() {
+      async function openReportView({ source = "generic_report_action" } = {}) {
         if (!latestAssessment) {
           const message = "Run an assessment first, then review your full report.";
           setReportActionStatus(message, "error");
           showHomeownerToast(message, "error");
           return;
         }
+        trackHomeownerFlowEvent("report_cta_clicked", {
+          metadata: {
+            source: String(source || "generic_report_action"),
+            has_simulation_result: hasCompletedSimulationSummary(),
+          },
+        });
         reportPrimarySurfaceOpened = true;
         syncReportActionHierarchy(hasCompletedSimulationSummary());
         try {
@@ -7252,7 +7449,7 @@
             cta_text: "Review Full Report",
           },
         });
-        openReportView();
+        openReportView({ source: "post_simulation_action_row" });
       });
       document.getElementById("postSimDownloadPdfBtn")?.addEventListener("click", () => {
         trackHomeownerFlowEvent("primary_cta_clicked", {
@@ -7262,14 +7459,43 @@
             cta_text: "Download Homeowner-Friendly PDF",
           },
         });
+        trackHomeownerFlowEvent("report_cta_clicked", {
+          metadata: {
+            source: "post_simulation_download_pdf",
+            has_simulation_result: hasCompletedSimulationSummary(),
+          },
+        });
         downloadHomeownerPdf();
       });
       document.getElementById("mobileNextStepBtn")?.addEventListener("click", handleMobileNextStepAction);
       document.getElementById("desktopNextStepBtn")?.addEventListener("click", handleDesktopNextStepAction);
       document.getElementById("refreshImproveBtn")?.addEventListener("click", refreshImproveSuggestions);
-      document.getElementById("openReportBtn").addEventListener("click", openReportView);
+      document.getElementById("reportInlineOpenBtn")?.addEventListener("click", () => {
+        trackHomeownerFlowEvent("primary_cta_clicked", {
+          metadata: {
+            cta_id: "reportInlineOpenBtn",
+            cta_action: "open_full_report_inline",
+            cta_text: "Open full report",
+          },
+        });
+        trackHomeownerFlowEvent("report_section_inline_clicked", {
+          metadata: {
+            source: "report_section_inline",
+          },
+        });
+        openReportView({ source: "report_section_inline" });
+      });
+      document.getElementById("openReportBtn").addEventListener("click", () => openReportView({ source: "report_section_primary_actions" }));
       document.getElementById("exportReportBtn").addEventListener("click", exportReport);
-      document.getElementById("downloadPdfBtn").addEventListener("click", downloadHomeownerPdf);
+      document.getElementById("downloadPdfBtn").addEventListener("click", () => {
+        trackHomeownerFlowEvent("report_cta_clicked", {
+          metadata: {
+            source: "report_section_download_pdf",
+            has_simulation_result: hasCompletedSimulationSummary(),
+          },
+        });
+        downloadHomeownerPdf();
+      });
       document.getElementById("openInternalDiagnosticsBtn")?.addEventListener("click", () => {
         window.open(`${apiBase}/internal/diagnostics`, "_blank", "noopener");
       });
@@ -7345,13 +7571,13 @@
         setVerificationModalMode({ fastPathEligible: false });
       });
       document.getElementById("editAddressBtn")?.addEventListener("click", () => {
-        cancelAddressVerification();
+        cancelAddressVerification("edit_address");
         document.getElementById("address")?.focus();
       });
-      document.getElementById("cancelAddressBtn")?.addEventListener("click", cancelAddressVerification);
+      document.getElementById("cancelAddressBtn")?.addEventListener("click", () => cancelAddressVerification("cancel_button"));
       document.getElementById("addressVerifyModal")?.addEventListener("click", (evt) => {
         if (evt.target?.id === "addressVerifyModal") {
-          cancelAddressVerification();
+          cancelAddressVerification("backdrop_click");
         }
       });
       window.addEventListener("resize", () => {
@@ -7362,7 +7588,7 @@
         if (!addressVerificationModalOpen) return;
         if (evt.key === "Escape") {
           evt.preventDefault();
-          cancelAddressVerification();
+          cancelAddressVerification("escape_key");
           return;
         }
         if (evt.key !== "Tab") return;
