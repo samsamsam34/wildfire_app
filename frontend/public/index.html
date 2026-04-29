@@ -702,6 +702,12 @@
       .more-options-item h3 {
         margin-bottom: 0.28rem;
       }
+      .report-journey-surface {
+        border: 0;
+        background: transparent;
+        box-shadow: none;
+        padding: 0;
+      }
       #assessmentMap {
         height: 360px;
         border: 1px solid #d5e1e8;
@@ -1570,32 +1576,34 @@
         </details>
       </section>
 
+      <section id="reportJourneySection" class="card secondary-panel" style="display:none;">
+        <section id="reportShareSection" class="report-journey-surface">
+          <h3>Review your full report</h3>
+          <p class="muted">Save or share your results with homeowner-friendly report formats.</p>
+          <p class="section-help">Best after reviewing your before/after result.</p>
+          <div id="reportPrimaryActions" class="actions actions-low-emphasis">
+            <button id="openReportBtn" type="button" class="secondary">Open Full Report</button>
+            <button id="downloadPdfBtn" type="button" class="secondary">Download Homeowner-Friendly PDF</button>
+          </div>
+          <p id="reportActionHierarchyHint" class="section-help muted" style="display:none;">
+            Your main report actions are shown above in the homeowner summary.
+          </p>
+          <p id="reportActionStatus" class="status-line status-secondary tone-muted">Report review actions will appear after simulation.</p>
+          <details id="homeownerReportPreviewPanel" class="mt-sm">
+            <summary>Preview report highlights (optional)</summary>
+            <p id="homeownerReportStatus" class="status-line status-secondary tone-muted">Open this section to load report highlights.</p>
+            <ul id="homeownerReportHighlights"><li class="muted">No report highlights yet.</li></ul>
+            <p class="mini-label mt-sm">More report notes</p>
+            <ul id="homeownerReportSecondary"><li class="muted">Additional details will appear here when available.</li></ul>
+          </details>
+        </section>
+      </section>
+
       <section id="moreOptionsHubSection" class="card secondary-panel" style="display:none;">
         <details id="moreOptionsHubPanel">
           <summary>More details (optional)</summary>
-          <p class="section-help">See more context about this property, what we could confirm, map context, and optional report tools.</p>
+          <p class="section-help">See more context about this property, what we could confirm, and map context.</p>
           <div class="more-details-stack">
-            <section id="reportShareSection" class="secondary-panel more-options-item more-details-item">
-              <h3>Review your full report</h3>
-              <p class="muted">Save or share your results with homeowner-friendly report formats.</p>
-              <p class="section-help">Best after reviewing your status and before/after simulation.</p>
-              <div id="reportPrimaryActions" class="actions actions-low-emphasis">
-                <button id="openReportBtn" type="button" class="secondary">Open Full Report</button>
-                <button id="downloadPdfBtn" type="button" class="secondary">Download Homeowner-Friendly PDF</button>
-              </div>
-              <p id="reportActionHierarchyHint" class="section-help muted" style="display:none;">
-                Your main report actions are shown above in the homeowner summary.
-              </p>
-              <p id="reportActionStatus" class="status-line status-secondary tone-muted">Report review actions will appear after assessment.</p>
-              <details id="homeownerReportPreviewPanel" class="mt-sm">
-                <summary>Preview report highlights (optional)</summary>
-                <p id="homeownerReportStatus" class="status-line status-secondary tone-muted">Open this section to load report highlights.</p>
-                <ul id="homeownerReportHighlights"><li class="muted">No report highlights yet.</li></ul>
-                <p class="mini-label mt-sm">More report notes</p>
-                <ul id="homeownerReportSecondary"><li class="muted">Additional details will appear here when available.</li></ul>
-              </details>
-            </section>
-
             <section id="supportingInsightsSection" class="secondary-panel more-options-item more-details-item">
               <details id="supportingInsightsPanel">
                 <summary>Why this property looks riskier (more context)</summary>
@@ -2436,12 +2444,18 @@
       function syncMoreOptionsHubState() {
         const wrap = document.querySelector(".wrap");
         const hubSection = document.getElementById("moreOptionsHubSection");
+        const reportJourneySection = document.getElementById("reportJourneySection");
         const hubPanel = document.getElementById("moreOptionsHubPanel");
         const simulationSection = document.getElementById("simulationPlannerSection");
         const advancedSection = document.getElementById("advancedSection");
         const hasAssessment = !!(latestAssessment && latestAssessment.assessment_id);
+        const hasSimulationResult = hasCompletedSimulationSummary();
+        positionReportJourneySection();
         if (simulationSection) {
           simulationSection.style.display = hasAssessment ? "block" : "none";
+        }
+        if (reportJourneySection) {
+          reportJourneySection.style.display = (hasAssessment && hasSimulationResult) ? "block" : "none";
         }
         if (hubSection) {
           hubSection.style.display = hasAssessment ? "block" : "none";
@@ -2456,6 +2470,14 @@
           wrap.classList.toggle("more-options-open", !!(hasAssessment && hubPanel?.open));
         }
         refreshSecondaryStatusVisibility();
+      }
+
+      function positionReportJourneySection() {
+        const reportSection = document.getElementById("reportJourneySection");
+        const simulationSection = document.getElementById("simulationPlannerSection");
+        if (!reportSection || !simulationSection) return;
+        if (reportSection.previousElementSibling === simulationSection) return;
+        simulationSection.insertAdjacentElement("afterend", reportSection);
       }
 
       function setVerificationAdjustToolsVisible(visible, { openPanel = false } = {}) {
@@ -2653,7 +2675,7 @@
         if (!el) return;
         el.textContent = String(message || "").trim();
         applyToneClass(el, tone);
-        applySecondaryStatusVisibility(el, { tone, panelId: "moreOptionsHubPanel" });
+        applySecondaryStatusVisibility(el, { tone, alwaysShow: true });
       }
 
       function setSimulationRunStatus(message, tone = "muted") {
@@ -2862,10 +2884,8 @@
         if (hasCompletedSimulationSummary()) {
           reportPrimarySurfaceOpened = true;
         }
-        setPanelOpen("moreOptionsHubPanel", true);
-        syncMoreOptionsHubState();
         syncReportActionHierarchy(hasCompletedSimulationSummary());
-        const target = document.getElementById("reportShareSection");
+        const target = document.getElementById("reportJourneySection") || document.getElementById("reportShareSection");
         if (target && typeof target.scrollIntoView === "function") {
           const useSmoothScroll = !!smooth && !prefersReducedMotion();
           target.scrollIntoView({ behavior: useSmoothScroll ? "smooth" : "auto", block: "start" });
@@ -3066,6 +3086,7 @@
       }
 
       function updatePrimaryDecisionCta(statusLabel = "") {
+        syncMoreOptionsHubState();
         const btn = document.getElementById("primaryDecisionCtaBtn");
         const labelEl = document.getElementById("primaryDecisionCtaLabel");
         const hintEl = document.getElementById("primaryDecisionCtaHint");
@@ -4225,7 +4246,7 @@
         setSimulationRunStatus("Run an assessment, choose a quick scenario, then run simulation.", "muted");
         syncAssessmentActionState();
         setImproveStatus("Input suggestions will appear after assessment.", "muted");
-        setReportActionStatus("Report review actions will appear after assessment.", "muted");
+        setReportActionStatus("Report review actions will appear after simulation.", "muted");
         setFlowStatus("Step 1 of 4: Enter your address to begin.", "muted");
         showHomeownerToast("", "muted", { autoHideMs: 0 });
       }
@@ -6871,6 +6892,11 @@
           setTimeout(() => URL.revokeObjectURL(url), 5000);
           setReportActionStatus("Full report opened in a new tab.", "success");
           setFlowStatus("Step 4 of 4: Full report opened.", "success");
+          const previewPanel = document.getElementById("homeownerReportPreviewPanel");
+          if (previewPanel && typeof previewPanel.open === "boolean") {
+            previewPanel.open = true;
+          }
+          maybeLoadHomeownerReportPreview("after_full_report_open");
         } catch (err) {
           const message = toHomeownerFriendlyError(
             err?.message,
@@ -7042,14 +7068,6 @@
 
       document.getElementById("moreOptionsHubPanel")?.addEventListener("toggle", () => {
         syncMoreOptionsHubState();
-        if (!latestAssessment?.assessment_id) {
-          setHomeownerReportStatus("Run an assessment first to preview report highlights.", "muted");
-          refreshSecondaryStatusVisibility();
-          return;
-        }
-        if (reportPreviewLoadedAssessmentId !== latestAssessment.assessment_id) {
-          setHomeownerReportStatus("Open report highlights to review details before downloading.", "muted");
-        }
         refreshSecondaryStatusVisibility();
       });
       document.getElementById("simulationPlannerPanel")?.addEventListener("toggle", refreshSecondaryStatusVisibility);
@@ -7073,7 +7091,7 @@
       syncMoreOptionsHubState();
       setSimulationRunStatus("Run an assessment, choose a quick scenario, then run simulation.", "muted");
       setImproveStatus("Input suggestions will appear after assessment.", "muted");
-      setReportActionStatus("Report review actions will appear after assessment.", "muted");
+      setReportActionStatus("Report review actions will appear after simulation.", "muted");
       setFlowStatus("Step 1 of 4: Enter your address to begin.", "muted");
       updateMobileNextStepBar();
       updateDesktopNextStepCue();
