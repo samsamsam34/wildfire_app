@@ -615,6 +615,22 @@
       .actions.actions-low-emphasis button:hover {
         box-shadow: none;
       }
+      .context-link-btn {
+        background: transparent;
+        border: none;
+        color: #2f5f79;
+        font-size: 0.84rem;
+        font-weight: 600;
+        text-decoration: underline;
+        text-underline-offset: 2px;
+        padding: 0.22rem 0;
+        min-height: 0;
+        box-shadow: none;
+      }
+      .context-link-btn:hover {
+        color: #234c62;
+        opacity: 1;
+      }
       .wrap.cta-priority .secondary-panel .actions button {
         opacity: 0.82;
         box-shadow: none;
@@ -1589,9 +1605,8 @@
             <div class="mini-label">After simulation: review and share</div>
             <div class="actions">
               <button id="postSimOpenReportBtn" type="button">Review Full Report</button>
-              <button id="postSimDownloadPdfBtn" type="button" class="secondary">Download Homeowner-Friendly PDF</button>
             </div>
-            <p class="post-simulation-action-note">Open your full report first, then optional highlights can be explored below.</p>
+            <p class="post-simulation-action-note">Open your full report first. Download/share options stay available in the report section.</p>
           </div>
         </div>
         <details id="homeownerDecisionAdvancedDetails" class="mt-sm">
@@ -1616,6 +1631,7 @@
           </p>
           <div id="reportInlineActionRow" class="actions actions-low-emphasis">
             <button id="reportInlineOpenBtn" type="button" class="secondary">Open full report</button>
+            <button id="reportInlineDownloadBtn" type="button" class="context-link-btn">Download homeowner-friendly PDF</button>
           </div>
           <p id="reportActionStatus" class="status-line status-secondary tone-muted">Report review actions will appear after simulation.</p>
           <details id="homeownerReportPreviewPanel" class="mt-sm">
@@ -1631,12 +1647,12 @@
       <section id="moreOptionsHubSection" class="card secondary-panel" style="display:none;">
         <details id="moreOptionsHubPanel">
           <summary>More details (optional)</summary>
-          <p class="section-help">See more context about this property, what we could confirm, and map context.</p>
+          <p class="section-help">Quick extra context on why this result looks the way it does. Deeper technical material stays in Advanced details.</p>
           <div class="more-details-stack">
             <section id="supportingInsightsSection" class="secondary-panel more-options-item more-details-item">
               <details id="supportingInsightsPanel">
                 <summary>Why this property looks riskier (more context)</summary>
-                <p class="section-help">Quick context behind your result, followed by optional deeper details.</p>
+                <p class="section-help">Top context first, with optional deeper items hidden until you ask for more.</p>
                 <div class="results mt-sm">
                   <div class="card result-primary">
                     <h3>Quick property context</h3>
@@ -1666,28 +1682,25 @@
                     <p class="section-help">Top findings first. Expand lists only if you want deeper context.</p>
                     <div class="insight-group">
                       <div class="mini-label">Closest to the home</div>
-                      <h3>What we found around the home</h3>
                       <ul id="propertyFindings"><li class="muted">Structure-specific findings will appear after assessment.</li></ul>
                     </div>
                     <div class="insight-group">
                       <div class="mini-label">Nearby area</div>
-                      <h3>Broader wildfire pressure nearby</h3>
                       <ul id="drivers"><li class="muted">Risk drivers will appear after assessment.</li></ul>
                     </div>
                     <div class="insight-group">
                       <div class="mini-label">What helps</div>
-                      <h3>Factors helping lower risk</h3>
                       <ul id="protective"><li class="muted">Protective factors will appear after assessment.</li></ul>
                     </div>
                   </div>
 
-                  <div class="card">
-                    <h3>Action plan details</h3>
+                  <details class="card">
+                    <summary>Action plan details (optional)</summary>
                     <p class="section-help">Shows the first actions to prioritize, then optional extra steps.</p>
                     <div class="mini-label">Recommended sequence</div>
                     <p id="nextStepsText">Focus on the top actions first.</p>
                     <ul id="mitigations"><li class="muted">Recommendations will appear after assessment.</li></ul>
-                  </div>
+                  </details>
                 </div>
               </details>
             </section>
@@ -3009,7 +3022,7 @@
           hierarchyHint.style.display = "block";
           hierarchyHint.textContent = reportDetailsUnlocked
             ? "You opened your report path above. Optional highlights are now available below."
-            : "Primary report action is in the summary above. You can also open the full report here.";
+            : "Primary report action is above. If you're in this section, use the link here.";
           if (reportPreviewPanel) {
             reportPreviewPanel.style.display = reportDetailsUnlocked ? "" : "none";
             if (!reportDetailsUnlocked) {
@@ -3201,12 +3214,10 @@
         const priorityNoteEl = document.getElementById("primaryDecisionCtaPriorityNote");
         const postSimActionRowEl = document.getElementById("postSimulationActionRow");
         const postSimOpenReportBtn = document.getElementById("postSimOpenReportBtn");
-        const postSimDownloadPdfBtn = document.getElementById("postSimDownloadPdfBtn");
         const wrap = document.querySelector(".wrap");
         const hasPostSimActionRow = !!(
           postSimActionRowEl
           && postSimOpenReportBtn
-          && postSimDownloadPdfBtn
         );
         if (!btn || !hintEl || !labelEl || !priorityNoteEl) {
           syncReportActionHierarchy(false);
@@ -3231,7 +3242,6 @@
           priorityNoteEl.textContent = "This is the main next step. More report and detail options are available below.";
           if (hasPostSimActionRow) {
             postSimOpenReportBtn.disabled = true;
-            postSimDownloadPdfBtn.disabled = true;
           }
           updateMobileNextStepBar();
           updateDesktopNextStepCue();
@@ -3250,7 +3260,6 @@
             btn.style.display = "none";
             postSimActionRowEl.hidden = false;
             postSimOpenReportBtn.disabled = isBusy;
-            postSimDownloadPdfBtn.disabled = isBusy;
           }
           updateMobileNextStepBar();
           updateDesktopNextStepCue();
@@ -3279,7 +3288,6 @@
         priorityNoteEl.textContent = "This is the main next step. More report and detail options are available below.";
         if (hasPostSimActionRow) {
           postSimOpenReportBtn.disabled = isBusy;
-          postSimDownloadPdfBtn.disabled = isBusy;
         }
         updateMobileNextStepBar();
         updateDesktopNextStepCue();
@@ -4047,6 +4055,9 @@
         setListItems(improveSuggestionsEl, suggestions, {
           limit: 6,
           fallbackText: "No additional improvement suggestions are available yet.",
+          shortModeCount: 2,
+          shortModeLabel: "See more suggestions",
+          shortModeCollapseLabel: "Show fewer suggestions",
           renderItem: (li, item) => {
             li.textContent = String(item || "").trim();
           },
@@ -4055,6 +4066,9 @@
         setListItems(improveInputsEl, followUps, {
           limit: 6,
           fallbackText: "No additional follow-up inputs suggested.",
+          shortModeCount: 2,
+          shortModeLabel: "See more inputs",
+          shortModeCollapseLabel: "Show fewer inputs",
           renderItem: (li, item) => {
             const label = String(item?.label || item?.input_key || "Input detail").trim();
             const prompt = String(item?.prompt || "").trim();
@@ -4828,21 +4842,21 @@
         if (scoringStatus === "insufficient_data_to_score") {
           setListItems(propertyFindingsEl, [], {
             fallbackText: "We found relevant signals, but not enough confirmed home details for structure-level findings.",
-            shortModeCount: 2,
+            shortModeCount: 1,
             shortModeLabel: "See more nearby findings",
             shortModeCollapseLabel: "Show fewer nearby findings",
           });
         } else if (!computedComponents.includes("home_ignition_vulnerability")) {
           setListItems(propertyFindingsEl, [], {
             fallbackText: "Near-home findings are preliminary because some property details are still estimated.",
-            shortModeCount: 2,
+            shortModeCount: 1,
             shortModeLabel: "See more nearby findings",
             shortModeCollapseLabel: "Show fewer nearby findings",
           });
         } else {
           setListItems(propertyFindingsEl, combinedFindings, {
             fallbackText: "No structure-specific findings available for this assessment.",
-            shortModeCount: 2,
+            shortModeCount: 1,
             shortModeLabel: "See more nearby findings",
             shortModeCollapseLabel: "Show fewer nearby findings",
           });
@@ -4855,14 +4869,14 @@
         if (scoringStatus === "insufficient_data_to_score") {
           setListItems(driversEl, [], {
             fallbackText: "We found relevant signals, but not enough confirmed details for a reliable risk estimate.",
-            shortModeCount: 2,
+            shortModeCount: 1,
             shortModeLabel: "See more nearby drivers",
             shortModeCollapseLabel: "Show fewer nearby drivers",
           });
         } else if (rankedDrivers.length > 0) {
           setListItems(driversEl, rankedDrivers, {
             limit: 5,
-            shortModeCount: 2,
+            shortModeCount: 1,
             shortModeLabel: "See more nearby drivers",
             shortModeCollapseLabel: "Show fewer nearby drivers",
             renderItem: (li, driver) => {
@@ -4884,7 +4898,7 @@
             (Array.isArray(data.top_risk_drivers) ? data.top_risk_drivers : []).slice(0, 5).map((v) => toHomeownerDriverText(v)),
             {
               fallbackText: "No major drivers were returned for this assessment.",
-              shortModeCount: 2,
+              shortModeCount: 1,
               shortModeLabel: "See more nearby drivers",
               shortModeCollapseLabel: "Show fewer nearby drivers",
             }
@@ -4895,7 +4909,7 @@
           (Array.isArray(data.top_protective_factors) ? data.top_protective_factors : []).slice(0, 5),
           {
             fallbackText: "No protective factors were identified yet.",
-            shortModeCount: 2,
+            shortModeCount: 1,
             shortModeLabel: "See more helpful factors",
             shortModeCollapseLabel: "Show fewer helpful factors",
           }
@@ -4937,7 +4951,7 @@
         });
         setListItems(document.getElementById("mitigations"), mitigationRows, {
           fallbackText: "No recommended actions are available yet.",
-          shortModeCount: 2,
+          shortModeCount: 1,
           shortModeLabel: "See full action list",
           shortModeCollapseLabel: "Show fewer actions",
           renderItem: (li, row) => {
@@ -5008,7 +5022,7 @@
         setListItems(document.getElementById("assumptions"), estimatedRows, {
           limit: 5,
           fallbackText: "No estimated items were listed.",
-          shortModeCount: 3,
+          shortModeCount: 2,
           shortModeLabel: "See more estimated items",
           shortModeCollapseLabel: "Show fewer estimated items",
         });
@@ -5022,7 +5036,7 @@
         setListItems(document.getElementById("confidenceActions"), confidenceActionRows, {
           limit: 6,
           fallbackText: "No additional ways to improve confidence are currently suggested.",
-          shortModeCount: 3,
+          shortModeCount: 2,
           shortModeLabel: "See more ways to improve this estimate",
           shortModeCollapseLabel: "Show fewer improvement ideas",
         });
@@ -5505,10 +5519,10 @@
           "refreshImproveBtn",
           "openReportBtn",
           "reportInlineOpenBtn",
+          "reportInlineDownloadBtn",
           "downloadPdfBtn",
           "exportReportBtn",
           "postSimOpenReportBtn",
-          "postSimDownloadPdfBtn",
         ].forEach((id) => {
           const el = document.getElementById(id);
           if (!el) return;
@@ -7470,22 +7484,6 @@
         });
         openReportView({ source: "post_simulation_action_row" });
       });
-      document.getElementById("postSimDownloadPdfBtn")?.addEventListener("click", () => {
-        trackHomeownerFlowEvent("primary_cta_clicked", {
-          metadata: {
-            cta_id: "postSimDownloadPdfBtn",
-            cta_action: "download_homeowner_pdf",
-            cta_text: "Download Homeowner-Friendly PDF",
-          },
-        });
-        trackHomeownerFlowEvent("report_cta_clicked", {
-          metadata: {
-            source: "post_simulation_download_pdf",
-            has_simulation_result: hasCompletedSimulationSummary(),
-          },
-        });
-        downloadHomeownerPdf();
-      });
       document.getElementById("mobileNextStepBtn")?.addEventListener("click", handleMobileNextStepAction);
       document.getElementById("desktopNextStepBtn")?.addEventListener("click", handleDesktopNextStepAction);
       document.getElementById("refreshImproveBtn")?.addEventListener("click", refreshImproveSuggestions);
@@ -7503,6 +7501,15 @@
           },
         });
         openReportView({ source: "report_section_inline" });
+      });
+      document.getElementById("reportInlineDownloadBtn")?.addEventListener("click", () => {
+        trackHomeownerFlowEvent("report_cta_clicked", {
+          metadata: {
+            source: "report_section_inline_download",
+            has_simulation_result: hasCompletedSimulationSummary(),
+          },
+        });
+        downloadHomeownerPdf();
       });
       document.getElementById("openReportBtn").addEventListener("click", () => openReportView({ source: "report_section_primary_actions" }));
       document.getElementById("exportReportBtn").addEventListener("click", exportReport);
