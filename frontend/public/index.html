@@ -251,6 +251,38 @@
         margin-top: 0.42rem;
         width: 100%;
       }
+      .desktop-next-step-cue {
+        position: fixed;
+        top: 0.95rem;
+        right: 1rem;
+        z-index: 1400;
+        width: min(320px, calc(100vw - 2rem));
+        border: 1px solid #dbe6ed;
+        border-radius: 12px;
+        background: rgba(255, 255, 255, 0.96);
+        box-shadow: 0 6px 16px rgba(16, 33, 44, 0.09);
+        padding: 0.55rem 0.62rem 0.6rem;
+      }
+      .desktop-next-step-cue[hidden] {
+        display: none !important;
+      }
+      .desktop-next-step-label {
+        font-size: 0.74rem;
+        font-weight: 600;
+        letter-spacing: 0.01em;
+        color: #526b79;
+      }
+      .desktop-next-step-summary {
+        margin-top: 0.16rem;
+        font-size: 0.84rem;
+        color: #2f4757;
+      }
+      .desktop-next-step-btn {
+        margin-top: 0.42rem;
+        min-height: 36px;
+        border-radius: 9px;
+        font-size: 0.83rem;
+      }
       .row {
         display: grid;
         gap: 0.72rem;
@@ -1332,6 +1364,9 @@
         }
       }
       @media (max-width: 860px) {
+        .desktop-next-step-cue {
+          display: none !important;
+        }
         .mobile-next-step-visible .wrap {
           padding-bottom: 7rem;
         }
@@ -1512,7 +1547,7 @@
         <details id="homeownerDecisionAdvancedDetails" class="mt-sm">
           <summary>More context (optional)</summary>
           <ul id="homeownerDecisionAdvancedList">
-            <li class="muted">Underlying scores, evidence notes, and compatibility fields are preserved in advanced sections.</li>
+            <li class="muted">Deeper notes on what mattered most, what was confirmed, and what was estimated are available in advanced sections.</li>
           </ul>
         </details>
       </section>
@@ -1605,7 +1640,7 @@
             <section id="confidenceSection" class="trust-card secondary-panel more-options-item more-details-item">
               <details id="confidenceDeepDivePanel">
                 <summary>How certain this result is</summary>
-                <p class="section-help">How reliable this estimate is, and where limited data may affect precision.</p>
+                <p class="section-help">How reliable this estimate is, and where limited data may reduce detail.</p>
                 <div class="trust-overview">
                   <div class="trust-value">
                     <span>How confident this estimate is</span>
@@ -1785,12 +1820,12 @@
 
       <section id="advancedSection" class="card advanced-secondary secondary-panel">
         <details id="advancedInternalDetailsPanel">
-          <summary>Advanced details and diagnostics</summary>
-          <p class="section-help">Use this panel for technical outputs beyond the homeowner summary.</p>
+          <summary>Advanced details (optional)</summary>
+          <p class="section-help">Use this panel for a deeper explanation of how this screening result was built.</p>
           <ul id="advancedCoverageList">
-            <li>Detailed factor breakdowns and weighted contributions</li>
-            <li>Confidence diagnostics, assumptions, and evidence notes</li>
-            <li>Compatibility and legacy output fields</li>
+            <li>What mattered most for this result</li>
+            <li>What was confirmed, estimated, and still uncertain</li>
+            <li>Additional background fields for users who need deeper detail</li>
           </ul>
           <div class="row" data-operator-only="true">
             <div>
@@ -1816,13 +1851,13 @@
           <h3 class="subsection-title">How to Improve Confidence</h3>
           <ul id="confidenceActions"><li class="muted">Confidence guidance will appear after assessment.</li></ul>
 
-          <h3 class="subsection-title">Detailed factor breakdown (advanced)</h3>
+          <h3 class="subsection-title">What mattered most for this result (advanced)</h3>
           <table>
-            <thead><tr><th>Factor</th><th>Score</th><th>Contribution</th></tr></thead>
-            <tbody id="submodels"><tr><td colspan="3" class="muted">Detailed factor breakdown will appear after assessment.</td></tr></tbody>
+            <thead><tr><th>Factor</th><th>Relative level</th><th>Why it matters</th></tr></thead>
+            <tbody id="submodels"><tr><td colspan="3" class="muted">A deeper factor breakdown will appear after assessment.</td></tr></tbody>
           </table>
 
-          <h3 class="subsection-title">Home hardening score</h3>
+          <h3 class="subsection-title">Home readiness estimate</h3>
           <p id="readinessText" class="muted">-</p>
 
           <h3 class="subsection-title">Property context</h3>
@@ -1935,6 +1970,11 @@
         <button id="mobileNextStepBtn" type="button" class="mobile-next-step-btn">Run assessment</button>
       </div>
     </div>
+    <div id="desktopNextStepCue" class="desktop-next-step-cue" aria-live="polite" hidden>
+      <div class="desktop-next-step-label">Next best step</div>
+      <p id="desktopNextStepSummary" class="desktop-next-step-summary">Run an assessment to unlock next steps.</p>
+      <button id="desktopNextStepBtn" type="button" class="secondary desktop-next-step-btn">Run assessment</button>
+    </div>
 
     <p id="homeownerToast" class="status-line tone-muted homeowner-toast" role="status" aria-live="polite"></p>
 
@@ -1995,6 +2035,7 @@
       let reportPrimarySurfaceOpened = false;
       let homeownerSummaryFocusTimer = null;
       let mobileNextStepAction = "";
+      let desktopNextStepAction = "";
       let primaryDecisionAction = "";
       let verificationFastPathTimer = null;
       let verificationFastPathEligible = false;
@@ -2480,13 +2521,16 @@
         ) {
           return "We couldn’t confidently place this address. Please confirm the address or select the correct location on the map.";
         }
+        if (lowered.includes("outside_us_coverage") || lowered.includes("limited to us addresses")) {
+          return "Assessment is currently limited to US addresses. Please enter a US address.";
+        }
         if (
           lowered.includes("prepared region")
           || lowered.includes("prepared-region")
           || lowered.includes("no_prepared_region_for_location")
-          || lowered.includes("unsupported_location")
+          || lowered.includes("national_fallback")
         ) {
-          return "Detailed local coverage is limited for this location, so some results may be estimated.";
+          return "National coverage data is being used for this location. Results are still useful, but local detail may be lighter.";
         }
         return text
           .replace(/_/g, " ")
@@ -2623,6 +2667,7 @@
         }
         updatePrimaryDecisionCta(currentHomeownerStatusLabel());
         updateMobileNextStepBar();
+        updateDesktopNextStepCue();
       }
 
       function setScenarioSelectValue(selectId, value, otherInputId = null) {
@@ -2884,6 +2929,35 @@
         setMobileNextStepBarVisibility(true);
       }
 
+      function updateDesktopNextStepCue() {
+        const cue = document.getElementById("desktopNextStepCue");
+        const summaryEl = document.getElementById("desktopNextStepSummary");
+        const btn = document.getElementById("desktopNextStepBtn");
+        if (!cue || !summaryEl || !btn) return;
+        const hasAssessment = !!(latestAssessment && latestAssessment.assessment_id);
+        const hasSimulationResult = hasCompletedSimulationSummary();
+        const shouldShow = !isMobileViewport() && hasAssessment && !addressVerificationModalOpen;
+        if (!shouldShow) {
+          desktopNextStepAction = "";
+          cue.hidden = true;
+          return;
+        }
+        if (hasSimulationResult) {
+          summaryEl.textContent = "Before/after is ready. Next, review your full report.";
+          btn.textContent = "Review Full Report";
+          desktopNextStepAction = "open_full_report";
+          btn.disabled = isAssessmentSubmitting || isAddressVerificationPending;
+        } else {
+          summaryEl.textContent = isSimulationSubmitting
+            ? "Simulation is running. Review the updated result when it finishes."
+            : "Next, run a quick before/after simulation.";
+          btn.textContent = isSimulationSubmitting ? "Simulation Running..." : "Run Quick Simulation";
+          desktopNextStepAction = "run_quick_simulation";
+          btn.disabled = isSimulationSubmitting || isAssessmentSubmitting || isAddressVerificationPending;
+        }
+        cue.hidden = false;
+      }
+
       function handleMobileNextStepAction() {
         if (!mobileNextStepAction) return;
         trackHomeownerFlowEvent("primary_cta_clicked", {
@@ -2894,6 +2968,22 @@
           },
         });
         if (mobileNextStepAction === "open_full_report" || mobileNextStepAction === "review_report_options") {
+          openReportView();
+          return;
+        }
+        openSimulationPlannerFromCta({ smooth: true });
+      }
+
+      function handleDesktopNextStepAction() {
+        if (!desktopNextStepAction) return;
+        trackHomeownerFlowEvent("primary_cta_clicked", {
+          metadata: {
+            cta_id: "desktopNextStepBtn",
+            cta_action: desktopNextStepAction,
+            cta_text: String(document.getElementById("desktopNextStepBtn")?.textContent || "").trim() || null,
+          },
+        });
+        if (desktopNextStepAction === "open_full_report") {
           openReportView();
           return;
         }
@@ -2939,6 +3029,7 @@
         if (!btn || !hintEl || !labelEl || !priorityNoteEl) {
           syncReportActionHierarchy(false);
           updateMobileNextStepBar();
+          updateDesktopNextStepCue();
           return;
         }
         const hasAssessment = !!(latestAssessment && latestAssessment.assessment_id);
@@ -2960,6 +3051,7 @@
             postSimDownloadPdfBtn.disabled = true;
           }
           updateMobileNextStepBar();
+          updateDesktopNextStepCue();
           return;
         }
         if (hasSimulationResult) {
@@ -2977,6 +3069,7 @@
             postSimDownloadPdfBtn.disabled = isBusy;
           }
           updateMobileNextStepBar();
+          updateDesktopNextStepCue();
           return;
         }
 
@@ -3004,6 +3097,7 @@
           postSimDownloadPdfBtn.disabled = isBusy;
         }
         updateMobileNextStepBar();
+        updateDesktopNextStepCue();
       }
 
       function buildPopupContent({ title = "", lines = [] } = {}) {
@@ -3591,6 +3685,38 @@
         return { label: "Lower risk", cls: "good" };
       }
 
+      function summarizeConfidenceLevel(score) {
+        const n = Number(score);
+        if (!Number.isFinite(n)) {
+          return {
+            label: "Confidence not available",
+            detail: "We need more reliable inputs to estimate confidence.",
+          };
+        }
+        if (n >= 85) {
+          return {
+            label: "Higher confidence",
+            detail: "Most key details were directly observed or strongly supported.",
+          };
+        }
+        if (n >= 65) {
+          return {
+            label: "Moderate confidence",
+            detail: "This estimate is useful for planning, with some details still inferred.",
+          };
+        }
+        if (n >= 45) {
+          return {
+            label: "Limited confidence",
+            detail: "Several details were estimated, so use this as a screening result.",
+          };
+        }
+        return {
+          label: "Low confidence",
+          detail: "Many details are estimated or missing, so treat this as an early screening.",
+        };
+      }
+
       function toNumber(value) {
         const n = Number(value);
         return Number.isFinite(n) ? n : null;
@@ -3974,10 +4100,10 @@
           limitations,
           methodology: methodology || "Rule-based screening guidance using observable wildfire and property factors; not a prediction or guarantee of insurer underwriting approval.",
           advancedRows: [
-            "Detailed factor breakdowns and compatibility fields are available in advanced details.",
+            "Deeper context on what mattered most is available in advanced details.",
             showOperatorControls
-              ? "Operator export and internal diagnostics are available in this mode."
-              : "Operator export and internal diagnostics are hidden in homeowner mode.",
+              ? "Internal export and troubleshooting tools are available in this mode."
+              : "Internal export and troubleshooting tools are hidden in homeowner mode.",
           ],
         });
       }
@@ -3992,7 +4118,7 @@
         const highlightsEl = document.getElementById("homeownerReportHighlights");
         const secondaryEl = document.getElementById("homeownerReportSecondary");
         const reportPreviewPanelEl = document.getElementById("homeownerReportPreviewPanel");
-        setHomeownerReportStatus(reason || "Open this section to load deeper report highlights.", "muted");
+        setHomeownerReportStatus(reason || "Open this section to load report highlights.", "muted");
         if (highlightsEl) {
           setListItems(highlightsEl, [], { fallbackText: "No report highlights yet." });
         }
@@ -4053,7 +4179,7 @@
         if (!highlightsEl || !secondaryEl) return;
 
         if (!report || typeof report !== "object") {
-          setHomeownerReportStatus("We couldn’t load deeper report highlights yet.", "error");
+          setHomeownerReportStatus("We couldn’t load report highlights yet.", "error");
           setListItems(highlightsEl, [], { fallbackText: "Report highlights will appear after assessment." });
           setListItems(secondaryEl, [], { fallbackText: "Additional details will appear here when available." });
           return;
@@ -4133,21 +4259,21 @@
           advancedRows.push(advancedNote);
         }
         if (report?.internal_calibration_debug?.subscores && typeof report.internal_calibration_debug.subscores === "object") {
-          advancedRows.push("Detailed factor breakdowns and weighted impacts are available for advanced review.");
+          advancedRows.push("A deeper factor-by-factor view is available for advanced review.");
         }
         if (report?.internal_calibration_debug?.diagnostics && typeof report.internal_calibration_debug.diagnostics === "object") {
-          advancedRows.push("Detailed diagnostics and evidence-quality notes are available for advanced review.");
+          advancedRows.push("Additional data-quality and evidence notes are available for advanced review.");
         }
         if (
           report?.metadata?.optional_public_outcome_calibration
           && typeof report.metadata.optional_public_outcome_calibration === "object"
         ) {
-          advancedRows.push("Additional calibration metadata is included for advanced review.");
+          advancedRows.push("Additional background metadata is included for advanced review.");
         }
         advancedRows.push(
           showOperatorControls
-            ? "Operator export and diagnostics tools are available in this mode."
-            : "Operator export and diagnostics tools are hidden in homeowner mode."
+            ? "Internal export and troubleshooting tools are available in this mode."
+            : "Internal export and troubleshooting tools are hidden in homeowner mode."
         );
 
         renderHomeownerDecisionSnapshot({
@@ -4166,8 +4292,8 @@
         });
 
         setHomeownerReportStatus(statusLabel
-          ? `${statusLabel}: ${headline || "deeper report highlights are ready."}`
-          : (headline || "Deeper report highlights are ready."), "success");
+          ? `${statusLabel}: ${headline || "report highlights are ready."}`
+          : (headline || "Report highlights are ready."), "success");
         const rows = [];
         const specificityHeadline = String(specificity?.headline || "").trim();
         const specificityMeaning = String(specificity?.what_this_means || "").trim();
@@ -4291,7 +4417,7 @@
           renderHomeownerReportPreview(latestHomeownerReport);
           return;
         }
-        setHomeownerReportStatus("Loading deeper report highlights...", "muted");
+        setHomeownerReportStatus("Loading report highlights...", "muted");
         setFlowStatus("Step 4 of 4: Loading report highlights...", "muted");
         try {
           const report = await api(`/report/${assessmentId}/homeowner`);
@@ -4312,7 +4438,7 @@
           reportPreviewLoadedAssessmentId = null;
           setHomeownerReportStatus(toHomeownerFriendlyError(
             err?.message,
-            "We couldn’t load deeper report highlights yet. You can still continue with your assessment results."
+            "We couldn’t load report highlights yet. You can still continue with your assessment results."
           ), "error");
           setListItems(highlightsEl, [], {
             fallbackText: "Try opening the full report again after rerunning the assessment.",
@@ -4365,18 +4491,9 @@
 
       function renderAssessment(data) {
         const resolution = data?.region_resolution || {};
-        if (resolution?.coverage_available === false && resolution?.reason === "no_prepared_region_for_location") {
-          resetHomeownerJourneyPanels("Report highlights are limited because detailed local coverage is still expanding for this location.");
-          renderUncoveredLocationState({
-            coverage_available: false,
-            resolved_region_id: null,
-            reason: resolution.reason,
-            message: "Detailed local coverage is limited for this location, so this result is currently partial.",
-            recommended_action: resolution.recommended_action,
-            diagnostics: resolution.diagnostics || [],
-          });
-          return;
-        }
+        // Phase 5: out-of-region addresses now receive a full assessment via national fallback
+        // clients. Do not short-circuit — render the actual score with a coverage note.
+        // renderUncoveredLocationState is reserved for hard geocoding failures only.
 
         latestAssessment = data;
         latestSimulationSummary = null;
@@ -4457,7 +4574,7 @@
           if (showOperatorDiagnostics) {
             const regionId = data?.resolved_region_id || resolution?.resolved_region_id || "unresolved";
             const coverage = data?.coverage_available ?? resolution?.coverage_available;
-            const regionText = coverage === false ? "unsupported_location" : regionId;
+            const regionText = coverage === false ? "national_fallback" : regionId;
             regionInlineEl.style.display = "block";
             regionInlineEl.textContent = `Region: ${regionText}`;
           } else {
@@ -4577,32 +4694,33 @@
         });
 
         const confidenceRaw = Number(homeownerConfidence?.score);
-        const confidenceLabel = String(homeownerConfidence?.label || "").trim();
         const confidenceType = String(homeownerConfidence?.assessment_type || "").trim();
         const confidenceHeadline = String(homeownerConfidence?.headline || "").trim();
+        const confidenceSummary = summarizeConfidenceLevel(confidenceRaw);
         if (Number.isFinite(confidenceRaw)) {
-          const labelPrefix = confidenceLabel ? `${confidenceLabel}: ` : "";
           const typeSuffix = confidenceType ? ` (${confidenceType.replace(/_/g, " ")})` : "";
           const headlineSuffix = confidenceHeadline ? ` ${confidenceHeadline}` : "";
+          const rounded = Math.round(confidenceRaw);
           document.getElementById("confidenceText").textContent =
-            `${labelPrefix}${confidenceRaw.toFixed(1)} / 100${typeSuffix}.${headlineSuffix}`.trim();
+            `${confidenceSummary.label}${typeSuffix}. ${confidenceSummary.detail}${headlineSuffix} (about ${rounded} out of 100).`.trim();
         } else if (confidenceHeadline) {
-          document.getElementById("confidenceText").textContent = confidenceHeadline;
+          document.getElementById("confidenceText").textContent = `${confidenceSummary.label}. ${confidenceHeadline}`;
         } else {
           const fallbackScore = Number(data?.confidence_score);
+          const fallbackSummary = summarizeConfidenceLevel(fallbackScore);
           document.getElementById("confidenceText").textContent = Number.isFinite(fallbackScore)
-            ? `Confidence estimate: ${fallbackScore.toFixed(1)} / 100.`
-            : "Confidence estimate: not available.";
+            ? `${fallbackSummary.label}. ${fallbackSummary.detail} (about ${Math.round(fallbackScore)} out of 100).`
+            : "Confidence estimate is not available yet.";
         }
         const confidenceAtGlanceEl = document.getElementById("confidenceAtGlance");
         if (confidenceAtGlanceEl) {
           if (Number.isFinite(confidenceRaw)) {
-            const confLabel = confidenceLabel || "Confidence";
-            confidenceAtGlanceEl.textContent = `${confLabel} (${confidenceRaw.toFixed(1)}/100)`;
+            confidenceAtGlanceEl.textContent = confidenceSummary.label;
           } else {
             const fallbackScore = Number(data?.confidence_score);
+            const fallbackSummary = summarizeConfidenceLevel(fallbackScore);
             confidenceAtGlanceEl.textContent = Number.isFinite(fallbackScore)
-              ? `Confidence (${fallbackScore.toFixed(1)}/100)`
+              ? fallbackSummary.label
               : (confidenceHeadline || "Confidence not available");
           }
         }
@@ -4788,7 +4906,7 @@
         if (regionInlineEl) {
           if (showOperatorDiagnostics) {
             regionInlineEl.style.display = "block";
-            regionInlineEl.textContent = "Region: unsupported_location";
+            regionInlineEl.textContent = "Region: national_fallback";
           } else {
             regionInlineEl.style.display = "none";
           }
@@ -4824,7 +4942,7 @@
         if (confidenceAtGlanceEl) confidenceAtGlanceEl.textContent = "Not available";
         if (specificityAtGlanceEl) specificityAtGlanceEl.textContent = "Regional estimate";
         if (confidenceSummaryTextEl) {
-          confidenceSummaryTextEl.textContent = "Detailed local coverage is limited for this address, so confidence and precision are lower.";
+          confidenceSummaryTextEl.textContent = "Detailed local coverage is limited for this address, so confidence is lower and some details are estimated.";
         }
         if (flagsPrimaryEl) {
           setPillSpans(
@@ -4848,7 +4966,7 @@
         setSubmodelTableRows(
           document.getElementById("submodels"),
           [],
-          "Detailed factor breakdown is limited until local coverage improves."
+          "Deeper factor details are limited until local coverage improves."
         );
         document.getElementById("readinessText").textContent = "Home hardening readiness: limited due to reduced local coverage";
         document.getElementById("propertyContextText").textContent = recommendation;
@@ -4876,7 +4994,7 @@
             const lon = detail?.resolved_longitude ?? "n/a";
             geocodeDebugEl.style.display = "block";
             geocodeDebugEl.textContent =
-              `Geocode: status=${geocodeStatus}; outcome=${geocodeOutcome}; trust=${trustedMatchStatus}; submitted="${submitted}"; normalized="${normalized}"; lat/lon=${lat}, ${lon}; region=unsupported_location`;
+              `Geocode: status=${geocodeStatus}; outcome=${geocodeOutcome}; trust=${trustedMatchStatus}; submitted="${submitted}"; normalized="${normalized}"; lat/lon=${lat}, ${lon}; region=national_fallback`;
           } else {
             geocodeDebugEl.style.display = "none";
           }
@@ -4952,7 +5070,7 @@
         setSubmodelTableRows(
           document.getElementById("submodels"),
           [],
-          "Detailed factor breakdown will appear after address confirmation."
+          "Deeper factor details will appear after address confirmation."
         );
         document.getElementById("readinessText").textContent = "Home hardening readiness: not computed";
         document.getElementById("propertyContextText").textContent = "Location-specific context will populate after address confirmation.";
@@ -5129,6 +5247,7 @@
         syncSecondaryActionState();
         syncSimulationActionState();
         updateMobileNextStepBar();
+        updateDesktopNextStepCue();
       }
 
       function formatCoordinate(value) {
@@ -6542,8 +6661,8 @@
             };
             addKpiCard("Current status", statusBefore || "Not available");
             addKpiCard("Projected status", statusAfter || "Not available");
-            addKpiCard("Wildfire risk score", formatDirectionalDelta(delta?.wildfire_risk_score_delta, "higher", "lower"));
-            addKpiCard("Home hardening readiness", formatDirectionalDelta(hardeningDelta, "higher", "lower"));
+            addKpiCard("Overall wildfire risk change", formatDirectionalDelta(delta?.wildfire_risk_score_delta, "higher", "lower"));
+            addKpiCard("Home readiness change", formatDirectionalDelta(hardeningDelta, "higher", "lower"));
             simResultEl.appendChild(kpiGrid);
 
             const actionHeading = document.createElement("strong");
@@ -6575,7 +6694,7 @@
             const details = document.createElement("details");
             details.className = "sim-result-advanced";
             const summary = document.createElement("summary");
-            summary.textContent = "What changed in this scenario (advanced)";
+            summary.textContent = "What changed in this scenario (optional details)";
             details.appendChild(summary);
 
             const addDetailLine = (label, value) => {
@@ -6859,6 +6978,7 @@
       setReportActionStatus("Report review actions will appear after assessment.", "muted");
       setFlowStatus("Step 1 of 4: Enter your address to begin.", "muted");
       updateMobileNextStepBar();
+      updateDesktopNextStepCue();
       showHomeownerToast("", "muted", { autoHideMs: 0 });
       refreshSecondaryStatusVisibility();
 
@@ -6902,6 +7022,7 @@
         downloadHomeownerPdf();
       });
       document.getElementById("mobileNextStepBtn")?.addEventListener("click", handleMobileNextStepAction);
+      document.getElementById("desktopNextStepBtn")?.addEventListener("click", handleDesktopNextStepAction);
       document.getElementById("refreshImproveBtn")?.addEventListener("click", refreshImproveSuggestions);
       document.getElementById("openReportBtn").addEventListener("click", openReportView);
       document.getElementById("exportReportBtn").addEventListener("click", exportReport);
@@ -6962,6 +7083,7 @@
       });
       window.addEventListener("resize", () => {
         updateMobileNextStepBar();
+        updateDesktopNextStepCue();
       });
       document.addEventListener("keydown", (evt) => {
         if (!addressVerificationModalOpen) return;
