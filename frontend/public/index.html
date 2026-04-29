@@ -2467,12 +2467,14 @@
       function openVerificationAdjustTools({ openManual = false, fallbackMode = "candidate" } = {}) {
         setVerificationModalMode({ fastPathEligible: false });
         setVerificationAdjustToolsVisible(true, { openPanel: true });
-        const targetMode = openManual ? "candidate" : fallbackMode;
-        if (targetMode === "candidate") {
-          verificationManualSearchExpanded = false;
-          setFlowStatus("Address confirmation: Step 1 of 3. Choose the best address match.", "muted");
-        } else {
+        const targetMode = openManual ? "candidate" : (fallbackMode || "candidate");
+        verificationManualSearchExpanded = targetMode === "search";
+        if (targetMode === "map") {
           setFlowStatus("Address confirmation: Step 3 of 3. Place the map pin, apply it, then continue.", "muted");
+        } else if (targetMode === "search") {
+          setFlowStatus("Address confirmation: Step 2 of 3. Broaden the search if needed.", "muted");
+        } else {
+          setFlowStatus("Address confirmation: Step 1 of 3. Choose the best address match.", "muted");
         }
         setVerificationFallbackMode(targetMode);
         if (
@@ -5455,39 +5457,41 @@
 
       function setManualSearchControlsVisible(visible) {
         const controls = document.getElementById("verifyManualSearchControls");
-        const toggleBtn = document.getElementById("verifyShowSearchFiltersBtn");
         const shouldShow = !!visible;
         if (controls) {
           controls.style.display = shouldShow ? "grid" : "none";
         }
-        if (toggleBtn) {
-          toggleBtn.textContent = shouldShow ? "Hide extra search options" : "Need a broader search?";
-        }
       }
 
       function setVerificationFallbackMode(mode = "candidate") {
-        verificationFallbackMode = mode === "map" ? "map" : "candidate";
+        if (mode !== "search" && mode !== "map") {
+          verificationFallbackMode = "candidate";
+        } else {
+          verificationFallbackMode = mode;
+        }
         const mapArea = document.getElementById("verifyMapModeArea");
         const modeHintEl = document.getElementById("verifyAdjustModeHint");
         const manualSection = document.getElementById("verifyManualAddressSection");
-        const switchToSearchBtn = document.getElementById("verifyShowManualOptionsBtn");
+        const switchToListBtn = document.getElementById("verifyShowManualOptionsBtn");
         const switchToMapBtn = document.getElementById("verifyUseMapFallbackBtn");
+        const switchToSearchBtn = document.getElementById("verifyShowSearchFiltersBtn");
         const candidateStepNoteEl = document.getElementById("verifyCandidateStepNote");
 
         if (verificationFallbackMode === "map") {
           if (mapArea) mapArea.style.display = "block";
           setManualAddressSectionVisible(false);
           setManualSearchControlsVisible(false);
-          if (switchToSearchBtn) {
-            switchToSearchBtn.style.display = "inline-flex";
-            switchToSearchBtn.textContent = "Back to address list";
+          if (switchToListBtn) {
+            switchToListBtn.style.display = "inline-flex";
+            switchToListBtn.textContent = "Back to address choices";
           }
+          if (switchToSearchBtn) switchToSearchBtn.style.display = "none";
           if (switchToMapBtn) switchToMapBtn.style.display = "none";
           if (modeHintEl) {
-            modeHintEl.textContent = "Step 3: Place the pin on your property, click Apply this pin, then continue.";
+            modeHintEl.textContent = "Step 3: Place the pin on your property, apply it, then continue.";
           }
           if (candidateStepNoteEl) {
-            candidateStepNoteEl.textContent = "Use the map only when the candidate list does not show your property.";
+            candidateStepNoteEl.textContent = "Use the map only if address options did not resolve your property.";
           }
           const map = ensureVerifyLocationMap();
           if (map) {
@@ -5499,18 +5503,36 @@
             }
             setTimeout(() => map.invalidateSize(), 0);
           }
+        } else if (verificationFallbackMode === "search") {
+          if (mapArea) mapArea.style.display = "none";
+          setManualAddressSectionVisible(true);
+          if (manualSection) manualSection.open = true;
+          setManualSearchControlsVisible(true);
+          if (switchToListBtn) switchToListBtn.style.display = "none";
+          if (switchToSearchBtn) switchToSearchBtn.style.display = "none";
+          if (switchToMapBtn) switchToMapBtn.style.display = "inline-flex";
+          if (modeHintEl) {
+            modeHintEl.textContent = "Step 2: Broaden the search, then choose the best address match.";
+          }
+          if (candidateStepNoteEl) {
+            candidateStepNoteEl.textContent = "If the first options were not right, search again and pick the best match.";
+          }
         } else {
           if (mapArea) mapArea.style.display = "none";
           setManualAddressSectionVisible(true);
           if (manualSection) manualSection.open = true;
-          setManualSearchControlsVisible(verificationManualSearchExpanded);
-          if (switchToSearchBtn) switchToSearchBtn.style.display = "none";
-          if (switchToMapBtn) switchToMapBtn.style.display = "inline-flex";
+          setManualSearchControlsVisible(false);
+          if (switchToListBtn) switchToListBtn.style.display = "none";
+          if (switchToSearchBtn) {
+            switchToSearchBtn.style.display = "inline-flex";
+            switchToSearchBtn.textContent = "Not right? Broaden search";
+          }
+          if (switchToMapBtn) switchToMapBtn.style.display = "none";
           if (modeHintEl) {
-            modeHintEl.textContent = "Step 1: Choose the best address match. Step 2: Continue. Step 3 (if needed): Try map instead.";
+            modeHintEl.textContent = "Step 1: Choose the best address match from the list below.";
           }
           if (candidateStepNoteEl) {
-            candidateStepNoteEl.textContent = "Select the best address match, then continue.";
+            candidateStepNoteEl.textContent = "Pick the closest match, then continue.";
           }
         }
         setConfirmAddressButtonState();
@@ -5535,7 +5557,7 @@
         );
         let message = "This looks like our best available match. Continue if it is your property.";
         if (needsManual) {
-          message = "We need a quick confirmation. Step 1: choose the best address match. Step 2 (if needed): try the map.";
+          message = "We need a quick confirmation. Step 1: choose an address match. Step 2 (if needed): broaden search. Step 3: use the map only if still needed.";
         } else if (confidence === "low" || confidence === "unknown") {
           message = "Match confidence is lower than usual. Please confirm before continuing.";
         } else if (hasMaterialAddressDifference(enteredAddress, resolvedAddress)) {
@@ -5631,7 +5653,7 @@
             });
             applyVerificationPendingLocation();
             renderManualCandidateList(verificationManualCandidates);
-            setManualCandidateStatus("Address selected. Continue if this is your property.");
+            setManualCandidateStatus("Address selected. Click \"Use this address\" to continue.");
           });
         });
       }
@@ -5645,7 +5667,11 @@
         const searchBtn = document.getElementById("verifySearchCandidatesBtn");
         if (searchBtn) searchBtn.disabled = true;
         if (statusMessage) {
-          setManualCandidateStatus("Searching for likely address matches...");
+          setManualCandidateStatus(
+            verificationFallbackMode === "search"
+              ? "Searching with your broader filters..."
+              : "Searching for likely address matches..."
+          );
         }
         try {
           const result = await fetchManualAddressCandidates(
@@ -5660,11 +5686,21 @@
           verificationSelectedCandidateId = null;
           renderManualCandidateList(verificationManualCandidates);
           if (verificationManualCandidates.length > 0) {
-            setManualCandidateStatus("Step 1 of 3: Select the correct address, then continue.");
+            setManualCandidateStatus(
+              verificationFallbackMode === "search"
+                ? "Step 2 of 3: Select the best match from these results."
+                : "Step 1 of 3: Select the correct address, then continue."
+            );
           } else {
-            setManualCandidateStatus(result?.status === "outside_prepared_region"
-              ? "No confident address match found here. Step 2 of 3: try the map instead."
-              : "No close matches found. Step 2 of 3: try the map instead.");
+            if (verificationFallbackMode === "search") {
+              setManualCandidateStatus(result?.status === "outside_prepared_region"
+                ? "No confident address match found here. Step 3 of 3: try the map instead."
+                : "No close matches found. Step 3 of 3: try the map instead.");
+            } else {
+              setManualCandidateStatus(result?.status === "outside_prepared_region"
+                ? "No confident top match yet. Step 2 of 3: broaden search."
+                : "No close matches yet. Step 2 of 3: broaden search.");
+            }
           }
         } catch (err) {
           verificationManualCandidates = [];
@@ -5722,9 +5758,9 @@
         ) {
           confirmBtn.textContent = "Continue and run assessment";
         } else if (verificationAcceptedSelectionSource === "manual_address_selection" && !verificationHasUnappliedPending) {
-          confirmBtn.textContent = "Continue with selected address";
+          confirmBtn.textContent = "Use this address";
         } else if (verificationAcceptedSelectionSource === "map_click_fallback" && !verificationHasUnappliedPending) {
-          confirmBtn.textContent = "Continue with selected map location";
+          confirmBtn.textContent = "Use this map location";
         } else if (verificationAcceptedSelectionSource === "suggested_geocode" && !verificationHasUnappliedPending) {
           confirmBtn.textContent = "Continue with suggested match";
         } else {
@@ -5854,9 +5890,16 @@
         if (verificationHasUnappliedPending) {
           warnings.unshift("You moved the map pin but have not applied it yet.");
         }
-        const contextualWarning = (verificationFallbackMode === "candidate")
-          ? (warnings[0] || "Choose the best address match first. Use the map only if needed.")
-          : (warnings[0] || "Apply this map pin before continuing.");
+        let contextualWarning = warnings[0] || "";
+        if (!contextualWarning) {
+          if (verificationFallbackMode === "candidate") {
+            contextualWarning = "Choose the best address match first. Use other options only if needed.";
+          } else if (verificationFallbackMode === "search") {
+            contextualWarning = "Search by ZIP or city if the first match list was not right.";
+          } else {
+            contextualWarning = "Apply this map pin before continuing.";
+          }
+        }
         if (contextualWarning) {
           warningBox.style.display = "block";
           warningBox.textContent = contextualWarning;
@@ -7037,17 +7080,59 @@
         openVerificationAdjustTools({ openManual: false });
       });
       document.getElementById("verifyShowManualOptionsBtn")?.addEventListener("click", () => {
-        openVerificationAdjustTools({ openManual: true });
+        openVerificationAdjustTools({ openManual: true, fallbackMode: "candidate" });
         if (Array.isArray(verificationManualCandidates) && verificationManualCandidates.length === 0) {
           runManualAddressCandidateSearch({ statusMessage: true });
         }
       });
       document.getElementById("verifyShowSearchFiltersBtn")?.addEventListener("click", () => {
-        verificationManualSearchExpanded = !verificationManualSearchExpanded;
-        setManualSearchControlsVisible(verificationManualSearchExpanded);
-        if (verificationManualSearchExpanded && Array.isArray(verificationManualCandidates) && verificationManualCandidates.length === 0) {
-          runManualAddressCandidateSearch({ statusMessage: true });
+        if (verificationFallbackMode === "candidate") {
+          verificationManualSearchExpanded = true;
+          setVerificationFallbackMode("search");
+          setFlowStatus("Address confirmation: Step 2 of 3. Broaden the search if needed.", "muted");
+          if (Array.isArray(verificationManualCandidates) && verificationManualCandidates.length === 0) {
+            runManualAddressCandidateSearch({ statusMessage: true });
+          }
+          return;
         }
+        verificationManualSearchExpanded = false;
+        setVerificationFallbackMode("candidate");
+        setFlowStatus("Address confirmation: Step 1 of 3. Choose the best address match.", "muted");
+      });
+      document.getElementById("verifyUseMapFallbackBtn")?.addEventListener("click", () => {
+        if (verificationFallbackMode !== "search") {
+          verificationManualSearchExpanded = true;
+          setVerificationFallbackMode("search");
+          setFlowStatus("Address confirmation: Step 2 of 3. Broaden the search if needed.", "muted");
+          if (Array.isArray(verificationManualCandidates) && verificationManualCandidates.length === 0) {
+            runManualAddressCandidateSearch({ statusMessage: true });
+          }
+          return;
+        }
+        activateMapClickFallback();
+      });
+      document.getElementById("verifySearchCandidatesBtn")?.addEventListener("click", () => {
+        if (verificationFallbackMode !== "search") {
+          verificationManualSearchExpanded = true;
+          setVerificationFallbackMode("search");
+        }
+        runManualAddressCandidateSearch({ statusMessage: true });
+      });
+      document.getElementById("verifyLocalitySelect")?.addEventListener("change", () => {
+        if (verificationFallbackMode !== "search") {
+          verificationManualSearchExpanded = true;
+          setVerificationFallbackMode("search");
+        }
+        runManualAddressCandidateSearch({ statusMessage: true });
+      });
+      document.getElementById("verifyZipInput")?.addEventListener("keydown", (evt) => {
+        if (evt.key !== "Enter") return;
+        evt.preventDefault();
+        if (verificationFallbackMode !== "search") {
+          verificationManualSearchExpanded = true;
+          setVerificationFallbackMode("search");
+        }
+        runManualAddressCandidateSearch({ statusMessage: true });
       });
       document.getElementById("verifyAdjustLocationPanel")?.addEventListener("toggle", () => {
         if (verifyLocationMap && document.getElementById("verifyAdjustLocationPanel")?.open) {
@@ -7058,18 +7143,6 @@
       document.getElementById("verifyAddressContextPanel")?.addEventListener("toggle", (evt) => {
         if (!evt?.target?.open) return;
         setVerificationModalMode({ fastPathEligible: false });
-      });
-      document.getElementById("verifySearchCandidatesBtn")?.addEventListener("click", () => {
-        runManualAddressCandidateSearch({ statusMessage: true });
-      });
-      document.getElementById("verifyUseMapFallbackBtn")?.addEventListener("click", activateMapClickFallback);
-      document.getElementById("verifyLocalitySelect")?.addEventListener("change", () => {
-        runManualAddressCandidateSearch({ statusMessage: true });
-      });
-      document.getElementById("verifyZipInput")?.addEventListener("keydown", (evt) => {
-        if (evt.key !== "Enter") return;
-        evt.preventDefault();
-        runManualAddressCandidateSearch({ statusMessage: true });
       });
       document.getElementById("editAddressBtn")?.addEventListener("click", () => {
         cancelAddressVerification();
