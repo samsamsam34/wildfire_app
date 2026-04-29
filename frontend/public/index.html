@@ -1650,9 +1650,9 @@
           <p class="section-help">Quick extra context on why this result looks the way it does. Deeper technical material stays in Advanced details.</p>
           <div class="more-details-stack">
             <section id="supportingInsightsSection" class="secondary-panel more-options-item more-details-item">
-              <details id="supportingInsightsPanel">
-                <summary>Why this property looks riskier (more context)</summary>
-                <p class="section-help">Top context first, with optional deeper items hidden until you ask for more.</p>
+              <div id="supportingInsightsPanel">
+                <h3 class="subsection-title">Why this property looks riskier (more context)</h3>
+                <p class="section-help">Top context first, with longer lists capped by “See more.”</p>
                 <div class="results mt-sm">
                   <div class="card result-primary">
                     <h3>Quick property context</h3>
@@ -1679,7 +1679,7 @@
 
                   <div class="card">
                     <h3>What is most affecting this result</h3>
-                    <p class="section-help">Top findings first. Expand lists only if you want deeper context.</p>
+                    <p class="section-help">Top findings first. Expand long lists only if you want more context.</p>
                     <div class="insight-group">
                       <div class="mini-label">Closest to the home</div>
                       <ul id="propertyFindings"><li class="muted">Structure-specific findings will appear after assessment.</li></ul>
@@ -1694,20 +1694,20 @@
                     </div>
                   </div>
 
-                  <details class="card">
-                    <summary>Action plan details (optional)</summary>
-                    <p class="section-help">Shows the first actions to prioritize, then optional extra steps.</p>
+                  <div class="card">
+                    <h3>Action plan details</h3>
+                    <p class="section-help">Shows the first actions to prioritize, with additional steps in capped lists.</p>
                     <div class="mini-label">Recommended sequence</div>
                     <p id="nextStepsText">Focus on the top actions first.</p>
                     <ul id="mitigations"><li class="muted">Recommendations will appear after assessment.</li></ul>
-                  </details>
+                  </div>
                 </div>
-              </details>
+              </div>
             </section>
 
             <section id="confidenceSection" class="trust-card secondary-panel more-options-item more-details-item">
-              <details id="confidenceDeepDivePanel">
-                <summary>How certain this result is</summary>
+              <div id="confidenceDeepDivePanel">
+                <h3 class="subsection-title">How certain this result is</h3>
                 <p class="section-help">How reliable this estimate is, and where limited data may reduce detail.</p>
                 <div class="trust-overview">
                   <div class="trust-value">
@@ -1726,12 +1726,12 @@
                 <div class="result-divider"></div>
                 <div class="mini-label">What we confirmed vs estimated</div>
                 <ul id="homeownerLimitationsBlock"><li class="muted">Run an assessment to see what was observed, estimated, and missing.</li></ul>
-              </details>
+              </div>
             </section>
 
             <section id="improveSection" class="secondary-panel more-options-item more-details-item">
-              <details id="improvePanel">
-                <summary>Improve this estimate (optional)</summary>
+              <div id="improvePanel">
+                <h3 class="subsection-title">Improve this estimate (optional)</h3>
                 <p class="section-help">Add any missing details, then click <strong>Re-run With Updated Details</strong> to sharpen this screening.</p>
                 <h3 class="subsection-title">Suggested Improvements</h3>
                 <ul id="improveSuggestions"><li class="muted">Suggestions will appear after assessment.</li></ul>
@@ -1741,12 +1741,12 @@
                   <button id="refreshImproveBtn" type="button" class="secondary">Refresh Input Suggestions</button>
                 </div>
                 <p id="improveStatus" class="status-line status-secondary tone-muted">Input suggestions will appear after assessment.</p>
-              </details>
+              </div>
             </section>
 
             <section id="mapSection" class="secondary-panel more-options-item more-details-item">
-              <details id="mapPanel">
-                <summary>Property map view (optional)</summary>
+              <div id="mapPanel">
+                <h3 class="subsection-title">Property map view (optional)</h3>
                 <p class="muted">See property geometry, defensible-space context, and nearby wildfire layers in one map view.</p>
                 <div id="assessmentMap"></div>
                 <p id="mapEmptyText" class="map-empty">Run an assessment to load map layers.</p>
@@ -1754,7 +1754,7 @@
                 <p id="mapLimitationsText" class="muted map-note">Map limitations will appear here when needed.</p>
                 <p id="propertyContextMapHint" class="muted map-note">Property context summary will appear here after assessment.</p>
                 <div id="mapDebugPanel" class="map-debug" data-operator-only="true" style="display:none;"></div>
-              </details>
+              </div>
             </section>
           </div>
         </details>
@@ -2349,10 +2349,12 @@
       }
 
       function isAssessmentMapPanelVisible() {
+        const mapSection = document.getElementById("mapSection");
         const mapPanel = document.getElementById("mapPanel");
         const hubPanel = document.getElementById("moreOptionsHubPanel");
         const mapEl = document.getElementById("assessmentMap");
-        if (!mapPanel?.open) return false;
+        if (!mapSection || mapSection.style.display === "none") return false;
+        if (!mapPanel) return false;
         if (hubPanel && !hubPanel.open) return false;
         if (!mapEl) return false;
         return mapEl.getClientRects().length > 0;
@@ -2532,11 +2534,7 @@
 
       const defaultCollapsedPanelIds = [
         "moreOptionsHubPanel",
-        "supportingInsightsPanel",
-        "confidenceDeepDivePanel",
         "simulationPlannerPanel",
-        "improvePanel",
-        "mapPanel",
         "advancedInternalDetailsPanel",
       ];
 
@@ -2882,7 +2880,7 @@
         if (!el) return;
         el.textContent = String(message || "").trim();
         applyToneClass(el, tone);
-        applySecondaryStatusVisibility(el, { tone, panelId: "improvePanel" });
+        applySecondaryStatusVisibility(el, { tone, panelId: "moreOptionsHubPanel" });
       }
 
       function setReportActionStatus(message, tone = "muted") {
@@ -7643,13 +7641,9 @@
       function wirePanelMotionCues() {
         const motionPanelIds = [
           "moreOptionsHubPanel",
-          "supportingInsightsPanel",
-          "confidenceDeepDivePanel",
           "simulationPlannerPanel",
           "simulationAdvancedPanel",
-          "improvePanel",
           "homeownerReportPreviewPanel",
-          "mapPanel",
           "homeownerDecisionAdvancedDetails",
           "advancedInternalDetailsPanel",
           "verifyAddressContextPanel",
@@ -7696,12 +7690,7 @@
         refreshSecondaryStatusVisibility();
         invalidateAssessmentMapSize({ refocus: false });
       });
-      document.getElementById("mapPanel")?.addEventListener("toggle", () => {
-        refreshSecondaryStatusVisibility();
-        invalidateAssessmentMapSize({ refocus: false });
-      });
       document.getElementById("simulationPlannerPanel")?.addEventListener("toggle", refreshSecondaryStatusVisibility);
-      document.getElementById("improvePanel")?.addEventListener("toggle", refreshSecondaryStatusVisibility);
 
       document.getElementById("homeownerReportPreviewPanel")?.addEventListener("toggle", (evt) => {
         const panel = evt?.target;
