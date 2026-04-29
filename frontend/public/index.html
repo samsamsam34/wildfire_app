@@ -702,6 +702,16 @@
       .more-options-item h3 {
         margin-bottom: 0.28rem;
       }
+      .short-list-toggle-btn {
+        margin-top: 0.32rem;
+        width: auto;
+        padding: 0.34rem 0.68rem;
+        min-height: 32px;
+        font-size: 0.8rem;
+      }
+      .short-list-hidden-item {
+        display: none;
+      }
       .report-journey-surface {
         border: 0;
         background: transparent;
@@ -2241,9 +2251,17 @@
           fallbackMuted = true,
           limit = null,
           renderItem = null,
+          shortModeCount = null,
+          shortModeLabel = "See more",
+          shortModeCollapseLabel = "See less",
         } = {}
       ) {
         if (!listEl) return;
+        const toggleKey = String(listEl.id || "");
+        if (toggleKey) {
+          const existingToggle = listEl.parentElement?.querySelector(`.short-list-toggle-btn[data-short-list-for="${toggleKey}"]`);
+          if (existingToggle) existingToggle.remove();
+        }
         clearNode(listEl);
         let rows = Array.isArray(items) ? items : [];
         if (Number.isFinite(Number(limit)) && Number(limit) >= 0) {
@@ -2267,6 +2285,42 @@
           if (fallbackMuted) li.className = "muted";
           li.textContent = fallbackText;
           listEl.appendChild(li);
+          return;
+        }
+
+        const shortCount = Number(shortModeCount);
+        if (
+          toggleKey
+          && Number.isFinite(shortCount)
+          && shortCount > 0
+          && appended > shortCount
+        ) {
+          const listItems = Array.from(listEl.querySelectorAll(":scope > li"));
+          listItems.forEach((li, idx) => {
+            const hide = idx >= shortCount;
+            li.classList.toggle("short-list-hidden-item", hide);
+            li.hidden = hide;
+          });
+          const toggleBtn = document.createElement("button");
+          toggleBtn.type = "button";
+          toggleBtn.className = "secondary short-list-toggle-btn";
+          toggleBtn.dataset.shortListFor = toggleKey;
+          toggleBtn.setAttribute("aria-expanded", "false");
+          toggleBtn.textContent = String(shortModeLabel || "See more");
+          toggleBtn.addEventListener("click", () => {
+            const expanded = toggleBtn.getAttribute("aria-expanded") === "true";
+            const nextExpanded = !expanded;
+            listItems.forEach((li, idx) => {
+              const hide = !nextExpanded && idx >= shortCount;
+              li.classList.toggle("short-list-hidden-item", hide);
+              li.hidden = hide;
+            });
+            toggleBtn.setAttribute("aria-expanded", nextExpanded ? "true" : "false");
+            toggleBtn.textContent = nextExpanded
+              ? String(shortModeCollapseLabel || "See less")
+              : String(shortModeLabel || "See more");
+          });
+          listEl.insertAdjacentElement("afterend", toggleBtn);
         }
       }
 
@@ -4442,6 +4496,9 @@
         if (limitations) rows.push({ label: "Confidence notes", value: limitations });
         setListItems(highlightsEl, rows, {
           fallbackText: "Report highlights will appear after assessment.",
+          shortModeCount: 3,
+          shortModeLabel: "See more highlights",
+          shortModeCollapseLabel: "Show fewer highlights",
           renderItem: (li, row) => {
             const label = String(row?.label || "").trim();
             const value = String(row?.value || "").trim();
@@ -4492,6 +4549,9 @@
         }
         setListItems(secondaryEl, secondaryRows, {
           fallbackText: "Additional details will appear here when available.",
+          shortModeCount: 2,
+          shortModeLabel: "See more notes",
+          shortModeCollapseLabel: "Show fewer notes",
           renderItem: (li, row) => {
             const label = String(row?.label || "").trim();
             const value = String(row?.value || "").trim();
@@ -4714,14 +4774,19 @@
         if (scoringStatus === "insufficient_data_to_score") {
           setListItems(propertyFindingsEl, [], {
             fallbackText: "We found relevant signals, but not enough confirmed home details for structure-level findings.",
+            shortModeCount: 3,
           });
         } else if (!computedComponents.includes("home_ignition_vulnerability")) {
           setListItems(propertyFindingsEl, [], {
             fallbackText: "Near-home findings are preliminary because some property details are still estimated.",
+            shortModeCount: 3,
           });
         } else {
           setListItems(propertyFindingsEl, combinedFindings, {
             fallbackText: "No structure-specific findings available for this assessment.",
+            shortModeCount: 3,
+            shortModeLabel: "See more context around the home",
+            shortModeCollapseLabel: "Show fewer context items",
           });
         }
 
@@ -4798,6 +4863,9 @@
         });
         setListItems(document.getElementById("mitigations"), mitigationRows, {
           fallbackText: "No recommended actions are available yet.",
+          shortModeCount: 3,
+          shortModeLabel: "See full action list",
+          shortModeCollapseLabel: "Show fewer actions",
           renderItem: (li, row) => {
             const title = String(row?.title || "").trim();
             const detail = String(row?.detail || "").trim();
@@ -4866,6 +4934,9 @@
         setListItems(document.getElementById("assumptions"), estimatedRows, {
           limit: 5,
           fallbackText: "No estimated items were listed.",
+          shortModeCount: 3,
+          shortModeLabel: "See more estimated items",
+          shortModeCollapseLabel: "Show fewer estimated items",
         });
         const confidenceActionRows = (Array.isArray(homeownerSummary?.confidence_improvement_actions) && homeownerSummary.confidence_improvement_actions.length > 0
           ? homeownerSummary.confidence_improvement_actions
@@ -4877,6 +4948,9 @@
         setListItems(document.getElementById("confidenceActions"), confidenceActionRows, {
           limit: 6,
           fallbackText: "No additional ways to improve confidence are currently suggested.",
+          shortModeCount: 3,
+          shortModeLabel: "See more ways to improve this estimate",
+          shortModeCollapseLabel: "Show fewer improvement ideas",
         });
         renderHomeownerLimitationsBlock({
           observedRows,
