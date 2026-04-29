@@ -3033,23 +3033,42 @@
 
         const decisionCtaBlock = document.querySelector(".decision-cta-block");
         const summaryBtn = document.getElementById("primaryDecisionCtaBtn");
+        const priorityNoteEl = document.getElementById("primaryDecisionCtaPriorityNote");
         const postSimActionRowEl = document.getElementById("postSimulationActionRow");
         const postSimOpenReportBtn = document.getElementById("postSimOpenReportBtn");
 
         const summaryIsPrimary = hasAssessment && !hasSimulationResult && !desktopCueVisible;
         const reportIsPrimary = hasAssessment && hasSimulationResult && !desktopCueVisible;
+        const suppressSummaryButtonRegion = desktopCueVisible && hasAssessment;
 
         if (decisionCtaBlock) {
           decisionCtaBlock.classList.toggle("is-demoted", desktopCueVisible);
         }
         if (summaryBtn) {
           summaryBtn.classList.toggle("secondary", !summaryIsPrimary);
+          summaryBtn.style.display = suppressSummaryButtonRegion ? "none" : "";
+        }
+        if (priorityNoteEl) {
+          if (suppressSummaryButtonRegion) {
+            if (!priorityNoteEl.dataset.defaultText) {
+              priorityNoteEl.dataset.defaultText = String(priorityNoteEl.textContent || "").trim();
+            }
+            priorityNoteEl.textContent = "Use the Next best step cue to continue.";
+          } else if (priorityNoteEl.dataset.defaultText) {
+            priorityNoteEl.textContent = priorityNoteEl.dataset.defaultText;
+            delete priorityNoteEl.dataset.defaultText;
+          }
         }
         if (postSimOpenReportBtn) {
           postSimOpenReportBtn.classList.toggle("secondary", !reportIsPrimary);
         }
         if (postSimActionRowEl) {
           postSimActionRowEl.classList.toggle("is-demoted", desktopCueVisible);
+          if (hasSimulationResult && suppressSummaryButtonRegion) {
+            postSimActionRowEl.style.display = "none";
+          } else {
+            postSimActionRowEl.style.display = "";
+          }
         }
       }
 
