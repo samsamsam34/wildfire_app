@@ -4490,6 +4490,80 @@
         return [text];
       }
 
+      function extractLabeledSummarySegment(summaryText, label, stopLabels = []) {
+        const text = String(summaryText || "").trim();
+        const labelText = String(label || "").trim();
+        if (!text || !labelText) return "";
+        const lower = text.toLowerCase();
+        const labelLower = labelText.toLowerCase();
+        const startIdx = lower.indexOf(labelLower);
+        if (startIdx < 0) return "";
+        const contentStart = startIdx + labelLower.length;
+        let endIdx = text.length;
+        const stopCandidates = (Array.isArray(stopLabels) ? stopLabels : [])
+          .map((v) => String(v || "").trim().toLowerCase())
+          .filter(Boolean);
+        stopCandidates.forEach((stop) => {
+          const idx = lower.indexOf(stop, contentStart);
+          if (idx >= 0 && idx < endIdx) endIdx = idx;
+        });
+        return text
+          .slice(contentStart, endIdx)
+          .replace(/^[\s:;,.!-]+/, "")
+          .trim();
+      }
+
+      function extractDriverSentencesFromSummary(summaryText) {
+        const text = String(summaryText || "").trim();
+        if (!text) return [];
+        const seen = new Set();
+        const rows = [];
+        const addRow = (raw) => {
+          const cleaned = String(raw || "")
+            .replace(/^[\s\-•*\d.)]+/, "")
+            .replace(/\s+/g, " ")
+            .replace(/[;,.!?]\s*$/, "")
+            .trim();
+          if (!cleaned) return;
+          const lower = cleaned.toLowerCase();
+          if (
+            lower === "not available"
+            || lower === "none"
+            || lower === "n/a"
+            || lower === "limited signal set"
+          ) return;
+          if (/^(primary drivers|near[- ]structure summary)\s*:/i.test(cleaned)) return;
+          if (cleaned.length < 8) return;
+          const key = normalizeComparableText(cleaned);
+          if (!key || seen.has(key)) return;
+          seen.add(key);
+          rows.push(sentenceCaseText(cleaned));
+        };
+
+        const chunkRows = text.split(/\s*(?:\.\s+|,\s+(?=[A-Z0-9]))\s*/);
+        chunkRows.forEach(addRow);
+        if (rows.length === 0) addRow(text);
+        return rows.slice(0, 6);
+      }
+
+      function extractPrimaryDriversFromSummary(summaryText) {
+        const segment = extractLabeledSummarySegment(
+          summaryText,
+          "Primary drivers:",
+          ["Near-structure summary:"]
+        );
+        return extractDriverSentencesFromSummary(segment);
+      }
+
+      function extractNearStructureSummaryFromSummary(summaryText) {
+        const segment = extractLabeledSummarySegment(
+          summaryText,
+          "Near-structure summary:",
+          []
+        );
+        return extractDriverSentencesFromSummary(segment);
+      }
+
       function mergeDecisionRows(primaryRows, fallbackRows, limit = 8) {
         const primary = Array.isArray(primaryRows) ? primaryRows : [];
         const fallback = Array.isArray(fallbackRows) ? fallbackRows : [];
@@ -4529,6 +4603,17 @@
         console.debug(`[homeowner-summary] ${kind} source=${source} count=${Array.isArray(rows) ? rows.length : 0}`);
       }
 
+      function traceHomeownerCandidates(kind, candidates = []) {
+        if (!isDebugMode) return;
+        const rows = (Array.isArray(candidates) ? candidates : [])
+          .map((candidate) => {
+            const source = String(candidate?.source || "unknown");
+            const count = Array.isArray(candidate?.rows) ? candidate.rows.length : 0;
+            return `${source}:${count}`;
+          });
+        console.debug(`[homeowner-summary] ${kind} candidates`, rows.join(" | "));
+      }
+
       function extractHomeownerDecisionCollections(data) {
         const homeownerSummary = (data && typeof data.homeowner_summary === "object" && data.homeowner_summary)
           ? data.homeowner_summary
@@ -4538,27 +4623,35 @@
           || homeownerSummary?.headline_risk_summary
           || ""
         ).trim();
+        const primaryDriversFromSummary = extractPrimaryDriversFromSummary(summaryText);
+        const nearStructureSummaryDrivers = extractNearStructureSummaryFromSummary(summaryText);
 
         const reasonCandidates = [
           { source: "assessment.insurability_status_reasons", rows: normalizeStringArray(data?.insurability_status_reasons) },
           { source: "homeowner_summary.insurability_status_reasons", rows: normalizeStringArray(homeownerSummary?.insurability_status_reasons) },
           { source: "assessment.top_risk_drivers_detailed", rows: normalizeStringArray(data?.top_risk_drivers_detailed) },
+          { source: "summary.primary_drivers", rows: normalizeStringArray(primaryDriversFromSummary) },
+          { source: "summary.near_structure", rows: normalizeStringArray(nearStructureSummaryDrivers) },
           { source: "assessment.top_near_structure_risk_drivers", rows: normalizeStringArray(data?.top_near_structure_risk_drivers) },
           { source: "assessment.property_findings", rows: normalizeStringArray(data?.property_findings) },
           { source: "summary_fallback", rows: deriveReasonFallbackFromSummary(summaryText) },
         ];
+        traceHomeownerCandidates("reasons", reasonCandidates);
         const selectedReasons = reasonCandidates.find((candidate) => candidate.rows.length > 0) || { source: "none", rows: [] };
 
         const driverCandidates = [
           { source: "assessment.top_risk_drivers", rows: normalizeDriverRows(data?.top_risk_drivers) },
           { source: "homeowner_summary.top_risk_drivers", rows: normalizeDriverRows(homeownerSummary?.top_risk_drivers) },
           { source: "assessment.top_risk_drivers_detailed", rows: normalizeDriverRows(data?.top_risk_drivers_detailed) },
+          { source: "summary.primary_drivers", rows: normalizeDriverRows(primaryDriversFromSummary) },
+          { source: "summary.near_structure", rows: normalizeDriverRows(nearStructureSummaryDrivers) },
           { source: "assessment.top_near_structure_risk_drivers", rows: normalizeDriverRows(data?.top_near_structure_risk_drivers) },
           { source: "assessment.property_findings", rows: normalizeDriverRows(data?.property_findings) },
         ];
+        traceHomeownerCandidates("drivers", driverCandidates);
         const selectedDrivers = driverCandidates.find((candidate) => candidate.rows.length > 0) || { source: "none", rows: [] };
 
-        const actionCandidates = [
+        const mitigationActionCandidates = [
           { source: "assessment.prioritized_mitigation_actions", rows: normalizeActionRows(data?.prioritized_mitigation_actions) },
           { source: "homeowner_summary.prioritized_mitigation_actions", rows: normalizeActionRows(homeownerSummary?.prioritized_mitigation_actions) },
           { source: "assessment.top_recommended_actions", rows: normalizeActionRows(data?.top_recommended_actions) },
@@ -4566,7 +4659,24 @@
           { source: "assessment.mitigation_plan", rows: normalizeActionRows(data?.mitigation_plan) },
           { source: "assessment.prioritized_vegetation_actions", rows: normalizeActionRows(data?.prioritized_vegetation_actions) },
         ];
-        const selectedActions = actionCandidates.find((candidate) => candidate.rows.length > 0) || { source: "none", rows: [] };
+        const estimateImprovementActionCandidates = [
+          { source: "homeowner_summary.confidence_improvement_actions", rows: normalizeActionRows(homeownerSummary?.confidence_improvement_actions) },
+          { source: "homeowner_summary.recommended_data_improvements", rows: normalizeActionRows(homeownerSummary?.recommended_data_improvements) },
+          { source: "assessment.recommended_data_improvements", rows: normalizeActionRows(data?.recommended_data_improvements) },
+          { source: "assessment.confidence_improvement_actions", rows: normalizeActionRows(data?.confidence_improvement_actions) },
+          { source: "homeowner_summary.improve_your_result.suggestions", rows: normalizeActionRows(homeownerSummary?.improve_your_result?.suggestions) },
+        ];
+        traceHomeownerCandidates("actions_mitigation", mitigationActionCandidates);
+        traceHomeownerCandidates("actions_estimate", estimateImprovementActionCandidates);
+
+        const selectedMitigationActions = mitigationActionCandidates.find((candidate) => candidate.rows.length > 0) || { source: "none", rows: [] };
+        const selectedEstimateImprovementActions = estimateImprovementActionCandidates.find((candidate) => candidate.rows.length > 0) || { source: "none", rows: [] };
+        const selectedActions = selectedMitigationActions.rows.length > 0
+          ? selectedMitigationActions
+          : selectedEstimateImprovementActions;
+        const actionsKind = selectedMitigationActions.rows.length > 0
+          ? "mitigation"
+          : (selectedEstimateImprovementActions.rows.length > 0 ? "estimate_improvement" : "none");
 
         return {
           homeownerSummary,
@@ -4578,6 +4688,7 @@
             reasons: selectedReasons.source,
             drivers: selectedDrivers.source,
             actions: selectedActions.source,
+            actions_kind: actionsKind,
           },
         };
       }
@@ -4620,6 +4731,7 @@
         reasons = [],
         drivers = [],
         actions = [],
+        actionsKind = "none",
         beforeAfterSummary = "",
         beforeStatus = "",
         afterStatus = "",
@@ -4666,7 +4778,11 @@
           ? "No top risk drivers were available from this result."
           : "Top drivers will appear after assessment.";
         const noActionsText = hasAssessment
-          ? "No prioritized actions were returned for this assessment."
+          ? (
+            actionsKind === "estimate_improvement"
+              ? "No mitigation actions were returned for this result. You can improve this estimate by adding property details."
+              : "No prioritized actions were returned for this assessment."
+          )
           : "Top actions will appear after assessment.";
 
         const reasonLines = topNonEmptyLines(reasons, 3);
@@ -4690,7 +4806,15 @@
             return String(row || "").trim();
           })
           .filter(Boolean);
-        setListItems(actionsEl, actionLines, {
+        const actionRows = (
+          actionsKind === "estimate_improvement" && actionLines.length > 0
+            ? [
+              "No mitigation actions were returned for this result. You can improve this estimate by adding property details.",
+              ...actionLines,
+            ]
+            : actionLines
+        );
+        setListItems(actionsEl, actionRows, {
           fallbackText: noActionsText,
         });
 
@@ -4803,6 +4927,15 @@
         traceHomeownerListSource("reasons", decisionCollections.sources.reasons, reasons);
         traceHomeownerListSource("drivers", decisionCollections.sources.drivers, drivers);
         traceHomeownerListSource("actions", decisionCollections.sources.actions, actions);
+        if (isDebugMode) {
+          console.debug("[homeowner-summary] renderHomeownerDecisionFromAssessment snapshot_counts", {
+            assessment_id: data?.assessment_id || null,
+            reasons: reasons.length,
+            drivers: drivers.length,
+            actions: actions.length,
+            actions_kind: decisionCollections.sources.actions_kind || "none",
+          });
+        }
         const rawLimitations = String(
           confidence?.headline
           || data?.why_this_result_is_limited
@@ -4825,6 +4958,7 @@
           reasons,
           drivers,
           actions,
+          actionsKind: decisionCollections.sources.actions_kind || "none",
           beforeAfterSummary: String(beforeAfter?.summary || "").trim(),
           beforeStatus: String(beforeAfter?.current_insurability_status || "").trim(),
           afterStatus: String(beforeAfter?.projected_insurability_status || "").trim(),
@@ -4924,7 +5058,7 @@
           : {};
         const assessmentDecision = latestAssessment
           ? extractHomeownerDecisionCollections(latestAssessment)
-          : { reasons: [], drivers: [], actions: [], sources: { reasons: "none", drivers: "none", actions: "none" } };
+          : { reasons: [], drivers: [], actions: [], sources: { reasons: "none", drivers: "none", actions: "none", actions_kind: "none" } };
         const overall = (firstScreen?.overall_wildfire_risk && typeof firstScreen.overall_wildfire_risk === "object")
           ? firstScreen.overall_wildfire_risk
           : {};
@@ -5054,6 +5188,7 @@
           reasons: statusReasons,
           drivers: topDrivers,
           actions: topActions,
+          actionsKind: assessmentDecision?.sources?.actions_kind || "none",
           beforeAfterSummary: beforeAfterText,
           beforeStatus,
           afterStatus,
@@ -5292,6 +5427,21 @@
         // renderUncoveredLocationState is reserved for hard geocoding failures only.
 
         latestAssessment = data;
+        if (isDebugMode) {
+          console.debug("[homeowner-summary] renderAssessment payload_snapshot", {
+            assessment_id: data?.assessment_id || null,
+            scoring_status: data?.scoring_status || null,
+            top_risk_drivers: Array.isArray(data?.top_risk_drivers) ? data.top_risk_drivers.length : 0,
+            top_risk_drivers_detailed: Array.isArray(data?.top_risk_drivers_detailed) ? data.top_risk_drivers_detailed.length : 0,
+            top_near_structure_risk_drivers: Array.isArray(data?.top_near_structure_risk_drivers) ? data.top_near_structure_risk_drivers.length : 0,
+            property_findings: Array.isArray(data?.property_findings) ? data.property_findings.length : 0,
+            prioritized_mitigation_actions: Array.isArray(data?.prioritized_mitigation_actions) ? data.prioritized_mitigation_actions.length : 0,
+            top_recommended_actions: Array.isArray(data?.top_recommended_actions) ? data.top_recommended_actions.length : 0,
+            mitigation_plan: Array.isArray(data?.mitigation_plan) ? data.mitigation_plan.length : 0,
+            explanation_summary: String(data?.explanation_summary || "").slice(0, 220),
+            homeowner_summary_keys: Object.keys((data && typeof data.homeowner_summary === "object" && data.homeowner_summary) ? data.homeowner_summary : {}),
+          });
+        }
         latestSimulationSummary = null;
         reportPreviewLoadedAssessmentId = null;
         reportPrimarySurfaceOpened = false;
@@ -7431,6 +7581,20 @@
                 audience: "homeowner"
               }, "POST")
             : await api("/risk/assess", payload, "POST");
+          if (isDebugMode) {
+            console.debug("[homeowner-summary] /risk/assess response", {
+              assessment_id: data?.assessment_id || null,
+              has_homeowner_summary: !!(data?.homeowner_summary && typeof data.homeowner_summary === "object"),
+              top_risk_drivers: Array.isArray(data?.top_risk_drivers) ? data.top_risk_drivers.length : 0,
+              top_risk_drivers_detailed: Array.isArray(data?.top_risk_drivers_detailed) ? data.top_risk_drivers_detailed.length : 0,
+              top_near_structure_risk_drivers: Array.isArray(data?.top_near_structure_risk_drivers) ? data.top_near_structure_risk_drivers.length : 0,
+              prioritized_mitigation_actions: Array.isArray(data?.prioritized_mitigation_actions) ? data.prioritized_mitigation_actions.length : 0,
+              top_recommended_actions: Array.isArray(data?.top_recommended_actions) ? data.top_recommended_actions.length : 0,
+              mitigation_plan: Array.isArray(data?.mitigation_plan) ? data.mitigation_plan.length : 0,
+              property_findings: Array.isArray(data?.property_findings) ? data.property_findings.length : 0,
+              explanation_summary: String(data?.explanation_summary || "").slice(0, 220),
+            });
+          }
 
           renderAssessment(data);
           setRequestStatus("Assessment complete. Review your status and next steps below.", "success");
