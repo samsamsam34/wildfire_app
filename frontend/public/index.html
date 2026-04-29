@@ -1506,7 +1506,7 @@
               <button id="postSimOpenReportBtn" type="button">Review Full Report</button>
               <button id="postSimDownloadPdfBtn" type="button" class="secondary">Download Homeowner-Friendly PDF</button>
             </div>
-            <p class="post-simulation-action-note">Optional report highlights remain available below and load only when opened.</p>
+            <p class="post-simulation-action-note">Open your full report first, then optional highlights can be explored below.</p>
           </div>
         </div>
         <details id="homeownerDecisionAdvancedDetails" class="mt-sm">
@@ -1988,6 +1988,7 @@
       let selectedSimulationPresetId = "apply_top_actions";
       let homeownerToastTimer = null;
       let reportPreviewLoadedAssessmentId = null;
+      let reportPrimarySurfaceOpened = false;
       let homeownerSummaryFocusTimer = null;
       let mobileNextStepAction = "";
       let primaryDecisionAction = "";
@@ -2781,8 +2782,12 @@
       }
 
       function openReportOptionsFromSticky({ smooth = true } = {}) {
+        if (hasCompletedSimulationSummary()) {
+          reportPrimarySurfaceOpened = true;
+        }
         setPanelOpen("moreOptionsHubPanel", true);
         syncMoreOptionsHubState();
+        syncReportActionHierarchy(hasCompletedSimulationSummary());
         const target = document.getElementById("reportShareSection");
         if (target && typeof target.scrollIntoView === "function") {
           const useSmoothScroll = !!smooth && !prefersReducedMotion();
@@ -2811,13 +2816,27 @@
       function syncReportActionHierarchy(hasSimulationResult = hasCompletedSimulationSummary()) {
         const actionWrap = document.getElementById("reportPrimaryActions");
         const hierarchyHint = document.getElementById("reportActionHierarchyHint");
+        const reportPreviewPanel = document.getElementById("homeownerReportPreviewPanel");
         if (!actionWrap || !hierarchyHint) return;
         if (hasSimulationResult) {
+          const reportDetailsUnlocked = !!reportPrimarySurfaceOpened;
           actionWrap.style.display = "none";
           hierarchyHint.style.display = "block";
+          hierarchyHint.textContent = reportDetailsUnlocked
+            ? "You opened your report path above. Optional highlights are now available below."
+            : "Use the main “Review Full Report” action above first. Optional highlights appear after that step.";
+          if (reportPreviewPanel) {
+            reportPreviewPanel.style.display = reportDetailsUnlocked ? "" : "none";
+            if (!reportDetailsUnlocked) {
+              reportPreviewPanel.open = false;
+            }
+          }
         } else {
           actionWrap.style.display = "";
           hierarchyHint.style.display = "none";
+          if (reportPreviewPanel) {
+            reportPreviewPanel.style.display = "";
+          }
         }
       }
 
@@ -2838,8 +2857,8 @@
 
         if (hasSimulationResult) {
           summaryEl.textContent = "Before/after results are ready. Review your full report and save or share.";
-          btn.textContent = "Review Report Options";
-          mobileNextStepAction = "review_report_options";
+          btn.textContent = "Review Full Report";
+          mobileNextStepAction = "open_full_report";
           btn.disabled = isAssessmentSubmitting || isAddressVerificationPending;
         } else {
           summaryEl.textContent = isSimulationSubmitting
@@ -2862,8 +2881,8 @@
             cta_text: String(document.getElementById("mobileNextStepBtn")?.textContent || "").trim() || null,
           },
         });
-        if (mobileNextStepAction === "review_report_options") {
-          openReportOptionsFromSticky({ smooth: true });
+        if (mobileNextStepAction === "open_full_report" || mobileNextStepAction === "review_report_options") {
+          openReportView();
           return;
         }
         openSimulationPlannerFromCta({ smooth: true });
@@ -3955,6 +3974,7 @@
         latestHomeownerReport = null;
         latestSimulationSummary = null;
         reportPreviewLoadedAssessmentId = null;
+        reportPrimarySurfaceOpened = false;
         isSimulationSubmitting = false;
         collapseSecondaryPanels();
         const highlightsEl = document.getElementById("homeownerReportHighlights");
@@ -4349,6 +4369,7 @@
         latestAssessment = data;
         latestSimulationSummary = null;
         reportPreviewLoadedAssessmentId = null;
+        reportPrimarySurfaceOpened = false;
         latestHomeownerReport = null;
         collapseSecondaryPanels();
         // Homeowner-first flow: reveal quick simulation controls immediately after assessment.
@@ -6327,6 +6348,8 @@
         if (isSimulationSubmitting) return;
 
         isSimulationSubmitting = true;
+        reportPrimarySurfaceOpened = false;
+        syncReportActionHierarchy(hasCompletedSimulationSummary());
         syncSimulationActionState();
         syncSecondaryActionState();
 
@@ -6568,6 +6591,8 @@
           showHomeownerToast(message, "error");
           return;
         }
+        reportPrimarySurfaceOpened = true;
+        syncReportActionHierarchy(hasCompletedSimulationSummary());
         try {
           setReportActionStatus("Opening your full report...", "muted");
           setFlowStatus("Step 4 of 4: Opening your full report...", "muted");
