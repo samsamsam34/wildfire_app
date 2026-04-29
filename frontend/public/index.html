@@ -3773,7 +3773,7 @@
         }
         if (n >= 85) {
           return {
-            label: "Higher confidence",
+            label: "High confidence",
             detail: "Most key details were directly observed or strongly supported.",
           };
         }
@@ -3783,16 +3783,40 @@
             detail: "This estimate is useful for planning, with some details still inferred.",
           };
         }
-        if (n >= 45) {
-          return {
-            label: "Limited confidence",
-            detail: "Several details were estimated, so use this as a screening result.",
-          };
-        }
         return {
-          label: "Low confidence",
-          detail: "Many details are estimated or missing, so treat this as an early screening.",
+          label: "Limited confidence",
+          detail: "Several details were estimated or missing, so treat this as a screening result.",
         };
+      }
+
+      function resolveConfidenceTierLabel(rawTier = "", score = null) {
+        const raw = String(rawTier || "").trim().toLowerCase();
+        if (raw) {
+          if (/(high|strong)/.test(raw) && !/(low|limited)/.test(raw)) return "High confidence";
+          if (/(moderate|medium|partial)/.test(raw)) return "Moderate confidence";
+          if (/(limited|low|weak|uncertain)/.test(raw)) return "Limited confidence";
+        }
+        return summarizeConfidenceLevel(score).label;
+      }
+
+      function confidenceTierMeaning(label = "") {
+        const normalized = String(label || "").trim().toLowerCase();
+        if (normalized === "high confidence") {
+          return "Most key property and location details were directly confirmed.";
+        }
+        if (normalized === "moderate confidence") {
+          return "This is useful for planning, with some details estimated.";
+        }
+        if (normalized === "limited confidence") {
+          return "Use this as screening guidance because several details were estimated or missing.";
+        }
+        return "Confidence details are not available yet.";
+      }
+
+      function buildConfidenceReferenceNote(score) {
+        const n = Number(score);
+        if (!Number.isFinite(n)) return "";
+        return `Reference score: ${Math.round(n)} on a 0-100 scale (for detail only).`;
       }
 
       function toNumber(value) {
@@ -4129,6 +4153,18 @@
         const confidence = (homeownerSummary && typeof homeownerSummary.confidence_summary === "object" && homeownerSummary.confidence_summary)
           ? homeownerSummary.confidence_summary
           : {};
+        const confidenceScoreForSummary = Number(
+          homeownerSummary?.confidence_summary?.score
+          ?? data?.confidence_score
+        );
+        const confidenceTierForSummary = resolveConfidenceTierLabel(
+          homeownerSummary?.confidence_tier
+          || homeownerSummary?.confidence_summary?.tier
+          || homeownerSummary?.confidence_summary?.confidence_tier
+          || data?.confidence_tier
+          || "",
+          confidenceScoreForSummary
+        );
         const statusLabel = String(
           data?.insurability_status
           || homeownerSummary?.insurability_status
@@ -4154,11 +4190,16 @@
         const actions = Array.isArray(data?.prioritized_mitigation_actions) && data.prioritized_mitigation_actions.length > 0
           ? data.prioritized_mitigation_actions.slice(0, 3)
           : topNonEmptyLines(data?.top_recommended_actions || [], 3);
-        const limitations = String(
+        const rawLimitations = String(
           confidence?.headline
           || data?.why_this_result_is_limited
           || ""
         ).trim();
+        const limitations = [
+          `${confidenceTierForSummary}: ${confidenceTierMeaning(confidenceTierForSummary)}`,
+          "Confidence is affected by how many property details we could directly confirm versus estimate.",
+          rawLimitations,
+        ].filter(Boolean).join(" ");
         const methodology = String(
           data?.insurability_status_methodology_note
           || homeownerSummary?.insurability_status_methodology_note
@@ -4774,31 +4815,39 @@
         const confidenceRaw = Number(homeownerConfidence?.score);
         const confidenceType = String(homeownerConfidence?.assessment_type || "").trim();
         const confidenceHeadline = String(homeownerConfidence?.headline || "").trim();
-        const confidenceSummary = summarizeConfidenceLevel(confidenceRaw);
+        const fallbackScore = Number(data?.confidence_score);
+        const referenceScore = Number.isFinite(confidenceRaw) ? confidenceRaw : fallbackScore;
+        const confidenceTierLabel = resolveConfidenceTierLabel(
+          homeownerSummary?.confidence_tier
+          || homeownerConfidence?.tier
+          || homeownerConfidence?.confidence_tier
+          || data?.confidence_tier
+          || "",
+          Number.isFinite(confidenceRaw) ? confidenceRaw : fallbackScore
+        );
+        const confidenceMeaning = confidenceTierMeaning(confidenceTierLabel);
+        const confidenceTypeNote = confidenceType
+          ? ` Estimate scope: ${humanizeToken(confidenceType)}.`
+          : "";
+        const confidenceHeadlineNote = confidenceHeadline ? ` ${confidenceHeadline}` : "";
         if (Number.isFinite(confidenceRaw)) {
-          const typeSuffix = confidenceType ? ` (${confidenceType.replace(/_/g, " ")})` : "";
-          const headlineSuffix = confidenceHeadline ? ` ${confidenceHeadline}` : "";
-          const rounded = Math.round(confidenceRaw);
           document.getElementById("confidenceText").textContent =
-            `${confidenceSummary.label}${typeSuffix}. ${confidenceSummary.detail}${headlineSuffix} (about ${rounded} out of 100).`.trim();
+            `${confidenceTierLabel}. ${confidenceMeaning}${confidenceHeadlineNote}${confidenceTypeNote}`.trim();
         } else if (confidenceHeadline) {
-          document.getElementById("confidenceText").textContent = `${confidenceSummary.label}. ${confidenceHeadline}`;
+          document.getElementById("confidenceText").textContent =
+            `${confidenceTierLabel}. ${confidenceMeaning} ${confidenceHeadline}`.trim();
         } else {
-          const fallbackScore = Number(data?.confidence_score);
-          const fallbackSummary = summarizeConfidenceLevel(fallbackScore);
           document.getElementById("confidenceText").textContent = Number.isFinite(fallbackScore)
-            ? `${fallbackSummary.label}. ${fallbackSummary.detail} (about ${Math.round(fallbackScore)} out of 100).`
+            ? `${resolveConfidenceTierLabel("", fallbackScore)}. ${confidenceTierMeaning(resolveConfidenceTierLabel("", fallbackScore))}`
             : "Confidence estimate is not available yet.";
         }
         const confidenceAtGlanceEl = document.getElementById("confidenceAtGlance");
         if (confidenceAtGlanceEl) {
           if (Number.isFinite(confidenceRaw)) {
-            confidenceAtGlanceEl.textContent = confidenceSummary.label;
+            confidenceAtGlanceEl.textContent = confidenceTierLabel;
           } else {
-            const fallbackScore = Number(data?.confidence_score);
-            const fallbackSummary = summarizeConfidenceLevel(fallbackScore);
             confidenceAtGlanceEl.textContent = Number.isFinite(fallbackScore)
-              ? fallbackSummary.label
+              ? resolveConfidenceTierLabel("", fallbackScore)
               : (confidenceHeadline || "Confidence not available");
           }
         }
@@ -4854,8 +4903,12 @@
         if (confidenceSummaryTextEl) {
           const firstLimitation = chips?.[0]?.detail || chips?.[0]?.label || "";
           const summary = String(confidenceHeadline || "").trim()
-            || (firstLimitation ? `This estimate is limited by: ${firstLimitation}` : "");
-          confidenceSummaryTextEl.textContent = summary || "More confidence details are available below.";
+            || (firstLimitation ? `Most affected by: ${firstLimitation}` : "")
+            || "Confidence depends on how many property and location details we could directly confirm.";
+          const numericReference = buildConfidenceReferenceNote(referenceScore);
+          confidenceSummaryTextEl.textContent = numericReference
+            ? `${summary} ${numericReference}`
+            : summary;
         }
 
         const seenFactors = new Set();
@@ -5006,7 +5059,7 @@
         setListItems(document.getElementById("mitigations"), [recommendation], {
           fallbackText: "No specific next steps are available yet.",
         });
-        document.getElementById("confidenceText").textContent = "Confidence: limited due to reduced local data coverage.";
+        document.getElementById("confidenceText").textContent = "Limited confidence. Detailed local coverage is reduced, so some factors are estimated.";
         setListItems(document.getElementById("assumptions"), ["Some location-level factors are estimated due to limited local coverage."]);
         setListItems(document.getElementById("confidenceActions"), [recommendation]);
         setPillSpans(
@@ -5017,7 +5070,7 @@
         const specificityAtGlanceEl = document.getElementById("specificityAtGlance");
         const confidenceSummaryTextEl = document.getElementById("confidenceSummaryText");
         const flagsPrimaryEl = document.getElementById("flagsPrimary");
-        if (confidenceAtGlanceEl) confidenceAtGlanceEl.textContent = "Not available";
+        if (confidenceAtGlanceEl) confidenceAtGlanceEl.textContent = "Limited confidence";
         if (specificityAtGlanceEl) specificityAtGlanceEl.textContent = "Regional estimate";
         if (confidenceSummaryTextEl) {
           confidenceSummaryTextEl.textContent = "Detailed local coverage is limited for this address, so confidence is lower and some details are estimated.";
@@ -5123,7 +5176,7 @@
         setListItems(document.getElementById("mitigations"), [toHomeownerFriendlyError(rejection, "Please confirm the address or choose your location on the map.")], {
           fallbackText: "No additional recommendations are available yet.",
         });
-        document.getElementById("confidenceText").textContent = "Confidence: unavailable until the address location is confirmed.";
+        document.getElementById("confidenceText").textContent = "Confidence not available yet. Confirm the address location to unlock a property-level estimate.";
         setListItems(document.getElementById("assumptions"), ["Location confidence is currently too low for a property-level result."]);
         setListItems(document.getElementById("confidenceActions"), [
           "Confirm the address details or click the map to set the correct home location, then rerun.",
