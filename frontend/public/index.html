@@ -2959,16 +2959,15 @@
       }
 
       function topAssessmentActionTexts(limit = 3) {
-        const prioritized = Array.isArray(latestAssessment?.prioritized_mitigation_actions)
-          ? latestAssessment.prioritized_mitigation_actions
-          : [];
-        if (prioritized.length > 0) {
-          return prioritized
-            .slice(0, limit)
-            .map((row) => `${String(row?.action || "").trim()} ${String(row?.explanation || "").trim()}`.trim())
-            .filter(Boolean);
-        }
-        return topNonEmptyLines(latestAssessment?.top_recommended_actions || [], limit);
+        const normalizedActions = normalizeActionRows(
+          latestAssessment
+            ? extractHomeownerDecisionCollections(latestAssessment).actions
+            : []
+        );
+        return normalizedActions
+          .slice(0, limit)
+          .map((row) => `${String(row?.action || "").trim()} ${String(row?.why_this_matters || "").trim()}`.trim())
+          .filter(Boolean);
       }
 
       function deriveTopActionPreset() {
@@ -4280,6 +4279,309 @@
         return [];
       }
 
+      function normalizeStringArray(value) {
+        const rows = [];
+        const seen = new Set();
+        const pushText = (raw) => {
+          const text = String(raw || "").trim();
+          if (!text) return;
+          const key = normalizeComparableText(text);
+          if (!key || seen.has(key)) return;
+          seen.add(key);
+          rows.push(text);
+        };
+        const scan = (entry) => {
+          if (entry === null || entry === undefined) return;
+          if (Array.isArray(entry)) {
+            entry.forEach(scan);
+            return;
+          }
+          if (typeof entry === "string" || typeof entry === "number") {
+            pushText(entry);
+            return;
+          }
+          if (typeof entry !== "object") return;
+          const primary = [
+            "text",
+            "summary",
+            "headline",
+            "reason",
+            "explanation",
+            "description",
+            "detail",
+            "label",
+            "title",
+            "factor",
+            "driver",
+            "action",
+            "recommendation",
+            "name",
+          ];
+          const firstValue = primary
+            .map((key) => entry?.[key])
+            .find((v) => (typeof v === "string" || typeof v === "number") && String(v || "").trim());
+          if (firstValue !== undefined) {
+            pushText(firstValue);
+          }
+          [
+            "items",
+            "rows",
+            "drivers",
+            "reasons",
+            "actions",
+            "recommendations",
+            "top_actions",
+            "top_risk_drivers",
+            "top_recommended_actions",
+            "mitigation_plan",
+            "prioritized_mitigation_actions",
+            "prioritized_vegetation_actions",
+          ].forEach((key) => {
+            if (Array.isArray(entry?.[key])) scan(entry[key]);
+          });
+        };
+        scan(value);
+        return rows;
+      }
+
+      function normalizeDriverRows(value) {
+        const rows = [];
+        const seen = new Set();
+        const pushDriver = (raw) => {
+          const text = toHomeownerDriverText(raw);
+          const key = normalizeComparableText(text);
+          if (!key || seen.has(key)) return;
+          seen.add(key);
+          rows.push(text);
+        };
+        const scan = (entry) => {
+          if (entry === null || entry === undefined) return;
+          if (Array.isArray(entry)) {
+            entry.forEach(scan);
+            return;
+          }
+          if (typeof entry === "string" || typeof entry === "number") {
+            pushDriver(entry);
+            return;
+          }
+          if (typeof entry !== "object") return;
+          const factor = String(
+            entry?.factor
+            || entry?.driver
+            || entry?.label
+            || entry?.title
+            || entry?.name
+            || ""
+          ).trim();
+          const explanation = String(
+            entry?.explanation
+            || entry?.reason
+            || entry?.description
+            || entry?.summary
+            || entry?.detail
+            || ""
+          ).trim();
+          if (factor && explanation) {
+            pushDriver(`${factor}: ${explanation}`);
+          } else if (explanation) {
+            pushDriver(explanation);
+          } else if (factor) {
+            pushDriver(factor);
+          } else {
+            const generic = normalizeStringArray(entry);
+            generic.forEach(pushDriver);
+          }
+        };
+        scan(value);
+        return rows;
+      }
+
+      function normalizeActionRows(value) {
+        const rows = [];
+        const seen = new Set();
+        const pushActionRow = (row) => {
+          if (!row || typeof row !== "object") return;
+          const action = String(row?.action || "").trim();
+          const why = String(row?.why_this_matters || "").trim();
+          if (!action) return;
+          const key = normalizeComparableText(`${action} ${why}`);
+          if (!key || seen.has(key)) return;
+          seen.add(key);
+          rows.push(row);
+        };
+        const scan = (entry) => {
+          if (entry === null || entry === undefined) return;
+          if (Array.isArray(entry)) {
+            entry.forEach(scan);
+            return;
+          }
+          if (typeof entry === "string" || typeof entry === "number") {
+            pushActionRow({
+              action: String(entry).trim(),
+              why_this_matters: "",
+            });
+            return;
+          }
+          if (typeof entry !== "object") return;
+
+          const action = String(
+            entry?.action
+            || entry?.recommendation
+            || entry?.title
+            || entry?.label
+            || entry?.name
+            || ""
+          ).trim();
+          const why = String(
+            entry?.why_this_matters
+            || entry?.explanation
+            || entry?.reason
+            || entry?.description
+            || entry?.detail
+            || entry?.summary
+            || ""
+          ).trim();
+          const impact = String(entry?.impact_level || entry?.impact || "").trim();
+          const effort = String(entry?.effort_level || entry?.effort || "").trim();
+          const timeline = String(entry?.timeline || "").trim();
+          const cost = String(entry?.estimated_cost_band || entry?.cost_band || entry?.cost || "").trim();
+          const zone = String(entry?.target_zone || "").trim();
+          const meta = [impact ? `${impact} impact` : "", effort ? `${effort} effort` : "", cost ? `${cost} cost` : "", timeline ? timeline : "", zone ? `zone ${zone}` : ""]
+            .filter(Boolean)
+            .join(", ");
+          if (action) {
+            pushActionRow({
+              action,
+              why_this_matters: why || meta,
+            });
+          } else {
+            const generic = normalizeStringArray(entry);
+            generic.forEach((text) => {
+              pushActionRow({ action: text, why_this_matters: "" });
+            });
+          }
+          [
+            "items",
+            "rows",
+            "actions",
+            "recommendations",
+            "top_actions",
+            "top_recommended_actions",
+            "mitigation_plan",
+            "prioritized_mitigation_actions",
+            "prioritized_vegetation_actions",
+          ].forEach((key) => {
+            if (Array.isArray(entry?.[key])) scan(entry[key]);
+          });
+        };
+        scan(value);
+        return rows;
+      }
+
+      function deriveReasonFallbackFromSummary(summaryText) {
+        const text = sentenceCaseText(summaryText);
+        if (!text) return [];
+        const normalized = normalizeComparableText(text);
+        const safeSignal = normalized.includes(" due to ")
+          || normalized.includes(" because ")
+          || normalized.includes(" driven by ")
+          || normalized.includes(" elevated risk");
+        if (!safeSignal || text.length < 32 || text.length > 260) return [];
+        return [text];
+      }
+
+      function mergeDecisionRows(primaryRows, fallbackRows, limit = 8) {
+        const primary = Array.isArray(primaryRows) ? primaryRows : [];
+        const fallback = Array.isArray(fallbackRows) ? fallbackRows : [];
+        const merged = [];
+        const seen = new Set();
+        const rowKey = (row) => {
+          if (row && typeof row === "object") {
+            const action = String(row?.action || row?.title || row?.label || row?.name || "").trim();
+            const detail = String(
+              row?.why_this_matters
+              || row?.explanation
+              || row?.reason
+              || row?.description
+              || row?.summary
+              || row?.detail
+              || row?.factor
+              || row?.driver
+              || ""
+            ).trim();
+            return normalizeComparableText(`${action} ${detail}`.trim());
+          }
+          return normalizeComparableText(String(row || "").trim());
+        };
+        const pushRow = (row) => {
+          const key = rowKey(row);
+          if (!key || seen.has(key)) return;
+          seen.add(key);
+          merged.push(row);
+        };
+        primary.forEach(pushRow);
+        fallback.forEach(pushRow);
+        return merged.slice(0, Math.max(1, Number(limit) || 8));
+      }
+
+      function traceHomeownerListSource(kind, source, rows) {
+        if (!isDebugMode) return;
+        console.debug(`[homeowner-summary] ${kind} source=${source} count=${Array.isArray(rows) ? rows.length : 0}`);
+      }
+
+      function extractHomeownerDecisionCollections(data) {
+        const homeownerSummary = (data && typeof data.homeowner_summary === "object" && data.homeowner_summary)
+          ? data.homeowner_summary
+          : {};
+        const summaryText = String(
+          data?.explanation_summary
+          || homeownerSummary?.headline_risk_summary
+          || ""
+        ).trim();
+
+        const reasonCandidates = [
+          { source: "assessment.insurability_status_reasons", rows: normalizeStringArray(data?.insurability_status_reasons) },
+          { source: "homeowner_summary.insurability_status_reasons", rows: normalizeStringArray(homeownerSummary?.insurability_status_reasons) },
+          { source: "assessment.top_risk_drivers_detailed", rows: normalizeStringArray(data?.top_risk_drivers_detailed) },
+          { source: "assessment.top_near_structure_risk_drivers", rows: normalizeStringArray(data?.top_near_structure_risk_drivers) },
+          { source: "assessment.property_findings", rows: normalizeStringArray(data?.property_findings) },
+          { source: "summary_fallback", rows: deriveReasonFallbackFromSummary(summaryText) },
+        ];
+        const selectedReasons = reasonCandidates.find((candidate) => candidate.rows.length > 0) || { source: "none", rows: [] };
+
+        const driverCandidates = [
+          { source: "assessment.top_risk_drivers", rows: normalizeDriverRows(data?.top_risk_drivers) },
+          { source: "homeowner_summary.top_risk_drivers", rows: normalizeDriverRows(homeownerSummary?.top_risk_drivers) },
+          { source: "assessment.top_risk_drivers_detailed", rows: normalizeDriverRows(data?.top_risk_drivers_detailed) },
+          { source: "assessment.top_near_structure_risk_drivers", rows: normalizeDriverRows(data?.top_near_structure_risk_drivers) },
+          { source: "assessment.property_findings", rows: normalizeDriverRows(data?.property_findings) },
+        ];
+        const selectedDrivers = driverCandidates.find((candidate) => candidate.rows.length > 0) || { source: "none", rows: [] };
+
+        const actionCandidates = [
+          { source: "assessment.prioritized_mitigation_actions", rows: normalizeActionRows(data?.prioritized_mitigation_actions) },
+          { source: "homeowner_summary.prioritized_mitigation_actions", rows: normalizeActionRows(homeownerSummary?.prioritized_mitigation_actions) },
+          { source: "assessment.top_recommended_actions", rows: normalizeActionRows(data?.top_recommended_actions) },
+          { source: "homeowner_summary.top_recommended_actions", rows: normalizeActionRows(homeownerSummary?.top_recommended_actions) },
+          { source: "assessment.mitigation_plan", rows: normalizeActionRows(data?.mitigation_plan) },
+          { source: "assessment.prioritized_vegetation_actions", rows: normalizeActionRows(data?.prioritized_vegetation_actions) },
+        ];
+        const selectedActions = actionCandidates.find((candidate) => candidate.rows.length > 0) || { source: "none", rows: [] };
+
+        return {
+          homeownerSummary,
+          summaryText,
+          reasons: selectedReasons.rows,
+          drivers: selectedDrivers.rows,
+          actions: selectedActions.rows,
+          sources: {
+            reasons: selectedReasons.source,
+            drivers: selectedDrivers.source,
+            actions: selectedActions.source,
+          },
+        };
+      }
+
       function normalizeComparableText(value) {
         return String(value || "")
           .toLowerCase()
@@ -4472,9 +4774,8 @@
           renderHomeownerDecisionSnapshot();
           return;
         }
-        const homeownerSummary = (data && typeof data.homeowner_summary === "object" && data.homeowner_summary)
-          ? data.homeowner_summary
-          : {};
+        const decisionCollections = extractHomeownerDecisionCollections(data);
+        const homeownerSummary = decisionCollections.homeownerSummary;
         const confidence = (homeownerSummary && typeof homeownerSummary.confidence_summary === "object" && homeownerSummary.confidence_summary)
           ? homeownerSummary.confidence_summary
           : {};
@@ -4495,39 +4796,13 @@
           || homeownerSummary?.insurability_status
           || ""
         ).trim();
-        const reasonRows = firstNonEmptyArray(
-          data?.insurability_status_reasons,
-          homeownerSummary?.insurability_status_reasons,
-        );
-        const reasons = topNonEmptyLines(
-          reasonRows,
-          3,
-        );
-        const summary = String(
-          data?.explanation_summary
-          || homeownerSummary?.headline_risk_summary
-          || ""
-        ).trim();
-        const driverRows = firstNonEmptyArray(
-          data?.top_risk_drivers,
-          homeownerSummary?.top_risk_drivers,
-          data?.property_findings,
-        );
-        const drivers = topNonEmptyLines(
-          driverRows,
-          3,
-        ).map((line) => toHomeownerDriverText(line));
-        const prioritizedActions = firstNonEmptyArray(
-          data?.prioritized_mitigation_actions,
-          homeownerSummary?.prioritized_mitigation_actions,
-        );
-        const recommendedActionRows = firstNonEmptyArray(
-          data?.top_recommended_actions,
-          homeownerSummary?.top_recommended_actions,
-        );
-        const actions = prioritizedActions.length > 0
-          ? prioritizedActions.slice(0, 3)
-          : topNonEmptyLines(recommendedActionRows, 3);
+        const reasons = topNonEmptyLines(decisionCollections.reasons, 3);
+        const summary = decisionCollections.summaryText;
+        const drivers = topNonEmptyLines(decisionCollections.drivers, 3).map((line) => toHomeownerDriverText(line));
+        const actions = (Array.isArray(decisionCollections.actions) ? decisionCollections.actions : []).slice(0, 3);
+        traceHomeownerListSource("reasons", decisionCollections.sources.reasons, reasons);
+        traceHomeownerListSource("drivers", decisionCollections.sources.drivers, drivers);
+        traceHomeownerListSource("actions", decisionCollections.sources.actions, actions);
         const rawLimitations = String(
           confidence?.headline
           || data?.why_this_result_is_limited
@@ -4647,6 +4922,9 @@
         const assessmentSummary = (latestAssessment?.homeowner_summary && typeof latestAssessment.homeowner_summary === "object")
           ? latestAssessment.homeowner_summary
           : {};
+        const assessmentDecision = latestAssessment
+          ? extractHomeownerDecisionCollections(latestAssessment)
+          : { reasons: [], drivers: [], actions: [], sources: { reasons: "none", drivers: "none", actions: "none" } };
         const overall = (firstScreen?.overall_wildfire_risk && typeof firstScreen.overall_wildfire_risk === "object")
           ? firstScreen.overall_wildfire_risk
           : {};
@@ -4662,12 +4940,13 @@
           || assessmentSummary?.insurability_status
           || ""
         ).trim();
-        const statusReasons = firstNonEmptyArray(
-          focus?.insurability_status_reasons,
-          report?.insurability_status_reasons,
-          latestAssessment?.insurability_status_reasons,
-          assessmentSummary?.insurability_status_reasons,
+        const reportStatusReasons = firstNonEmptyArray(
+          normalizeStringArray(focus?.insurability_status_reasons),
+          normalizeStringArray(report?.insurability_status_reasons),
+          normalizeStringArray(latestAssessment?.insurability_status_reasons),
+          normalizeStringArray(assessmentSummary?.insurability_status_reasons),
         );
+        const statusReasons = mergeDecisionRows(assessmentDecision.reasons, reportStatusReasons, 6);
         const statusMethodologyNote = String(
           focus?.insurability_status_methodology_note
           || report?.insurability_status_methodology_note
@@ -4677,22 +4956,48 @@
         ).trim();
         const riskBand = String(overall?.risk_band || report?.score_summary?.wildfire_risk_band || "").trim();
         const whatFirst = String(firstScreen?.what_to_do_first?.action || report?.what_to_do_first?.action || report?.what_to_do_first?.title || "").trim();
-        const topActions = firstNonEmptyArray(
-          focus?.top_recommended_actions,
-          firstScreen?.top_actions,
-          report?.prioritized_actions,
-          latestAssessment?.prioritized_mitigation_actions,
-          latestAssessment?.top_recommended_actions,
-          assessmentSummary?.top_recommended_actions,
+        const reportTopActions = firstNonEmptyArray(
+          normalizeActionRows(focus?.top_recommended_actions),
+          normalizeActionRows(firstScreen?.top_actions),
+          normalizeActionRows(report?.prioritized_actions),
+          normalizeActionRows(latestAssessment?.prioritized_mitigation_actions),
+          normalizeActionRows(latestAssessment?.top_recommended_actions),
+          normalizeActionRows(assessmentSummary?.top_recommended_actions),
         );
-        const topDrivers = firstNonEmptyArray(
-          focus?.top_risk_drivers,
-          firstScreen?.top_risk_drivers,
-          report?.top_risk_drivers,
-          latestAssessment?.top_risk_drivers,
-          assessmentSummary?.top_risk_drivers,
-          latestAssessment?.property_findings,
+        const topActions = mergeDecisionRows(assessmentDecision.actions, reportTopActions, 6);
+        const reportTopDrivers = firstNonEmptyArray(
+          normalizeDriverRows(focus?.top_risk_drivers),
+          normalizeDriverRows(firstScreen?.top_risk_drivers),
+          normalizeDriverRows(report?.top_risk_drivers),
+          normalizeDriverRows(latestAssessment?.top_risk_drivers),
+          normalizeDriverRows(assessmentSummary?.top_risk_drivers),
+          normalizeDriverRows(latestAssessment?.property_findings),
         );
+        const topDrivers = mergeDecisionRows(assessmentDecision.drivers, reportTopDrivers, 6);
+        const reportReasonsSource = statusReasons.length === 0
+          ? "none"
+          : (assessmentDecision.reasons.length > 0 && reportStatusReasons.length > 0
+            ? `assessment+report (${assessmentDecision.sources.reasons})`
+            : (assessmentDecision.reasons.length > 0
+              ? `assessment_only (${assessmentDecision.sources.reasons})`
+              : "report_only"));
+        const reportDriversSource = topDrivers.length === 0
+          ? "none"
+          : (assessmentDecision.drivers.length > 0 && reportTopDrivers.length > 0
+            ? `assessment+report (${assessmentDecision.sources.drivers})`
+            : (assessmentDecision.drivers.length > 0
+              ? `assessment_only (${assessmentDecision.sources.drivers})`
+              : "report_only"));
+        const reportActionsSource = topActions.length === 0
+          ? "none"
+          : (assessmentDecision.actions.length > 0 && reportTopActions.length > 0
+            ? `assessment+report (${assessmentDecision.sources.actions})`
+            : (assessmentDecision.actions.length > 0
+              ? `assessment_only (${assessmentDecision.sources.actions})`
+              : "report_only"));
+        traceHomeownerListSource("report_reasons", reportReasonsSource, statusReasons);
+        traceHomeownerListSource("report_drivers", reportDriversSource, topDrivers);
+        traceHomeownerListSource("report_actions", reportActionsSource, topActions);
         const limitations = String(
           focus?.confidence_limitations_summary
           || firstScreen?.limitations_note
@@ -5161,38 +5466,20 @@
 
         document.getElementById("nextStepsText").textContent = buildNextStepsHint(combinedFindings);
 
-        const prioritizedActions = Array.isArray(data?.prioritized_mitigation_actions)
-          ? data.prioritized_mitigation_actions
-          : [];
+        const decisionActionsForAssessment = extractHomeownerDecisionCollections(data).actions;
         const topActionLabel = String(
-          prioritizedActions?.[0]?.action
-          || data?.top_recommended_actions?.[0]
-          || data?.mitigation_plan?.[0]?.title
+          decisionActionsForAssessment?.[0]?.action
           || "Review top actions"
         ).trim();
         const firstActionKpiEl = document.getElementById("firstActionKpi");
         if (firstActionKpiEl) {
           firstActionKpiEl.textContent = topActionLabel || "Review top actions";
         }
-        const mitigationRows = prioritizedActions.length > 0
-          ? prioritizedActions.slice(0, 5).map((m) => ({
-              title: String(m?.action || "").trim(),
-              detail: `(${String(m?.impact_level || "unknown").trim()} impact, ${String(m?.effort_level || "unknown").trim()} effort, ${String(m?.estimated_cost_band || "unknown").trim()} cost, ${String(m?.timeline || "unknown").trim()}): ${String(m?.explanation || "").trim()}`,
-            }))
-          : (Array.isArray(data.mitigation_plan) ? data.mitigation_plan : []).slice(0, 3).map((m) => ({
-              title: String(m?.title || "").trim(),
-              detail: String(m?.reason || "").trim(),
-            }));
-        const prioritizedVegetationActions = Array.isArray(data?.prioritized_vegetation_actions)
-          ? data.prioritized_vegetation_actions
-          : [];
-        prioritizedVegetationActions.slice(0, 2).forEach(action => {
-          const zone = action?.target_zone ? ` (${action.target_zone})` : "";
-          mitigationRows.push({
-            title: `${String(action?.title || "Vegetation action").trim()}${zone}`,
-            detail: String(action?.explanation || action?.why_it_matters || "").trim(),
-          });
-        });
+        const mitigationRows = decisionActionsForAssessment.slice(0, 5).map((row) => ({
+          title: String(row?.action || "").trim(),
+          detail: String(row?.why_this_matters || "").trim(),
+        }));
+        traceHomeownerListSource("mitigation_rows", "assessment_action_plan", mitigationRows);
         setListItems(document.getElementById("mitigations"), mitigationRows, {
           fallbackText: "No recommended actions are available yet.",
           shortModeCount: 1,
