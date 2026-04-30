@@ -105,12 +105,28 @@ class NationalFootprintIndex:
             or _DEFAULT_OVERTURE_RELEASE
         )
 
-        # Probe DuckDB availability once at construction time.
+        # Probe DuckDB availability once at construction time and pre-install
+        # the required extensions.  INSTALL is idempotent but slow (~1 s on a
+        # cold DuckDB home dir); running it here means each per-query connection
+        # only needs LOAD (fast, per-connection, always required).
         self._duckdb_available = False
         if self.enabled:
             try:
-                import duckdb as _duckdb  # noqa: F401
+                import duckdb as _duckdb
                 self._duckdb_available = True
+                # Install extensions once at startup.  Errors are suppressed
+                # because the extensions may already be present in the DuckDB
+                # extensions directory from a previous run.
+                _con = _duckdb.connect()
+                try:
+                    _con.execute("INSTALL spatial;")
+                except Exception:
+                    pass
+                try:
+                    _con.execute("INSTALL httpfs;")
+                except Exception:
+                    pass
+                _con.close()
             except ImportError:
                 LOGGER.warning(
                     "national_footprint_index duckdb_not_installed"
@@ -317,30 +333,35 @@ class NationalFootprintIndex:
             return []
 
         try:
+            # Extensions were installed once at __init__ time; here we only
+            # LOAD them into this connection (fast, required per-connection).
             con = duckdb.connect()
-            # Install extensions (no-op if already installed in the DuckDB home dir).
-            try:
-                con.execute("INSTALL spatial;")
-            except Exception:
-                pass
-            try:
-                con.execute("INSTALL httpfs;")
-            except Exception:
-                pass
             con.execute("LOAD spatial;")
             con.execute("LOAD httpfs;")
             con.execute("SET s3_region='us-west-2';")
 
+            # Intersection predicate: return any footprint whose bbox OVERLAPS
+            # the query bbox.  The correct form is:
+            #   footprint.left  <= query.right   (bbox.xmin <= max_lon)
+            #   footprint.right >= query.left    (bbox.xmax >= min_lon)
+            #   footprint.bottom <= query.top    (bbox.ymin <= max_lat)
+            #   footprint.top  >= query.bottom   (bbox.ymax >= min_lat)
+            # The previous containment predicate (xmin >= min_lon AND xmax <=
+            # max_lon) silently dropped buildings whose bbox extended outside
+            # the query boundary — common for large structures and buildings
+            # near the edge of the search radius.  No bbox buffer margin is
+            # needed: exact-geometry matching in building_footprints.py still
+            # filters to the precise search radius after this coarse filter.
             query = f"""
                 SELECT
                     ST_AsGeoJSON(ST_GeomFromWkb(geometry)) AS geometry_json,
                     class                                  AS building_class,
                     height
                 FROM read_parquet('{self._overture_s3_path}', hive_partitioning=1)
-                WHERE bbox.xmin >= {min_lon}
-                  AND bbox.xmax <= {max_lon}
-                  AND bbox.ymin >= {min_lat}
-                  AND bbox.ymax <= {max_lat}
+                WHERE bbox.xmin <= {max_lon}
+                  AND bbox.xmax >= {min_lon}
+                  AND bbox.ymin <= {max_lat}
+                  AND bbox.ymax >= {min_lat}
                 LIMIT {self._max_buildings}
             """
             rows = con.execute(query).fetchall()
