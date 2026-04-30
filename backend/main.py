@@ -77,6 +77,7 @@ from backend.mitigation import build_mitigation_plan
 from backend.property_linkage import build_property_linkage_summary
 from backend.structure_enrichment import enrich_structure_attributes
 from backend.models import (
+    DataCoverageSummary,
     AssessmentDiagnostics,
     AssessmentStatus,
     AddressRequest,
@@ -976,6 +977,24 @@ def _build_confidence(
     if has_ring_metrics:
         missing_critical_fields_set.difference_update(NEAR_STRUCTURE_PROXY_CRITICAL_FIELDS)
         inferred_critical_fields_set.difference_update(NEAR_STRUCTURE_PROXY_CRITICAL_FIELDS)
+    # Layers with status "not_configured" are intentionally absent for national fallback assessments
+    # (e.g. WHP, burn probability have no national COG source). Penalizing them as "missing_critical"
+    # is incorrect — they're expected to be unavailable, not a data quality failure.
+    # Strip the layer name from any field like "burn_probability_layer" or "hazard_severity_layer"
+    # and check whether the underlying env layer was intentionally unconfigured.
+    _not_configured_keys = {
+        key for key, status in (environmental_layer_status or {}).items()
+        if status == "not_configured"
+    }
+    if _not_configured_keys:
+        _to_drop = set()
+        for field in missing_critical_fields_set:
+            if not field.endswith("_layer"):
+                continue
+            base = field[: -len("_layer")]  # e.g. "burn_probability", "hazard_severity"
+            if any(nc_key in base or base.startswith(nc_key) for nc_key in _not_configured_keys):
+                _to_drop.add(field)
+        missing_critical_fields_set.difference_update(_to_drop)
     missing_critical_fields = sorted(missing_critical_fields_set)
     inferred_critical_fields = sorted(inferred_critical_fields_set)
 
@@ -3997,11 +4016,17 @@ def _build_feature_coverage_preflight(
     property_data_confidence = float(property_confidence_summary.get("score") or 0.0)
     property_mismatch_flag = bool(property_level_context.get("property_mismatch_flag"))
     mismatch_reason = str(property_level_context.get("mismatch_reason") or "").strip() or None
-    major_environmental_missing_count = sum(
-        1
-        for available in [hazard_available, burn_prob_available, dryness_available]
-        if not available
-    )
+    _env_layer_status = dict(getattr(context, "environmental_layer_status", None) or {})
+    # Only count a "major" layer as missing if it was actually configured (not intentionally absent).
+    # Layers with status "not_configured" are expected to be unavailable (e.g., national fallback
+    # regions that have no WHP or hazard raster) and should not inflate major_environmental_missing_count.
+    _hazard_was_configured = _env_layer_status.get("hazard", "not_configured") != "not_configured"
+    _burn_was_configured = _env_layer_status.get("burn_probability", "not_configured") != "not_configured"
+    major_environmental_missing_count = sum([
+        not hazard_available and _hazard_was_configured,
+        not burn_prob_available and _burn_was_configured,
+        not dryness_available,
+    ])
 
     if (
         feature_coverage_percent >= 70.0
@@ -4680,8 +4705,11 @@ def _build_score_eligibility(
         site_caveats.append("Fuel/canopy context unavailable; vegetation pressure uses conservative fallback.")
 
     available_site_evidence = sum([burn_or_hazard, slope_ok, fuel_or_canopy])
+    # National fallback: region_not_prepared is no longer a hard block when national clients
+    # supply real layer data. Only force insufficient when no environmental evidence exists.
+    _region_no_site_data = region_status == "region_not_prepared" and available_site_evidence == 0
     site_status: EligibilityStatus
-    if not geocode_verified or region_status == "region_not_prepared":
+    if not geocode_verified or _region_no_site_data:
         site_status = "insufficient"
     elif geocode_verified and burn_or_hazard and slope_ok and fuel_or_canopy:
         site_status = "full"
@@ -4731,8 +4759,10 @@ def _build_score_eligibility(
         home_caveats.append("Building footprint not found; using point-based fallback")
         home_caveats.append("Home Ignition Vulnerability used point-based fallback instead of footprint rings.")
 
+    # National fallback: remove hard block for region_not_prepared — home ignition evidence
+    # is assessed on actual signal presence, not region status.
     home_status: EligibilityStatus
-    if not geocode_verified or region_status == "region_not_prepared":
+    if not geocode_verified:
         home_status = "insufficient"
     elif geocode_verified and near_structure_signal and (structure_context or ring_signal) and footprint_used and ring_signal:
         home_status = "full"
@@ -4808,7 +4838,7 @@ def _build_score_eligibility(
         caveats=sorted(set(readiness_caveats)),
     )
 
-    if (not geocode_verified) or region_status == "region_not_prepared":
+    if not geocode_verified:
         assessment_status: AssessmentStatus = "insufficient_data"
     elif site_status == "insufficient" and home_status == "insufficient":
         assessment_status = "insufficient_data"
@@ -5266,7 +5296,9 @@ def _derive_assessment_output_state(
         return "insufficient_data"
 
     if region_readiness == "limited_regional_ready":
-        if severe_fallback and severe_observed_weight_loss:
+        # Only block as "insufficient_data" when severe fallback AND environmental evidence is
+        # also genuinely missing (not merely "not_configured" national-fallback layers).
+        if severe_fallback and severe_observed_weight_loss and major_environmental_missing_count >= 1:
             return "insufficient_data"
         return "limited_regional_estimate"
 
@@ -8097,7 +8129,7 @@ def _run_assessment(
     region_status = str(property_level_context.get("region_status") or "")
     if region_status == "region_not_prepared":
         scoring_notes.append(
-            "Region not prepared for this location — initialize regional layers before high-confidence scoring."
+            "No locally-prepared region for this location — assessment uses national data sources (LANDFIRE, NLCD, MTBS)."
         )
     elif region_status == "legacy_fallback":
         scoring_notes.append("Assessment used legacy direct layer paths because no prepared region matched this location.")
@@ -8495,6 +8527,11 @@ def _run_assessment(
         insurability_status_methodology_note=insurability.insurability_status_methodology_note,
         layer_coverage_audit=layer_coverage_audit,
         coverage_summary=coverage_summary,
+        data_coverage_summary=_build_data_coverage_summary(
+            coverage_available=bool(region_resolution.coverage_available),
+            data_sources=all_sources,
+            environmental_layer_status=dict(context.environmental_layer_status),
+        ),
         region_resolution=region_resolution,
         coverage_available=bool(region_resolution.coverage_available),
         resolved_region_id=region_resolution.resolved_region_id,
@@ -13359,6 +13396,126 @@ def _derive_region_bbox_from_point(lat: float, lon: float) -> dict[str, float]:
     }
 
 
+def _is_us_coordinate(lat: float, lon: float) -> bool:
+    """Return True if (lat, lon) falls within the approximate US bounding box.
+
+    Covers CONUS, Alaska, Hawaii, and US territories. Intentionally generous —
+    edge cases are handled by geocoder validation upstream.
+    """
+    # CONUS + Alaska + Hawaii approximate bbox
+    if 15.0 <= lat <= 72.0 and -180.0 <= lon <= -60.0:
+        return True
+    # US Pacific territories (Guam ~13°N, CNMI ~15-20°N, American Samoa ~-14°S)
+    if -15.0 <= lat <= 22.0 and 144.0 <= lon <= 172.0:
+        return True
+    return False
+
+
+# National source markers — substrings present in data_sources strings
+# when a national COG/API client provided the layer value.
+_NATIONAL_SOURCE_MARKERS = (
+    "LANDFIRE WCS",
+    "COG fallback",
+    "USGS 3DEP",
+    "National NLCD",
+    "National MTBS",
+    "national fallback",
+    "national COG",
+    "national_mtbs",
+)
+
+# Layer names in data_sources that indicate which environmental layer was covered
+_LOCAL_LAYER_MARKERS = (
+    "Slope raster",
+    "DEM-derived slope",
+    "Fuel raster",
+    "Wildfire hazard",
+    "Canopy cover raster",
+    "Wildfire Hazard Potential",
+    "Burn probability",
+    "Historical fire",
+    "Distance to wildland",
+)
+
+
+def _build_data_coverage_summary(
+    *,
+    coverage_available: bool,
+    data_sources: list[str],
+    environmental_layer_status: dict[str, str],
+) -> "DataCoverageSummary":
+    """Build DataCoverageSummary from assessment outputs.
+
+    Classifies each environmental layer as local, national, or unavailable
+    based on data_sources strings tagged by wildfire_data.py.
+    """
+    from backend.models import DataCoverageSummary
+
+    sources_lower = [s.lower() for s in data_sources]
+
+    def _is_national(src: str) -> bool:
+        sl = src.lower()
+        return any(m.lower() in sl for m in _NATIONAL_SOURCE_MARKERS)
+
+    national_sources = [s for s in data_sources if _is_national(s)]
+    has_any_national = bool(national_sources)
+
+    # Determine per-layer status from environmental_layer_status dict.
+    # Values: "ok", "missing", "not_configured", "outside_extent", etc.
+    unavailable = [
+        layer for layer, status in environmental_layer_status.items()
+        if status not in {"ok", "partial", "ok_nearby"}
+    ]
+
+    # Layer provenance: national source strings that mention a specific layer
+    _layer_source_map = {
+        "slope": ("slope", "3dep", "elevation"),
+        "fuel": ("fuel",),
+        "canopy": ("canopy",),
+        "fire_history": ("mtbs", "fire history", "historical fire"),
+        "wildland_distance": ("nlcd", "wildland distance"),
+        "burn_probability": ("burn", "whp", "hazard potential"),
+    }
+    layers_from_national: list[str] = []
+    for layer, keywords in _layer_source_map.items():
+        env_status = environmental_layer_status.get(layer, "not_configured")
+        if env_status in {"ok", "partial", "ok_nearby"}:
+            # Check if any matching source string is national
+            for src in data_sources:
+                if _is_national(src) and any(kw in src.lower() for kw in keywords):
+                    layers_from_national.append(layer)
+                    break
+
+    # Classify overall coverage
+    if coverage_available and not has_any_national and not unavailable:
+        overall = "full"
+        note = "Risk assessment uses high-resolution local data for your area."
+    elif not unavailable or (len(unavailable) <= 2 and has_any_national):
+        overall = "partial"
+        national_list = ", ".join(sorted(set(layers_from_national))) or "some layers"
+        note = (
+            f"Risk assessment uses national datasets for {national_list}. "
+            "Results are reliable but may have slightly lower precision than areas "
+            "with locally-prepared data."
+        )
+    else:
+        overall = "limited"
+        n_unavail = len(unavailable)
+        note = (
+            f"Risk assessment uses national datasets. {n_unavail} data layer"
+            f"{'s are' if n_unavail != 1 else ' is'} unavailable for this area, "
+            "which reduces score confidence."
+        )
+
+    return DataCoverageSummary(
+        overall_coverage=overall,
+        local_data_available=coverage_available,
+        layers_from_national_sources=sorted(set(layers_from_national)),
+        layers_unavailable=sorted(unavailable),
+        coverage_note=note,
+    )
+
+
 def _auto_region_id_for_bbox(bbox: dict[str, float]) -> str:
     digest = AssessmentStore.build_region_prep_dedupe_key("auto", bbox)
     return f"auto_{digest[:12]}"
@@ -13884,6 +14041,18 @@ def assess_risk(
         property_anchor_point=requested_anchor,
     )
     assert geocode_resolution is not None
+    _assess_lat = float(geocode_resolution.latitude)
+    _assess_lon = float(geocode_resolution.longitude)
+    if not _is_us_coordinate(_assess_lat, _assess_lon):
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error_class": "outside_us_coverage",
+                "message": "Assessment is currently limited to US addresses.",
+                "resolved_latitude": _assess_lat,
+                "resolved_longitude": _assess_lon,
+            },
+        )
     if not coverage_resolution.coverage_available and (auto_queue_on_uncovered or require_prepared_region):
         lat = geocode_resolution.latitude
         lon = geocode_resolution.longitude

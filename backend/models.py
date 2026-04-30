@@ -614,6 +614,19 @@ class LayerCoverageAuditItem(BaseModel):
     notes: List[str] = Field(default_factory=list)
 
 
+class DataCoverageSummary(BaseModel):
+    """Describes which data layers came from local vs. national sources.
+
+    Added in Phase 5. Included in every AssessmentResult so clients can
+    communicate data provenance to end users without parsing data_sources strings.
+    """
+    overall_coverage: Literal["full", "partial", "limited"] = "limited"
+    local_data_available: bool = False
+    layers_from_national_sources: List[str] = Field(default_factory=list)
+    layers_unavailable: List[str] = Field(default_factory=list)
+    coverage_note: str = ""
+
+
 class LayerCoverageSummary(BaseModel):
     total_layers_checked: int = 0
     observed_count: int = 0
@@ -1163,6 +1176,7 @@ class AssessmentResult(BaseModel):
     insurability_status_methodology_note: str = ""
     layer_coverage_audit: List[LayerCoverageAuditItem] = Field(default_factory=list)
     coverage_summary: LayerCoverageSummary = Field(default_factory=LayerCoverageSummary)
+    data_coverage_summary: DataCoverageSummary = Field(default_factory=DataCoverageSummary)
     region_resolution: RegionResolution = Field(default_factory=RegionResolution)
     # Convenience mirrors for routing observability without parsing nested objects.
     coverage_available: bool = False

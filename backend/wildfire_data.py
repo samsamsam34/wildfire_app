@@ -99,6 +99,30 @@ class WildfireContext:
     coverage_summary: Dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass
+class RegionContext:
+    """Typed region resolution result returned by get_region_context().
+
+    Attributes:
+        region_id: Prepared region ID, or "national_fallback" when no region matches.
+        display_name: Human-readable region name.
+        is_prepared_region: True when a locally-prepared region with raster files covers the point.
+        is_national_fallback: True when no prepared region covers the point; national COG/API
+            clients will supply layer data instead.
+        bbox: (min_lon, min_lat, max_lon, max_lat) bounding box, or None for national fallback.
+        available_layers: Layer names that have local raster files (prepared region only).
+        missing_layers: Layer names with no local raster file (will use national fallback or None).
+    """
+
+    region_id: str
+    display_name: str
+    is_prepared_region: bool
+    is_national_fallback: bool
+    bbox: Optional[Tuple[float, float, float, float]]
+    available_layers: List[str]
+    missing_layers: List[str]
+
+
 def compute_environmental_data_completeness(context: WildfireContext) -> float:
     status = context.environmental_layer_status or {}
     if not status:
@@ -863,6 +887,77 @@ class WildfireDataClient:
             },
             assumptions,
             sources,
+        )
+
+    def get_region_context(self, lat: float, lon: float) -> RegionContext:
+        """Return a typed RegionContext for the given coordinates.
+
+        For coordinates covered by a locally-prepared region:
+            is_prepared_region=True, is_national_fallback=False.
+        For any other valid coordinates (no prepared region):
+            is_prepared_region=False, is_national_fallback=True.
+
+        Never raises — out-of-coverage coordinates return the national-fallback context.
+        US boundary enforcement is the responsibility of the caller (main.py).
+        """
+        import logging as _logging
+        _log = _logging.getLogger("wildfire_app.wildfire_data")
+
+        _LAYER_KEYS = [
+            "burn_prob", "hazard", "whp", "slope", "aspect", "dem",
+            "fuel", "canopy", "moisture", "gridmet_dryness", "perimeters",
+            "mtbs_severity", "footprints_overture", "footprints_microsoft",
+            "footprints", "fema_structures", "address_points", "parcels",
+            "naip_imagery", "naip_structure_features",
+        ]
+
+        if self.use_prepared_regions:
+            lookup = lookup_region_for_point(lat=lat, lon=lon, regions_root=self.region_data_dir)
+            if lookup.get("covered"):
+                manifest = lookup.get("manifest")
+                if isinstance(manifest, dict):
+                    valid, _missing = validate_region_files(manifest, base_dir=self.region_data_dir)
+                    if valid:
+                        available: list[str] = []
+                        missing: list[str] = []
+                        for key in _LAYER_KEYS:
+                            resolved = resolve_region_file(manifest, key, base_dir=self.region_data_dir)
+                            if resolved:
+                                available.append(key)
+                            else:
+                                missing.append(key)
+                        bbox_raw = manifest.get("bbox") or manifest.get("bounds")
+                        bbox: Optional[Tuple[float, float, float, float]] = None
+                        if isinstance(bbox_raw, (list, tuple)) and len(bbox_raw) == 4:
+                            try:
+                                bbox = (
+                                    float(bbox_raw[0]), float(bbox_raw[1]),
+                                    float(bbox_raw[2]), float(bbox_raw[3]),
+                                )
+                            except (TypeError, ValueError):
+                                bbox = None
+                        return RegionContext(
+                            region_id=str(manifest.get("region_id") or "prepared"),
+                            display_name=str(manifest.get("display_name") or manifest.get("region_id") or "Prepared Region"),
+                            is_prepared_region=True,
+                            is_national_fallback=False,
+                            bbox=bbox,
+                            available_layers=available,
+                            missing_layers=missing,
+                        )
+
+        _log.info(
+            "get_region_context: no prepared region for lat=%.4f lon=%.4f — using national fallback",
+            lat, lon,
+        )
+        return RegionContext(
+            region_id="national_fallback",
+            display_name="National Coverage",
+            is_prepared_region=False,
+            is_national_fallback=True,
+            bbox=None,
+            available_layers=[],
+            missing_layers=list(_LAYER_KEYS),
         )
 
     @staticmethod
