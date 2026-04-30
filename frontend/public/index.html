@@ -1700,7 +1700,7 @@
                   <div class="card">
                     <h3>Action plan details</h3>
                     <p class="section-help">Shows the first actions to prioritize, with additional steps in capped lists.</p>
-                    <div class="mini-label">Recommended sequence</div>
+                    <div id="mitigationSequenceLabel" class="mini-label">Recommended sequence</div>
                     <p id="nextStepsText">Focus on the top actions first.</p>
                     <ul id="mitigations"><li class="muted">Recommendations will appear after assessment.</li></ul>
                   </div>
@@ -2417,6 +2417,38 @@
         while (node.firstChild) {
           node.removeChild(node.firstChild);
         }
+      }
+
+      const DEBUG_HOMEOWNER_STEP2_DOM = false;
+
+      function renderHomeownerDecisionList(
+        listEl,
+        rows,
+        {
+          fallbackText = "",
+          fallbackMuted = true,
+        } = {}
+      ) {
+        if (!listEl) return { renderedCount: 0, usedFallback: false };
+        clearNode(listEl);
+        const values = (Array.isArray(rows) ? rows : [])
+          .map((row) => String(row || "").trim())
+          .filter(Boolean);
+        if (values.length === 0) {
+          if (fallbackText) {
+            const li = document.createElement("li");
+            if (fallbackMuted) li.className = "muted";
+            li.textContent = fallbackText;
+            listEl.appendChild(li);
+          }
+          return { renderedCount: 0, usedFallback: true };
+        }
+        values.forEach((value) => {
+          const li = document.createElement("li");
+          li.textContent = value;
+          listEl.appendChild(li);
+        });
+        return { renderedCount: values.length, usedFallback: false };
       }
 
       function setListItems(
@@ -4651,6 +4683,54 @@
           .filter(Boolean);
       }
 
+      function setMitigationSequenceLabel(text = "Recommended sequence") {
+        const labelEl = document.getElementById("mitigationSequenceLabel");
+        if (!labelEl) return;
+        labelEl.textContent = String(text || "Recommended sequence").trim() || "Recommended sequence";
+      }
+
+      function buildHomeownerActionPlanFromDecisionCollections(decisionCollections, { limit = 5 } = {}) {
+        let actionsKind = String(decisionCollections?.sources?.actions_kind || "none");
+        let rows = normalizeActionRows(decisionCollections?.actions || []);
+        const currentAssessmentId = String(latestAssessment?.assessment_id || "").trim() || null;
+        const canReusePersistedActions = !!(
+          currentAssessmentId
+          && latestHomeownerDecisionLists?.assessmentId === currentAssessmentId
+          && Array.isArray(latestHomeownerDecisionLists?.actions)
+          && latestHomeownerDecisionLists.actions.length > 0
+        );
+        if (rows.length === 0 && canReusePersistedActions) {
+          rows = normalizeActionRows(latestHomeownerDecisionLists.actions);
+          if (actionsKind === "none") {
+            actionsKind = String(latestHomeownerDecisionLists?.actionsKind || "none");
+          }
+        }
+        const cappedRows = rows.slice(0, Math.max(1, Number(limit) || 5));
+        const actionRows = cappedRows
+          .map((row) => ({
+            title: String(row?.action || row?.title || row?.recommendation || "").trim(),
+            detail: String(row?.why_this_matters || row?.explanation || row?.description || "").trim(),
+          }))
+          .filter((row) => row.title || row.detail);
+
+        const isEstimateImprovement = actionsKind === "estimate_improvement";
+        return {
+          actionsKind,
+          sectionLabel: isEstimateImprovement ? "Ways to improve this estimate" : "Recommended sequence",
+          introText: isEstimateImprovement
+            ? "No mitigation actions were returned for this result. Use these steps to improve estimate quality."
+            : "Focus on the top actions first.",
+          fallbackText: isEstimateImprovement
+            ? "No estimate-improvement actions are available yet."
+            : "No recommended actions are available yet.",
+          actionRows,
+          topActionLabel: String(
+            actionRows?.[0]?.title
+            || (isEstimateImprovement ? "Improve estimate details" : "Review top actions")
+          ).trim(),
+        };
+      }
+
       function mergeDecisionRows(primaryRows, fallbackRows, limit = 8) {
         const primary = Array.isArray(primaryRows) ? primaryRows : [];
         const fallback = Array.isArray(fallbackRows) ? fallbackRows : [];
@@ -4972,11 +5052,11 @@
           }
         }
 
-        setListItems(reasonsEl, reasonLines, {
+        const reasonsRender = renderHomeownerDecisionList(reasonsEl, reasonLines, {
           fallbackText: noReasonsText,
         });
 
-        setListItems(driversEl, driverLines, {
+        const driversRender = renderHomeownerDecisionList(driversEl, driverLines, {
           fallbackText: noDriversText,
         });
 
@@ -4988,9 +5068,61 @@
             ]
             : actionLines
         );
-        setListItems(actionsEl, actionRows, {
+        const actionsRender = renderHomeownerDecisionList(actionsEl, actionRows, {
           fallbackText: noActionsText,
         });
+
+        if (isDebugMode && DEBUG_HOMEOWNER_STEP2_DOM) {
+          const logListState = (label, el, normalizedRows, renderInfo) => {
+            console.debug("[homeowner-step2-dom] list_render", {
+              source: String(debugSource || "unknown"),
+              list: label,
+              assessment_id: currentAssessmentId,
+              target_exists: !!el,
+              target_tag: el?.tagName || null,
+              target_id: el?.id || null,
+              target_class: el?.className || null,
+              normalized_rows: normalizedRows,
+              rendered_count: Number(renderInfo?.renderedCount || 0),
+              used_fallback: !!renderInfo?.usedFallback,
+              inner_html: el?.innerHTML || "",
+              text_content: el?.textContent || "",
+            });
+          };
+          logListState("reasons", reasonsEl, reasonLines, reasonsRender);
+          logListState("drivers", driversEl, driverLines, driversRender);
+          logListState("actions", actionsEl, actionRows, actionsRender);
+        }
+
+        const placeholderSnippets = [
+          "No strong reasons were returned for this assessment.",
+          "No top risk drivers were available from this result.",
+          "No prioritized actions were returned for this assessment.",
+        ];
+        if (reasonLines.length > 0 && placeholderSnippets.some((snippet) => String(reasonsEl.textContent || "").includes(snippet))) {
+          console.warn("[homeowner-step2-dom] reasons list failed to replace placeholder", {
+            source: String(debugSource || "unknown"),
+            assessment_id: currentAssessmentId,
+            normalized_rows: reasonLines,
+            text_content: reasonsEl.textContent || "",
+          });
+        }
+        if (driverLines.length > 0 && placeholderSnippets.some((snippet) => String(driversEl.textContent || "").includes(snippet))) {
+          console.warn("[homeowner-step2-dom] drivers list failed to replace placeholder", {
+            source: String(debugSource || "unknown"),
+            assessment_id: currentAssessmentId,
+            normalized_rows: driverLines,
+            text_content: driversEl.textContent || "",
+          });
+        }
+        if (actionRows.length > 0 && placeholderSnippets.some((snippet) => String(actionsEl.textContent || "").includes(snippet))) {
+          console.warn("[homeowner-step2-dom] actions list failed to replace placeholder", {
+            source: String(debugSource || "unknown"),
+            assessment_id: currentAssessmentId,
+            normalized_rows: actionRows,
+            text_content: actionsEl.textContent || "",
+          });
+        }
         const beforeAfterLines = [];
         const normalizedBeforeStatus = normalizeComparableText(beforeStatus);
         const normalizedAfterStatus = normalizeComparableText(afterStatus);
@@ -5186,6 +5318,7 @@
         if (specificityAtGlanceEl) specificityAtGlanceEl.textContent = "Pending";
         if (confidenceSummaryTextEl) confidenceSummaryTextEl.textContent = "Run an assessment to see what we could confirm.";
         if (flagsPrimaryEl) setPillSpans(flagsPrimaryEl, [], "Trust notes will appear after assessment.");
+        setMitigationSequenceLabel("Recommended sequence");
         renderHomeownerLimitationsBlock();
         renderHomeownerDecisionSnapshot({
           debugSource: "assessment:resetHomeownerJourneyPanels",
@@ -5812,24 +5945,27 @@
           }
         );
 
-        document.getElementById("nextStepsText").textContent = buildNextStepsHint(combinedFindings);
+        const decisionCollectionsForAssessment = extractHomeownerDecisionCollections(data);
+        const actionPlan = buildHomeownerActionPlanFromDecisionCollections(decisionCollectionsForAssessment, { limit: 5 });
+        setMitigationSequenceLabel(actionPlan.sectionLabel);
+        document.getElementById("nextStepsText").textContent = (
+          actionPlan.actionsKind === "estimate_improvement"
+            ? actionPlan.introText
+            : buildNextStepsHint(combinedFindings)
+        );
 
-        const decisionActionsForAssessment = extractHomeownerDecisionCollections(data).actions;
-        const topActionLabel = String(
-          decisionActionsForAssessment?.[0]?.action
-          || "Review top actions"
-        ).trim();
+        const topActionLabel = actionPlan.topActionLabel;
         const firstActionKpiEl = document.getElementById("firstActionKpi");
         if (firstActionKpiEl) {
           firstActionKpiEl.textContent = topActionLabel || "Review top actions";
         }
-        const mitigationRows = decisionActionsForAssessment.slice(0, 5).map((row) => ({
-          title: String(row?.action || "").trim(),
-          detail: String(row?.why_this_matters || "").trim(),
-        }));
-        traceHomeownerListSource("mitigation_rows", "assessment_action_plan", mitigationRows);
-        setListItems(document.getElementById("mitigations"), mitigationRows, {
-          fallbackText: "No recommended actions are available yet.",
+        traceHomeownerListSource(
+          "mitigation_rows",
+          `assessment_action_plan (${decisionCollectionsForAssessment?.sources?.actions || "none"}:${actionPlan.actionsKind})`,
+          actionPlan.actionRows
+        );
+        setListItems(document.getElementById("mitigations"), actionPlan.actionRows, {
+          fallbackText: actionPlan.fallbackText,
           shortModeCount: 1,
           shortModeLabel: "See full action list",
           shortModeCollapseLabel: "Show fewer actions",
@@ -6131,6 +6267,7 @@
         setListItems(document.getElementById("protective"), [], {
           fallbackText: "Protective factors will appear once we have fuller local coverage.",
         });
+        setMitigationSequenceLabel("Recommended sequence");
         document.getElementById("nextStepsText").textContent = "Use the suggested next steps below and rerun later for a fuller view.";
         setListItems(document.getElementById("mitigations"), [recommendation], {
           fallbackText: "No specific next steps are available yet.",
@@ -6247,6 +6384,7 @@
         setListItems(document.getElementById("protective"), [], {
           fallbackText: "Protective factors will appear after location confirmation.",
         });
+        setMitigationSequenceLabel("Recommended sequence");
         document.getElementById("nextStepsText").textContent = detail?.recommended_action
           || "Check street, city, state, and ZIP, then confirm location in the map step.";
         setListItems(document.getElementById("mitigations"), [toHomeownerFriendlyError(rejection, "Please confirm the address or choose your location on the map.")], {
