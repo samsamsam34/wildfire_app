@@ -2069,6 +2069,13 @@
       apiKeyInput.value = storedApiKey;
 
       let latestAssessment = null;
+      let latestHomeownerDecisionLists = {
+        assessmentId: null,
+        reasons: [],
+        drivers: [],
+        actions: [],
+        actionsKind: "none",
+      };
       let latestHomeownerReport = null;
       let latestSimulationSummary = null;
       let latestMapPayload = null;
@@ -4490,22 +4497,53 @@
         return [text];
       }
 
-      function extractLabeledSummarySegment(summaryText, label, stopLabels = []) {
-        const text = String(summaryText || "").trim();
-        const labelText = String(label || "").trim();
-        if (!text || !labelText) return "";
-        const lower = text.toLowerCase();
-        const labelLower = labelText.toLowerCase();
-        const startIdx = lower.indexOf(labelLower);
-        if (startIdx < 0) return "";
-        const contentStart = startIdx + labelLower.length;
+      function normalizeSummaryTextForParsing(summaryText) {
+        return String(summaryText || "")
+          .replace(/[\u2012\u2013\u2014\u2015]/g, "-")
+          .replace(/\r\n?/g, "\n")
+          .trim();
+      }
+
+      function findFirstLabeledSegmentMatch(text, patterns = []) {
+        const source = String(text || "");
+        let winner = null;
+        (Array.isArray(patterns) ? patterns : []).forEach((pattern) => {
+          if (!(pattern instanceof RegExp)) return;
+          const flags = pattern.flags.includes("g") ? pattern.flags : `${pattern.flags}g`;
+          const matcher = new RegExp(pattern.source, flags);
+          const match = matcher.exec(source);
+          if (!match || !Number.isFinite(match.index)) return;
+          if (!winner || match.index < winner.index) {
+            winner = {
+              index: match.index,
+              end: match.index + String(match[0] || "").length,
+              text: String(match[0] || ""),
+            };
+          }
+        });
+        return winner;
+      }
+
+      function extractLabeledSummarySegment(summaryText, labelPatterns = [], stopPatterns = []) {
+        const text = normalizeSummaryTextForParsing(summaryText);
+        if (!text) return "";
+        const startMatch = findFirstLabeledSegmentMatch(text, labelPatterns);
+        if (!startMatch) return "";
+        const contentStart = startMatch.end;
         let endIdx = text.length;
-        const stopCandidates = (Array.isArray(stopLabels) ? stopLabels : [])
-          .map((v) => String(v || "").trim().toLowerCase())
-          .filter(Boolean);
-        stopCandidates.forEach((stop) => {
-          const idx = lower.indexOf(stop, contentStart);
-          if (idx >= 0 && idx < endIdx) endIdx = idx;
+        (Array.isArray(stopPatterns) ? stopPatterns : []).forEach((pattern) => {
+          if (!(pattern instanceof RegExp)) return;
+          const flags = pattern.flags.includes("g") ? pattern.flags : `${pattern.flags}g`;
+          const matcher = new RegExp(pattern.source, flags);
+          let match;
+          while ((match = matcher.exec(text)) !== null) {
+            const idx = Number(match.index);
+            if (!Number.isFinite(idx)) break;
+            if (idx > contentStart && idx < endIdx) {
+              endIdx = idx;
+              break;
+            }
+          }
         });
         return text
           .slice(contentStart, endIdx)
@@ -4514,7 +4552,7 @@
       }
 
       function extractDriverSentencesFromSummary(summaryText) {
-        const text = String(summaryText || "").trim();
+        const text = normalizeSummaryTextForParsing(summaryText);
         if (!text) return [];
         const seen = new Set();
         const rows = [];
@@ -4540,17 +4578,30 @@
           rows.push(sentenceCaseText(cleaned));
         };
 
-        const chunkRows = text.split(/\s*(?:\.\s+|,\s+(?=[A-Z0-9]))\s*/);
+        const chunkRows = text
+          .replace(/\n+/g, " ")
+          .split(/\s*(?:\.\s+|,\s+(?=[A-Z0-9]))\s*/);
         chunkRows.forEach(addRow);
         if (rows.length === 0) addRow(text);
         return rows.slice(0, 6);
       }
 
+      const primaryDriverLabelPatterns = [
+        /\bprimary\s+drivers?\s*[:\-]?\s*/i,
+        /\bmain\s+drivers?\s*[:\-]?\s*/i,
+        /\bkey\s+drivers?\s*[:\-]?\s*/i,
+      ];
+
+      const nearStructureLabelPatterns = [
+        /\bnear[\s-]*structure\s+summary\s*[:\-]?\s*/i,
+        /\bstructure\s+summary\s*[:\-]?\s*/i,
+      ];
+
       function extractPrimaryDriversFromSummary(summaryText) {
         const segment = extractLabeledSummarySegment(
           summaryText,
-          "Primary drivers:",
-          ["Near-structure summary:"]
+          primaryDriverLabelPatterns,
+          nearStructureLabelPatterns
         );
         return extractDriverSentencesFromSummary(segment);
       }
@@ -4558,10 +4609,34 @@
       function extractNearStructureSummaryFromSummary(summaryText) {
         const segment = extractLabeledSummarySegment(
           summaryText,
-          "Near-structure summary:",
+          nearStructureLabelPatterns,
           []
         );
         return extractDriverSentencesFromSummary(segment);
+      }
+
+      function extractKeywordDriverClausesFromSummary(summaryText) {
+        const text = normalizeSummaryTextForParsing(summaryText);
+        if (!text) return [];
+        const keywordRegex = /\b(hazard|vulnerability|readiness|vegetation|hardening|ember|roof|defensible|fuel|slope|fire history)\b/i;
+        const rows = extractDriverSentencesFromSummary(text)
+          .filter((line) => keywordRegex.test(String(line || "").toLowerCase()))
+          .slice(0, 4);
+        return rows;
+      }
+
+      function buildHomeownerActionLines(rows, limit = 3) {
+        return (Array.isArray(rows) ? rows : [])
+          .slice(0, limit)
+          .map((row) => {
+            if (row && typeof row === "object") {
+              const action = String(row?.action || row?.title || "").trim();
+              const why = String(row?.why_this_matters || row?.explanation || "").trim();
+              return action ? `${action}${why ? `: ${why}` : ""}` : "";
+            }
+            return String(row || "").trim();
+          })
+          .filter(Boolean);
       }
 
       function mergeDecisionRows(primaryRows, fallbackRows, limit = 8) {
@@ -4625,6 +4700,9 @@
         ).trim();
         const primaryDriversFromSummary = extractPrimaryDriversFromSummary(summaryText);
         const nearStructureSummaryDrivers = extractNearStructureSummaryFromSummary(summaryText);
+        const keywordDriverFallback = (
+          primaryDriversFromSummary.length === 0 && nearStructureSummaryDrivers.length === 0
+        ) ? extractKeywordDriverClausesFromSummary(summaryText) : [];
         if (isDebugMode) {
           console.debug("[homeowner-summary] extractHomeownerDecisionCollections summary_input", {
             assessment_id: data?.assessment_id || null,
@@ -4633,6 +4711,7 @@
           console.debug("[homeowner-summary] extractHomeownerDecisionCollections parsed_summary", {
             primary_drivers: primaryDriversFromSummary,
             near_structure_summary: nearStructureSummaryDrivers,
+            keyword_driver_fallback: keywordDriverFallback,
           });
         }
 
@@ -4642,6 +4721,7 @@
           { source: "assessment.top_risk_drivers_detailed", rows: normalizeStringArray(data?.top_risk_drivers_detailed) },
           { source: "summary.primary_drivers", rows: normalizeStringArray(primaryDriversFromSummary) },
           { source: "summary.near_structure", rows: normalizeStringArray(nearStructureSummaryDrivers) },
+          { source: "summary.keyword_driver_fallback", rows: normalizeStringArray(keywordDriverFallback) },
           { source: "assessment.top_near_structure_risk_drivers", rows: normalizeStringArray(data?.top_near_structure_risk_drivers) },
           { source: "assessment.property_findings", rows: normalizeStringArray(data?.property_findings) },
           { source: "summary_fallback", rows: deriveReasonFallbackFromSummary(summaryText) },
@@ -4655,6 +4735,7 @@
           { source: "assessment.top_risk_drivers_detailed", rows: normalizeDriverRows(data?.top_risk_drivers_detailed) },
           { source: "summary.primary_drivers", rows: normalizeDriverRows(primaryDriversFromSummary) },
           { source: "summary.near_structure", rows: normalizeDriverRows(nearStructureSummaryDrivers) },
+          { source: "summary.keyword_driver_fallback", rows: normalizeDriverRows(keywordDriverFallback) },
           { source: "assessment.top_near_structure_risk_drivers", rows: normalizeDriverRows(data?.top_near_structure_risk_drivers) },
           { source: "assessment.property_findings", rows: normalizeDriverRows(data?.property_findings) },
         ];
@@ -4784,6 +4865,26 @@
           || !methodologyEl
           || !advancedEl
         ) return;
+
+        const currentAssessmentId = String(latestAssessment?.assessment_id || "").trim() || null;
+        if (!currentAssessmentId) {
+          latestHomeownerDecisionLists = {
+            assessmentId: null,
+            reasons: [],
+            drivers: [],
+            actions: [],
+            actionsKind: "none",
+          };
+        } else if (latestHomeownerDecisionLists.assessmentId !== currentAssessmentId) {
+          latestHomeownerDecisionLists = {
+            assessmentId: currentAssessmentId,
+            reasons: [],
+            drivers: [],
+            actions: [],
+            actionsKind: "none",
+          };
+        }
+
         if (isDebugMode) {
           console.debug("[homeowner-summary] renderHomeownerDecisionSnapshot", {
             source: String(debugSource || "unknown"),
@@ -4818,29 +4919,41 @@
           )
           : "Top actions will appear after assessment.";
 
-        const reasonLines = topNonEmptyLines(reasons, 3);
+        let reasonLines = topNonEmptyLines(reasons, 3);
+        let driverLines = topNonEmptyLines(drivers, 3);
+        let actionLines = buildHomeownerActionLines(actions, 3);
+        let effectiveActionsKind = String(actionsKind || "none");
+
+        if (currentAssessmentId) {
+          if (reasonLines.length > 0) latestHomeownerDecisionLists.reasons = reasonLines.slice(0, 3);
+          if (driverLines.length > 0) latestHomeownerDecisionLists.drivers = driverLines.slice(0, 3);
+          if (actionLines.length > 0) {
+            latestHomeownerDecisionLists.actions = actionLines.slice(0, 3);
+            latestHomeownerDecisionLists.actionsKind = effectiveActionsKind;
+          }
+
+          if (reasonLines.length === 0 && latestHomeownerDecisionLists.reasons.length > 0) {
+            reasonLines = latestHomeownerDecisionLists.reasons.slice(0, 3);
+          }
+          if (driverLines.length === 0 && latestHomeownerDecisionLists.drivers.length > 0) {
+            driverLines = latestHomeownerDecisionLists.drivers.slice(0, 3);
+          }
+          if (actionLines.length === 0 && latestHomeownerDecisionLists.actions.length > 0) {
+            actionLines = latestHomeownerDecisionLists.actions.slice(0, 3);
+            effectiveActionsKind = latestHomeownerDecisionLists.actionsKind || effectiveActionsKind;
+          }
+        }
+
         setListItems(reasonsEl, reasonLines, {
           fallbackText: noReasonsText,
         });
 
-        const driverLines = topNonEmptyLines(drivers, 3);
         setListItems(driversEl, driverLines, {
           fallbackText: noDriversText,
         });
 
-        const actionLines = (Array.isArray(actions) ? actions : [])
-          .slice(0, 3)
-          .map((row) => {
-            if (row && typeof row === "object") {
-              const action = String(row?.action || row?.title || "").trim();
-              const why = String(row?.why_this_matters || row?.explanation || "").trim();
-              return action ? `${action}${why ? `: ${why}` : ""}` : "";
-            }
-            return String(row || "").trim();
-          })
-          .filter(Boolean);
         const actionRows = (
-          actionsKind === "estimate_improvement" && actionLines.length > 0
+          effectiveActionsKind === "estimate_improvement" && actionLines.length > 0
             ? [
               "No mitigation actions were returned for this result. You can improve this estimate by adding property details.",
               ...actionLines,
@@ -5094,6 +5207,7 @@
         const assessmentDecision = latestAssessment
           ? extractHomeownerDecisionCollections(latestAssessment)
           : { reasons: [], drivers: [], actions: [], sources: { reasons: "none", drivers: "none", actions: "none", actions_kind: "none" } };
+        const currentAssessmentId = String(latestAssessment?.assessment_id || "").trim() || null;
         const overall = (firstScreen?.overall_wildfire_risk && typeof firstScreen.overall_wildfire_risk === "object")
           ? firstScreen.overall_wildfire_risk
           : {};
@@ -5143,6 +5257,20 @@
           normalizeDriverRows(latestAssessment?.property_findings),
         );
         const topDrivers = mergeDecisionRows(assessmentDecision.drivers, reportTopDrivers, 6);
+        const mergedHasContent = statusReasons.length > 0 || topDrivers.length > 0 || topActions.length > 0;
+        const sameAssessmentAsPersisted = !!(
+          currentAssessmentId
+          && latestHomeownerDecisionLists.assessmentId
+          && currentAssessmentId === latestHomeownerDecisionLists.assessmentId
+        );
+        if (!mergedHasContent && sameAssessmentAsPersisted) {
+          if (isDebugMode) {
+            console.debug("[homeowner-summary] report preview snapshot skipped to avoid empty overwrite", {
+              assessment_id: currentAssessmentId,
+              source: "report:renderHomeownerReportPreview",
+            });
+          }
+        } else {
         const reportReasonsSource = statusReasons.length === 0
           ? "none"
           : (assessmentDecision.reasons.length > 0 && reportStatusReasons.length > 0
@@ -5235,6 +5363,7 @@
           methodology: statusMethodologyNote,
           advancedRows,
         });
+        }
 
         setHomeownerReportStatus(statusLabel
           ? `${statusLabel}: ${headline || "report highlights are ready."}`
