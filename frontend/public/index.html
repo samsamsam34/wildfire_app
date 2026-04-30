@@ -804,19 +804,6 @@
         font-size: 0.8rem;
         margin-top: 0.35rem;
       }
-      .debug-block {
-        margin: 0.5rem 0 0;
-        padding: 0.6rem 0.7rem;
-        border: 1px dashed #c9d6df;
-        border-radius: 10px;
-        background: #f8fbfd;
-        color: #334155;
-        font-size: 0.78rem;
-        line-height: 1.45;
-        white-space: pre-wrap;
-        max-height: 320px;
-        overflow: auto;
-      }
       .map-note {
         margin-top: 0.48rem;
       }
@@ -1628,11 +1615,6 @@
             <li class="muted">Deeper notes on what mattered most, what was confirmed, and what was estimated are available in advanced sections.</li>
           </ul>
         </details>
-        <details id="homeownerStep2DebugPanel" class="mt-sm" hidden>
-          <summary>Step 2 debug trace (temporary)</summary>
-          <p class="section-help">Temporary debug output for Step 2 list extraction and render order.</p>
-          <pre id="homeownerStep2DebugContent" class="debug-block"></pre>
-        </details>
       </section>
 
       <section id="reportJourneySection" class="card secondary-panel" style="display:none;">
@@ -2082,7 +2064,6 @@
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <script>
       const apiBase = (window.WILDFIRE_API_BASE || "http://127.0.0.1:8000").replace(/\/$/, "");
-      const DEBUG_HOMEOWNER_STEP2 = true;
       const isDebugMode = !!window.WILDFIRE_DEBUG_MODE
         || window.location.hostname === "localhost"
         || window.location.hostname === "127.0.0.1"
@@ -2106,24 +2087,6 @@
         drivers: [],
         actions: [],
         actionsKind: "none",
-      };
-      let homeownerStep2RenderCounter = 0;
-      let homeownerStep2DebugState = {
-        assessmentId: null,
-        rawExplanationSummaryFromAssessment: "",
-        rawSummaryTextFromCollections: "",
-        parsedPrimaryDrivers: [],
-        parsedNearStructureDrivers: [],
-        parsedKeywordDriverClauses: [],
-        finalReasons: [],
-        finalDrivers: [],
-        finalActions: [],
-        lastSnapshotSource: "",
-        lastSnapshotCounts: { reasons: 0, drivers: 0, actions: 0 },
-        snapshotHistory: [],
-        reasonsTextContent: "",
-        driversTextContent: "",
-        actionsTextContent: "",
       };
       let latestHomeownerReport = null;
       let latestSimulationSummary = null;
@@ -2454,52 +2417,6 @@
         while (node.firstChild) {
           node.removeChild(node.firstChild);
         }
-      }
-
-      function trimmedTextContent(el) {
-        return String(el?.textContent || "").replace(/\s+/g, " ").trim();
-      }
-
-      function debugRowsPreview(rows, limit = 6) {
-        return (Array.isArray(rows) ? rows : [])
-          .slice(0, limit)
-          .map((row) => {
-            if (row && typeof row === "object") {
-              return String(row?.action || row?.title || row?.label || row?.reason || row?.description || "").trim();
-            }
-            return String(row || "").trim();
-          })
-          .filter(Boolean);
-      }
-
-      function updateHomeownerStep2DebugPanel() {
-        const panelEl = document.getElementById("homeownerStep2DebugPanel");
-        const contentEl = document.getElementById("homeownerStep2DebugContent");
-        if (!panelEl || !contentEl) return;
-        if (!DEBUG_HOMEOWNER_STEP2) {
-          panelEl.hidden = true;
-          contentEl.textContent = "";
-          return;
-        }
-        panelEl.hidden = false;
-        const debugPayload = {
-          assessment_id: homeownerStep2DebugState.assessmentId || null,
-          raw_explanation_summary_from_render_homeowner_decision: homeownerStep2DebugState.rawExplanationSummaryFromAssessment || "",
-          raw_summary_text_from_extract_homeowner_decision_collections: homeownerStep2DebugState.rawSummaryTextFromCollections || "",
-          parsed_primary_drivers: homeownerStep2DebugState.parsedPrimaryDrivers,
-          parsed_near_structure_summary: homeownerStep2DebugState.parsedNearStructureDrivers,
-          parsed_keyword_driver_clauses: homeownerStep2DebugState.parsedKeywordDriverClauses,
-          final_reasons_array: homeownerStep2DebugState.finalReasons,
-          final_drivers_array: homeownerStep2DebugState.finalDrivers,
-          final_actions_array: homeownerStep2DebugState.finalActions,
-          last_snapshot_source: homeownerStep2DebugState.lastSnapshotSource || "",
-          last_snapshot_counts: homeownerStep2DebugState.lastSnapshotCounts,
-          homeowner_decision_reasons_textContent: homeownerStep2DebugState.reasonsTextContent || "",
-          homeowner_decision_drivers_textContent: homeownerStep2DebugState.driversTextContent || "",
-          homeowner_decision_actions_textContent: homeownerStep2DebugState.actionsTextContent || "",
-          snapshot_calls: homeownerStep2DebugState.snapshotHistory,
-        };
-        contentEl.textContent = JSON.stringify(debugPayload, null, 2);
       }
 
       function setListItems(
@@ -4798,13 +4715,6 @@
         const keywordDriverFallback = (
           primaryDriversFromSummary.length === 0 && nearStructureSummaryDrivers.length === 0
         ) ? extractKeywordDriverClausesFromSummary(summaryText) : [];
-        if (DEBUG_HOMEOWNER_STEP2) {
-          homeownerStep2DebugState.assessmentId = String(data?.assessment_id || latestAssessment?.assessment_id || "").trim() || null;
-          homeownerStep2DebugState.rawSummaryTextFromCollections = summaryText;
-          homeownerStep2DebugState.parsedPrimaryDrivers = debugRowsPreview(primaryDriversFromSummary, 8);
-          homeownerStep2DebugState.parsedNearStructureDrivers = debugRowsPreview(nearStructureSummaryDrivers, 8);
-          homeownerStep2DebugState.parsedKeywordDriverClauses = debugRowsPreview(keywordDriverFallback, 8);
-        }
         if (isDebugMode) {
           console.debug("[homeowner-summary] extractHomeownerDecisionCollections summary_input", {
             assessment_id: data?.assessment_id || null,
@@ -4881,13 +4791,6 @@
             actions: selectedActions.rows,
           });
         }
-        if (DEBUG_HOMEOWNER_STEP2) {
-          homeownerStep2DebugState.finalReasons = debugRowsPreview(selectedReasons.rows, 10);
-          homeownerStep2DebugState.finalDrivers = debugRowsPreview(selectedDrivers.rows, 10);
-          homeownerStep2DebugState.finalActions = debugRowsPreview(selectedActions.rows, 10);
-          updateHomeownerStep2DebugPanel();
-        }
-
         return {
           homeownerSummary,
           summaryText,
@@ -4975,29 +4878,6 @@
         ) return;
 
         const currentAssessmentId = String(latestAssessment?.assessment_id || "").trim() || null;
-        const snapshotReasonsCount = Array.isArray(reasons) ? reasons.length : 0;
-        const snapshotDriversCount = Array.isArray(drivers) ? drivers.length : 0;
-        const snapshotActionsCount = Array.isArray(actions) ? actions.length : 0;
-        homeownerStep2RenderCounter += 1;
-        if (DEBUG_HOMEOWNER_STEP2) {
-          homeownerStep2DebugState.lastSnapshotSource = String(debugSource || "unknown");
-          homeownerStep2DebugState.lastSnapshotCounts = {
-            reasons: snapshotReasonsCount,
-            drivers: snapshotDriversCount,
-            actions: snapshotActionsCount,
-          };
-          homeownerStep2DebugState.snapshotHistory.push({
-            call: homeownerStep2RenderCounter,
-            source: String(debugSource || "unknown"),
-            assessment_id: currentAssessmentId,
-            reasons_count: snapshotReasonsCount,
-            drivers_count: snapshotDriversCount,
-            actions_count: snapshotActionsCount,
-          });
-          if (homeownerStep2DebugState.snapshotHistory.length > 40) {
-            homeownerStep2DebugState.snapshotHistory = homeownerStep2DebugState.snapshotHistory.slice(-40);
-          }
-        }
         if (!currentAssessmentId) {
           latestHomeownerDecisionLists = {
             assessmentId: null,
@@ -5020,9 +4900,9 @@
           console.debug("[homeowner-summary] renderHomeownerDecisionSnapshot", {
             source: String(debugSource || "unknown"),
             assessment_id: latestAssessment?.assessment_id || null,
-            reasons_count: Array.isArray(reasons) ? reasons.length : 0,
-            drivers_count: Array.isArray(drivers) ? drivers.length : 0,
-            actions_count: Array.isArray(actions) ? actions.length : 0,
+            reasons_count: normalizeStringArray(reasons).length,
+            drivers_count: normalizeDriverRows(drivers).length,
+            actions_count: normalizeActionRows(actions).length,
             actions_kind: actionsKind,
             status_label: String(statusLabel || "").trim() || null,
           });
@@ -5050,10 +4930,27 @@
           )
           : "Top actions will appear after assessment.";
 
-        let reasonLines = topNonEmptyLines(reasons, 3);
-        let driverLines = topNonEmptyLines(drivers, 3);
-        let actionLines = buildHomeownerActionLines(actions, 3);
+        const normalizedReasonsInput = normalizeStringArray(reasons);
+        const normalizedDriversInput = normalizeDriverRows(drivers);
+        const normalizedActionsInput = normalizeActionRows(actions);
+        let reasonLines = topNonEmptyLines(normalizedReasonsInput, 3);
+        let driverLines = topNonEmptyLines(normalizedDriversInput, 3);
+        let actionLines = buildHomeownerActionLines(normalizedActionsInput, 3);
         let effectiveActionsKind = String(actionsKind || "none");
+
+        if (reasonLines.length === 0 || driverLines.length === 0) {
+          const summaryDrivers = firstNonEmptyArray(
+            normalizeStringArray(extractPrimaryDriversFromSummary(summary)),
+            normalizeStringArray(extractNearStructureSummaryFromSummary(summary)),
+            normalizeStringArray(extractKeywordDriverClausesFromSummary(summary))
+          );
+          if (reasonLines.length === 0 && summaryDrivers.length > 0) {
+            reasonLines = topNonEmptyLines(summaryDrivers, 3);
+          }
+          if (driverLines.length === 0 && summaryDrivers.length > 0) {
+            driverLines = topNonEmptyLines(normalizeDriverRows(summaryDrivers), 3);
+          }
+        }
 
         if (currentAssessmentId) {
           if (reasonLines.length > 0) latestHomeownerDecisionLists.reasons = reasonLines.slice(0, 3);
@@ -5094,14 +4991,6 @@
         setListItems(actionsEl, actionRows, {
           fallbackText: noActionsText,
         });
-        if (DEBUG_HOMEOWNER_STEP2) {
-          homeownerStep2DebugState.reasonsTextContent = trimmedTextContent(reasonsEl);
-          homeownerStep2DebugState.driversTextContent = trimmedTextContent(driversEl);
-          homeownerStep2DebugState.actionsTextContent = trimmedTextContent(actionsEl);
-          homeownerStep2DebugState.assessmentId = currentAssessmentId;
-          updateHomeownerStep2DebugPanel();
-        }
-
         const beforeAfterLines = [];
         const normalizedBeforeStatus = normalizeComparableText(beforeStatus);
         const normalizedAfterStatus = normalizeComparableText(afterStatus);
@@ -5181,11 +5070,6 @@
         if (!data || typeof data !== "object") {
           renderHomeownerDecisionSnapshot({ debugSource: "assessment:missing_data" });
           return;
-        }
-        if (DEBUG_HOMEOWNER_STEP2) {
-          homeownerStep2DebugState.assessmentId = String(data?.assessment_id || "").trim() || null;
-          homeownerStep2DebugState.rawExplanationSummaryFromAssessment = String(data?.explanation_summary || "").trim();
-          updateHomeownerStep2DebugPanel();
         }
         const decisionCollections = extractHomeownerDecisionCollections(data);
         const homeownerSummary = decisionCollections.homeownerSummary;
@@ -8471,8 +8355,6 @@
       bindOtherInput("sim_deck_attachment", "sim_deck_attachment_other");
       bindOtherInput("sim_year_built", "sim_year_built_other");
       applyHomeownerModeGates();
-      updateHomeownerStep2DebugPanel();
-
       document.querySelectorAll("#simulationPresetGrid .sim-preset-btn").forEach((btn) => {
         btn.addEventListener("click", () => {
           setSimulationPresetSelection(btn?.dataset?.presetId || "apply_top_actions", { prefill: true });
