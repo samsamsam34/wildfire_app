@@ -224,3 +224,141 @@ def test_fire_count_30yr_excludes_old_fires(tmp_path: Path) -> None:
     assert result.fire_count_all == 2
     assert result.fire_count_30yr == 1, "Only the recent fire should count in 30yr window"
     assert result.most_recent_fire_year == recent_year
+
+
+# ---------------------------------------------------------------------------
+# Test 7: Truncation warning — fewer than 50,000 features logs a WARNING
+# ---------------------------------------------------------------------------
+
+def test_truncated_dataset_logs_warning(tmp_path: Path) -> None:
+    """Client logs a WARNING when loaded GeoPackage has fewer than 50,000 features."""
+    _gpd()
+    import logging
+    from shapely.geometry import Polygon
+
+    # Build a GeoPackage with only 100 features (well below the 50,000 threshold).
+    gpd = _gpd()
+    rows = []
+    geoms = []
+    for i in range(100):
+        lon = -111.0 + (i * 0.001)
+        rows.append({
+            "Fire_ID": f"TEST{i:04d}", "Fire_Name": f"FIRE {i}", "Year": 2000 + (i % 24),
+            "StartMonth": 7, "BurnBndAc": 1000.0,
+            "low_severity_pct": 50.0, "mod_severity_pct": 30.0, "high_severity_pct": 20.0,
+        })
+        geoms.append(Polygon([
+            (lon, 40.0), (lon + 0.001, 40.0),
+            (lon + 0.001, 40.001), (lon, 40.001), (lon, 40.0),
+        ]))
+    import geopandas as gpd_mod
+    gdf = gpd_mod.GeoDataFrame(rows, geometry=geoms, crs="EPSG:4326")
+    path = str(tmp_path / "small_mtbs.gpkg")
+    gdf.to_file(path, driver="GPKG", layer="fire_perimeters")
+
+    import logging
+    from backend.national_fire_history_client import NationalFireHistoryClient
+
+    # Capture WARNING logs during init.
+    log_records: list[logging.LogRecord] = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            log_records.append(record)
+
+    handler = _Capture()
+    logger = logging.getLogger("wildfire_app.national_fire_history_client")
+    logger.addHandler(handler)
+    logger.setLevel(logging.WARNING)
+    try:
+        client = NationalFireHistoryClient(mtbs_gpkg_path=path)
+    finally:
+        logger.removeHandler(handler)
+
+    assert client.enabled, "Client should still be enabled even with truncated data"
+    warning_msgs = [r.getMessage() for r in log_records if r.levelno == logging.WARNING]
+    assert any(
+        "truncated_dataset" in msg or "25000" in msg or "25,000" in msg
+        for msg in warning_msgs
+    ), (
+        f"Expected a truncation warning but got: {warning_msgs}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test 8: Full dataset smoke test — 80,000+ rows, no warning logged
+# ---------------------------------------------------------------------------
+
+def test_full_dataset_no_truncation_warning(tmp_path: Path) -> None:
+    """With 80,000 features, client loads without a truncation warning."""
+    _gpd()
+    import geopandas as gpd_mod
+    import logging
+    from shapely.geometry import Point
+    from backend.national_fire_history_client import NationalFireHistoryClient
+
+    # Build a minimal GeoPackage with 80,000 point-geometry rows.
+    # We use Point instead of Polygon to keep memory/time manageable in tests.
+    n = 80_000
+    rows = [{"Fire_ID": f"F{i}", "Fire_Name": f"Fire {i}", "Year": 1985 + (i % 40),
+              "StartMonth": 7, "BurnBndAc": 500.0,
+              "low_severity_pct": None, "mod_severity_pct": None, "high_severity_pct": None}
+             for i in range(n)]
+    geoms = [Point(-120.0 + (i % 1000) * 0.01, 37.0 + (i // 1000) * 0.01) for i in range(n)]
+    gdf = gpd_mod.GeoDataFrame(rows, geometry=geoms, crs="EPSG:4326")
+    path = str(tmp_path / "full_mtbs.gpkg")
+    gdf.to_file(path, driver="GPKG", layer="fire_perimeters")
+
+    log_records: list[logging.LogRecord] = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            log_records.append(record)
+
+    handler = _Capture()
+    logger = logging.getLogger("wildfire_app.national_fire_history_client")
+    logger.addHandler(handler)
+    logger.setLevel(logging.WARNING)
+    try:
+        client = NationalFireHistoryClient(mtbs_gpkg_path=path)
+    finally:
+        logger.removeHandler(handler)
+
+    assert client.enabled is True
+    warning_msgs = [r.getMessage() for r in log_records if r.levelno == logging.WARNING]
+    truncation_warnings = [m for m in warning_msgs if "truncated" in m or "25,000" in m]
+    assert truncation_warnings == [], (
+        f"Unexpected truncation warning for 80,000-feature dataset: {truncation_warnings}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test 9: Ocean point query — data_available=True but fire_count_all=0
+# ---------------------------------------------------------------------------
+
+def test_ocean_point_returns_zero_fires(tmp_path: Path) -> None:
+    """Query a point in the open ocean — client is loaded but no fires there."""
+    _gpd()
+    # Single fire polygon far from the ocean point (30.0, -60.0)
+    fires = [
+        {
+            "Fire_ID": "CA001", "Fire_Name": "INLAND FIRE", "Year": 2020,
+            "StartMonth": 8, "BurnBndAc": 10000.0,
+            "low_severity_pct": 20.0, "mod_severity_pct": 40.0, "high_severity_pct": 40.0,
+            "geometry": _box(-118.0, 34.0, -117.5, 34.5),  # inland CA, far from (30, -60)
+        }
+    ]
+    path = _make_gpkg(tmp_path, fires)
+
+    from backend.national_fire_history_client import NationalFireHistoryClient
+    client = NationalFireHistoryClient(mtbs_gpkg_path=path)
+
+    # Atlantic Ocean south of Bermuda — no fires expected
+    result = client.query_fire_history(30.0, -60.0, radius_m=10000.0)
+
+    assert result.data_available is True, (
+        "data_available must be True when client is loaded — just no fires at this location"
+    )
+    assert result.fire_count_all == 0
+    assert result.burned_within_radius is False
+    assert result.most_recent_fire_year is None

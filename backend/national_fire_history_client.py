@@ -29,6 +29,11 @@ from typing import Any, Optional
 
 LOGGER = logging.getLogger("wildfire_app.national_fire_history_client")
 
+# Minimum feature count for a healthy national MTBS GeoPackage.
+# A count below this threshold indicates a dev stub, partial download, or
+# corrupt file — all of which silently degrade fire history scoring.
+_MINIMUM_EXPECTED_FEATURES = 25_000
+
 # Fields expected in the MTBS GeoPackage (created by download_national_mtbs.py)
 _YEAR_FIELD = "Year"
 _NAME_FIELD = "Fire_Name"
@@ -154,11 +159,22 @@ class NationalFireHistoryClient:
 
             self._gdf = gpd.read_file(str(gpkg_path), layer="fire_perimeters")
             self._sindex = STRtree(self._gdf.geometry.values)
+            feature_count = len(self._gdf)
             LOGGER.info(
                 "national_fire_history_client loaded path=%s features=%d",
                 mtbs_gpkg_path,
-                len(self._gdf),
+                feature_count,
             )
+            if feature_count < _MINIMUM_EXPECTED_FEATURES:
+                LOGGER.warning(
+                    "national_fire_history_client truncated_dataset"
+                    " path=%s features=%d expected>=%d"
+                    " — fire history scoring may be unreliable."
+                    " Re-run scripts/download_national_mtbs.py to refresh.",
+                    mtbs_gpkg_path,
+                    feature_count,
+                    _MINIMUM_EXPECTED_FEATURES,
+                )
         except Exception as exc:
             LOGGER.warning(
                 "national_fire_history_client load_error path=%s error=%s",
