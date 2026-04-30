@@ -99,6 +99,16 @@ StructureGeometrySource = Literal["auto_detected", "user_selected", "user_modifi
 SelectionMode = Literal["polygon", "point"]
 
 
+class APIError(BaseModel):
+    """Standard error response envelope for all API errors."""
+
+    error: bool = True
+    error_class: str
+    message: str
+    detail: Optional[Any] = None
+    request_id: Optional[str] = None
+
+
 class PropertyAttributes(BaseModel):
     roof_type: Optional[str] = None
     vent_type: Optional[str] = None

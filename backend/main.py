@@ -7,6 +7,7 @@ import logging
 import math
 import os
 import re
+import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -14,9 +15,11 @@ from pathlib import Path
 from typing import Any, Dict, Iterable
 from uuid import uuid4
 
-from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Query
+from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, PlainTextResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Response
+from pydantic import ValidationError
+from slowapi.errors import RateLimitExceeded
 
 from backend.auth import get_key_org, require_api_key
 from backend.resolver_config import ResolverConfig
@@ -75,8 +78,14 @@ from backend.public_outcome_artifacts import load_public_outcome_governance_snap
 from backend.layer_diagnostics import LAYER_SPECS
 from backend.mitigation import build_mitigation_plan
 from backend.property_linkage import build_property_linkage_summary
+from backend.rate_limiting import (
+    get_assess_combined_limit,
+    get_simulate_limit,
+    limiter,
+)
 from backend.structure_enrichment import enrich_structure_attributes
 from backend.models import (
+    APIError,
     DataCoverageSummary,
     AssessmentDiagnostics,
     AssessmentStatus,
@@ -194,12 +203,118 @@ from backend.wildfire_data import (
 app = FastAPI(title="WildfireRisk Advisor API", version=PRODUCT_VERSION)
 LOGGER = logging.getLogger("wildfire_app.assessment")
 
+_raw_origins = os.environ.get(
+    "WF_ALLOWED_ORIGINS",
+    "http://localhost:4173,http://localhost:8000",
+)
+ALLOWED_ORIGINS = [origin.strip() for origin in _raw_origins.split(",") if origin.strip()]
+LOGGER.info("CORS allowed origins: %s", ALLOWED_ORIGINS)
+if "*" in ALLOWED_ORIGINS:
+    LOGGER.warning("CORS wildcard origin configured — not recommended for production.")
+
+
+def _http_error_class(status_code: int) -> str:
+    error_class_map = {
+        400: "bad_request",
+        404: "not_found",
+        422: "validation_error",
+        429: "rate_limit_exceeded",
+        500: "internal_error",
+    }
+    return error_class_map.get(int(status_code), "http_error")
+
+
+def _http_error_default_message(status_code: int) -> str:
+    fallback_messages = {
+        400: "Bad request.",
+        401: "Unauthorized.",
+        403: "Forbidden.",
+        404: "Not found.",
+        409: "Conflict.",
+        422: "Validation error.",
+        429: "Rate limit exceeded.",
+        500: "Internal server error.",
+    }
+    return fallback_messages.get(int(status_code), "Request failed.")
+
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(_request: Request, exc: HTTPException) -> JSONResponse:
+    """Wrap HTTPException responses in the standard APIError envelope."""
+    detail_payload: Any = exc.detail
+    error_class = _http_error_class(exc.status_code)
+    message = _http_error_default_message(exc.status_code)
+    normalized_detail: Any = None
+
+    if isinstance(detail_payload, dict):
+        normalized_detail = detail_payload
+        if detail_payload.get("error_class"):
+            error_class = str(detail_payload.get("error_class"))
+        elif detail_payload.get("error"):
+            error_class = str(detail_payload.get("error"))
+        if detail_payload.get("message"):
+            message = str(detail_payload.get("message"))
+        elif detail_payload.get("detail"):
+            message = str(detail_payload.get("detail"))
+        elif detail_payload.get("error"):
+            message = str(detail_payload.get("error"))
+    elif detail_payload is not None:
+        normalized_detail = detail_payload
+        message = str(detail_payload)
+
+    content = APIError(
+        error_class=error_class,
+        message=message,
+        detail=normalized_detail,
+    ).model_dump(exclude_none=True)
+    return JSONResponse(status_code=exc.status_code, content=content)
+
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    """
+    Catch-all handler for unhandled exceptions.
+    Logs traceback internally and returns a sanitized APIError envelope.
+    """
+    request_id = str(uuid4())[:8]
+    LOGGER.error(
+        "Unhandled exception [%s] %s %s: %s: %s\n%s",
+        request_id,
+        request.method,
+        request.url.path,
+        type(exc).__name__,
+        exc,
+        traceback.format_exc(),
+    )
+
+    include_detail = os.environ.get("WF_DEBUG_ERRORS", "false").strip().lower() == "true"
+    content = APIError(
+        error_class="internal_error",
+        message="An unexpected error occurred. Please try again.",
+        detail=str(exc) if include_detail else None,
+        request_id=request_id,
+    ).model_dump(exclude_none=True)
+    return JSONResponse(status_code=500, content=content)
+
+
+@app.exception_handler(RateLimitExceeded)
+async def rate_limit_exceeded_handler(_request: Request, exc: RateLimitExceeded) -> JSONResponse:
+    content = APIError(
+        error_class="rate_limit_exceeded",
+        message="Rate limit exceeded. Please try again shortly.",
+        detail=str(exc),
+    ).model_dump(exclude_none=True)
+    return JSONResponse(status_code=429, content=content)
+
+
+app.state.limiter = limiter
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=False,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=ALLOWED_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["GET", "POST"],
+    allow_headers=["Content-Type", "X-API-Key"],
 )
 
 scoring_config = load_scoring_config()
@@ -14164,8 +14279,10 @@ def check_region_coverage(
     response_model=AssessmentResult | AssessmentWithDiagnosticsResponse,
     dependencies=[Depends(require_api_key)],
 )
-def assess_risk(
-    payload: AddressRequest,
+@limiter.limit(get_assess_combined_limit)
+async def assess_risk(
+    request: Request,
+    payload: dict[str, Any],
     include_diagnostics: bool = Query(
         default=False,
         description=(
@@ -14182,6 +14299,11 @@ def assess_risk(
     ),
     ctx: ActorContext = Depends(get_actor_context),
 ) -> AssessmentResult | AssessmentWithDiagnosticsResponse:
+    try:
+        payload = AddressRequest.model_validate(payload)
+    except ValidationError as exc:
+        raise HTTPException(status_code=422, detail=exc.errors()) from exc
+
     organization_id, ruleset = _resolve_write_context(
         ctx, payload.organization_id, payload.ruleset_id,
         "Viewer role cannot create assessments",
@@ -14409,11 +14531,18 @@ def assess_risk(
 
 
 @app.post("/risk/reassess/{assessment_id}", response_model=AssessmentResult, dependencies=[Depends(require_api_key)])
-def reassess_risk(
+@limiter.limit(get_assess_combined_limit)
+async def reassess_risk(
+    request: Request,
     assessment_id: str,
-    payload: ReassessmentRequest,
+    payload: dict[str, Any],
     ctx: ActorContext = Depends(get_actor_context),
 ) -> AssessmentResult:
+    try:
+        payload = ReassessmentRequest.model_validate(payload)
+    except ValidationError as exc:
+        raise HTTPException(status_code=422, detail=exc.errors()) from exc
+
     _require_role(ctx, WRITE_ROLES, "Viewer role cannot create reassessments")
 
     existing = store.get(assessment_id)
@@ -14925,10 +15054,17 @@ def rerun_assessment_with_homeowner_inputs(
 
 
 @app.post("/risk/simulate", response_model=SimulationResult, dependencies=[Depends(require_api_key)])
-def simulate_risk(
-    payload: SimulationRequest,
+@limiter.limit(get_simulate_limit)
+async def simulate_risk(
+    request: Request,
+    payload: dict[str, Any],
     ctx: ActorContext = Depends(get_actor_context),
 ) -> SimulationResult:
+    try:
+        payload = SimulationRequest.model_validate(payload)
+    except ValidationError as exc:
+        raise HTTPException(status_code=422, detail=exc.errors()) from exc
+
     _require_role(ctx, WRITE_ROLES, "Viewer role cannot run simulations")
 
     if payload.assessment_id:

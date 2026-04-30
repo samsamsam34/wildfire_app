@@ -19,3 +19,5 @@ PyYAML==6.0.2
 # Test dependencies (tests/test_risk_assessment.py)
 pytest==8.3.5
 httpx==0.28.1
+slowapi>=0.1.9
+limits>=3.6.0

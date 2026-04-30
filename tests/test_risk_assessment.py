@@ -2266,7 +2266,10 @@ def test_geocoding_failure_does_not_use_synthetic_coordinate_fallback(monkeypatc
         },
     )
     assert res.status_code == 503
-    detail = res.json()["detail"]
+    body = res.json()
+    assert body["error"] is True
+    assert body["error_class"] in {"geocoding_failed", "address_not_found", "address_unresolved"}
+    detail = body["detail"]
     assert detail["error"] == "geocoding_failed"
     assert detail["geocode_status"] == "provider_error"
     assert "temporarily unavailable" in detail["message"].lower()
@@ -2301,7 +2304,10 @@ def test_malformed_address_returns_structured_geocode_parser_error(monkeypatch, 
         },
     )
     assert res.status_code == 422
-    detail = res.json()["detail"]
+    body = res.json()
+    assert body["error"] is True
+    assert body["error_class"] in {"geocoding_failed", "address_not_found", "address_unresolved"}
+    detail = body["detail"]
     assert detail["error"] == "geocoding_failed"
     assert detail["geocode_status"] == "parser_error"
     assert "could not be parsed" in detail["message"].lower()
@@ -2335,7 +2341,10 @@ def test_ambiguous_address_returns_structured_geocode_ambiguity_error(monkeypatc
         },
     )
     assert res.status_code == 422
-    detail = res.json()["detail"]
+    body = res.json()
+    assert body["error"] is True
+    assert body["error_class"] in {"geocoding_failed", "address_not_found", "address_unresolved"}
+    detail = body["detail"]
     assert detail["error"] == "geocoding_failed"
     assert detail["geocode_status"] == "ambiguous_match"
     assert "multiple possible locations" in detail["message"].lower()
@@ -2369,7 +2378,10 @@ def test_low_confidence_address_returns_structured_geocode_low_confidence_error(
         },
     )
     assert res.status_code == 422
-    detail = res.json()["detail"]
+    body = res.json()
+    assert body["error"] is True
+    assert body["error_class"] in {"geocoding_failed", "address_not_found", "address_unresolved"}
+    detail = body["detail"]
     assert detail["error"] == "geocoding_failed"
     assert detail["geocode_status"] == "low_confidence"
     assert detail["rejection_category"] == "trust_filter_rejected"
@@ -2515,7 +2527,10 @@ def test_low_confidence_with_candidate_fallback_reaches_uncovered_response(monke
     assert "region_resolution" in debug_body
 
     assert assess.status_code == 409
-    detail = assess.json()["detail"]
+    assess_body = assess.json()
+    assert assess_body["error"] is True
+    assert assess_body["error_class"] == "outside_prepared_region"
+    detail = assess_body["detail"]
     assert detail["region_not_ready"] is True
     assert detail["geocode_status"] == "accepted"
     assert detail["geocode_outcome"] == "geocode_succeeded_untrusted"
@@ -2835,7 +2850,10 @@ def test_street_only_fallback_candidate_is_not_auto_used(monkeypatch, tmp_path):
         },
     )
     assert response.status_code == 422
-    detail = response.json()["detail"]
+    body = response.json()
+    assert body["error"] is True
+    assert body["error_class"] == "address_unresolved"
+    detail = body["detail"]
     assert detail["geocode_status"] == "low_confidence"
     assert detail["rejection_category"] == "location_needs_confirmation"
     assert "selecting your home" in detail["message"].lower()
@@ -3167,7 +3185,10 @@ def test_route_geocode_and_coverage_are_consistent_for_valid_uncovered_address(m
 
     coverage_body = coverage.json()
     debug_body = debug.json()
-    assess_detail = assess.json()["detail"]
+    assess_body = assess.json()
+    assert assess_body["error"] is True
+    assert assess_body["error_class"] == "outside_prepared_region"
+    assess_detail = assess_body["detail"]
 
     assert coverage_body["geocode_status"] == "accepted"
     assert coverage_body["coverage_available"] is False
@@ -3218,7 +3239,10 @@ def test_route_geocode_and_coverage_are_consistent_for_invalid_address(monkeypat
     assert assess.status_code == 422
 
     for response in (coverage, debug, assess):
-        detail = response.json()["detail"]
+        body = response.json()
+        assert body["error"] is True
+        assert body["error_class"] in {"geocoding_failed", "address_not_found", "address_unresolved"}
+        detail = body["detail"]
         assert detail["error"] == "geocoding_failed"
         assert detail["geocode_status"] == "no_match"
         assert detail["normalized_address"] == "Invalid Input"
