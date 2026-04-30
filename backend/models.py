@@ -756,6 +756,16 @@ class HomeownerPrioritizedAction(BaseModel):
     priority: int = 5
 
 
+class ConfidenceImprovementAction(BaseModel):
+    """Structured prompt telling a homeowner which input would most improve confidence."""
+    field_name: str
+    display_label: str
+    confidence_gain: int   # estimated points added to overall confidence_score
+    why_it_matters: str
+    input_type: Literal["select", "number", "boolean"]
+    options: Optional[List[str]] = None
+
+
 class HomeownerConfidenceSummary(BaseModel):
     confidence: ConfidenceTier = "preliminary"
     observed_data: List[str] = Field(default_factory=list)
@@ -1112,6 +1122,13 @@ class AssessmentResult(BaseModel):
     confidence_score: float
     data_completeness_score: float = 0.0
     environmental_data_completeness_score: float = 0.0
+    # Split confidence: environmental layers only vs structural attributes only.
+    # These are informational and do not feed back into scoring.
+    environmental_confidence_score: float = 0.0
+    environmental_confidence_tier: str = "low"
+    structural_confidence_score: Optional[float] = None
+    structural_confidence_tier: str = "not_assessed"
+    structural_confidence_improvement_actions: List[ConfidenceImprovementAction] = Field(default_factory=list)
     confidence_tier: ConfidenceTier = "preliminary"
     use_restriction: UseRestriction = "not_for_underwriting_or_binding"
     low_confidence_flags: List[str]
@@ -1395,6 +1412,12 @@ class HomeownerReport(BaseModel):
     insurance_readiness_summary: Dict[str, object] = Field(default_factory=dict)
     confidence_summary: HomeownerConfidenceSummary = Field(default_factory=HomeownerConfidenceSummary)
     confidence_and_limitations: Dict[str, object] = Field(default_factory=dict)
+    # Split confidence fields added for homeowner UX (Part 3).
+    environmental_confidence_tier: str = "low"
+    environmental_confidence_score: float = 0.0
+    structural_confidence_tier: str = "not_assessed"
+    structural_confidence_improvement_actions: List[ConfidenceImprovementAction] = Field(default_factory=list)
+    confidence_summary_text: str = ""
     metadata: Dict[str, object] = Field(default_factory=dict)
     professional_debug_metadata: Optional[Dict[str, object]] = None
     specificity_summary: SpecificitySummary = Field(default_factory=SpecificitySummary)

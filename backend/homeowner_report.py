@@ -1581,6 +1581,14 @@ def build_homeowner_report(
         },
         confidence_summary=result.confidence_summary,
         confidence_and_limitations=confidence_and_limitations,
+        # Split confidence fields from AssessmentResult (informational, homeowner UX).
+        environmental_confidence_tier=str(result.environmental_confidence_tier or "low"),
+        environmental_confidence_score=float(result.environmental_confidence_score or 0.0),
+        structural_confidence_tier=str(result.structural_confidence_tier or "not_assessed"),
+        structural_confidence_improvement_actions=list(result.structural_confidence_improvement_actions or []),
+        confidence_summary_text=str(
+            (result.homeowner_summary or {}).get("confidence_summary_text") or ""
+        ),
         specificity_summary=specificity_summary,
         metadata={
             "model_version": result.model_version,

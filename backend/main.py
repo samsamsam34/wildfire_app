@@ -250,6 +250,53 @@ STRUCTURAL_SUBMODELS = [
 
 CORE_FACT_FIELDS = {"roof_type", "vent_type", "defensible_space_ft", "construction_year"}
 DIRECT_SOURCE_TYPES = {"observed", "footprint_derived", "user_provided"}
+
+# Structural attribute improvement metadata.
+# confidence_gain values are derived from the 5.5-point-per-field penalty in _build_confidence
+# (see line ~1050) plus estimated cap-relief when reducing missing_critical count across thresholds.
+# Ordering reflects relative scoring impact within the home-ignition-vulnerability model.
+_STRUCTURAL_IMPROVEMENT_FIELDS: list[dict] = [
+    {
+        "field_name": "roof_type",
+        "display_label": "Roof material",
+        "confidence_gain": 12,
+        "why_it_matters": "Roof material is the single strongest predictor of home ignition from embers.",
+        "input_type": "select",
+        "options": ["asphalt_shingle", "metal", "tile", "wood_shake", "unknown"],
+    },
+    {
+        "field_name": "vent_type",
+        "display_label": "Vent screening",
+        "confidence_gain": 9,
+        "why_it_matters": "Unscreened vents are the primary ember entry point during wildfires.",
+        "input_type": "select",
+        "options": ["screened", "unscreened", "unknown"],
+    },
+    {
+        "field_name": "defensible_space_ft",
+        "display_label": "Defensible space cleared (feet)",
+        "confidence_gain": 8,
+        "why_it_matters": "Vegetation within 30 feet significantly increases ignition risk.",
+        "input_type": "number",
+        "options": None,
+    },
+    {
+        "field_name": "construction_year",
+        "display_label": "Year built",
+        "confidence_gain": 5,
+        "why_it_matters": "Post-2010 homes meet stricter fire codes that reduce ember and flame ignition risk.",
+        "input_type": "number",
+        "options": None,
+    },
+    {
+        "field_name": "siding_type",
+        "display_label": "Siding material",
+        "confidence_gain": 4,
+        "why_it_matters": "Non-combustible siding reduces ignition risk from flame impingement.",
+        "input_type": "select",
+        "options": ["stucco", "fiber_cement", "wood", "vinyl", "unknown"],
+    },
+]
 INFERRED_SOURCE_TYPES = {"public_record_inferred"}
 LOW_QUALITY_SOURCE_TYPES = {"missing", "heuristic"}
 
@@ -5482,6 +5529,93 @@ def _build_confidence_improvement_actions(
     return actions[:10]
 
 
+def _compute_environmental_confidence(
+    environmental_layer_status: dict[str, str],
+    environmental_data_completeness: float,
+) -> tuple[float, str]:
+    """
+    Environmental-only confidence score (0–100) and tier.
+    Ignores structural attribute penalties — only env layer coverage counts.
+    """
+    env_status = dict(environmental_layer_status or {})
+    score = float(environmental_data_completeness)
+    # Small deduction for intentionally-absent layers (national fallback expected)
+    not_configured = sum(1 for s in env_status.values() if s == "not_configured")
+    score -= not_configured * 3.0
+    # Larger deduction for error status (genuine data failure)
+    error_count = sum(1 for s in env_status.values() if s == "error")
+    score -= error_count * 8.0
+    score = max(0.0, min(100.0, round(score, 1)))
+    if score >= 70.0:
+        tier = "high"
+    elif score >= 50.0:
+        tier = "medium"
+    else:
+        tier = "low"
+    return score, tier
+
+
+_KEY_STRUCTURAL_FIELDS = {"roof_type", "vent_type", "defensible_space_ft", "construction_year"}
+
+
+def _compute_structural_confidence(
+    observed_inputs: dict[str, Any],
+    missing_inputs: list[str],
+    confirmed_inputs: dict[str, Any],
+) -> float | None:
+    """
+    Structural-only confidence (0–100). Returns None when no structural attributes provided.
+    """
+    missing_set = set(missing_inputs or [])
+    confirmed_set = set(confirmed_inputs or {})
+    present = [
+        f for f in _KEY_STRUCTURAL_FIELDS
+        if observed_inputs.get(f) is not None and f not in missing_set
+    ]
+    if not present:
+        return None
+    total = 0.0
+    for field in _KEY_STRUCTURAL_FIELDS:
+        if observed_inputs.get(field) is not None and field not in missing_set:
+            total += 100.0 if field in confirmed_set else 75.0
+    return max(0.0, min(100.0, round(total / len(_KEY_STRUCTURAL_FIELDS), 1)))
+
+
+def _build_structural_improvement_actions(
+    missing_inputs: list[str],
+    observed_inputs: dict[str, Any],
+    confirmed_inputs: dict[str, Any],
+) -> "list[ConfidenceImprovementAction]":
+    """
+    Return structured improvement actions for missing structural fields, ordered by gain.
+    Only includes fields not yet provided; returns [] when all fields are present.
+    """
+    from backend.models import ConfidenceImprovementAction
+
+    missing_set = set(missing_inputs or [])
+    confirmed_set = set(confirmed_inputs or {})
+    actions = []
+    for meta in _STRUCTURAL_IMPROVEMENT_FIELDS:
+        field_name = meta["field_name"]
+        if field_name in confirmed_set:
+            continue
+        val = observed_inputs.get(field_name)
+        if val is not None and field_name not in missing_set:
+            continue
+        actions.append(
+            ConfidenceImprovementAction(
+                field_name=field_name,
+                display_label=meta["display_label"],
+                confidence_gain=meta["confidence_gain"],
+                why_it_matters=meta["why_it_matters"],
+                input_type=meta["input_type"],
+                options=meta["options"],
+            )
+        )
+    actions.sort(key=lambda a: -a.confidence_gain)
+    return actions
+
+
 def _build_homeowner_confidence_summary(
     *,
     confidence_score: float,
@@ -7631,6 +7765,37 @@ def _run_assessment(
         preflight=coverage_preflight,
         assessment_output_state=assessment_output_state,
     )
+    # Split confidence: computed early so homeowner_summary can reference them.
+    _env_conf_score, _env_conf_tier = _compute_environmental_confidence(
+        environmental_layer_status=dict(context.environmental_layer_status or {}),
+        environmental_data_completeness=environmental_data_completeness,
+    )
+    _struct_conf_score = _compute_structural_confidence(
+        observed_inputs=dict(assumptions_block.observed_inputs or {}),
+        missing_inputs=list(assumptions_block.missing_inputs or []),
+        confirmed_inputs=dict(assumptions_block.confirmed_inputs or {}),
+    )
+    _struct_conf_tier = (
+        "not_assessed"
+        if _struct_conf_score is None
+        else ("high" if _struct_conf_score >= 70.0 else ("medium" if _struct_conf_score >= 50.0 else "low"))
+    )
+    _struct_improvement_actions = _build_structural_improvement_actions(
+        missing_inputs=list(assumptions_block.missing_inputs or []),
+        observed_inputs=dict(assumptions_block.observed_inputs or {}),
+        confirmed_inputs=dict(assumptions_block.confirmed_inputs or {}),
+    )
+    # Human-readable confidence summary for homeowner display.
+    if _struct_conf_tier == "not_assessed":
+        _confidence_summary_text = (
+            f"Environmental risk data is {_env_conf_tier} confidence. "
+            "Add your home's details to get a complete assessment."
+        )
+    elif str(confidence_block.confidence_tier) == "high":
+        _confidence_summary_text = "Complete assessment — high confidence."
+    else:
+        _confidence_summary_text = f"Assessment confidence: {confidence_block.confidence_tier}."
+
     confidence_penalties = _derive_confidence_penalties(
         assumptions_block,
         environmental_data_completeness=environmental_data_completeness,
@@ -8061,6 +8226,14 @@ def _run_assessment(
         "insurability_status": insurability.insurability_status,
         "insurability_status_reasons": list(insurability.insurability_status_reasons),
         "insurability_status_methodology_note": insurability.insurability_status_methodology_note,
+        # Split confidence fields for homeowner UX (additive, informational).
+        "environmental_confidence_tier": _env_conf_tier,
+        "environmental_confidence_score": _env_conf_score,
+        "structural_confidence_tier": _struct_conf_tier,
+        "structural_confidence_improvement_actions": [
+            a.model_dump() for a in _struct_improvement_actions
+        ],
+        "confidence_summary_text": _confidence_summary_text,
     }
     readiness_factors = [
         ReadinessFactor(name=f["name"], status=f["status"], score_impact=f["score_impact"], detail=f["detail"])
@@ -8457,6 +8630,11 @@ def _run_assessment(
         confidence_score=confidence_block.confidence_score,
         data_completeness_score=confidence_block.data_completeness_score,
         environmental_data_completeness_score=confidence_block.environmental_data_completeness_score,
+        environmental_confidence_score=_env_conf_score,
+        environmental_confidence_tier=_env_conf_tier,
+        structural_confidence_score=_struct_conf_score,
+        structural_confidence_tier=_struct_conf_tier,
+        structural_confidence_improvement_actions=_struct_improvement_actions,
         confidence_tier=confidence_block.confidence_tier,
         use_restriction=confidence_block.use_restriction,
         low_confidence_flags=confidence_block.low_confidence_flags,

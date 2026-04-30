@@ -1732,7 +1732,15 @@
                 <p class="section-help">How reliable this estimate is, and where limited data may reduce detail.</p>
                 <div class="trust-overview">
                   <div class="trust-value">
-                    <span>How confident this estimate is</span>
+                    <span>Environmental risk data</span>
+                    <strong id="envConfidenceAtGlance">Pending</strong>
+                  </div>
+                  <div class="trust-value">
+                    <span>Home details</span>
+                    <strong id="structConfidenceAtGlance">Pending</strong>
+                  </div>
+                  <div class="trust-value">
+                    <span>Overall estimate</span>
                     <strong id="confidenceAtGlance">Pending</strong>
                   </div>
                   <div class="trust-value">
@@ -1741,6 +1749,10 @@
                   </div>
                 </div>
                 <p id="confidenceSummaryText" class="muted">Run an assessment to see what we could confirm.</p>
+                <div id="structImprovementPrompt" style="display:none;">
+                  <p class="mini-label" style="margin-top:0.75rem;">Add these details to improve your assessment:</p>
+                  <ul id="structImprovementList" style="margin:0 0 0 1rem;padding:0;list-style:disc;"></ul>
+                </div>
                 <div class="result-divider"></div>
                 <div class="mini-label">What may limit this estimate</div>
                 <div id="flagsPrimary"><span class="pill">Trust notes will appear after assessment</span></div>
@@ -5281,6 +5293,12 @@
         if (readinessKpiEl) readinessKpiEl.textContent = "Pending";
         if (firstActionKpiEl) firstActionKpiEl.textContent = "Run assessment";
         if (confidenceAtGlanceEl) confidenceAtGlanceEl.textContent = "Pending";
+        const envAtGlanceResetEl = document.getElementById("envConfidenceAtGlance");
+        const structAtGlanceResetEl = document.getElementById("structConfidenceAtGlance");
+        const structPromptResetEl = document.getElementById("structImprovementPrompt");
+        if (envAtGlanceResetEl) envAtGlanceResetEl.textContent = "Pending";
+        if (structAtGlanceResetEl) structAtGlanceResetEl.textContent = "Pending";
+        if (structPromptResetEl) structPromptResetEl.style.display = "none";
         if (specificityAtGlanceEl) specificityAtGlanceEl.textContent = "Pending";
         if (confidenceSummaryTextEl) confidenceSummaryTextEl.textContent = "Run an assessment to see what we could confirm.";
         if (flagsPrimaryEl) setPillSpans(flagsPrimaryEl, [], "Trust notes will appear after assessment.");
@@ -5983,6 +6001,41 @@
               ? resolveConfidenceTierLabel("", fallbackScore)
               : (confidenceHeadline || "Confidence not available");
           }
+        }
+        // Split confidence display.
+        const envTier = String(homeownerSummary?.environmental_confidence_tier || data?.environmental_confidence_tier || "").trim();
+        const structTier = String(homeownerSummary?.structural_confidence_tier || data?.structural_confidence_tier || "").trim();
+        const envAtGlanceEl = document.getElementById("envConfidenceAtGlance");
+        if (envAtGlanceEl) envAtGlanceEl.textContent = envTier ? humanizeToken(envTier) : "—";
+        const structAtGlanceEl = document.getElementById("structConfidenceAtGlance");
+        if (structAtGlanceEl) {
+          structAtGlanceEl.textContent = structTier === "not_assessed" ? "Not provided" : (structTier ? humanizeToken(structTier) : "—");
+        }
+        // Confidence summary text.
+        const confSummaryText = String(homeownerSummary?.confidence_summary_text || "").trim();
+        const confSummaryEl = document.getElementById("confidenceSummaryText");
+        if (confSummaryEl && confSummaryText) confSummaryEl.textContent = confSummaryText;
+        // Structured improvement actions.
+        const structActions = Array.isArray(homeownerSummary?.structural_confidence_improvement_actions)
+          ? homeownerSummary.structural_confidence_improvement_actions
+          : (Array.isArray(data?.structural_confidence_improvement_actions)
+            ? data.structural_confidence_improvement_actions : []);
+        const structPromptEl = document.getElementById("structImprovementPrompt");
+        const structListEl = document.getElementById("structImprovementList");
+        if (structPromptEl && structListEl && structActions.length > 0) {
+          setListItems(structListEl, structActions.slice(0, 3), {
+            renderItem: (li, action) => {
+              li.style.cssText = "margin-bottom:0.35rem;font-size:0.9rem;";
+              const gain = Number.isFinite(action.confidence_gain) ? ` (+${action.confidence_gain} pts)` : "";
+              const strong = document.createElement("strong");
+              strong.textContent = `${action.display_label}${gain}`;
+              li.appendChild(strong);
+              li.appendChild(document.createTextNode(` \u2014 ${action.why_it_matters}`));
+            },
+          });
+          structPromptEl.style.display = "";
+        } else if (structPromptEl) {
+          structPromptEl.style.display = "none";
         }
 
         const estimatedRows = Array.isArray(homeownerSummary?.what_was_estimated) && homeownerSummary.what_was_estimated.length > 0
