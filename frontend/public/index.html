@@ -1732,6 +1732,7 @@
                     <div id="mitigationSequenceLabel" class="mini-label">Recommended sequence</div>
                     <p id="nextStepsText">Focus on the top actions first.</p>
                     <ul id="mitigations"><li class="muted">Recommendations will appear after assessment.</li></ul>
+                    <div id="actionPlanDebugPanel" class="map-debug" style="display:none;margin-top:0.75rem;"></div>
                   </div>
                 </div>
               </div>
@@ -2107,6 +2108,7 @@
       const showOperatorControls = !!window.WILDFIRE_SHOW_OPERATOR_CONTROLS || !!window.WILDFIRE_OPERATOR_UI;
       const isHomeownerMode = !showOperatorControls;
       const showOperatorDiagnostics = isDebugMode && showOperatorControls;
+      const DEBUG_ACTION_PLAN_DETAILS = false;
       const apiKeyInput = document.getElementById("apiKey");
       let storedApiKey = "dev-key-1";
       try {
@@ -2127,6 +2129,11 @@
       let latestHomeownerActionPlanState = {
         assessmentId: null,
         hasRealActions: false,
+      };
+      let actionPlanDebugCounter = 0;
+      const actionPlanDebugState = {
+        renderer_calls: [],
+        mitigation_writes: [],
       };
       let latestHomeownerReport = null;
       let latestSimulationSummary = null;
@@ -2602,6 +2609,67 @@
       }
 
       const DEBUG_HOMEOWNER_STEP2_DOM = false;
+      const ACTION_PLAN_DEBUG_MAX_EVENTS = 40;
+
+      function trimDebugEvents(rows, limit = ACTION_PLAN_DEBUG_MAX_EVENTS) {
+        const normalized = Array.isArray(rows) ? rows : [];
+        if (normalized.length <= limit) return normalized;
+        return normalized.slice(normalized.length - limit);
+      }
+
+      function captureCallerFromStack(stackText = "") {
+        const lines = String(stackText || "").split("\n").map((line) => line.trim()).filter(Boolean);
+        const frame = lines.find((line) => {
+          if (line === "Error") return false;
+          if (line.includes("captureCallerFromStack")) return false;
+          if (line.includes("recordActionPlanDebug")) return false;
+          if (line.includes("setListItems")) return false;
+          return true;
+        });
+        return frame || "(unknown caller)";
+      }
+
+      function renderActionPlanDebugPanel() {
+        if (!DEBUG_ACTION_PLAN_DETAILS) return;
+        const panel = document.getElementById("actionPlanDebugPanel");
+        if (!panel) return;
+        panel.style.display = "block";
+        panel.style.whiteSpace = "pre-wrap";
+        panel.style.fontFamily = "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace";
+        panel.style.fontSize = "0.75rem";
+        const assessmentId = String(latestAssessment?.assessment_id || "").trim() || null;
+        const mitigationsEl = document.getElementById("mitigations");
+        const payload = {
+          assessment_id: assessmentId,
+          latestHomeownerDecisionLists_actions: Array.isArray(latestHomeownerDecisionLists?.actions)
+            ? latestHomeownerDecisionLists.actions
+            : [],
+          latestHomeownerActionPlanState,
+          renderActionPlanDetails_calls: trimDebugEvents(actionPlanDebugState.renderer_calls),
+          other_mitigations_writes: trimDebugEvents(actionPlanDebugState.mitigation_writes),
+          final_mitigations_textContent: String(mitigationsEl?.textContent || "").trim(),
+          final_mitigations_innerHTML: String(mitigationsEl?.innerHTML || ""),
+        };
+        panel.textContent = `Action plan debug\n${JSON.stringify(payload, null, 2)}`;
+      }
+
+      function recordActionPlanDebug(entryKind, payload = {}) {
+        if (!DEBUG_ACTION_PLAN_DETAILS) return;
+        const event = {
+          call: ++actionPlanDebugCounter,
+          kind: entryKind,
+          ts: new Date().toISOString(),
+          ...payload,
+        };
+        if (entryKind === "renderActionPlanDetailsFromActions") {
+          actionPlanDebugState.renderer_calls.push(event);
+          actionPlanDebugState.renderer_calls = trimDebugEvents(actionPlanDebugState.renderer_calls);
+        } else {
+          actionPlanDebugState.mitigation_writes.push(event);
+          actionPlanDebugState.mitigation_writes = trimDebugEvents(actionPlanDebugState.mitigation_writes);
+        }
+        renderActionPlanDebugPanel();
+      }
 
       function renderHomeownerDecisionList(
         listEl,
@@ -2647,6 +2715,12 @@
         } = {}
       ) {
         if (!listEl) return;
+        const isMitigationsTarget = String(listEl.id || "") === "mitigations";
+        let mitigationWriteMode = "rows";
+        let mitigationRenderedCount = 0;
+        let mitigationUsedFallback = false;
+        let mitigationFallbackText = String(fallbackText || "").trim();
+        const mitigationStack = isMitigationsTarget ? new Error().stack : "";
         const toggleKey = String(listEl.id || "");
         if (toggleKey) {
           const existingToggle = listEl.parentElement?.querySelector(`.short-list-toggle-btn[data-short-list-for="${toggleKey}"]`);
@@ -2670,11 +2744,29 @@
           listEl.appendChild(li);
           appended += 1;
         });
+        if (isMitigationsTarget) {
+          mitigationRenderedCount = appended;
+        }
         if (appended === 0 && fallbackText) {
           const li = document.createElement("li");
           if (fallbackMuted) li.className = "muted";
           li.textContent = fallbackText;
           listEl.appendChild(li);
+          if (isMitigationsTarget) {
+            mitigationWriteMode = "fallback";
+            mitigationUsedFallback = true;
+            recordActionPlanDebug("setListItems:mitigations", {
+              source: captureCallerFromStack(mitigationStack),
+              target_exists: !!listEl,
+              target_id: listEl?.id || null,
+              incoming_count: Array.isArray(items) ? items.length : 0,
+              rendered_count: 0,
+              fallback_used: true,
+              fallback_text: mitigationFallbackText,
+              text_content: String(listEl.textContent || "").trim(),
+              inner_html: String(listEl.innerHTML || ""),
+            });
+          }
           return;
         }
 
@@ -2711,6 +2803,20 @@
               : String(shortModeLabel || "See more");
           });
           listEl.insertAdjacentElement("afterend", toggleBtn);
+        }
+        if (isMitigationsTarget) {
+          recordActionPlanDebug("setListItems:mitigations", {
+            source: captureCallerFromStack(mitigationStack),
+            target_exists: !!listEl,
+            target_id: listEl?.id || null,
+            mode: mitigationWriteMode,
+            incoming_count: Array.isArray(items) ? items.length : 0,
+            rendered_count: mitigationRenderedCount,
+            fallback_used: mitigationUsedFallback,
+            fallback_text: mitigationFallbackText,
+            text_content: String(listEl.textContent || "").trim(),
+            inner_html: String(listEl.innerHTML || ""),
+          });
         }
       }
 
@@ -4984,6 +5090,109 @@
         };
       }
 
+      function renderMitigationListItems(
+        listEl,
+        rows,
+        {
+          fallbackText = "No recommended actions are available yet.",
+          fallbackMuted = true,
+          shortModeCount = 1,
+          shortModeLabel = "See full action list",
+          shortModeCollapseLabel = "Show fewer actions",
+        } = {}
+      ) {
+        if (!listEl) return { renderedCount: 0, usedFallback: false };
+        const toggleKey = String(listEl.id || "");
+        if (toggleKey) {
+          const existingToggle = listEl.parentElement?.querySelector(`.short-list-toggle-btn[data-short-list-for="${toggleKey}"]`);
+          if (existingToggle) existingToggle.remove();
+        }
+        clearNode(listEl);
+        const normalizedRows = Array.isArray(rows) ? rows : [];
+        let appended = 0;
+        normalizedRows.forEach((row) => {
+          const li = document.createElement("li");
+          if (typeof row === "string" || typeof row === "number") {
+            li.textContent = String(row || "").trim();
+          } else if (row && typeof row === "object") {
+            const title = String(
+              row?.title
+              || row?.action
+              || row?.recommendation
+              || row?.label
+              || row?.name
+              || ""
+            ).trim();
+            const detail = String(
+              row?.detail
+              || row?.why_this_matters
+              || row?.explanation
+              || row?.description
+              || row?.reason
+              || row?.summary
+              || ""
+            ).trim();
+            if (title) {
+              const strong = document.createElement("strong");
+              strong.textContent = title;
+              li.appendChild(strong);
+              if (detail) li.appendChild(document.createTextNode(`: ${detail}`));
+            } else if (detail) {
+              li.textContent = detail;
+            }
+          }
+          const text = String(li.textContent || "").trim();
+          if (!text && li.childNodes.length === 0) return;
+          listEl.appendChild(li);
+          appended += 1;
+        });
+
+        if (appended === 0 && fallbackText) {
+          const li = document.createElement("li");
+          if (fallbackMuted) li.className = "muted";
+          li.textContent = String(fallbackText || "").trim();
+          listEl.appendChild(li);
+          return { renderedCount: 0, usedFallback: true };
+        }
+
+        const shortCount = Number(shortModeCount);
+        if (
+          toggleKey
+          && Number.isFinite(shortCount)
+          && shortCount > 0
+          && appended > shortCount
+        ) {
+          const listItems = Array.from(listEl.querySelectorAll(":scope > li"));
+          listItems.forEach((li, idx) => {
+            const hide = idx >= shortCount;
+            li.classList.toggle("short-list-hidden-item", hide);
+            li.hidden = hide;
+          });
+          const toggleBtn = document.createElement("button");
+          toggleBtn.type = "button";
+          toggleBtn.className = "secondary short-list-toggle-btn";
+          toggleBtn.dataset.shortListFor = toggleKey;
+          toggleBtn.setAttribute("aria-expanded", "false");
+          toggleBtn.textContent = String(shortModeLabel || "See more");
+          toggleBtn.addEventListener("click", () => {
+            const expanded = toggleBtn.getAttribute("aria-expanded") === "true";
+            const nextExpanded = !expanded;
+            listItems.forEach((li, idx) => {
+              const hide = !nextExpanded && idx >= shortCount;
+              li.classList.toggle("short-list-hidden-item", hide);
+              li.hidden = hide;
+            });
+            toggleBtn.setAttribute("aria-expanded", nextExpanded ? "true" : "false");
+            toggleBtn.textContent = nextExpanded
+              ? String(shortModeCollapseLabel || "See less")
+              : String(shortModeLabel || "See more");
+          });
+          listEl.insertAdjacentElement("afterend", toggleBtn);
+        }
+
+        return { renderedCount: appended, usedFallback: false };
+      }
+
       function renderActionPlanDetailsFromActions(actions, options = {}) {
         const {
           source = "unknown",
@@ -4994,7 +5203,19 @@
           preserveWhenSameAssessment = true,
         } = options || {};
         const mitigationsEl = document.getElementById("mitigations");
-        if (!mitigationsEl) return;
+        if (!mitigationsEl) {
+          recordActionPlanDebug("renderActionPlanDetailsFromActions", {
+            source,
+            assessment_id: String(assessmentId || latestAssessment?.assessment_id || "").trim() || null,
+            target_exists: false,
+            incoming_count: Array.isArray(actions) ? actions.length : 0,
+            normalized_count: 0,
+            resolved_count: 0,
+            fallback_used: false,
+            skipped_reason: "missing_target",
+          });
+          return;
+        }
 
         const resolvedAssessmentId = String(
           assessmentId
@@ -5022,6 +5243,18 @@
           && resolvedRows.length === 0
         );
         if (shouldKeepExisting) {
+          recordActionPlanDebug("renderActionPlanDetailsFromActions", {
+            source,
+            assessment_id: resolvedAssessmentId,
+            target_exists: true,
+            incoming_count: Array.isArray(actions) ? actions.length : 0,
+            normalized_count: normalizedActions.length,
+            resolved_count: resolvedRows.length,
+            fallback_used: false,
+            skipped_reason: "preserve_existing_non_empty",
+            text_content: String(mitigationsEl.textContent || "").trim(),
+            inner_html: String(mitigationsEl.innerHTML || ""),
+          });
           if (isDebugMode) {
             console.debug("[homeowner-action-plan] render skipped (preserving existing non-empty rows)", {
               source,
@@ -5034,23 +5267,11 @@
         }
 
         setMitigationSequenceLabel(actionPlan.sectionLabel);
-        setListItems(mitigationsEl, resolvedRows, {
+        const renderResult = renderMitigationListItems(mitigationsEl, resolvedRows, {
           fallbackText: actionPlan.fallbackText,
           shortModeCount: 1,
           shortModeLabel: "See full action list",
           shortModeCollapseLabel: "Show fewer actions",
-          renderItem: (li, row) => {
-            const title = String(row?.title || "").trim();
-            const detail = String(row?.detail || "").trim();
-            if (title) {
-              const strong = document.createElement("strong");
-              strong.textContent = title;
-              li.appendChild(strong);
-              if (detail) li.appendChild(document.createTextNode(`: ${detail}`));
-            } else {
-              li.textContent = detail;
-            }
-          },
         });
 
         latestHomeownerActionPlanState = {
@@ -5058,13 +5279,26 @@
           hasRealActions: resolvedRows.length > 0,
         };
 
+        recordActionPlanDebug("renderActionPlanDetailsFromActions", {
+          source,
+          assessment_id: resolvedAssessmentId,
+          target_exists: true,
+          incoming_count: Array.isArray(actions) ? actions.length : 0,
+          normalized_count: normalizedActions.length,
+          resolved_count: resolvedRows.length,
+          fallback_used: !!renderResult?.usedFallback,
+          actions_kind: actionPlan.actionsKind,
+          text_content: String(mitigationsEl.textContent || "").trim(),
+          inner_html: String(mitigationsEl.innerHTML || ""),
+        });
+
         if (isDebugMode) {
           console.debug("[homeowner-action-plan] renderActionPlanDetailsFromActions", {
             source,
             assessment_id: resolvedAssessmentId,
             incoming_count: normalizedActions.length,
             resolved_count: resolvedRows.length,
-            used_fallback: resolvedRows.length === 0,
+            used_fallback: !!renderResult?.usedFallback,
             actions_kind: actionPlan.actionsKind,
             text_content: String(mitigationsEl.textContent || "").trim(),
           });
@@ -5645,6 +5879,7 @@
           assessmentId: null,
           hasRealActions: false,
         };
+        renderActionPlanDebugPanel();
         isSimulationSubmitting = false;
         collapseSecondaryPanels();
         const highlightsEl = document.getElementById("homeownerReportHighlights");
@@ -8904,6 +9139,7 @@
       updateDesktopNextStepCue();
       showHomeownerToast("", "muted", { autoHideMs: 0 });
       refreshSecondaryStatusVisibility();
+      renderActionPlanDebugPanel();
 
       document.getElementById("assessBtn").addEventListener("click", startAddressVerificationFlow);
       document.getElementById("reassessBtn").addEventListener("click", () => runAssessment(true));
