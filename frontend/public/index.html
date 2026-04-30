@@ -2124,6 +2124,10 @@
         actions: [],
         actionsKind: "none",
       };
+      let latestHomeownerActionPlanState = {
+        assessmentId: null,
+        hasRealActions: false,
+      };
       let latestHomeownerReport = null;
       let latestSimulationSummary = null;
       let latestMapPayload = null;
@@ -2306,12 +2310,16 @@
       ];
       const defaultMapFallbackCenter = { latitude: 39.2, longitude: -105.5 };
       const defaultMapFallbackZoom = 14;
-      const defaultPropertyMapZoom = 18;
-      const defaultPropertyMapNoGeometryZoom = 15;
+      const defaultPropertyMapZoom = 17;
+      const defaultPropertyMapNoGeometryZoom = 17;
       const mapMaxPropertyFocusDiagonalMeters = 3000;
       const mapMaxParcelFocusDiagonalMeters = 10000;
       const mapMaxContextFocusDiagonalMeters = 12000;
       const mapMinTightFocusDiagonalMeters = 25;
+      const mapCenterOnSmallStructureDiagonalMeters = 180;
+      const mapCenterOnSmallParcelDiagonalMeters = 320;
+      const mapFitZoomFloor = 16;
+      const mapFitZoomFloorTarget = 17;
       const assessmentMapDefaultBasemap = "satellite";
 
       function setAssessmentBasemap(baseKey = assessmentMapDefaultBasemap) {
@@ -2352,7 +2360,8 @@
             }),
             map: L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
               attribution: "&copy; OpenStreetMap contributors",
-              maxZoom: 19,
+              maxZoom: 20,
+              maxNativeZoom: 19,
             }),
           };
           setAssessmentBasemap(assessmentMapDefaultBasemap);
@@ -2428,9 +2437,30 @@
         if (!bounds || !bounds.isValid || !bounds.isValid()) return null;
         if (isLargeBounds(bounds, maxDiagonalMeters)) return null;
         if (isTinyBounds(bounds, minDiagonalMeters) && assessmentMap) {
-          return bounds.pad(0.35);
+          return bounds.pad(0.25);
         }
         return bounds;
+      }
+
+      function setViewFromBoundsCenter(bounds, zoomLevel = defaultPropertyMapZoom) {
+        if (!assessmentMap || !bounds || !bounds.isValid || !bounds.isValid()) return false;
+        const center = bounds.getCenter && bounds.getCenter();
+        if (!center || !Number.isFinite(center.lat) || !Number.isFinite(center.lng)) return false;
+        assessmentMap.setView([center.lat, center.lng], Number(zoomLevel) || defaultPropertyMapZoom);
+        return true;
+      }
+
+      function fitBoundsWithZoomFloor(bounds, padFactor = 0.12, {
+        floorZoom = mapFitZoomFloor,
+        targetZoom = mapFitZoomFloorTarget,
+      } = {}) {
+        if (!assessmentMap || !bounds || !bounds.isValid || !bounds.isValid()) return false;
+        assessmentMap.fitBounds(bounds.pad(Number(padFactor) || 0));
+        const zoomAfterFit = Number(assessmentMap.getZoom());
+        if (Number.isFinite(zoomAfterFit) && zoomAfterFit < Number(floorZoom || mapFitZoomFloor)) {
+          assessmentMap.setZoom(Number(targetZoom) || mapFitZoomFloorTarget);
+        }
+        return true;
       }
 
       function layerKeyLooksLike(layerKey, hints = []) {
@@ -2485,7 +2515,12 @@
           minDiagonalMeters: mapMinTightFocusDiagonalMeters,
         });
         if (structureBounds) {
-          assessmentMap.fitBounds(structureBounds.pad(0.28));
+          const structureDiagonal = boundsDiagonalMeters(structureBounds);
+          if (Number.isFinite(structureDiagonal) && structureDiagonal <= mapCenterOnSmallStructureDiagonalMeters) {
+            setViewFromBoundsCenter(structureBounds, defaultPropertyMapZoom);
+            return;
+          }
+          fitBoundsWithZoomFloor(structureBounds, 0.2);
           return;
         }
         const parcelBounds = normalizeBoundsForFocus(seed.parcelBounds, {
@@ -2493,7 +2528,12 @@
           minDiagonalMeters: mapMinTightFocusDiagonalMeters,
         });
         if (parcelBounds) {
-          assessmentMap.fitBounds(parcelBounds.pad(0.18));
+          const parcelDiagonal = boundsDiagonalMeters(parcelBounds);
+          if (Number.isFinite(parcelDiagonal) && parcelDiagonal <= mapCenterOnSmallParcelDiagonalMeters) {
+            setViewFromBoundsCenter(parcelBounds, defaultPropertyMapZoom);
+            return;
+          }
+          fitBoundsWithZoomFloor(parcelBounds, 0.13);
           return;
         }
         const contextBounds = normalizeBoundsForFocus(seed.focusBounds || seed.contextBounds, {
@@ -2501,7 +2541,10 @@
           minDiagonalMeters: mapMinTightFocusDiagonalMeters,
         });
         if (contextBounds) {
-          assessmentMap.fitBounds(contextBounds.pad(0.14));
+          fitBoundsWithZoomFloor(contextBounds, 0.1, {
+            floorZoom: mapFitZoomFloor,
+            targetZoom: mapFitZoomFloor,
+          });
           return;
         }
         const center = seed.center || defaultMapFallbackCenter;
@@ -4828,6 +4871,77 @@
         labelEl.textContent = String(text || "Recommended sequence").trim() || "Recommended sequence";
       }
 
+      function resolveCurrentHomeownerActions(dataOrReport = null, options = {}) {
+        const assessmentId = String(
+          options?.assessmentId
+          || dataOrReport?.assessment_id
+          || latestAssessment?.assessment_id
+          || ""
+        ).trim() || null;
+        const explicitActions = normalizeActionRows(options?.explicitActions || []);
+        const explicitActionsKind = String(options?.explicitActionsKind || "").trim();
+        if (explicitActions.length > 0) {
+          return {
+            assessmentId,
+            actions: explicitActions,
+            actionsKind: explicitActionsKind || "mitigation",
+            source: `explicit_actions${explicitActionsKind ? ` (${explicitActionsKind})` : ""}`,
+          };
+        }
+
+        const canReusePersisted = !!(
+          assessmentId
+          && latestHomeownerDecisionLists?.assessmentId === assessmentId
+          && Array.isArray(latestHomeownerDecisionLists?.actions)
+          && latestHomeownerDecisionLists.actions.length > 0
+        );
+        if (canReusePersisted) {
+          return {
+            assessmentId,
+            actions: normalizeActionRows(latestHomeownerDecisionLists.actions),
+            actionsKind: String(latestHomeownerDecisionLists?.actionsKind || "none"),
+            source: "latestHomeownerDecisionLists.actions",
+          };
+        }
+
+        if (
+          dataOrReport
+          && typeof dataOrReport === "object"
+          && Array.isArray(dataOrReport.actions)
+        ) {
+          const resolvedFromCollections = normalizeActionRows(dataOrReport.actions);
+          if (resolvedFromCollections.length > 0) {
+            return {
+              assessmentId,
+              actions: resolvedFromCollections,
+              actionsKind: String(dataOrReport?.sources?.actions_kind || "none"),
+              source: "decision_collections.actions",
+            };
+          }
+        }
+
+        const extracted = (
+          dataOrReport && typeof dataOrReport === "object"
+            ? extractHomeownerDecisionCollections(dataOrReport)
+            : null
+        );
+        if (extracted && Array.isArray(extracted.actions) && extracted.actions.length > 0) {
+          return {
+            assessmentId,
+            actions: normalizeActionRows(extracted.actions),
+            actionsKind: String(extracted?.sources?.actions_kind || "none"),
+            source: `extractHomeownerDecisionCollections (${String(extracted?.sources?.actions || "none")})`,
+          };
+        }
+
+        return {
+          assessmentId,
+          actions: [],
+          actionsKind: "none",
+          source: "none",
+        };
+      }
+
       function buildHomeownerActionPlanFromDecisionCollections(decisionCollections, { limit = 5 } = {}) {
         let actionsKind = String(decisionCollections?.sources?.actions_kind || "none");
         let rows = normalizeActionRows(decisionCollections?.actions || []);
@@ -4868,6 +4982,93 @@
             || (isEstimateImprovement ? "Improve estimate details" : "Review top actions")
           ).trim(),
         };
+      }
+
+      function renderActionPlanDetailsFromActions(actions, options = {}) {
+        const {
+          source = "unknown",
+          assessmentId = null,
+          actionsKind = "none",
+          limit = 5,
+          allowEmptyOverwrite = false,
+          preserveWhenSameAssessment = true,
+        } = options || {};
+        const mitigationsEl = document.getElementById("mitigations");
+        if (!mitigationsEl) return;
+
+        const resolvedAssessmentId = String(
+          assessmentId
+          || latestAssessment?.assessment_id
+          || ""
+        ).trim() || null;
+        const normalizedActions = normalizeActionRows(actions || []);
+        const actionPlan = buildHomeownerActionPlanFromDecisionCollections(
+          {
+            actions: normalizedActions,
+            sources: { actions_kind: String(actionsKind || "none") },
+          },
+          { limit }
+        );
+        const resolvedRows = Array.isArray(actionPlan?.actionRows) ? actionPlan.actionRows : [];
+        const sameAssessment = !!(
+          preserveWhenSameAssessment
+          && resolvedAssessmentId
+          && latestHomeownerActionPlanState.assessmentId === resolvedAssessmentId
+        );
+        const shouldKeepExisting = !!(
+          !allowEmptyOverwrite
+          && sameAssessment
+          && latestHomeownerActionPlanState.hasRealActions
+          && resolvedRows.length === 0
+        );
+        if (shouldKeepExisting) {
+          if (isDebugMode) {
+            console.debug("[homeowner-action-plan] render skipped (preserving existing non-empty rows)", {
+              source,
+              assessment_id: resolvedAssessmentId,
+              incoming_count: normalizedActions.length,
+              resolved_count: resolvedRows.length,
+            });
+          }
+          return;
+        }
+
+        setMitigationSequenceLabel(actionPlan.sectionLabel);
+        setListItems(mitigationsEl, resolvedRows, {
+          fallbackText: actionPlan.fallbackText,
+          shortModeCount: 1,
+          shortModeLabel: "See full action list",
+          shortModeCollapseLabel: "Show fewer actions",
+          renderItem: (li, row) => {
+            const title = String(row?.title || "").trim();
+            const detail = String(row?.detail || "").trim();
+            if (title) {
+              const strong = document.createElement("strong");
+              strong.textContent = title;
+              li.appendChild(strong);
+              if (detail) li.appendChild(document.createTextNode(`: ${detail}`));
+            } else {
+              li.textContent = detail;
+            }
+          },
+        });
+
+        latestHomeownerActionPlanState = {
+          assessmentId: resolvedAssessmentId,
+          hasRealActions: resolvedRows.length > 0,
+        };
+
+        if (isDebugMode) {
+          console.debug("[homeowner-action-plan] renderActionPlanDetailsFromActions", {
+            source,
+            assessment_id: resolvedAssessmentId,
+            incoming_count: normalizedActions.length,
+            resolved_count: resolvedRows.length,
+            used_fallback: resolvedRows.length === 0,
+            actions_kind: actionPlan.actionsKind,
+            text_content: String(mitigationsEl.textContent || "").trim(),
+          });
+        }
       }
 
       function mergeDecisionRows(primaryRows, fallbackRows, limit = 8) {
@@ -5210,6 +5411,20 @@
         const actionsRender = renderHomeownerDecisionList(actionsEl, actionRows, {
           fallbackText: noActionsText,
         });
+        const resolvedSnapshotActions = resolveCurrentHomeownerActions(null, {
+          assessmentId: currentAssessmentId,
+          explicitActions: actionLines,
+          explicitActionsKind: effectiveActionsKind,
+        });
+        if (actionsRender.renderedCount > 0) {
+          renderActionPlanDetailsFromActions(resolvedSnapshotActions.actions, {
+            source: `step2:renderHomeownerDecisionSnapshot (${debugSource})`,
+            assessmentId: currentAssessmentId,
+            actionsKind: resolvedSnapshotActions.actionsKind,
+            limit: 5,
+            allowEmptyOverwrite: false,
+          });
+        }
 
         if (isDebugMode && DEBUG_HOMEOWNER_STEP2_DOM) {
           const logListState = (label, el, normalizedRows, renderInfo) => {
@@ -5426,6 +5641,10 @@
         latestSimulationSummary = null;
         reportPreviewLoadedAssessmentId = null;
         reportPrimarySurfaceOpened = false;
+        latestHomeownerActionPlanState = {
+          assessmentId: null,
+          hasRealActions: false,
+        };
         isSimulationSubmitting = false;
         collapseSecondaryPanels();
         const highlightsEl = document.getElementById("homeownerReportHighlights");
@@ -5667,6 +5886,18 @@
           limitations,
           methodology: statusMethodologyNote,
           advancedRows,
+        });
+        const resolvedReportActions = resolveCurrentHomeownerActions(null, {
+          assessmentId: currentAssessmentId,
+          explicitActions: topActions,
+          explicitActionsKind: assessmentDecision?.sources?.actions_kind || "none",
+        });
+        renderActionPlanDetailsFromActions(resolvedReportActions.actions, {
+          source: `report:renderHomeownerReportPreview (${resolvedReportActions.source})`,
+          assessmentId: currentAssessmentId,
+          actionsKind: resolvedReportActions.actionsKind,
+          limit: 5,
+          allowEmptyOverwrite: false,
         });
         }
 
@@ -6086,7 +6317,6 @@
 
         const decisionCollectionsForAssessment = extractHomeownerDecisionCollections(data);
         const actionPlan = buildHomeownerActionPlanFromDecisionCollections(decisionCollectionsForAssessment, { limit: 5 });
-        setMitigationSequenceLabel(actionPlan.sectionLabel);
         document.getElementById("nextStepsText").textContent = (
           actionPlan.actionsKind === "estimate_improvement"
             ? actionPlan.introText
@@ -6103,23 +6333,15 @@
           `assessment_action_plan (${decisionCollectionsForAssessment?.sources?.actions || "none"}:${actionPlan.actionsKind})`,
           actionPlan.actionRows
         );
-        setListItems(document.getElementById("mitigations"), actionPlan.actionRows, {
-          fallbackText: actionPlan.fallbackText,
-          shortModeCount: 1,
-          shortModeLabel: "See full action list",
-          shortModeCollapseLabel: "Show fewer actions",
-          renderItem: (li, row) => {
-            const title = String(row?.title || "").trim();
-            const detail = String(row?.detail || "").trim();
-            if (title) {
-              const strong = document.createElement("strong");
-              strong.textContent = title;
-              li.appendChild(strong);
-              if (detail) li.appendChild(document.createTextNode(`: ${detail}`));
-            } else {
-              li.textContent = detail;
-            }
-          },
+        const resolvedAssessmentActions = resolveCurrentHomeownerActions(decisionCollectionsForAssessment, {
+          assessmentId: data?.assessment_id,
+        });
+        renderActionPlanDetailsFromActions(resolvedAssessmentActions.actions, {
+          source: `assessment:renderAssessment (${resolvedAssessmentActions.source})`,
+          assessmentId: data?.assessment_id,
+          actionsKind: resolvedAssessmentActions.actionsKind,
+          limit: 5,
+          allowEmptyOverwrite: true,
         });
 
         const confidenceRaw = Number(homeownerConfidence?.score);
