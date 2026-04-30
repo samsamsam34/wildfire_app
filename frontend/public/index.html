@@ -4625,6 +4625,16 @@
         ).trim();
         const primaryDriversFromSummary = extractPrimaryDriversFromSummary(summaryText);
         const nearStructureSummaryDrivers = extractNearStructureSummaryFromSummary(summaryText);
+        if (isDebugMode) {
+          console.debug("[homeowner-summary] extractHomeownerDecisionCollections summary_input", {
+            assessment_id: data?.assessment_id || null,
+            explanation_summary: summaryText,
+          });
+          console.debug("[homeowner-summary] extractHomeownerDecisionCollections parsed_summary", {
+            primary_drivers: primaryDriversFromSummary,
+            near_structure_summary: nearStructureSummaryDrivers,
+          });
+        }
 
         const reasonCandidates = [
           { source: "assessment.insurability_status_reasons", rows: normalizeStringArray(data?.insurability_status_reasons) },
@@ -4677,6 +4687,17 @@
         const actionsKind = selectedMitigationActions.rows.length > 0
           ? "mitigation"
           : (selectedEstimateImprovementActions.rows.length > 0 ? "estimate_improvement" : "none");
+        if (isDebugMode) {
+          console.debug("[homeowner-summary] extractHomeownerDecisionCollections final_lists", {
+            reasons_source: selectedReasons.source,
+            drivers_source: selectedDrivers.source,
+            actions_source: selectedActions.source,
+            actions_kind: actionsKind,
+            reasons: selectedReasons.rows,
+            drivers: selectedDrivers.rows,
+            actions: selectedActions.rows,
+          });
+        }
 
         return {
           homeownerSummary,
@@ -4732,6 +4753,7 @@
         drivers = [],
         actions = [],
         actionsKind = "none",
+        debugSource = "unknown",
         beforeAfterSummary = "",
         beforeStatus = "",
         afterStatus = "",
@@ -4762,6 +4784,17 @@
           || !methodologyEl
           || !advancedEl
         ) return;
+        if (isDebugMode) {
+          console.debug("[homeowner-summary] renderHomeownerDecisionSnapshot", {
+            source: String(debugSource || "unknown"),
+            assessment_id: latestAssessment?.assessment_id || null,
+            reasons_count: Array.isArray(reasons) ? reasons.length : 0,
+            drivers_count: Array.isArray(drivers) ? drivers.length : 0,
+            actions_count: Array.isArray(actions) ? actions.length : 0,
+            actions_kind: actionsKind,
+            status_label: String(statusLabel || "").trim() || null,
+          });
+        }
 
         const normalizedStatus = String(statusLabel || "").trim();
         const badgeText = normalizedStatus || "Status not yet assessed";
@@ -4895,7 +4928,7 @@
 
       function renderHomeownerDecisionFromAssessment(data) {
         if (!data || typeof data !== "object") {
-          renderHomeownerDecisionSnapshot();
+          renderHomeownerDecisionSnapshot({ debugSource: "assessment:missing_data" });
           return;
         }
         const decisionCollections = extractHomeownerDecisionCollections(data);
@@ -4953,6 +4986,7 @@
         ).trim();
         const beforeAfter = latestSimulationSummary || {};
         renderHomeownerDecisionSnapshot({
+          debugSource: "assessment:renderHomeownerDecisionFromAssessment",
           statusLabel,
           summary,
           reasons,
@@ -5008,6 +5042,7 @@
         if (flagsPrimaryEl) setPillSpans(flagsPrimaryEl, [], "Trust notes will appear after assessment.");
         renderHomeownerLimitationsBlock();
         renderHomeownerDecisionSnapshot({
+          debugSource: "assessment:resetHomeownerJourneyPanels",
           summary: reason || "Run an assessment to see your homeowner status and next steps.",
         });
         const propertyContextMapHintEl = document.getElementById("propertyContextMapHint");
@@ -5183,6 +5218,7 @@
         );
 
         renderHomeownerDecisionSnapshot({
+          debugSource: "report:renderHomeownerReportPreview",
           statusLabel,
           summary: headline,
           reasons: statusReasons,
