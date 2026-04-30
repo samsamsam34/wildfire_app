@@ -771,6 +771,35 @@
         color: var(--muted);
         font-size: 0.9rem;
       }
+      .map-controls-row {
+        margin-top: 0.55rem;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.5rem;
+        align-items: center;
+      }
+      .map-basemap-toggle {
+        display: inline-flex;
+        gap: 0.35rem;
+        align-items: center;
+      }
+      .map-basemap-toggle button {
+        width: auto;
+        min-height: 34px;
+        padding: 0.34rem 0.6rem;
+        font-size: 0.8rem;
+      }
+      .map-basemap-toggle button.is-active {
+        background: #0f766e;
+        color: #f8fafc;
+        border-color: #0f766e;
+      }
+      #mapResetViewBtn {
+        width: auto;
+        min-height: 34px;
+        padding: 0.34rem 0.65rem;
+        font-size: 0.8rem;
+      }
       .map-debug {
         margin-top: 0.55rem;
         font-size: 0.78rem;
@@ -1763,6 +1792,13 @@
               <div id="mapPanel">
                 <h3 class="subsection-title">Property map view (optional)</h3>
                 <p class="muted">See property geometry, defensible-space context, and nearby wildfire layers in one map view.</p>
+                <div class="map-controls-row">
+                  <div class="map-basemap-toggle" role="group" aria-label="Basemap">
+                    <button id="mapBasemapSatelliteBtn" type="button" class="secondary">Satellite</button>
+                    <button id="mapBasemapOsmBtn" type="button" class="secondary">Map</button>
+                  </div>
+                  <button id="mapResetViewBtn" type="button" class="secondary">Center on property</button>
+                </div>
                 <div id="assessmentMap"></div>
                 <p id="mapEmptyText" class="map-empty">Run an assessment to load map layers.</p>
                 <div id="mapLayerToggles" class="map-toggles"></div>
@@ -2093,7 +2129,8 @@
       let latestMapPayload = null;
       let latestMapViewportSeed = null;
       let assessmentMap = null;
-      let mapBaseLayer = null;
+      let mapBaseLayers = { satellite: null, map: null };
+      let activeAssessmentBasemapKey = "satellite";
       let mapLayerInstances = {};
       let isAddressVerificationPending = false;
       let isAssessmentSubmitting = false;
@@ -2268,25 +2305,64 @@
         "drought",
       ];
       const defaultMapFallbackCenter = { latitude: 39.2, longitude: -105.5 };
-      const defaultMapFallbackZoom = 12;
-      const defaultPropertyMapZoom = 16;
-      const mapMaxInitialFocusDiagonalMeters = 60000;
+      const defaultMapFallbackZoom = 14;
+      const defaultPropertyMapZoom = 18;
+      const defaultPropertyMapNoGeometryZoom = 15;
+      const mapMaxPropertyFocusDiagonalMeters = 3000;
+      const mapMaxParcelFocusDiagonalMeters = 10000;
+      const mapMaxContextFocusDiagonalMeters = 12000;
+      const mapMinTightFocusDiagonalMeters = 25;
+      const assessmentMapDefaultBasemap = "satellite";
+
+      function setAssessmentBasemap(baseKey = assessmentMapDefaultBasemap) {
+        if (!assessmentMap) return;
+        const normalizedKey = baseKey === "map" ? "map" : "satellite";
+        const nextBaseLayer = mapBaseLayers[normalizedKey];
+        if (!nextBaseLayer) return;
+        Object.entries(mapBaseLayers).forEach(([key, layer]) => {
+          if (!layer || !assessmentMap.hasLayer(layer)) return;
+          if (key !== normalizedKey) assessmentMap.removeLayer(layer);
+        });
+        if (!assessmentMap.hasLayer(nextBaseLayer)) {
+          nextBaseLayer.addTo(assessmentMap);
+        }
+        activeAssessmentBasemapKey = normalizedKey;
+        const satelliteBtn = document.getElementById("mapBasemapSatelliteBtn");
+        const osmBtn = document.getElementById("mapBasemapOsmBtn");
+        if (satelliteBtn) {
+          const active = normalizedKey === "satellite";
+          satelliteBtn.classList.toggle("is-active", active);
+          satelliteBtn.setAttribute("aria-pressed", active ? "true" : "false");
+        }
+        if (osmBtn) {
+          const active = normalizedKey === "map";
+          osmBtn.classList.toggle("is-active", active);
+          osmBtn.setAttribute("aria-pressed", active ? "true" : "false");
+        }
+      }
 
       function ensureMap(center) {
         if (!window.L) return null;
         if (!assessmentMap) {
           assessmentMap = L.map("assessmentMap", { zoomControl: true });
-          mapBaseLayer = L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-            attribution: "&copy; OpenStreetMap contributors",
-            maxZoom: 19,
-          });
-          mapBaseLayer.addTo(assessmentMap);
+          mapBaseLayers = {
+            satellite: L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", {
+              attribution: "Tiles &copy; Esri",
+              maxZoom: 20,
+            }),
+            map: L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+              attribution: "&copy; OpenStreetMap contributors",
+              maxZoom: 19,
+            }),
+          };
+          setAssessmentBasemap(assessmentMapDefaultBasemap);
           if (!assessmentMap.getPane("selectableStructuresPane")) {
             const pane = assessmentMap.createPane("selectableStructuresPane");
             pane.style.zIndex = "650";
             pane.style.pointerEvents = "auto";
           }
         }
+        setAssessmentBasemap(activeAssessmentBasemapKey || assessmentMapDefaultBasemap);
         if (center && Number.isFinite(center.latitude) && Number.isFinite(center.longitude)) {
           assessmentMap.setView([center.latitude, center.longitude], defaultPropertyMapZoom);
         }
@@ -2333,6 +2409,36 @@
         );
       }
 
+      function isLargeBounds(bounds, maxDiagonalMeters) {
+        const diagonal = boundsDiagonalMeters(bounds);
+        if (diagonal === null) return false;
+        return diagonal > Number(maxDiagonalMeters || mapMaxContextFocusDiagonalMeters);
+      }
+
+      function isTinyBounds(bounds, minDiagonalMeters = mapMinTightFocusDiagonalMeters) {
+        const diagonal = boundsDiagonalMeters(bounds);
+        if (diagonal === null) return false;
+        return diagonal > 0 && diagonal < Number(minDiagonalMeters || mapMinTightFocusDiagonalMeters);
+      }
+
+      function normalizeBoundsForFocus(bounds, {
+        maxDiagonalMeters = mapMaxContextFocusDiagonalMeters,
+        minDiagonalMeters = mapMinTightFocusDiagonalMeters,
+      } = {}) {
+        if (!bounds || !bounds.isValid || !bounds.isValid()) return null;
+        if (isLargeBounds(bounds, maxDiagonalMeters)) return null;
+        if (isTinyBounds(bounds, minDiagonalMeters) && assessmentMap) {
+          return bounds.pad(0.35);
+        }
+        return bounds;
+      }
+
+      function layerKeyLooksLike(layerKey, hints = []) {
+        const normalized = String(layerKey || "").toLowerCase();
+        if (!normalized) return false;
+        return (Array.isArray(hints) ? hints : []).some((hint) => normalized.includes(String(hint || "").toLowerCase()));
+      }
+
       function buildMapViewportSeed(payloadCenter, layerBoundsMeta) {
         const layerRows = Array.isArray(layerBoundsMeta) ? layerBoundsMeta : [];
         const focusRows = layerRows
@@ -2344,13 +2450,28 @@
           .sort((a, b) => a.rank - b.rank);
         const contextRows = layerRows.filter((row) => row.defaultVisible && !mapLayerIsBroadContext(row.layerKey));
         const allDefaultVisibleRows = layerRows.filter((row) => row.defaultVisible);
+        const structureRows = layerRows.filter((row) => layerKeyLooksLike(row?.layerKey, [
+          "selectable_structure",
+          "matched_structure",
+          "building_footprint",
+          "user_selected_structure",
+          "auto_detected_structure",
+        ]));
+        const parcelRows = layerRows.filter((row) => layerKeyLooksLike(row?.layerKey, [
+          "parcel_polygon",
+          "parcel",
+        ]));
         const mergedFocusBounds = mergeBoundsList(focusRows.map((row) => row.bounds));
         const mergedContextBounds = mergeBoundsList(contextRows.map((row) => row.bounds));
         const mergedAllVisibleBounds = mergeBoundsList(allDefaultVisibleRows.map((row) => row.bounds));
+        const mergedStructureBounds = mergeBoundsList(structureRows.map((row) => row.bounds));
+        const mergedParcelBounds = mergeBoundsList(parcelRows.map((row) => row.bounds));
         return {
           center: payloadCenter && Number.isFinite(payloadCenter.latitude) && Number.isFinite(payloadCenter.longitude)
             ? payloadCenter
             : null,
+          structureBounds: mergedStructureBounds,
+          parcelBounds: mergedParcelBounds,
           focusBounds: mergedFocusBounds,
           contextBounds: mergedContextBounds,
           defaultVisibleBounds: mergedAllVisibleBounds,
@@ -2359,14 +2480,32 @@
 
       function applyAssessmentMapViewport(seed) {
         if (!assessmentMap || !seed) return;
-        const preferredBounds = seed.focusBounds || seed.contextBounds || seed.defaultVisibleBounds || null;
-        const preferredDiagonal = boundsDiagonalMeters(preferredBounds);
-        if (preferredBounds && (preferredDiagonal === null || preferredDiagonal <= mapMaxInitialFocusDiagonalMeters)) {
-          assessmentMap.fitBounds(preferredBounds.pad(0.15));
+        const structureBounds = normalizeBoundsForFocus(seed.structureBounds, {
+          maxDiagonalMeters: mapMaxPropertyFocusDiagonalMeters,
+          minDiagonalMeters: mapMinTightFocusDiagonalMeters,
+        });
+        if (structureBounds) {
+          assessmentMap.fitBounds(structureBounds.pad(0.28));
+          return;
+        }
+        const parcelBounds = normalizeBoundsForFocus(seed.parcelBounds, {
+          maxDiagonalMeters: mapMaxParcelFocusDiagonalMeters,
+          minDiagonalMeters: mapMinTightFocusDiagonalMeters,
+        });
+        if (parcelBounds) {
+          assessmentMap.fitBounds(parcelBounds.pad(0.18));
+          return;
+        }
+        const contextBounds = normalizeBoundsForFocus(seed.focusBounds || seed.contextBounds, {
+          maxDiagonalMeters: mapMaxContextFocusDiagonalMeters,
+          minDiagonalMeters: mapMinTightFocusDiagonalMeters,
+        });
+        if (contextBounds) {
+          assessmentMap.fitBounds(contextBounds.pad(0.14));
           return;
         }
         const center = seed.center || defaultMapFallbackCenter;
-        const fallbackZoom = seed.center ? defaultPropertyMapZoom : defaultMapFallbackZoom;
+        const fallbackZoom = seed.center ? defaultPropertyMapNoGeometryZoom : defaultMapFallbackZoom;
         assessmentMap.setView([center.latitude, center.longitude], fallbackZoom);
       }
 
@@ -8502,9 +8641,27 @@
       document.getElementById("moreOptionsHubPanel")?.addEventListener("toggle", () => {
         syncMoreOptionsHubState();
         refreshSecondaryStatusVisibility();
-        invalidateAssessmentMapSize({ refocus: false });
+        invalidateAssessmentMapSize({ refocus: true });
       });
       document.getElementById("simulationPlannerPanel")?.addEventListener("toggle", refreshSecondaryStatusVisibility);
+      document.getElementById("mapBasemapSatelliteBtn")?.addEventListener("click", () => {
+        setAssessmentBasemap("satellite");
+      });
+      document.getElementById("mapBasemapOsmBtn")?.addEventListener("click", () => {
+        setAssessmentBasemap("map");
+      });
+      document.getElementById("mapResetViewBtn")?.addEventListener("click", () => {
+        if (!assessmentMap) return;
+        if (latestMapViewportSeed) {
+          applyAssessmentMapViewport(latestMapViewportSeed);
+          invalidateAssessmentMapSize({ refocus: true });
+          return;
+        }
+        const center = latestMapPayload?.center;
+        if (center && Number.isFinite(center.latitude) && Number.isFinite(center.longitude)) {
+          assessmentMap.setView([center.latitude, center.longitude], defaultPropertyMapNoGeometryZoom);
+        }
+      });
 
       document.getElementById("loadReportHighlightsBtn")?.addEventListener("click", () => {
         maybeLoadHomeownerReportPreview("manual_preview_button");
