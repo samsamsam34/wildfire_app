@@ -2648,7 +2648,6 @@
           renderActionPlanDetails_calls: trimDebugEvents(actionPlanDebugState.renderer_calls),
           other_mitigations_writes: trimDebugEvents(actionPlanDebugState.mitigation_writes),
           final_mitigations_textContent: String(mitigationsEl?.textContent || "").trim(),
-          final_mitigations_innerHTML: String(mitigationsEl?.innerHTML || ""),
         };
         panel.textContent = `Action plan debug\n${JSON.stringify(payload, null, 2)}`;
       }
@@ -2764,7 +2763,6 @@
               fallback_used: true,
               fallback_text: mitigationFallbackText,
               text_content: String(listEl.textContent || "").trim(),
-              inner_html: String(listEl.innerHTML || ""),
             });
           }
           return;
@@ -2815,7 +2813,6 @@
             fallback_used: mitigationUsedFallback,
             fallback_text: mitigationFallbackText,
             text_content: String(listEl.textContent || "").trim(),
-            inner_html: String(listEl.innerHTML || ""),
           });
         }
       }
@@ -5253,7 +5250,6 @@
             fallback_used: false,
             skipped_reason: "preserve_existing_non_empty",
             text_content: String(mitigationsEl.textContent || "").trim(),
-            inner_html: String(mitigationsEl.innerHTML || ""),
           });
           if (isDebugMode) {
             console.debug("[homeowner-action-plan] render skipped (preserving existing non-empty rows)", {
@@ -5289,7 +5285,6 @@
           fallback_used: !!renderResult?.usedFallback,
           actions_kind: actionPlan.actionsKind,
           text_content: String(mitigationsEl.textContent || "").trim(),
-          inner_html: String(mitigationsEl.innerHTML || ""),
         });
 
         if (isDebugMode) {
@@ -5673,7 +5668,6 @@
               normalized_rows: normalizedRows,
               rendered_count: Number(renderInfo?.renderedCount || 0),
               used_fallback: !!renderInfo?.usedFallback,
-              inner_html: el?.innerHTML || "",
               text_content: el?.textContent || "",
             });
           };
