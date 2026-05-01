@@ -1,0 +1,390 @@
+     283 backend/templates/homeowner_report.html
+./benchmark/public_outcomes/normalized/public_outcomes_multi_source_20260324/normalization_report.md
+./benchmark/public_outcomes/normalized/full_eval_20260326T153810Z/normalization_report.md
+./benchmark/public_outcomes/normalized/20260325T190854Z/normalization_report.md
+./benchmark/public_outcomes/normalized/ingest_full_20260326T043832Z/normalization_report.md
+./benchmark/public_outcomes/normalized/ingest_full_20260326T042308Z/normalization_report.md
+./benchmark/public_outcomes/normalized/diag_ingest_20260325T204451Z/normalization_report.md
+./benchmark/public_outcomes/normalized/public_outcomes_smoke/normalization_report.md
+./benchmark/public_outcomes/normalized/20260325T184730Z/normalization_report.md
+./benchmark/public_outcomes/model_viability/model_viability_rerun_after_dataset_fix_20260325_rescored/model_viability_report.json
+./benchmark/public_outcomes/model_viability/model_viability_20260330T180630Z/model_viability_report.json
+./benchmark/public_outcomes/model_viability/full_suite_viability_20260326T153810Z/model_viability_report.json
+./benchmark/public_outcomes/model_viability/full_eval_public_structure_integration_viability_20260327T013500Z/model_viability_report.json
+./benchmark/public_outcomes/model_viability/full_eval_enriched_viability_20260327T000500Z/model_viability_report.json
+./benchmark/public_outcomes/model_viability/full_eval_enriched_allnorm_v2_viability_20260327T002500Z/model_viability_report.json
+./benchmark/public_outcomes/model_viability/metrics_feature_importance_20260326T/model_viability_report.json
+./benchmark/public_outcomes/model_viability/model_viability_full_20260326T043832Z/model_viability_report.json
+./benchmark/public_outcomes/model_viability/full_eval_input_upgrade_viability_20260327T011500Z/model_viability_report.json
+./benchmark/public_outcomes/model_viability/full_eval_model_viability_20260326T174900Z/model_viability_report.json
+./benchmark/public_outcomes/model_viability/model_viability_full_20260326T042308Z/model_viability_report.json
+./benchmark/public_outcomes/validation/full_suite_validation_20260326T153810Z/segment_report.md
+./benchmark/public_outcomes/validation/weighted_feature_filtering_default_20260330/direction_alignment_report.json
+./benchmark/public_outcomes/validation/weighted_feature_filtering_default_20260330/feature_signal_report.json
+./benchmark/public_outcomes/validation/weighted_feature_filtering_default_20260330/segment_report.md
+./benchmark/public_outcomes/validation/diag_public_validation_after_rebuild_20260325T204451Z/segment_report.md
+./benchmark/public_outcomes/validation/full_eval_public_validation_20260326T174900Z/segment_report.md
+./benchmark/public_outcomes/validation/feature_signal_report_20260326
+./benchmark/public_outcomes/validation/feature_signal_report_20260326/feature_signal_report.json
+./benchmark/public_outcomes/validation/feature_signal_report_20260326/segment_report.md
+./benchmark/public_outcomes/validation/20260330T180616Z/direction_alignment_report.json
+./benchmark/public_outcomes/validation/20260330T180616Z/feature_signal_report.json
+./benchmark/public_outcomes/validation/20260330T180616Z/segment_report.md
+./benchmark/public_outcomes/validation/full_eval_enriched_allnorm_v2_validation_20260327T002500Z/segment_report.md
+./benchmark/public_outcomes/validation/full_eval_input_upgrade_validation_20260327T011500Z/segment_report.md
+./benchmark/public_outcomes/validation/validation_structure_proxy_light_20260326T152638Z/segment_report.md
+./benchmark/public_outcomes/validation/interaction_validation_fast_20260325T210634Z/segment_report.md
+./benchmark/public_outcomes/validation/high_signal_weighted_20260330T1807Z/direction_alignment_report.json
+./benchmark/public_outcomes/validation/high_signal_weighted_20260330T1807Z/feature_signal_report.json
+./benchmark/public_outcomes/validation/high_signal_weighted_20260330T1807Z/segment_report.md
+./benchmark/public_outcomes/validation/diverse_conditions_pack_20260325_v2_validation/segment_report.md
+./benchmark/public_outcomes/validation/direction_alignment_20260330T2/direction_alignment_report.json
+./benchmark/public_outcomes/validation/direction_alignment_20260330T2/feature_signal_report.json
+./benchmark/public_outcomes/validation/direction_alignment_20260330T2/segment_report.md
+./benchmark/public_outcomes/validation/simplified_unweighted_20260330_v2/direction_alignment_report.json
+./benchmark/public_outcomes/validation/simplified_unweighted_20260330_v2/feature_signal_report.json
+./benchmark/public_outcomes/validation/simplified_unweighted_20260330_v2/segment_report.md
+./benchmark/public_outcomes/validation/simplified_unweighted_20260330/direction_alignment_report.json
+./benchmark/public_outcomes/validation/simplified_unweighted_20260330/feature_signal_report.json
+./benchmark/public_outcomes/validation/simplified_unweighted_20260330/segment_report.md
+./benchmark/public_outcomes/validation/filtered_features_weighted_20260330/direction_alignment_report.json
+./benchmark/public_outcomes/validation/filtered_features_weighted_20260330/feature_signal_report.json
+./benchmark/public_outcomes/validation/filtered_features_weighted_20260330/segment_report.md
+./benchmark/public_outcomes/validation/segment_slice_interaction_20260325T220900Z/segment_report.md
+./benchmark/public_outcomes/validation/validation_diverse_eval_20260326T223000Z/segment_report.md
+./benchmark/public_outcomes/validation/full_eval_enriched_validation_20260327T000500Z/segment_report.md
+./benchmark/public_outcomes/validation/diag_public_validation_20260325T203746Z/segment_report.md
+./benchmark/public_outcomes/validation/direction_alignment_20260330/direction_alignment_report.json
+./benchmark/public_outcomes/validation/direction_alignment_20260330/feature_signal_report.json
+./benchmark/public_outcomes/validation/direction_alignment_20260330/segment_report.md
+./benchmark/public_outcomes/validation/viability_guardrail_20260326T230500Z/segment_report.md
+./benchmark/public_outcomes/validation/near_structure_validation_20260325T211928Z/segment_report.md
+./benchmark/public_outcomes/validation/dev_fallback_reduction_validation_20260326/segment_report.md
+./benchmark/public_outcomes/validation/simplified_high_signal_20260330/direction_alignment_report.json
+./benchmark/public_outcomes/validation/simplified_high_signal_20260330/feature_signal_report.json
+./benchmark/public_outcomes/validation/simplified_high_signal_20260330/segment_report.md
+./benchmark/public_outcomes/validation/validation_structure_proxy_wide_20260326T152638Z/segment_report.md
+./benchmark/public_outcomes/validation/diverse_conditions_pack_20260325_validation/segment_report.md
+./benchmark/public_outcomes/validation/validation_structure_proxy_20260326T152638Z/segment_report.md
+./benchmark/public_outcomes/validation/diverse_full_20260326T042308Z_validation/segment_report.md
+./benchmark/public_outcomes/validation/diverse_full_20260326T043832Z_validation/segment_report.md
+./benchmark/public_outcomes/validation/20260325T201954Z/segment_report.md
+./benchmark/public_outcomes/validation/full_eval_public_structure_integration_validation_20260327T013500Z/segment_report.md
+./benchmark/public_outcomes/validation/validation_full_20260326T043832Z/segment_report.md
+./benchmark/public_outcomes/validation/baseline_compare_20260325T221600Z/segment_report.md
+./benchmark/public_outcomes/validation/segment_slice_map_20260325T220500Z/segment_report.md
+./benchmark/public_outcomes/validation/diverse_eval_validation_20260326T200000Z/segment_report.md
+./benchmark/public_outcomes/validation/validation_full_20260326T042308Z/segment_report.md
+./benchmark/public_outcomes/validation/simplified_weighted_from_report_20260330
+./benchmark/public_outcomes/validation/simplified_weighted_from_report_20260330/direction_alignment_report.json
+./benchmark/public_outcomes/validation/simplified_weighted_from_report_20260330/feature_signal_report.json
+./benchmark/public_outcomes/validation/simplified_weighted_from_report_20260330/segment_report.md
+./benchmark/public_outcomes/validation/diverse_conditions_baseline_ref_20260325/segment_report.md
+./benchmark/public_outcomes/validation/diverse_conditions_featurevar_20260325_validation/segment_report.md
+./benchmark/public_outcomes/validation/diverse_conditions_structure_proxy_20260325_v2_validation/segment_report.md
+./benchmark/public_outcomes/validation/metrics_feature_importance_20260326T/feature_signal_report.json
+./benchmark/public_outcomes/validation/metrics_feature_importance_20260326T/segment_report.md
+./benchmark/public_outcomes/validation/simplified_weighted_from_report_20260330_v2
+./benchmark/public_outcomes/validation/simplified_weighted_from_report_20260330_v2/direction_alignment_report.json
+./benchmark/public_outcomes/validation/simplified_weighted_from_report_20260330_v2/feature_signal_report.json
+./benchmark/public_outcomes/validation/simplified_weighted_from_report_20260330_v2/segment_report.md
+./benchmark/public_outcomes/validation/full_eval_minimal_features_validation_20260327T024500Z/segment_report.md
+./benchmark/public_outcomes/validation/rerun_after_dataset_fix_20260325_rescored/segment_report.md
+./benchmark/public_outcomes/validation/segment_slice_map_large_20260325T220700Z/segment_report.md
+./benchmark/public_outcomes/validation/diverse_conditions_structure_proxy_20260325_validation/segment_report.md
+./benchmark/public_outcomes/validation/validation_structure_proxy_tuned_light_20260326T153234Z/segment_report.md
+./benchmark/public_outcomes/validation/all_diag_public_validation_20260325T223300Z/segment_report.md
+./benchmark/public_outcomes/validation/baseline_gap_check_20260325T222500Z/segment_report.md
+./benchmark/public_outcomes/validation/diverse_conditions_featurevar_baseline_ref_20260325/segment_report.md
+./benchmark/public_outcomes/validation/near_structure_veg_validation_20260326T160929Z/segment_report.md
+./benchmark/public_outcomes/validation/dev_diverse_try_validation_20260326/segment_report.md
+./benchmark/public_outcomes/validation/segment_strength_map_20260325T211928Z/segment_report.md
+./benchmark/public_outcomes/validation/hazard_vuln_split_validation_fast_20260325T2356/segment_report.md
+./benchmark/public_outcomes/evaluation_dataset/diverse_conditions_pack_20260325/quick_validation_report.json
+./benchmark/public_outcomes/evaluation_dataset/diverse_full_20260326T042308Z/quick_validation_report.json
+./benchmark/public_outcomes/evaluation_dataset/eval_full_20260326T043832Z/join_quality_report.md
+./benchmark/public_outcomes/evaluation_dataset/eval_full_20260326T043832Z/join_quality_report.json
+./benchmark/public_outcomes/evaluation_dataset/feature_variation_debug_20260325/join_quality_report.md
+./benchmark/public_outcomes/evaluation_dataset/feature_variation_debug_20260325/feature_variation_debug_report.md
+./benchmark/public_outcomes/evaluation_dataset/feature_variation_debug_20260325/join_quality_report.json
+./benchmark/public_outcomes/evaluation_dataset/dev_minimal_high_signal/join_quality_report.md
+./benchmark/public_outcomes/evaluation_dataset/dev_minimal_high_signal/pipeline_audit_report.md
+./benchmark/public_outcomes/evaluation_dataset/dev_minimal_high_signal/dataset_quality_report.md
+./benchmark/public_outcomes/evaluation_dataset/dev_minimal_high_signal/join_quality_report.json
+./benchmark/public_outcomes/evaluation_dataset/dev_minimal_high_signal/dataset_quality_report.json
+./benchmark/public_outcomes/evaluation_dataset/feature_variation_runtime_context_probe/join_quality_report.md
+./benchmark/public_outcomes/evaluation_dataset/feature_variation_runtime_context_probe/join_quality_report.json
+./benchmark/public_outcomes/evaluation_dataset/debug_high_conf_check/join_quality_report.md
+./benchmark/public_outcomes/evaluation_dataset/debug_high_conf_check/join_quality_report.json
+./benchmark/public_outcomes/evaluation_dataset/interaction_eval_ds_20260325T210634Z/join_quality_report.md
+./benchmark/public_outcomes/evaluation_dataset/interaction_eval_ds_20260325T210634Z/join_quality_report.json
+./benchmark/public_outcomes/evaluation_dataset/eval_structure_proxy_tuned_light_20260326T153234Z/join_quality_report.md
+./benchmark/public_outcomes/evaluation_dataset/eval_structure_proxy_tuned_light_20260326T153234Z/join_quality_report.json
+./benchmark/public_outcomes/evaluation_dataset/public_eval_ds_multi_source_ingested_20260324/join_quality_report.json
+./benchmark/public_outcomes/evaluation_dataset/full_eval_enriched_allnorm_20260327T001500Z/join_quality_report.md
+./benchmark/public_outcomes/evaluation_dataset/full_eval_enriched_allnorm_20260327T001500Z/dataset_quality_report.md
+./benchmark/public_outcomes/evaluation_dataset/full_eval_enriched_allnorm_20260327T001500Z/join_quality_report.json
+./benchmark/public_outcomes/evaluation_dataset/full_eval_enriched_allnorm_20260327T001500Z/dataset_quality_report.json
+./benchmark/public_outcomes/evaluation_dataset/full_eval_enriched_20260326T235900Z/join_quality_report.md
+./benchmark/public_outcomes/evaluation_dataset/full_eval_enriched_20260326T235900Z/pipeline_audit_report.md
+./benchmark/public_outcomes/evaluation_dataset/full_eval_enriched_20260326T235900Z/dataset_quality_report.md
+./benchmark/public_outcomes/evaluation_dataset/full_eval_enriched_20260326T235900Z/join_quality_report.json
+./benchmark/public_outcomes/evaluation_dataset/full_eval_enriched_20260326T235900Z/dataset_quality_report.json
+./benchmark/public_outcomes/evaluation_dataset/auc_scan_04/join_quality_report.md
+./benchmark/public_outcomes/evaluation_dataset/auc_scan_04/join_quality_report.json
+./benchmark/public_outcomes/evaluation_dataset/public_eval_ds_multi_source_20260324/join_quality_report.json
+./benchmark/public_outcomes/evaluation_dataset/auc_scan_03/join_quality_report.md
+./benchmark/public_outcomes/evaluation_dataset/auc_scan_03/join_quality_report.json
+./benchmark/public_outcomes/evaluation_dataset/auc_rescore_all_probe_ds/join_quality_report.md
+./benchmark/public_outcomes/evaluation_dataset/auc_rescore_all_probe_ds/join_quality_report.json
+./benchmark/public_outcomes/evaluation_dataset/hazard_vuln_split_eval_fast_20260325T2355/join_quality_report.md
+./benchmark/public_outcomes/evaluation_dataset/hazard_vuln_split_eval_fast_20260325T2355/join_quality_report.json
+./benchmark/public_outcomes/evaluation_dataset/auc_scan_02/join_quality_report.md
+./benchmark/public_outcomes/evaluation_dataset/auc_scan_02/join_quality_report.json
+./benchmark/public_outcomes/evaluation_dataset/diverse_full_20260326T043832Z/quick_validation_report.json
+./benchmark/public_outcomes/evaluation_dataset/auc_scan_05/join_quality_report.md
+./benchmark/public_outcomes/evaluation_dataset/auc_scan_05/join_quality_report.json
+./benchmark/public_outcomes/evaluation_dataset/all_diag_eval_ds_20260325T1848/join_quality_report.md
+./benchmark/public_outcomes/evaluation_dataset/all_diag_eval_ds_20260325T1848/pipeline_audit_report.md
+./benchmark/public_outcomes/evaluation_dataset/all_diag_eval_ds_20260325T1848/join_quality_report.json
+./benchmark/public_outcomes/evaluation_dataset/eval_full_20260326T042308Z/join_quality_report.md
+./benchmark/public_outcomes/evaluation_dataset/eval_full_20260326T042308Z/join_quality_report.json
+./benchmark/public_outcomes/evaluation_dataset/dev_fallback_reduction_20260326/join_quality_report.md
+./benchmark/public_outcomes/evaluation_dataset/dev_fallback_reduction_20260326/join_quality_report.json
+./benchmark/public_outcomes/evaluation_dataset/full_eval_dataset_20260326T153810Z/join_quality_report.md
+./benchmark/public_outcomes/evaluation_dataset/full_eval_dataset_20260326T153810Z/pipeline_audit_report.md
+./benchmark/public_outcomes/evaluation_dataset/full_eval_dataset_20260326T153810Z/join_quality_report.json
+./benchmark/public_outcomes/evaluation_dataset/public_eval_ds_geo_match_20260324/join_quality_report.json
+./benchmark/public_outcomes/evaluation_dataset/dev_minimal_high_signal_check/join_quality_report.md
+./benchmark/public_outcomes/evaluation_dataset/dev_minimal_high_signal_check/dataset_quality_report.md
+./benchmark/public_outcomes/evaluation_dataset/dev_minimal_high_signal_check/join_quality_report.json
+./benchmark/public_outcomes/evaluation_dataset/dev_minimal_high_signal_check/dataset_quality_report.json
+./benchmark/public_outcomes/evaluation_dataset/diag_eval_ds_20260325T204451Z/join_quality_report.md
+./benchmark/public_outcomes/evaluation_dataset/diag_eval_ds_20260325T204451Z/pipeline_audit_report.md
+./benchmark/public_outcomes/evaluation_dataset/diag_eval_ds_20260325T204451Z/join_quality_report.json
+./benchmark/public_outcomes/evaluation_dataset/diverse_conditions_pack_20260325_v2/quick_validation_report.json
+./benchmark/public_outcomes/evaluation_dataset/public_eval_ds_n0_fix_20260324/join_quality_report.json
+./benchmark/public_outcomes/evaluation_dataset/diverse_eval_rapid_20260326T224500Z/join_quality_report.md
+./benchmark/public_outcomes/evaluation_dataset/diverse_eval_rapid_20260326T224500Z/join_quality_report.json
+./benchmark/public_outcomes/evaluation_dataset/public_eval_ds_smoke/join_quality_report.json
+./benchmark/public_outcomes/evaluation_dataset/full_eval_enriched_20260327T000500Z/join_quality_report.md
+./benchmark/public_outcomes/evaluation_dataset/full_eval_enriched_20260327T000500Z/pipeline_audit_report.md
+./benchmark/public_outcomes/evaluation_dataset/full_eval_enriched_20260327T000500Z/dataset_quality_report.md
+./benchmark/public_outcomes/evaluation_dataset/full_eval_enriched_20260327T000500Z/join_quality_report.json
+./benchmark/public_outcomes/evaluation_dataset/full_eval_enriched_20260327T000500Z/dataset_quality_report.json
+./benchmark/public_outcomes/evaluation_dataset/auc_tuning_noise_reduced_ds/join_quality_report.md
+./benchmark/public_outcomes/evaluation_dataset/auc_tuning_noise_reduced_ds/join_quality_report.json
+./benchmark/public_outcomes/evaluation_dataset/near_structure_veg_eval_20260326T160929Z/join_quality_report.md
+./benchmark/public_outcomes/evaluation_dataset/near_structure_veg_eval_20260326T160929Z/join_quality_report.json
+./benchmark/public_outcomes/evaluation_dataset/full_eval_minimal_high_signal_20260327T021500Z/join_quality_report.md
+./benchmark/public_outcomes/evaluation_dataset/full_eval_minimal_high_signal_20260327T021500Z/dataset_quality_report.md
+./benchmark/public_outcomes/evaluation_dataset/full_eval_minimal_high_signal_20260327T021500Z/join_quality_report.json
+./benchmark/public_outcomes/evaluation_dataset/full_eval_minimal_high_signal_20260327T021500Z/dataset_quality_report.json
+./benchmark/public_outcomes/evaluation_dataset/public_eval_ds_high_conf_boost_20260324/join_quality_report.json
+./benchmark/public_outcomes/evaluation_dataset/diverse_eval_rapid_20260326T223500Z/join_quality_report.md
+./benchmark/public_outcomes/evaluation_dataset/diverse_eval_rapid_20260326T223500Z/pipeline_audit_report.md
+./benchmark/public_outcomes/evaluation_dataset/diverse_eval_rapid_20260326T223500Z/join_quality_report.json
+./benchmark/public_outcomes/evaluation_dataset/feature_variation_smoke/join_quality_report.md
+./benchmark/public_outcomes/evaluation_dataset/feature_variation_smoke/join_quality_report.json
+./benchmark/public_outcomes/evaluation_dataset/dev_minimal_high_signal_replaced/join_quality_report.md
+./benchmark/public_outcomes/evaluation_dataset/dev_minimal_high_signal_replaced/dataset_quality_report.md
+./benchmark/public_outcomes/evaluation_dataset/dev_minimal_high_signal_replaced/join_quality_report.json
+./benchmark/public_outcomes/evaluation_dataset/dev_minimal_high_signal_replaced/dataset_quality_report.json
+./benchmark/public_outcomes/evaluation_dataset/feature_variation_fix_20260325/join_quality_report.md
+./benchmark/public_outcomes/evaluation_dataset/feature_variation_fix_20260325/join_quality_report.json
+./benchmark/public_outcomes/evaluation_dataset/diverse_eval_20260326T200000Z/join_quality_report.md
+./benchmark/public_outcomes/evaluation_dataset/diverse_eval_20260326T200000Z/join_quality_report.json
+./benchmark/public_outcomes/evaluation_dataset/dev_diverse_try_20260326/join_quality_report.md
+./benchmark/public_outcomes/evaluation_dataset/dev_diverse_try_20260326/join_quality_report.json
+./benchmark/public_outcomes/evaluation_dataset/rerun_after_dataset_fix_20260325/join_quality_report.md
+./benchmark/public_outcomes/evaluation_dataset/rerun_after_dataset_fix_20260325/join_quality_report.json
+./benchmark/public_outcomes/evaluation_dataset/hazard_vuln_split_eval_20260325T2350/join_quality_report.md
+./benchmark/public_outcomes/evaluation_dataset/hazard_vuln_split_eval_20260325T2350/join_quality_report.json
+./benchmark/public_outcomes/evaluation_dataset/near_structure_eval_ds_20260325T211928Z/join_quality_report.md
+./benchmark/public_outcomes/evaluation_dataset/near_structure_eval_ds_20260325T211928Z/join_quality_report.json
+./benchmark/public_outcomes/evaluation_dataset/full_eval_input_upgrade_20260327T011500Z/join_quality_report.md
+./benchmark/public_outcomes/evaluation_dataset/full_eval_input_upgrade_20260327T011500Z/dataset_quality_report.md
+./benchmark/public_outcomes/evaluation_dataset/full_eval_input_upgrade_20260327T011500Z/join_quality_report.json
+./benchmark/public_outcomes/evaluation_dataset/full_eval_input_upgrade_20260327T011500Z/dataset_quality_report.json
+./benchmark/public_outcomes/evaluation_dataset/diverse_conditions_structure_proxy_20260325/quick_validation_report.json
+./benchmark/public_outcomes/evaluation_dataset/eval_structure_proxy_tuned_20260326T153234Z/join_quality_report.md
+./benchmark/public_outcomes/evaluation_dataset/eval_structure_proxy_tuned_20260326T153234Z/join_quality_report.json
+./benchmark/public_outcomes/evaluation_dataset/interaction_eval_ds_sample_20260325T210634Z/join_quality_report.md
+./benchmark/public_outcomes/evaluation_dataset/interaction_eval_ds_sample_20260325T210634Z/join_quality_report.json
+./benchmark/public_outcomes/evaluation_dataset/all_diag_eval_ds_20260325T1909/join_quality_report.md
+./benchmark/public_outcomes/evaluation_dataset/all_diag_eval_ds_20260325T1909/pipeline_audit_report.md
+./benchmark/public_outcomes/evaluation_dataset/all_diag_eval_ds_20260325T1909/join_quality_report.json
+./benchmark/public_outcomes/evaluation_dataset/public_eval_ds_rapid_coverage_20260324/join_quality_report.json
+./benchmark/public_outcomes/evaluation_dataset/full_eval_enriched_allnorm_v2_20260327T002500Z/join_quality_report.md
+./benchmark/public_outcomes/evaluation_dataset/full_eval_enriched_allnorm_v2_20260327T002500Z/dataset_quality_report.md
+./benchmark/public_outcomes/evaluation_dataset/full_eval_enriched_allnorm_v2_20260327T002500Z/join_quality_report.json
+./benchmark/public_outcomes/evaluation_dataset/full_eval_enriched_allnorm_v2_20260327T002500Z/dataset_quality_report.json
+./benchmark/public_outcomes/evaluation_dataset/hazard_vuln_split_eval_allnorm_20260325T2358/join_quality_report.md
+./benchmark/public_outcomes/evaluation_dataset/hazard_vuln_split_eval_allnorm_20260325T2358/join_quality_report.json
+./benchmark/public_outcomes/evaluation_dataset/interaction_eval_ds_fast_20260325T210634Z/join_quality_report.md
+./benchmark/public_outcomes/evaluation_dataset/interaction_eval_ds_fast_20260325T210634Z/join_quality_report.json
+./benchmark/public_outcomes/evaluation_dataset/diverse_eval_20260326T223000Z/join_quality_report.md
+./benchmark/public_outcomes/evaluation_dataset/diverse_eval_20260326T223000Z/pipeline_audit_report.md
+./benchmark/public_outcomes/evaluation_dataset/diverse_eval_20260326T223000Z/join_quality_report.json
+./benchmark/public_outcomes/evaluation_dataset/public_eval_ds_all_outcomes_root_20260324/join_quality_report.json
+./benchmark/public_outcomes/evaluation_dataset/auc_tuning_after_missing_only_ds/join_quality_report.md
+./benchmark/public_outcomes/evaluation_dataset/auc_tuning_after_missing_only_ds/join_quality_report.json
+./benchmark/public_outcomes/evaluation_dataset/auc_scan_09/join_quality_report.md
+./benchmark/public_outcomes/evaluation_dataset/auc_scan_09/join_quality_report.json
+./benchmark/public_outcomes/evaluation_dataset/auc_scan_00/join_quality_report.md
+./benchmark/public_outcomes/evaluation_dataset/auc_scan_00/join_quality_report.json
+./benchmark/public_outcomes/evaluation_dataset/auc_tuning_rescore_all_ds/join_quality_report.md
+./benchmark/public_outcomes/evaluation_dataset/auc_tuning_rescore_all_ds/pipeline_audit_report.md
+./benchmark/public_outcomes/evaluation_dataset/auc_tuning_rescore_all_ds/join_quality_report.json
+./benchmark/public_outcomes/evaluation_dataset/auc_scan_07/join_quality_report.md
+./benchmark/public_outcomes/evaluation_dataset/auc_scan_07/join_quality_report.json
+./benchmark/public_outcomes/evaluation_dataset/public_eval_ds_smoke_fix/join_quality_report.json
+./benchmark/public_outcomes/evaluation_dataset/auc_scan_06/join_quality_report.md
+./benchmark/public_outcomes/evaluation_dataset/auc_scan_06/join_quality_report.json
+./benchmark/public_outcomes/evaluation_dataset/auc_scan_01/join_quality_report.md
+./benchmark/public_outcomes/evaluation_dataset/auc_scan_01/join_quality_report.json
+./benchmark/public_outcomes/evaluation_dataset/eval_structure_proxy_20260326T152638Z/join_quality_report.md
+./benchmark/public_outcomes/evaluation_dataset/eval_structure_proxy_20260326T152638Z/join_quality_report.json
+./benchmark/public_outcomes/evaluation_dataset/auc_scan_08/join_quality_report.md
+./benchmark/public_outcomes/evaluation_dataset/auc_scan_08/join_quality_report.json
+./benchmark/public_outcomes/evaluation_dataset/20260326T005143Z/join_quality_report.md
+./benchmark/public_outcomes/evaluation_dataset/20260326T005143Z/join_quality_report.json
+./benchmark/public_outcomes/evaluation_dataset/rerun_after_dataset_fix_20260325_rescored/join_quality_report.md
+./benchmark/public_outcomes/evaluation_dataset/rerun_after_dataset_fix_20260325_rescored/join_quality_report.json
+./benchmark/public_outcomes/evaluation_dataset/full_eval_minimal_features_20260327T024500Z/join_quality_report.md
+./benchmark/public_outcomes/evaluation_dataset/full_eval_minimal_features_20260327T024500Z/pipeline_audit_report.md
+./benchmark/public_outcomes/evaluation_dataset/full_eval_minimal_features_20260327T024500Z/dataset_quality_report.md
+./benchmark/public_outcomes/evaluation_dataset/full_eval_minimal_features_20260327T024500Z/join_quality_report.json
+./benchmark/public_outcomes/evaluation_dataset/full_eval_minimal_features_20260327T024500Z/dataset_quality_report.json
+./benchmark/public_outcomes/evaluation_dataset/diverse_conditions_structure_proxy_20260325_v2/quick_validation_report.json
+./benchmark/public_outcomes/evaluation_dataset/auc_tuning_rescore_all_ctx_ds/join_quality_report.md
+./benchmark/public_outcomes/evaluation_dataset/auc_tuning_rescore_all_ctx_ds/join_quality_report.json
+./benchmark/public_outcomes/evaluation_dataset/full_eval_public_structure_integration_20260327T013500Z/join_quality_report.md
+./benchmark/public_outcomes/evaluation_dataset/full_eval_public_structure_integration_20260327T013500Z/dataset_quality_report.md
+./benchmark/public_outcomes/evaluation_dataset/full_eval_public_structure_integration_20260327T013500Z/join_quality_report.json
+./benchmark/public_outcomes/evaluation_dataset/full_eval_public_structure_integration_20260327T013500Z/dataset_quality_report.json
+./benchmark/public_outcomes/evaluation_dataset/interaction_eval_ds_sample_alloutcomes_20260325T210634Z/join_quality_report.md
+./benchmark/public_outcomes/evaluation_dataset/interaction_eval_ds_sample_alloutcomes_20260325T210634Z/join_quality_report.json
+./benchmark/public_outcomes/evaluation_dataset/public_eval_ds_join_expansion_20260324/join_quality_report.json
+./benchmark/public_outcomes/evaluation_dataset/auc_rescore_all_probe_dup_ds/join_quality_report.md
+./benchmark/public_outcomes/evaluation_dataset/auc_rescore_all_probe_dup_ds/join_quality_report.json
+./benchmark/public_outcomes/evaluation_dataset/eval_structure_proxy_light_20260326T152638Z/join_quality_report.md
+./benchmark/public_outcomes/evaluation_dataset/eval_structure_proxy_light_20260326T152638Z/join_quality_report.json
+./benchmark/public_outcomes/evaluation_dataset/diverse_conditions_featurevar_20260325/quick_validation_report.json
+./benchmark/public_outcomes/evaluation_dataset/eval_structure_proxy_wide_20260326T152638Z/join_quality_report.md
+./benchmark/public_outcomes/evaluation_dataset/eval_structure_proxy_wide_20260326T152638Z/join_quality_report.json
+./tests/test_report_pdf.py
+./tests/test_homeowner_report.py
+./backend/homeowner_report.py
+./backend/report_pdf.py
+./backend/templates/homeowner_report.html
+./docs/pdf_report_diagnostic_output.txt
+./docs/homeowner_report.md
+./.venv/lib/python3.12/site-packages/rasterio/gdal_data/pdfcomposition.xsd
+./.venv/lib/python3.12/site-packages/pip/_internal/models/installation_report.py
+./.venv/lib/python3.12/site-packages/pip/_internal/resolution/resolvelib/reporter.py
+./.venv/lib/python3.12/site-packages/pip/_vendor/resolvelib/reporters.py
+./.venv/lib/python3.12/site-packages/_pytest/reports.py
+./scripts/generate_benchmark_report.py
+./reports
+HomeownerReport fields found: ['score', 'score', 'text', 'normalized', 'text', 'normalized', 'tier', 'fallback_share', 'base_tone', 'evidence_status', 'evidence', 'risk_score', 'tone_level', 'homeowner_trust_summary', 'tier', 'headline', 'what_this_means', 'comparison_allowed', 'mode', 'tier', 'safeguard_triggered', 'base_tone', 'specificity_summary', 'tier', 'comparison_allowed', 'limitations_notice', 'specificity_summary', 'tier', 'comparison_allowed', 'base', 'action_row', 'simple', 'raw', 'values', 'limit', 'cleaned', 'homeowner_improve_your_result', 'follow_up_lines', 'prompt', 'specificity_summary']
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>WildfireRisk Advisor Homeowner Report</title>
+    <style>
+      :root {
+        --brand: #1e40af;
+        --muted: #64748b;
+        --text: #0f172a;
+        --border: #e2e8f0;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        color: var(--text);
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+          "Helvetica Neue", Arial, sans-serif;
+        font-size: 10pt;
+        line-height: 1.45;
+      }
+      .page {
+        width: 100%;
+        min-height: 10.4in;
+        padding: 0.45in 0.55in 0.45in 0.55in;
+        page-break-after: always;
+      }
+      .page:last-child { page-break-after: auto; }
+      .header {
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+        border-bottom: 2px solid var(--border);
+        padding-bottom: 8px;
+        margin-bottom: 14px;
+      }
+      .brand {
+        color: var(--brand);
+        font-size: 14pt;
+        font-weight: 700;
+      }
+      .confidential {
+        color: var(--muted);
+        font-size: 8pt;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+      .footer {
+        margin-top: 14px;
+        border-top: 1px solid var(--border);
+        padding-top: 6px;
+        color: var(--muted);
+        font-size: 9pt;
+        text-align: right;
+      }
+      .address {
+        font-size: 18pt;
+        font-weight: 700;
+        margin: 2px 0 4px;
+      }
+      .meta { color: var(--muted); font-size: 10pt; margin: 2px 0; }
+      .risk-box {
+        background: #fff;
+        border: 1px solid var(--border);
+        border-left: 8px solid $risk_level_color;
+        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+        padding: 14px;
+        margin: 14px 0;
+      }
+      .risk-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-end;
+        gap: 12px;
+      }
+      .risk-label {
+        color: $risk_level_color;
+        font-size: 24pt;
+        font-weight: 700;
+      }
+      .risk-score {
+        color: $risk_level_color;
+        font-size: 36pt;
+        font-weight: 700;
+      }
+      .risk-summary { margin-top: 8px; font-size: 11pt; }
+      .score-grid { margin-top: 10px; }
+      .score-row {
+        display: grid;
+        grid-template-columns: 30% 55% 15%;
+        align-items: center;
+        gap: 8px;
+        margin: 8px 0;
+      }
+      .track {
+        width: 100%;
+        height: 10px;
+        background: #e2e8f0;
+        border-radius: 999px;
+        overflow: hidden;

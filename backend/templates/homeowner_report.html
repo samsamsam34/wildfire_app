@@ -1,0 +1,283 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>WildfireRisk Advisor Homeowner Report</title>
+    <style>
+      :root {
+        --brand: #1e40af;
+        --muted: #64748b;
+        --text: #0f172a;
+        --border: #e2e8f0;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        color: var(--text);
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+          "Helvetica Neue", Arial, sans-serif;
+        font-size: 10pt;
+        line-height: 1.45;
+      }
+      .page {
+        width: 100%;
+        min-height: 10.4in;
+        padding: 0.45in 0.55in 0.45in 0.55in;
+        page-break-after: always;
+      }
+      .page:last-child { page-break-after: auto; }
+      .header {
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+        border-bottom: 2px solid var(--border);
+        padding-bottom: 8px;
+        margin-bottom: 14px;
+      }
+      .brand {
+        color: var(--brand);
+        font-size: 14pt;
+        font-weight: 700;
+      }
+      .confidential {
+        color: var(--muted);
+        font-size: 8pt;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+      .footer {
+        margin-top: 14px;
+        border-top: 1px solid var(--border);
+        padding-top: 6px;
+        color: var(--muted);
+        font-size: 9pt;
+        text-align: right;
+      }
+      .address {
+        font-size: 18pt;
+        font-weight: 700;
+        margin: 2px 0 4px;
+      }
+      .meta { color: var(--muted); font-size: 10pt; margin: 2px 0; }
+      .risk-box {
+        background: #fff;
+        border: 1px solid var(--border);
+        border-left: 8px solid $risk_level_color;
+        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+        padding: 14px;
+        margin: 14px 0;
+      }
+      .risk-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-end;
+        gap: 12px;
+      }
+      .risk-label {
+        color: $risk_level_color;
+        font-size: 24pt;
+        font-weight: 700;
+      }
+      .risk-score {
+        color: $risk_level_color;
+        font-size: 36pt;
+        font-weight: 700;
+      }
+      .risk-summary { margin-top: 8px; font-size: 11pt; }
+      .score-grid { margin-top: 10px; }
+      .score-row {
+        display: grid;
+        grid-template-columns: 30% 55% 15%;
+        align-items: center;
+        gap: 8px;
+        margin: 8px 0;
+      }
+      .track {
+        width: 100%;
+        height: 10px;
+        background: #e2e8f0;
+        border-radius: 999px;
+        overflow: hidden;
+      }
+      .fill {
+        height: 100%;
+        border-radius: 999px;
+      }
+      .note { color: var(--muted); font-size: 9pt; }
+      h2 {
+        color: var(--brand);
+        font-size: 16pt;
+        border-bottom: 1px solid var(--border);
+        padding-bottom: 6px;
+        margin: 0 0 12px;
+      }
+      .driver-row {
+        display: grid;
+        grid-template-columns: 14px 1fr auto;
+        gap: 8px;
+        align-items: start;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 8px 10px;
+        margin: 8px 0;
+      }
+      .dot {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        margin-top: 4px;
+      }
+      .badge {
+        border-radius: 999px;
+        padding: 2px 8px;
+        font-size: 8pt;
+        font-weight: 700;
+        border: 1px solid transparent;
+        white-space: nowrap;
+      }
+      .callout {
+        border: 1px solid var(--border);
+        border-left: 5px solid #d97706;
+        border-radius: 8px;
+        padding: 10px;
+        margin-top: 10px;
+        background: #fffbeb;
+      }
+      .action-card {
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 10px;
+        margin: 8px 0;
+      }
+      .action-top {
+        display: grid;
+        grid-template-columns: auto 1fr auto;
+        gap: 8px;
+        align-items: center;
+      }
+      .action-title { font-size: 12pt; font-weight: 700; }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 9.5pt;
+        margin-top: 8px;
+      }
+      th, td {
+        border: 1px solid var(--border);
+        padding: 6px;
+        text-align: left;
+        vertical-align: top;
+      }
+      th { background: #f8fafc; }
+      .italic { font-style: italic; color: var(--muted); }
+      .legal {
+        margin-top: 14px;
+        font-size: 9pt;
+        color: var(--muted);
+      }
+    </style>
+  </head>
+  <body>
+    <section class="page">
+      <div class="header">
+        <div class="brand">WildfireRisk Advisor</div>
+        <div class="confidential">CONFIDENTIAL RISK ASSESSMENT</div>
+      </div>
+
+      <div class="address">$property_address</div>
+      <div class="meta">Assessment Date: $formatted_date</div>
+      <div class="meta">Assessment ID: $assessment_id_short</div>
+
+      <div class="risk-box">
+        <div class="risk-row">
+          <div class="risk-label">$risk_level_label</div>
+          <div class="risk-score">$overall_score_text</div>
+        </div>
+        <div class="risk-summary">$risk_level_summary</div>
+      </div>
+
+      <div class="score-grid">
+        $score_rows_html
+      </div>
+
+      <div class="note">Data Confidence: $environmental_confidence_tier_label | Home Details: $structural_confidence_tier_label</div>
+      <div class="italic">$coverage_note</div>
+
+      <div class="legal">
+        This report is generated for informational purposes only and does not constitute professional engineering advice,
+        guarantee insurability, or predict future wildfire behavior. Risk assessments are based on publicly available data
+        and may not reflect recent changes to property conditions.
+      </div>
+
+      <div class="footer">Page 1 of 4</div>
+    </section>
+
+    <section class="page">
+      <div class="header">
+        <div class="brand">WildfireRisk Advisor</div>
+        <div class="confidential">CONFIDENTIAL RISK ASSESSMENT</div>
+      </div>
+
+      <h2>What's Driving Your Risk</h2>
+      <div class="note">Top 3 Risk Drivers</div>
+      $driver_rows_html
+
+      <h2>Home Factors</h2>
+      $home_factors_html
+
+      $fire_history_callout_html
+
+      <div class="footer">Page 2 of 4</div>
+    </section>
+
+    <section class="page">
+      <div class="header">
+        <div class="brand">WildfireRisk Advisor</div>
+        <div class="confidential">CONFIDENTIAL RISK ASSESSMENT</div>
+      </div>
+
+      <h2>Your Action Plan</h2>
+      <div class="note">Top 3 Recommended Actions</div>
+      <p>The following improvements are ranked by their estimated impact on your wildfire risk. Completing them may also improve your insurance readiness.</p>
+
+      $mitigation_cards_html
+
+      <table>
+        <thead>
+          <tr>
+            <th>Action</th>
+            <th>Priority</th>
+            <th>Est. Risk Reduction</th>
+          </tr>
+        </thead>
+        <tbody>
+          $mitigation_table_rows_html
+        </tbody>
+      </table>
+
+      <div class="footer">Page 3 of 4</div>
+    </section>
+
+    <section class="page">
+      <div class="header">
+        <div class="brand">WildfireRisk Advisor</div>
+        <div class="confidential">CONFIDENTIAL RISK ASSESSMENT</div>
+      </div>
+
+      <h2>Assessment Details &amp; How to Improve Your Score</h2>
+      $details_or_confidence_html
+
+      <h2>Assessment Metadata</h2>
+      <table>
+        <tbody>
+          <tr><th>Assessment ID</th><td>$assessment_id_full</td></tr>
+          <tr><th>Generated</th><td>$generated_at</td></tr>
+          <tr><th>Data sources</th><td>$data_sources_html</td></tr>
+          <tr><th>Validity note</th><td>Risk scores reflect conditions at the time of assessment. Reassess after significant property changes or annually.</td></tr>
+        </tbody>
+      </table>
+
+      <div class="footer">Page 4 of 4</div>
+    </section>
+  </body>
+</html>

@@ -3536,33 +3536,6 @@ def _serialize_pdf(objects: dict[int, bytes]) -> bytes:
 
 
 def render_homeowner_report_pdf(report: HomeownerReport) -> bytes:
-    entries = _build_report_entries(report)
-    pages = _paginate_entries(entries)
+    from backend.report_pdf import generate_homeowner_pdf
 
-    objects: dict[int, bytes] = {
-        1: b"<< /Type /Catalog /Pages 2 0 R >>",
-        3: b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
-        4: b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>",
-    }
-
-    page_ids: list[int] = []
-    for idx, page_entries in enumerate(pages):
-        content_id = 5 + idx * 2
-        page_id = 6 + idx * 2
-        page_ids.append(page_id)
-
-        content_stream = _build_pdf_content_stream(page_entries)
-        objects[content_id] = (
-            f"<< /Length {len(content_stream)} >>\nstream\n".encode("ascii")
-            + content_stream
-            + b"\nendstream"
-        )
-        objects[page_id] = (
-            f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
-            f"/Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents {content_id} 0 R >>"
-        ).encode("ascii")
-
-    kids = " ".join(f"{pid} 0 R" for pid in page_ids)
-    objects[2] = f"<< /Type /Pages /Count {len(page_ids)} /Kids [{kids}] >>".encode("ascii")
-
-    return _serialize_pdf(objects)
+    return generate_homeowner_pdf(report)
