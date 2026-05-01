@@ -15,9 +15,8 @@ def test_frontend_avoids_unsafe_dom_html_injection_apis() -> None:
     assert "document.write(" not in html
 
 
-def test_frontend_includes_safe_rendering_helpers() -> None:
+def test_frontend_uses_react_rendering_and_safe_fetch_helpers() -> None:
     html = _frontend_html()
-    assert "function clearNode(" in html
-    assert "function setListItems(" in html
-    assert "function setPillSpans(" in html
-    assert "function setSubmodelTableRows(" in html
+    assert "React.createElement" in html
+    assert "async function apiFetch(" in html
+    assert "readJsonSafe(" in html
