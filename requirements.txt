@@ -16,6 +16,9 @@ geopandas>=1.0.0
 # YAML config parsing (backend/scoring_config.py, backend/geocoding_fallback_chain.py)
 PyYAML==6.0.2
 
+# HTTP client (backend/landfire_cog_client.py, backend/national_nlcd_client.py)
+requests>=2.31.0
+
 # Test dependencies (tests/test_risk_assessment.py)
 pytest==8.3.5
 httpx==0.28.1

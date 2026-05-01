@@ -479,3 +479,213 @@ def test_elevation_client_not_called_when_local_slope_present(tmp_path: Path) ->
     assert mock_elev.get_slope_and_aspect.call_count == 0, (
         "elevation_client must not be called when local slope raster succeeds"
     )
+
+
+# ---------------------------------------------------------------------------
+# WHP proxy integration tests (Tests 10–12)
+# ---------------------------------------------------------------------------
+
+def _run_collect_context_with_whp_client(
+    tmp_path,
+    *,
+    whp_client,
+    fuel_samples: list,
+    canopy_samples: list,
+    slope_val=None,
+    burn_prob_val=None,
+):
+    """Run collect_context with a mock WHPClient injected and local rasters absent."""
+    from backend.wildfire_data import WildfireDataClient
+    from unittest.mock import MagicMock, patch
+
+    anchor = _minimal_anchor()
+    footprint_result = _null_footprint_result()
+    mock_resolver_instance = MagicMock()
+    mock_resolver_instance.resolve.return_value = anchor
+    mock_footprints = MagicMock()
+    mock_footprints.get_building_footprint.return_value = footprint_result
+    mock_footprints.compute_structure_rings.return_value = (None, [], [])
+    mock_footprints.get_neighbor_structure_metrics.return_value = None
+
+    def _fake_sample_detail(path, lat, lon):
+        if slope_val is not None and "slope" in str(path):
+            return (slope_val, "ok", None)
+        if burn_prob_val is not None and "burn" in str(path):
+            return (burn_prob_val, "ok", None)
+        return (None, "not_configured", "No path")
+
+    def _fake_sample_circle(path, lat, lon, radius_m, step_m=30.0):
+        if "fuel" in str(path):
+            return fuel_samples
+        if "canopy" in str(path):
+            return canopy_samples
+        return []
+
+    with (
+        patch("backend.wildfire_data.PropertyAnchorResolver", return_value=mock_resolver_instance),
+        patch("backend.wildfire_data.BuildingFootprintClient", return_value=mock_footprints),
+    ):
+        client = WildfireDataClient()
+        client._landfire_cog_client = None
+        client._fire_history_client = None
+        client._nlcd_client = None
+        client._whp_client = whp_client
+
+        whp_missing = MagicMock(
+            status="missing", notes=["No WHP path"], source_dataset=None,
+            raw_value=None, burn_probability_index=None, hazard_severity_index=None,
+            hazard_class=None,
+        )
+        with (
+            patch.object(client, "_sample_layer_value_detailed", side_effect=_fake_sample_detail),
+            patch.object(client, "_sample_circle", side_effect=_fake_sample_circle),
+            patch.object(client, "_sample_layer_value", return_value=(None, "not_configured")),
+            patch.object(client, "_file_exists", return_value=False),
+            patch.object(client, "_historical_fire_metrics", return_value=(None, None, "missing")),
+            patch.object(client, "_wildland_distance_metrics", return_value=(None, None)),
+            patch.object(client.feature_bundle_cache, "load", return_value=None),
+            patch.object(client.whp_adapter, "sample", return_value=whp_missing),
+            patch.object(
+                client.mtbs_adapter, "summarize",
+                return_value=MagicMock(
+                    status="missing", notes=[], source_dataset=None,
+                    nearest_perimeter_km=None, intersects_prior_burn=False,
+                    nearby_high_severity=False, fire_history_index=None,
+                ),
+            ),
+        ):
+            return client.collect_context(46.87, -113.99)
+
+
+def test_whp_proxy_fills_burn_probability_index_when_absent(tmp_path) -> None:
+    """
+    Test 10: When burn_probability_index is None after all raster sampling,
+    and WHPClient returns a value, burn_probability_index is populated.
+    """
+    from unittest.mock import MagicMock
+
+    mock_whp = MagicMock()
+
+    def _get_whp(lat, lon, features):
+        features["whp_index_source"] = "whp_proxy"
+        return 65.0
+
+    mock_whp.get_whp_index.side_effect = _get_whp
+    mock_whp.enabled = True
+
+    ctx = _run_collect_context_with_whp_client(
+        tmp_path,
+        whp_client=mock_whp,
+        fuel_samples=[102.0, 101.0],
+        canopy_samples=[50.0, 55.0],
+    )
+
+    assert ctx is not None
+    assert ctx.burn_probability_index is not None, (
+        "burn_probability_index must be populated from WHP proxy when rasters absent"
+    )
+    assert abs(ctx.burn_probability_index - 65.0) < 1.0, (
+        f"Expected ~65.0, got {ctx.burn_probability_index}"
+    )
+    assert mock_whp.get_whp_index.call_count == 1, (
+        "WHPClient.get_whp_index must be called exactly once"
+    )
+
+
+def test_whp_proxy_not_called_when_burn_probability_already_set(tmp_path) -> None:
+    """
+    Test 11: When burn_probability_index is populated from the WHPAdapter (local WHP raster),
+    WHPClient.get_whp_index must NOT be called.
+
+    The WHPAdapter returns status="ok" with a non-None value, which populates
+    burn_probability_index before the proxy check. The proxy guard
+    `if burn_probability_index is None` then skips the proxy.
+    """
+    from backend.wildfire_data import WildfireDataClient
+    from unittest.mock import MagicMock, patch
+
+    mock_whp = MagicMock()
+    mock_whp.enabled = True
+
+    anchor = _minimal_anchor()
+    footprint_result = _null_footprint_result()
+    mock_resolver_instance = MagicMock()
+    mock_resolver_instance.resolve.return_value = anchor
+    mock_footprints = MagicMock()
+    mock_footprints.get_building_footprint.return_value = footprint_result
+    mock_footprints.compute_structure_rings.return_value = (None, [], [])
+    mock_footprints.get_neighbor_structure_metrics.return_value = None
+
+    # WHPAdapter returns a successful observation — burn_prob will be non-None.
+    whp_ok = MagicMock(
+        status="ok", notes=[], source_dataset="USFS WHP raster",
+        raw_value=0.35, burn_probability_index=35.0, hazard_severity_index=40.0,
+        hazard_class=3,
+    )
+
+    with (
+        patch("backend.wildfire_data.PropertyAnchorResolver", return_value=mock_resolver_instance),
+        patch("backend.wildfire_data.BuildingFootprintClient", return_value=mock_footprints),
+    ):
+        client = WildfireDataClient()
+        client._landfire_cog_client = None
+        client._fire_history_client = None
+        client._nlcd_client = None
+        client._whp_client = mock_whp
+
+        whp_missing_sample = MagicMock(
+            status="missing", notes=["No burn_prob path"], source_dataset=None,
+            raw_value=None, burn_probability_index=None, hazard_severity_index=None,
+            hazard_class=None,
+        )
+        with (
+            patch.object(client, "_sample_layer_value_detailed",
+                         return_value=(None, "not_configured", "No path")),
+            patch.object(client, "_sample_circle", return_value=[]),
+            patch.object(client, "_sample_layer_value", return_value=(None, "not_configured")),
+            patch.object(client, "_file_exists", return_value=False),
+            patch.object(client, "_historical_fire_metrics", return_value=(None, None, "missing")),
+            patch.object(client, "_wildland_distance_metrics", return_value=(None, None)),
+            patch.object(client.feature_bundle_cache, "load", return_value=None),
+            # whp_adapter returns OK → burn_prob is set → proxy should NOT be called
+            patch.object(client.whp_adapter, "sample", return_value=whp_ok),
+            patch.object(
+                client.mtbs_adapter, "summarize",
+                return_value=MagicMock(
+                    status="missing", notes=[], source_dataset=None,
+                    nearest_perimeter_km=None, intersects_prior_burn=False,
+                    nearby_high_severity=False, fire_history_index=None,
+                ),
+            ),
+        ):
+            ctx = client.collect_context(46.87, -113.99)
+
+    assert ctx is not None
+    assert ctx.burn_probability_index is not None, (
+        "burn_probability_index should be set from WHPAdapter"
+    )
+    assert mock_whp.get_whp_index.call_count == 0, (
+        "WHPClient must not be called when WHPAdapter already returned a value"
+    )
+
+
+def test_whp_proxy_returns_none_gracefully(tmp_path) -> None:
+    """
+    Test 12: When WHPClient.get_whp_index returns None (insufficient inputs),
+    burn_probability_index remains None and no exception is raised.
+    """
+    from unittest.mock import MagicMock
+
+    mock_whp = MagicMock()
+    mock_whp.get_whp_index.return_value = None
+    mock_whp.enabled = True
+
+    ctx = _run_collect_context_with_whp_client(
+        tmp_path,
+        whp_client=mock_whp,
+        fuel_samples=[],
+        canopy_samples=[],
+    )
+
+    assert ctx is not None, "collect_context must not raise when WHP proxy returns None"
+    assert ctx.burn_probability_index is None

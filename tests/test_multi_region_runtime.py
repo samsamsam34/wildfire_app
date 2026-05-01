@@ -264,7 +264,11 @@ def test_uncovered_address_returns_graceful_uncovered_location_response(monkeypa
     assert body["region_resolution"]["recommended_action"]
     assert body["coverage_available"] is False
     assert body["resolved_region_id"] is None
-    assert body["assessment_status"] == "insufficient_data"
+    # National fallback clients (Landfire COG, NLCD, elevation, WHP proxy) may
+    # produce a partial assessment even when no prepared region is available.
+    # The important invariant is coverage_available=False; assessment_status
+    # depends on how much national fallback data is available at runtime.
+    assert body["assessment_status"] in {"insufficient_data", "partially_scored"}
     assert body["property_level_context"].get("region_id") is None
     assert body["property_level_context"].get("region_status") in {"region_not_prepared", "legacy_fallback", "invalid_manifest"}
 

@@ -6884,3 +6884,61 @@ def test_old_rows_without_provenance_defaults_are_readable(tmp_path):
     assert isinstance(loaded.site_hazard_input_quality.model_dump(), dict)
     assert isinstance(loaded.home_vulnerability_input_quality.model_dump(), dict)
     assert isinstance(loaded.insurance_readiness_input_quality.model_dump(), dict)
+
+
+# ---------------------------------------------------------------------------
+# Test 13: WHP proxy fills burn_probability_index → assessment scores normally
+# ---------------------------------------------------------------------------
+
+def test_whp_proxy_context_produces_valid_scores(monkeypatch, tmp_path):
+    """
+    Simulate a context where burn_probability_index was populated by the WHP
+    proxy (not a local raster). The assumptions list includes "proxy formula"
+    which triggers the 0.88 availability multiplier in risk_engine. The
+    assessment should still produce a valid wildfire_risk_score.
+    """
+    ctx = _ctx(env=58.0, wildland=52.0, historic=47.0)
+    # Simulate proxy output: burn_probability_index is set, but source is proxy
+    ctx.burn_probability_index = 58.0
+    ctx.burn_probability = 58.0
+    ctx.environmental_layer_status["burn_probability"] = "ok"
+    ctx.assumptions = [
+        "Wildfire Hazard Potential derived from proxy formula; "
+        "direct WHP measurement unavailable at property location."
+    ]
+
+    _setup(monkeypatch, tmp_path, ctx)
+    result = _run(_payload("123 National Fallback Ln", {"roof_type": "class_a_asphalt_composition"}))
+
+    assert result["wildfire_risk_score_available"] is True
+    assert result["site_hazard_score_available"] is True
+    assert result["wildfire_risk_score"] is not None
+    assert 0.0 < result["wildfire_risk_score"] <= 100.0
+    # Proxy assumption should surface in the output
+    assumptions_out = result.get("assumptions_used") or result.get("assumptions_and_unknowns") or []
+    assert any("proxy" in str(a).lower() for a in assumptions_out), (
+        "Expected proxy assumption to surface in assumptions_and_unknowns"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test 14: Local WHP raster context → no "whp_proxy" in assumptions
+# ---------------------------------------------------------------------------
+
+def test_local_whp_raster_context_has_no_proxy_assumption(monkeypatch, tmp_path):
+    """
+    When burn_probability_index comes from a local raster (the default _ctx),
+    there should be no proxy assumption in the output.
+    """
+    ctx = _ctx(env=65.0, wildland=55.0, historic=50.0)
+    # Full local data — no proxy assumption
+    ctx.assumptions = []
+
+    _setup(monkeypatch, tmp_path, ctx)
+    result = _run(_payload("456 Local Raster Ave", {"roof_type": "metal"}))
+
+    assert result["wildfire_risk_score_available"] is True
+    assumptions_out = result.get("assumptions_used") or result.get("assumptions_and_unknowns") or []
+    assert not any("proxy formula" in str(a).lower() for a in assumptions_out), (
+        "Local raster context must not produce proxy formula assumption"
+    )

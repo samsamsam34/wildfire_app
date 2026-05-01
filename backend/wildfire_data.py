@@ -316,6 +316,27 @@ class WildfireDataClient:
                     "wildfire_data national_elevation_client_init_error error=%s", _exc
                 )
 
+        # WHP proxy client — fills in burn_probability_index for national fallback assessments.
+        # The proxy uses fuel, canopy, slope, aspect, and fire history (all independently
+        # available via LANDFIRE WCS COG + MTBS GPKG). No network calls at assessment time.
+        self._whp_client = None
+        _whp_enabled = os.environ.get("WF_WHP_PROXY_ENABLED", "true").strip().lower() not in {
+            "0", "false", "no",
+        }
+        if _whp_enabled:
+            try:
+                from backend.whp_client import WHPClient  # noqa: PLC0415
+                self._whp_client = WHPClient(enabled=True)
+                import logging as _logging
+                _logging.getLogger("wildfire_app.wildfire_data").info(
+                    "WHP client initialized: proxy mode, enabled=True"
+                )
+            except Exception as _exc:  # pragma: no cover
+                import logging as _logging
+                _logging.getLogger("wildfire_app.wildfire_data").warning(
+                    "wildfire_data whp_client_init_error error=%s", _exc
+                )
+
         # Optional Regrid parcel API client — enabled only when WF_REGRID_API_KEY is set.
         self._regrid_client = None
         _regrid_api_key = os.environ.get("WF_REGRID_API_KEY", "").strip()
@@ -5319,6 +5340,44 @@ class WildfireDataClient:
                     pass
 
         environmental_layer_status["fire_history"] = fire_history_status
+
+        # WHP proxy fallback: fill in burn_probability_index for national-coverage
+        # assessments where no local WHP/burn-probability raster was available.
+        # Must run AFTER all other features are computed (fuel, canopy, slope, aspect,
+        # fire history) so the proxy has all inputs. Local raster data takes priority.
+        if burn_probability_index is None and self._whp_client is not None:
+            _whp_features: dict = {
+                "fuel_index": fuel_index,
+                "canopy_index": canopy_index,
+                "slope_index": slope_index,
+                "aspect_degrees": aspect,  # raw degrees (0-360), None if flat/unknown
+                "fire_count_30yr": historical_fire_context.get("fire_count_30yr"),
+                "burned_within_radius": historical_fire_context.get("intersects_prior_burn"),
+            }
+            _whp_result = self._whp_client.get_whp_index(lat, lon, _whp_features)
+            if _whp_result is not None:
+                burn_probability_index = _whp_result
+                _whp_source = _whp_features.get("whp_index_source", "whp_proxy")
+                hazard_context["whp_index_source"] = _whp_source
+                sources.append("WHP proxy (fuel/slope/canopy/aspect/fire-history)")
+                assumptions.append(
+                    "Wildfire Hazard Potential derived from proxy formula; "
+                    "direct WHP measurement unavailable at property location."
+                )
+                update_layer_audit(
+                    layer_audit,
+                    "whp",
+                    sample_attempted=True,
+                    sample_succeeded=True,
+                    coverage_status="fallback_used",
+                    raw_value_preview=round(burn_probability_index, 1),
+                    note="source=whp_proxy",
+                )
+                import logging as _logging
+                _logging.getLogger("wildfire_app.wildfire_data").info(
+                    "wildfire_data whp_proxy lat=%.4f lon=%.4f whp=%.1f",
+                    lat, lon, burn_probability_index,
+                )
 
         access_summary = self.osm_adapter.summarize(
             lat=lat,

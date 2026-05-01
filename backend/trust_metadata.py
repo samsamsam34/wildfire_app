@@ -283,6 +283,31 @@ def build_trust_diagnostics(
     mitigation_samples: list[dict[str, Any]],
     reference_artifacts: dict[str, Any],
 ) -> TrustDiagnostics:
+    # WHP / burn_probability_index confidence tiers:
+    #
+    # The burn_probability_index feeds the ember exposure submodel at 0.31 weight
+    # (risk_engine.py). Three source tiers produce different confidence impacts:
+    #
+    #   Tier 1 — local WHP/burn-prob raster (source not in hazard_context["whp_index_source"]):
+    #     No penalty. Direct measurement from prepared region raster.
+    #
+    #   Tier 2 — proxy formula (hazard_context["whp_index_source"] == "whp_proxy"):
+    #     Small penalty applied via the "proxy" token in the assumptions list.
+    #     risk_engine._availability_multiplier() applies multiplier *= 0.88 for ember
+    #     exposure when assumptions contain "proxy". This is roughly -4 to -6 confidence
+    #     points depending on submodel weight. The proxy appends:
+    #       "Wildfire Hazard Potential derived from proxy formula; direct measurement
+    #        unavailable at property location."
+    #     to the assumptions list in wildfire_data.py immediately after computing it.
+    #
+    #   Tier 3 — missing (burn_probability_index is None, burn_missing=True):
+    #     Full penalty: multiplier *= 0.60 for ember_exposure_risk submodel
+    #     (risk_engine.py line ~1399). This is the largest single-layer confidence hit.
+    #     No change needed here — this path is unchanged.
+    #
+    # Action: the proxy assumption text ("proxy formula") triggers the existing
+    # "proxy" token in _availability_multiplier's has_low_quality_assumption check.
+    # No additional code changes to risk_engine.py are required.
     evidence_completeness = _safe_float(result.feature_coverage_percent)
     if evidence_completeness is None or evidence_completeness <= 0.0:
         evidence_completeness = round(float(result.observed_weight_fraction or 0.0) * 100.0, 1)
