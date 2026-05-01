@@ -2,6 +2,8 @@
 __pycache__/
 *.py[cod]
 *$py.class
+pycache/
+*.pyc
 
 # Python packaging/build outputs
 build/
@@ -36,6 +38,8 @@ htmlcov/
 .env
 .env.*
 !.env.example
+.env.local
+.env.*.local
 
 # Local databases and runtime artifacts
 *.db
@@ -44,6 +48,16 @@ htmlcov/
 *.db-shm
 *.db-wal
 *.log
+data/parcel_cache.db
+data/footprint_cache.db
+data/landfire_cache.db
+data/elevation_cache.db
+data/nlcd_cache.db
+data/zip_centroids.csv
+data/national/
+data/regions/backup/
+data/regions/_prerefresh/
+data/regions/_prerefrehs/
 
 # IDE/editor files
 .vscode/

@@ -14079,10 +14079,25 @@ def _execute_portfolio_job(
         )
 
 
-@app.get("/health")
-def health() -> dict:
-    return {
+@app.get("/health", tags=["ops"])
+async def health_check() -> dict[str, object]:
+    """
+    Health check endpoint for deployment platforms.
+    Returns 200 when the service is running.
+    Any optional component lookup failure is reported as "unavailable"
+    rather than raising an exception.
+    """
+
+    def _component_status(getter) -> str:
+        try:
+            value = getter()
+            return "ok" if value else "unavailable"
+        except Exception:
+            return "unavailable"
+
+    checks: dict[str, object] = {
         "status": "ok",
+        "version": app.version if hasattr(app, "version") else PRODUCT_VERSION,
         "product_version": PRODUCT_VERSION,
         "api_version": API_VERSION,
         "model_governance": _build_result_governance(
@@ -14090,6 +14105,30 @@ def health() -> dict:
             region_data_version=None,
         ),
     }
+
+    checks["geocoder"] = _component_status(lambda: geocoder is not None)
+    checks["parcel_client"] = _component_status(
+        lambda: getattr(wildfire_data, "_regrid_client", None) is not None
+    )
+    checks["national_footprint"] = _component_status(
+        lambda: bool(
+            getattr(wildfire_data, "_national_footprint_index", None)
+            and getattr(wildfire_data._national_footprint_index, "enabled", False)
+        )
+    )
+    checks["fire_history"] = _component_status(
+        lambda: bool(
+            getattr(wildfire_data, "_fire_history_client", None)
+            and getattr(wildfire_data._fire_history_client, "enabled", False)
+        )
+    )
+    checks["whp_client"] = _component_status(
+        lambda: bool(
+            getattr(wildfire_data, "_whp_client", None)
+            and getattr(wildfire_data._whp_client, "enabled", False)
+        )
+    )
+    return checks
 
 
 @app.get("/organizations", response_model=list[Organization], dependencies=[Depends(require_api_key)])

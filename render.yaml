@@ -1,0 +1,24 @@
+services:
+  - type: web
+    name: wildfire-risk-api
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: PORT
+        value: 10000
+      - key: WF_ALLOWED_ORIGINS
+        sync: false
+      - key: WILDFIRE_API_KEYS
+        sync: false
+      - key: WF_REGRID_API_KEY
+        sync: false
+      - key: WF_GOOGLE_GEOCODE_API_KEY
+        sync: false
+      - key: WF_RATE_LIMIT_ASSESS
+        value: 10/minute
+      - key: WF_RATE_LIMIT_ASSESS_DAILY
+        value: 100/day
+      - key: WF_RATE_LIMIT_SIMULATE
+        value: 20/minute

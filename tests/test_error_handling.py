@@ -184,3 +184,11 @@ def test_cors_blocks_unapproved_origin(non_raising_client: TestClient):
         },
     )
     assert response.headers.get("access-control-allow-origin") != "https://evil.com"
+
+
+def test_health_endpoint_returns_ok_shape(non_raising_client: TestClient):
+    response = non_raising_client.get("/health")
+    assert response.status_code == 200
+    body = response.json()
+    assert body.get("status") == "ok"
+    assert "geocoder" in body
