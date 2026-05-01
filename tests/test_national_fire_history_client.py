@@ -7,8 +7,12 @@ MTBS file or network access required. Tests skip if geopandas is unavailable.
 
 from __future__ import annotations
 
+import builtins
+import threading
+import time
 from pathlib import Path
 from typing import Any
+from unittest.mock import Mock
 
 import pytest
 
@@ -137,7 +141,177 @@ def test_missing_gpkg_degrades_gracefully(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Test 4: STRtree candidate whose exact geometry doesn't intersect buffer
+# Test 4: Lazy load triggers once and caches for subsequent queries
+# ---------------------------------------------------------------------------
+
+def test_lazy_load_triggers_once_then_uses_cache(tmp_path: Path) -> None:
+    """lazy_load=True defers load until first query and loads only once."""
+    _gpd()
+    fires = [{
+        "Fire_ID": "UT001", "Fire_Name": "TEST FIRE", "Year": 2018,
+        "StartMonth": 7, "BurnBndAc": 1000.0,
+        "low_severity_pct": 30.0, "mod_severity_pct": 50.0, "high_severity_pct": 20.0,
+        "geometry": _box(-111.75, 40.25, -111.65, 40.35),
+    }]
+    path = _make_gpkg(tmp_path, fires)
+
+    from backend.national_fire_history_client import FireHistoryResult, NationalFireHistoryClient
+    client = NationalFireHistoryClient(mtbs_gpkg_path=path, lazy_load=True)
+    assert client._gdf is None
+
+    load_calls = Mock()
+
+    def _fake_load() -> None:
+        load_calls()
+        client._gdf = object()
+        client._spatial_index = object()
+
+    client._load_data = _fake_load  # type: ignore[method-assign]
+    client._query_inner = Mock(return_value=FireHistoryResult(  # type: ignore[method-assign]
+        burned_within_radius=False,
+        most_recent_fire_year=None,
+        most_recent_fire_severity=None,
+        fire_count_30yr=0,
+        fire_count_all=0,
+        nearest_fire_distance_m=None,
+        fires_within_radius=[],
+        data_available=True,
+        radius_m=5000.0,
+    ))
+
+    client.query_fire_history(46.83, -113.98)
+    assert load_calls.call_count == 1
+
+    client.query_fire_history(46.83, -113.98)
+    assert load_calls.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# Test 5: Eager load mode calls _load_data at initialization
+# ---------------------------------------------------------------------------
+
+def test_eager_load_calls_load_data_during_init(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """lazy_load=False should trigger eager load during __init__."""
+    _gpd()
+    fires = [{
+        "Fire_ID": "UT001", "Fire_Name": "TEST FIRE", "Year": 2018,
+        "StartMonth": 7, "BurnBndAc": 1000.0,
+        "low_severity_pct": 30.0, "mod_severity_pct": 50.0, "high_severity_pct": 20.0,
+        "geometry": _box(-111.75, 40.25, -111.65, 40.35),
+    }]
+    path = _make_gpkg(tmp_path, fires)
+
+    from backend.national_fire_history_client import NationalFireHistoryClient
+
+    load_mock = Mock()
+    monkeypatch.setattr(NationalFireHistoryClient, "_load_data", load_mock)
+    _ = NationalFireHistoryClient(mtbs_gpkg_path=path, lazy_load=False)
+
+    assert load_mock.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# Test 6: Thread-safe lazy init calls _load_data once under concurrency
+# ---------------------------------------------------------------------------
+
+def test_lazy_load_thread_safe_single_initialization(tmp_path: Path) -> None:
+    """Concurrent first queries should initialize data exactly once."""
+    _gpd()
+    fires = [{
+        "Fire_ID": "UT001", "Fire_Name": "TEST FIRE", "Year": 2018,
+        "StartMonth": 7, "BurnBndAc": 1000.0,
+        "low_severity_pct": 30.0, "mod_severity_pct": 50.0, "high_severity_pct": 20.0,
+        "geometry": _box(-111.75, 40.25, -111.65, 40.35),
+    }]
+    path = _make_gpkg(tmp_path, fires)
+
+    from backend.national_fire_history_client import FireHistoryResult, NationalFireHistoryClient
+    client = NationalFireHistoryClient(mtbs_gpkg_path=path, lazy_load=True)
+
+    load_calls = Mock()
+
+    def _slow_load() -> None:
+        time.sleep(0.1)
+        load_calls()
+        client._gdf = object()
+        client._spatial_index = object()
+
+    client._load_data = _slow_load  # type: ignore[method-assign]
+    client._query_inner = Mock(return_value=FireHistoryResult(  # type: ignore[method-assign]
+        burned_within_radius=False,
+        most_recent_fire_year=None,
+        most_recent_fire_severity=None,
+        fire_count_30yr=0,
+        fire_count_all=0,
+        nearest_fire_distance_m=None,
+        fires_within_radius=[],
+        data_available=True,
+        radius_m=5000.0,
+    ))
+
+    results: list[FireHistoryResult] = []
+
+    def _runner() -> None:
+        results.append(client.query_fire_history(46.83, -113.98))
+
+    threads = [threading.Thread(target=_runner) for _ in range(5)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert load_calls.call_count == 1
+    assert len(results) == 5
+    assert all(r.data_available for r in results)
+
+
+# ---------------------------------------------------------------------------
+# Test 7: File not found with lazy mode degrades gracefully
+# ---------------------------------------------------------------------------
+
+def test_missing_gpkg_lazy_mode_disabled_client(tmp_path: Path) -> None:
+    """Nonexistent path should disable client and return data_available=False."""
+    _gpd()
+    from backend.national_fire_history_client import NationalFireHistoryClient
+    client = NationalFireHistoryClient(
+        mtbs_gpkg_path=str(tmp_path / "definitely_missing.gpkg"),
+        lazy_load=True,
+    )
+    assert client.enabled is False
+    assert client._gdf is None
+
+    result = client.query_fire_history(46.83, -113.98)
+    assert result.data_available is False
+
+
+# ---------------------------------------------------------------------------
+# Test 8: Fiona unavailable falls back to file-size validation
+# ---------------------------------------------------------------------------
+
+def test_lightweight_validation_fiona_unavailable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """If fiona import fails, client falls back to file size and remains enabled."""
+    _gpd()
+    path = tmp_path / "large_placeholder.gpkg"
+    with path.open("wb") as fh:
+        fh.truncate(11 * 1024 * 1024)
+
+    real_import = builtins.__import__
+
+    def _import_with_fiona_failure(name, *args, **kwargs):
+        if name == "fiona":
+            raise ImportError("mocked fiona unavailable")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _import_with_fiona_failure)
+
+    from backend.national_fire_history_client import NationalFireHistoryClient
+    client = NationalFireHistoryClient(mtbs_gpkg_path=str(path), lazy_load=True)
+    assert client.enabled is True
+    assert client._gdf is None
+
+
+# ---------------------------------------------------------------------------
+# Test 9: STRtree candidate whose exact geometry doesn't intersect buffer
 # ---------------------------------------------------------------------------
 
 def test_strtree_candidate_excluded_by_exact_check(tmp_path: Path) -> None:
@@ -174,7 +348,7 @@ def test_strtree_candidate_excluded_by_exact_check(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Test 5: Severity classification logic
+# Test 10: Severity classification logic
 # ---------------------------------------------------------------------------
 
 def test_severity_classification(tmp_path: Path) -> None:
@@ -190,7 +364,7 @@ def test_severity_classification(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Test 6: fire_count_30yr only counts fires within 30 years
+# Test 11: fire_count_30yr only counts fires within 30 years
 # ---------------------------------------------------------------------------
 
 def test_fire_count_30yr_excludes_old_fires(tmp_path: Path) -> None:
@@ -227,16 +401,16 @@ def test_fire_count_30yr_excludes_old_fires(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Test 7: Truncation warning — fewer than 50,000 features logs a WARNING
+# Test 12: Lightweight validation warns on truncated dataset
 # ---------------------------------------------------------------------------
 
 def test_truncated_dataset_logs_warning(tmp_path: Path) -> None:
-    """Client logs a WARNING when loaded GeoPackage has fewer than 50,000 features."""
+    """Client logs a WARNING when lightweight validation sees too few features."""
     _gpd()
     import logging
     from shapely.geometry import Polygon
 
-    # Build a GeoPackage with only 100 features (well below the 50,000 threshold).
+    # Build a GeoPackage with only 100 features (well below expected minimum).
     gpd = _gpd()
     rows = []
     geoms = []
@@ -277,16 +451,13 @@ def test_truncated_dataset_logs_warning(tmp_path: Path) -> None:
 
     assert client.enabled, "Client should still be enabled even with truncated data"
     warning_msgs = [r.getMessage() for r in log_records if r.levelno == logging.WARNING]
-    assert any(
-        "truncated_dataset" in msg or "25000" in msg or "25,000" in msg
-        for msg in warning_msgs
-    ), (
+    assert any("has only" in msg and "25000" in msg for msg in warning_msgs), (
         f"Expected a truncation warning but got: {warning_msgs}"
     )
 
 
 # ---------------------------------------------------------------------------
-# Test 8: Full dataset smoke test — 80,000+ rows, no warning logged
+# Test 13: Full dataset smoke test — 80,000+ rows, no warning logged
 # ---------------------------------------------------------------------------
 
 def test_full_dataset_no_truncation_warning(tmp_path: Path) -> None:
@@ -333,7 +504,7 @@ def test_full_dataset_no_truncation_warning(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Test 9: Ocean point query — data_available=True but fire_count_all=0
+# Test 14: Ocean point query — data_available=True but fire_count_all=0
 # ---------------------------------------------------------------------------
 
 def test_ocean_point_returns_zero_fires(tmp_path: Path) -> None:

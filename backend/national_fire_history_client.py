@@ -1,14 +1,12 @@
 """
 National MTBS fire history client.
 
-Loads the MTBS national fire perimeters GeoPackage (data/national/mtbs_perimeters.gpkg)
-into memory at startup and exposes a fast spatial query via Shapely STRtree.
+Loads the MTBS national fire perimeters GeoPackage
+(data/national/mtbs_perimeters.gpkg) and exposes a fast spatial query.
 
-Memory footprint: ~100–400 MB depending on whether the dev (3-feature) or full
-national (80,000+ feature) GeoPackage is loaded. The full GPKG is expected to
-occupy ~200–400 MB of RSS when held as a GeoDataFrame in memory. This is
-acceptable for a persistent server process. Do NOT use this client in lambda/
-serverless contexts without pre-warming.
+By default this client validates the file at startup and lazy-loads the full
+GeoDataFrame/spatial index on first query. Set WF_FIRE_HISTORY_LAZY_LOAD=false
+to force eager loading at startup.
 
 Download the full national GPKG with:
     python scripts/download_national_mtbs.py
@@ -22,6 +20,9 @@ from __future__ import annotations
 
 import logging
 import math
+import os
+import threading
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -108,9 +109,9 @@ class NationalFireHistoryClient:
     """
     Spatial query client for MTBS national fire perimeters.
 
-    Loads the GeoPackage at data/national/mtbs_perimeters.gpkg into memory and
-    builds a Shapely STRtree for fast bounding-box prefilter + exact intersection
-    checks at assessment time.
+    Loads the GeoPackage at data/national/mtbs_perimeters.gpkg (lazily by
+    default) and builds a spatial index for fast bounding-box prefilter + exact
+    intersection checks at assessment time.
 
     Usage::
 
@@ -125,69 +126,106 @@ class NationalFireHistoryClient:
         self,
         mtbs_gpkg_path: str = "data/national/mtbs_perimeters.gpkg",
         enabled: bool = True,
+        lazy_load: Optional[bool] = None,
     ) -> None:
-        # TODO: Consider lazy loading — this dataset is 506MB on disk and
-        # loads significant RSS at startup. For memory-constrained deployments
-        # (< 512MB), consider loading on first query rather than at init.
-        # Set WF_FIRE_HISTORY_LAZY_LOAD=true to enable (not yet implemented).
-        self.enabled = enabled
         self._mtbs_gpkg_path = mtbs_gpkg_path
-        self._gdf = None
-        self._sindex = None
+        self._lazy_load = (
+            os.environ.get("WF_FIRE_HISTORY_LAZY_LOAD", "true").lower() == "true"
+            if lazy_load is None
+            else lazy_load
+        )
+        self._gdf: Optional[Any] = None
+        self._spatial_index: Optional[Any] = None
+        self._load_lock = threading.Lock()
+        self.enabled = False
 
         if not enabled:
+            LOGGER.info("NationalFireHistoryClient: disabled by caller")
             return
 
-        try:
-            import geopandas as gpd  # noqa: F401
-        except ImportError:
-            LOGGER.warning(
-                "national_fire_history_client geopandas_unavailable; client disabled"
-            )
-            self.enabled = False
-            return
+        self._validate_file_lightweight()
 
-        gpkg_path = Path(mtbs_gpkg_path)
+    def _validate_file_lightweight(self) -> None:
+        """
+        Validate that the GeoPackage exists and is plausibly complete
+        without loading all features into memory.
+        """
+        gpkg_path = Path(self._mtbs_gpkg_path)
         if not gpkg_path.exists():
             LOGGER.warning(
-                "national_fire_history_client mtbs_gpkg_not_found path=%s; "
-                "run scripts/download_national_mtbs.py to download the dataset",
-                mtbs_gpkg_path,
+                "NationalFireHistoryClient: MTBS file not found at %s — client disabled. "
+                "Run scripts/download_national_mtbs.py to download.",
+                self._mtbs_gpkg_path,
             )
             self.enabled = False
             return
 
         try:
-            import geopandas as gpd
-            from shapely.strtree import STRtree
+            import fiona
 
-            self._gdf = gpd.read_file(str(gpkg_path), layer="fire_perimeters")
-            self._sindex = STRtree(self._gdf.geometry.values)
-            feature_count = len(self._gdf)
-            LOGGER.info(
-                "national_fire_history_client loaded path=%s features=%d",
-                mtbs_gpkg_path,
-                feature_count,
-            )
-            if feature_count < _MINIMUM_EXPECTED_FEATURES:
+            with fiona.open(self._mtbs_gpkg_path, layer="fire_perimeters") as src:
+                count = len(src)
+
+            if count < _MINIMUM_EXPECTED_FEATURES:
                 LOGGER.warning(
-                    "national_fire_history_client truncated_dataset"
-                    " path=%s features=%d expected>=%d"
-                    " — fire history scoring may be unreliable."
-                    " Re-run scripts/download_national_mtbs.py to refresh.",
-                    mtbs_gpkg_path,
-                    feature_count,
+                    "NationalFireHistoryClient: MTBS GeoPackage has only %d features "
+                    "(expected >= %d). Re-run scripts/download_national_mtbs.py to refresh.",
+                    count,
                     _MINIMUM_EXPECTED_FEATURES,
                 )
+
+            LOGGER.info(
+                "NationalFireHistoryClient: validated %d features at %s (%s load)",
+                count,
+                self._mtbs_gpkg_path,
+                "lazy" if self._lazy_load else "eager",
+            )
+            self.enabled = True
+
+            if not self._lazy_load:
+                self._load_data()
+        except ImportError:
+            LOGGER.warning(
+                "NationalFireHistoryClient: fiona not available for lightweight validation"
+            )
+            size_mb = gpkg_path.stat().st_size / 1024.0 / 1024.0
+            if size_mb < 10:
+                LOGGER.warning(
+                    "NationalFireHistoryClient: MTBS file is only %.1fMB (expected ~500MB) "
+                    "— may be truncated",
+                    size_mb,
+                )
+            self.enabled = True
+            if not self._lazy_load:
+                self._load_data()
         except Exception as exc:
             LOGGER.warning(
-                "national_fire_history_client load_error path=%s error=%s",
-                mtbs_gpkg_path,
+                "NationalFireHistoryClient: validation failed path=%s error=%s",
+                self._mtbs_gpkg_path,
                 exc,
             )
-            self._gdf = None
-            self._sindex = None
             self.enabled = False
+
+    def _load_data(self) -> None:
+        """
+        Load the MTBS GeoDataFrame and build the spatial index.
+        Called once during eager init or lazily on first query.
+        """
+        import geopandas as gpd
+
+        LOGGER.info(
+            "NationalFireHistoryClient: loading %s into memory...",
+            self._mtbs_gpkg_path,
+        )
+        start = time.time()
+        self._gdf = gpd.read_file(self._mtbs_gpkg_path, layer="fire_perimeters")
+        self._spatial_index = self._gdf.sindex
+        elapsed = time.time() - start
+        LOGGER.info(
+            "NationalFireHistoryClient: loaded %d features in %.1fs",
+            len(self._gdf),
+            elapsed,
+        )
 
     # ------------------------------------------------------------------
     # Public API
@@ -211,8 +249,22 @@ class NationalFireHistoryClient:
         -------
         FireHistoryResult — never raises.
         """
-        if not self.enabled or self._gdf is None or self._sindex is None:
+        if not self.enabled:
             return _unavailable(radius_m)
+
+        if self._gdf is None or self._spatial_index is None:
+            with self._load_lock:
+                if self._gdf is None or self._spatial_index is None:
+                    try:
+                        self._load_data()
+                    except Exception as exc:
+                        LOGGER.error(
+                            "NationalFireHistoryClient: load failed path=%s error=%s",
+                            self._mtbs_gpkg_path,
+                            exc,
+                        )
+                        self.enabled = False
+                        return _unavailable(radius_m)
 
         try:
             return self._query_inner(lat, lon, radius_m)
@@ -241,8 +293,8 @@ class NationalFireHistoryClient:
         radius_deg = radius_m / _M_PER_DEG_LAT
         buffer = pt.buffer(radius_deg)
 
-        # Stage 1: bbox prefilter via STRtree
-        candidate_idxs = self._sindex.query(buffer)
+        # Stage 1: bbox prefilter via spatial index
+        candidate_idxs = self._spatial_index.query(buffer)
 
         now_year = datetime.now(tz=timezone.utc).year
         threshold_30yr = now_year - 30

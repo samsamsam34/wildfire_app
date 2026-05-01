@@ -94,6 +94,7 @@ This table lists environment variables referenced by `backend/*.py`.
 | WF_LOCAL_ADDRESS_MATCH_MIN_SCORE | "0.76" | Used by backend `address_resolution.py`. |
 | WF_LOCATION_RESOLUTION_SOURCE_CONFIG | (none) | Used by backend `address_resolution.py`. |
 | WF_MTBS_GPKG_PATH | "data/national/mtbs_perimeters.gpkg" | Used by backend `wildfire_data.py`. |
+| WF_FIRE_HISTORY_LAZY_LOAD | "true" | When true, MTBS fire history data (~1.4GB RSS) is loaded on first query rather than at startup. Set to false only on deployments with > 2GB available memory. |
 | WF_NAIP_FEATURE_MATCH_MAX_DISTANCE_M | "45" | Used by backend `wildfire_data.py`. |
 | WF_NLCD_CACHE_DB | "data/nlcd_cache.db" | Used by backend `wildfire_data.py`. |
 | WF_NLCD_COG_ENABLED | "true" | Used by backend `wildfire_data.py`. |

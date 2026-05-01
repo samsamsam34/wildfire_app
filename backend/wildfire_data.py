@@ -256,14 +256,18 @@ class WildfireDataClient:
 
         # National fire history client (MTBS GeoPackage).
         self._fire_history_client = None
-        _mtbs_gpkg = os.environ.get("WF_MTBS_GPKG_PATH", "data/national/mtbs_perimeters.gpkg")
         try:
             from backend.national_fire_history_client import NationalFireHistoryClient  # noqa: PLC0415
-            self._fire_history_client = NationalFireHistoryClient(mtbs_gpkg_path=_mtbs_gpkg)
+            self._fire_history_client = NationalFireHistoryClient(
+                mtbs_gpkg_path=os.environ.get(
+                    "WF_MTBS_GPKG_PATH", "data/national/mtbs_perimeters.gpkg"
+                )
+            )
             if self._fire_history_client.enabled:
                 import logging as _logging
                 _logging.getLogger("wildfire_app.wildfire_data").info(
-                    "National MTBS fire history client initialized path=%s", _mtbs_gpkg
+                    "National MTBS fire history client initialized path=%s",
+                    os.environ.get("WF_MTBS_GPKG_PATH", "data/national/mtbs_perimeters.gpkg"),
                 )
         except Exception as _exc:  # pragma: no cover
             import logging as _logging
