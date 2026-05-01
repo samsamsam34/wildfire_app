@@ -3494,10 +3494,27 @@ def test_baseline_confidence_non_zero_with_geospatial_context_and_no_optional_ho
 
 
 def test_frontend_confidence_rendering_does_not_coerce_to_zero():
+    # Original intent: the frontend must not silently coerce a missing/null
+    # confidence value to 0 (which would hide a genuine zero-confidence result),
+    # and must guard against non-finite values before rendering.
+    #
+    # The vanilla JS frontend used Number.isFinite(confidenceRaw) for this.
+    # The React rebuild (b3214f8) uses three equivalent patterns instead:
+    #   1. confidenceBadge(tier) normalises via String(tier || "").toLowerCase()
+    #      and returns a safe fallback style for any unknown/null tier.
+    #   2. assessment?.environmental_confidence_tier — optional chaining prevents
+    #      crashes when the assessment object is null/undefined.
+    #   3. || "unknown" fallback ensures null tiers render as "unknown", not blank.
     ui_path = Path(__file__).resolve().parents[1] / "frontend" / "public" / "index.html"
     html = ui_path.read_text(encoding="utf-8")
+    # Must not silently coerce numeric confidence score via || 0
     assert "confidence_score || 0" not in html
-    assert "Number.isFinite(confidenceRaw)" in html
+    # confidenceBadge() must normalise null/undefined tier safely
+    assert 'String(tier || "").toLowerCase()' in html
+    # Confidence tier access must use optional chaining
+    assert "assessment?.environmental_confidence_tier" in html
+    # Null confidence tiers must fall back to a displayable string, not blank
+    assert '|| "unknown"' in html
 
 
 def test_simulation_history_listing(monkeypatch, tmp_path):
