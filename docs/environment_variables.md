@@ -18,6 +18,7 @@ This table lists environment variables referenced by `backend/*.py`.
 | WF_AUTO_REGION_PREP_TILE_DEG | "0.25" | Used by backend `main.py`. |
 | WF_BUILDING_FOOTPRINT_DATE | (none) | Used by backend `main.py`. |
 | WF_BUILDING_FOOTPRINT_VERSION | (none) | Used by backend `main.py`. |
+| WF_BUILDING_SOURCE_PRIORITY | "building_footprints_overture,building_footprints_microsoft,building_footprints,fema_structures" | Comma-separated building footprint source priority used by `wildfire_data._resolve_building_source_paths`; unknown tokens are ignored and available sources are appended as fallback. |
 | WF_DEBUG_ERRORS | "false" | When true, include exception details in 500 responses. |
 | WF_DEBUG_MODE | (none) | Used by backend `geocoding.py`. |
 | WF_ELEVATION_CACHE_DB | "data/elevation_cache.db" | Used by backend `wildfire_data.py`. |
@@ -100,7 +101,10 @@ This table lists environment variables referenced by `backend/*.py`.
 | WF_OVERTURE_BUILDINGS_VERSION | "" | Used by backend `wildfire_data.py`. |
 | WF_OVERTURE_RELEASE | _DEFAULT_OVERTURE_RELEASE | Used by backend `national_footprint_index.py`. |
 | WF_PARCEL_CACHE_DB | "data/parcel_cache.db" | Used by backend `wildfire_data.py`. |
+| WF_PARCEL_SOURCE_PRIORITY | "county_gis,open_parcel,prepared_region" | Comma-separated parcel source class priority used by `ParcelResolutionClient._resolve_source_priority`; valid classes are `county_gis`, `open_parcel`, and `prepared_region`. |
 | WF_PARCEL_SOURCE_NAME | (none) | Used by backend `property_anchor.py`. |
+| WF_POINT_SELECTION_MAX_SNAP_DISTANCE_M | str(getattr(footprint_client, "max_match_distance_m", 25.0) or 25.0) | Max distance (meters) for snapping a user-selected point to a footprint in `wildfire_data.py`; larger matches are rejected for point mode. |
+| WF_POINT_SELECTION_MIN_SNAP_CONFIDENCE | "0.62" | Minimum confidence threshold for snapping a user-selected point to a footprint in `wildfire_data.py`; lower-confidence matches are rejected for point mode. |
 | WF_POINT_SELECTION_USE_PARCEL_CONTEXT | "true" | Used by backend `wildfire_data.py`. |
 | WF_PROPERTY_ANCHOR_SOURCE_PRIORITY | ",".join(DEFAULT_PRIORITY | Used by backend `property_anchor.py`. |
 | WF_PUBLIC_CALIBRATION_ARTIFACT | "" | Used by backend `calibration.py`. |
@@ -119,6 +123,7 @@ This table lists environment variables referenced by `backend/*.py`.
 | WF_STRUCTURE_DISPLAY_MIN_CONFIDENCE | "0.8" | Used by backend `wildfire_data.py`. |
 | WF_TRUST_REFERENCE_ARTIFACT_DIR | (none) | Used by backend `trust_metadata.py`. |
 | WF_USE_PREPARED_REGIONS | "true" | Used by backend `wildfire_data.py`. |
+| WF_WHP_PROXY_ENABLED | "true" | Enables/disables initialization of proxy-based WHP enrichment in `wildfire_data.py`; when disabled, `_whp_client` is left unset. |
 | WF_ZIP_LOCALITY_SCAN_MAX_FEATURES | "60000" | Used by backend `address_resolution.py`. |
 | WILDFIRE_API_KEYS | "" | Comma-separated API keys accepted by require_api_key dependency. |
 | WILDFIRE_READINESS_BONUSES_JSON | (none) | Used by backend `scoring_config.py`. |

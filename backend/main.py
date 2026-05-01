@@ -14079,8 +14079,7 @@ def _execute_portfolio_job(
         )
 
 
-@app.get("/health", tags=["ops"])
-async def health_check() -> dict[str, object]:
+def _health_payload() -> dict[str, object]:
     """
     Health check endpoint for deployment platforms.
     Returns 200 when the service is running.
@@ -14129,6 +14128,11 @@ async def health_check() -> dict[str, object]:
         )
     )
     return checks
+
+
+@app.get("/health", tags=["ops"])
+def health() -> dict[str, object]:
+    return _health_payload()
 
 
 @app.get("/organizations", response_model=list[Organization], dependencies=[Depends(require_api_key)])

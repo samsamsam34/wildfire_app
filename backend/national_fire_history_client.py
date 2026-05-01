@@ -126,6 +126,10 @@ class NationalFireHistoryClient:
         mtbs_gpkg_path: str = "data/national/mtbs_perimeters.gpkg",
         enabled: bool = True,
     ) -> None:
+        # TODO: Consider lazy loading — this dataset is 506MB on disk and
+        # loads significant RSS at startup. For memory-constrained deployments
+        # (< 512MB), consider loading on first query rather than at init.
+        # Set WF_FIRE_HISTORY_LAZY_LOAD=true to enable (not yet implemented).
         self.enabled = enabled
         self._mtbs_gpkg_path = mtbs_gpkg_path
         self._gdf = None

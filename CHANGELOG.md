@@ -2,6 +2,38 @@
 
 This file tracks release-level governance changes for `WildfireRisk Advisor`.
 
+## [0.18.0] - 2026-05-01
+### Version changes
+- `product_version`: `0.18.0` (minor)
+- `api_version`: `1.5.0` (minor; additive homeowner/deployment/health metadata paths)
+- `scoring_model_version`: `1.10.0` (minor; national fallback and confidence-split era scoring/risk-driver updates)
+- `ruleset_version`: tracked per assessment ruleset
+- `rules_logic_version`: `1.1.0` (unchanged)
+- `factor_schema_version`: `1.3.0` (unchanged)
+- `benchmark_pack_version`: `1.1.0` (unchanged)
+- `calibration_version`: `0.3.0` (unchanged)
+- `region_data_version`: tracked per assessment/region build
+- `data_bundle_version`: `unversioned` default unless overridden
+
+### Reason
+- Release train includes multiple feature-level changes since `0.17.1`: national fallback coverage hardening (`dda521c`), split homeowner confidence UX (`157d6d3`), WHP proxy integration (`4687079`), MTBS dataset correction (`3ff5233`), homeowner PDF redesign (`5c10170`), and deployment hardening (`85279d5`).
+- Added backend reliability/security controls and consumer/frontend UX flow work in support of public-facing homeowner workflows.
+
+### Expected effect on outputs
+- US addresses outside prepared regions continue to return assessments via national fallback with improved confidence framing and diagnostics.
+- Homeowner report/PDF outputs are materially improved in readability and actionability (professional 4-page PDF layout, plain-English risk/action language).
+- Operational behavior includes explicit `/health` reporting and deployment-ready configuration artifacts (Railway/Render/Docker), without changing base assessment endpoint contracts.
+
+### Migration/interpretation notes
+- Treat comparisons across pre- and post-`0.18.0` homeowner-facing artifacts as presentation-breaking (report wording/layout changed), even when raw score fields are stable.
+- Rate limiting, CORS allowlist, and deployment defaults are additive operational controls; clients should continue using existing authenticated API paths.
+- For memory-constrained deployments, national MTBS loading behavior should be reviewed before increasing worker count.
+
+### Historical comparison validity
+- `not_directly_comparable` when scoring/rules/schema dimensions differ.
+- `comparable_with_review` when data/calibration dimensions differ.
+- `directly_comparable` when governance dimensions match.
+
 ## [0.17.1] - 2026-04-17
 ### Version changes
 - `product_version`: `0.17.1` (patch)
