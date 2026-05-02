@@ -314,6 +314,7 @@ def test_download_retry_timeout_and_metadata(monkeypatch, tmp_path):
         layer_sources=sources,
         layer_urls={"dem": "https://example.test/dem.tif"},
         region_data_dir=tmp_path / "regions",
+        cache_dir=tmp_path / "cache",
         download_timeout=12.0,
         download_retries=3,
         retry_backoff_seconds=0.01,
@@ -346,7 +347,11 @@ def test_dry_run_does_not_write_outputs(tmp_path):
     assert not (region_root / "dry_run_region").exists()
     assert "dem" in manifest["attempted_layers"]
     assert "fuel" in manifest["skipped_layers"]
-    assert "fuel" in manifest["unsupported_auto_discovery_layers"]
+    # Option A (stale assertion): unsupported_auto_discovery_layers is only
+    # populated when auto_discover=True.  With auto_discover=False (above) the
+    # list is correctly empty — skipped layers are not "unsupported by discovery"
+    # when discovery was never attempted.
+    assert manifest["unsupported_auto_discovery_layers"] == []
 
 
 def test_dry_run_with_no_layers_is_partial_not_failed(tmp_path):
@@ -396,6 +401,9 @@ def test_bad_html_download_rejected(monkeypatch, tmp_path):
         lambda _url, timeout=0: _FakeHTTPResponse(b"<html><body>Error 404</body></html>"),
     )
 
+    # Use an isolated cache_dir so the mock is always invoked regardless of
+    # test ordering (shared data/cache/ may have a valid cached file for this
+    # URL from other tests, which would bypass the download and the HTML check).
     with pytest.raises(ValueError) as exc:
         prepare_region_layers(
             region_id="html_fail_region",
@@ -404,6 +412,7 @@ def test_bad_html_download_rejected(monkeypatch, tmp_path):
             layer_sources=sources,
             layer_urls={"dem": "https://example.test/dem.tif"},
             region_data_dir=tmp_path / "regions",
+            cache_dir=tmp_path / "cache",
             auto_discover=False,
         )
     assert "html" in str(exc.value).lower()
@@ -982,11 +991,21 @@ def test_prepare_pipeline_falls_back_from_bbox_to_full_download(monkeypatch, tmp
     src = _sources(tmp_path, include_slope=False)
     dem_local = src.pop("dem")
 
-    monkeypatch.setattr(
-        source_acq.urllib.request,
-        "urlopen",
-        lambda *_a, **_k: (_ for _ in ()).throw(TimeoutError("bbox export failed")),
-    )
+    # Option C (test infrastructure): the original mock threw TimeoutError for
+    # ALL urlopen calls — including the file:// fallback URI — because the
+    # download helper routes file:// URIs through urllib.request.urlopen too.
+    # Fix: only throw for http/https requests (simulating the bbox export
+    # failure); let file:// requests fall through to the real urlopen so the
+    # local temp file can be read as the fallback "full download".
+    _real_urlopen = source_acq.urllib.request.urlopen
+
+    def _fake_urlopen(*args, **kwargs):
+        url_str = args[0].full_url if hasattr(args[0], "full_url") else str(args[0])
+        if url_str.startswith("file://"):
+            return _real_urlopen(*args, **kwargs)
+        raise TimeoutError("bbox export failed")
+
+    monkeypatch.setattr(source_acq.urllib.request, "urlopen", _fake_urlopen)
 
     manifest = prepare_region_layers(
         region_id="bbox_fallback_region",

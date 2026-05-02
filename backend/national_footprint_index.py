@@ -354,7 +354,13 @@ class NationalFootprintIndex:
             # filters to the precise search radius after this coarse filter.
             query = f"""
                 SELECT
-                    ST_AsGeoJSON(ST_GeomFromWkb(geometry)) AS geometry_json,
+                    ST_AsGeoJSON(
+                        CASE
+                            WHEN typeof(geometry) LIKE 'GEOMETRY%'
+                                THEN geometry::GEOMETRY
+                            ELSE ST_GeomFromWkb(CAST(geometry AS BLOB))
+                        END
+                    )                                      AS geometry_json,
                     class                                  AS building_class,
                     height
                 FROM read_parquet('{self._overture_s3_path}', hive_partitioning=1)
