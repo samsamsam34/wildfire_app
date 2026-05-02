@@ -205,7 +205,7 @@ LOGGER = logging.getLogger("wildfire_app.assessment")
 
 _raw_origins = os.environ.get(
     "WF_ALLOWED_ORIGINS",
-    "http://localhost:4173,http://localhost:8000",
+    "http://localhost:4173,http://localhost:5173,http://localhost:8000",
 )
 ALLOWED_ORIGINS = [origin.strip() for origin in _raw_origins.split(",") if origin.strip()]
 LOGGER.info("CORS allowed origins: %s", ALLOWED_ORIGINS)
