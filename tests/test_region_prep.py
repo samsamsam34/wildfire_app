@@ -881,15 +881,19 @@ def test_feature_service_paginates_when_server_caps_below_page_size(monkeypatch,
     # Simulate a server whose maxRecordCount (1) is smaller than our requested
     # page_size (2).  Without adaptive batch-size detection the loop would stop
     # after the first page because current_count (1) < page_size (2).  With the
-    # fix it detects effective_batch_size=1 from the first page and continues
-    # until a page returns fewer than 1 feature.
+    # effective_batch_size fix the loop detects that the server's real batch
+    # size is 1, so current_count (1) == effective_batch_size (1) is NOT a
+    # termination signal — it continues until a page returns fewer than
+    # effective_batch_size features.
+    # The server correctly sets exceededTransferLimit=True when it has capped
+    # and more data may follow (this is standard ArcGIS behaviour).
     page0 = {
         "features": [{"attributes": {"id": 1}, "geometry": {"x": -111.0, "y": 45.6}}],
-        "exceededTransferLimit": False,
+        "exceededTransferLimit": True,
     }
     page1 = {
         "features": [{"attributes": {"id": 2}, "geometry": {"x": -110.99, "y": 45.61}}],
-        "exceededTransferLimit": False,
+        "exceededTransferLimit": True,
     }
     page2 = {
         "features": [],

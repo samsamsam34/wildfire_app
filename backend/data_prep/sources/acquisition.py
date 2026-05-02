@@ -621,16 +621,8 @@ class ArcGISFeatureServiceProvider:
             # returned — this is the reliable cross-server termination signal.
             if current_count < (effective_batch_size or page_size):
                 break
-            # Server explicitly signalled no more pages — but only trust this
-            # when the server is returning full pages (effective_batch_size >=
-            # page_size).  When the server caps below page_size, do NOT stop
-            # on exceededTransferLimit=False: the server simply never sets that
-            # flag even though more data exists.  In that case, rely solely on
-            # current_count < effective_batch_size above to detect the end.
-            server_is_capping = (
-                effective_batch_size is not None and effective_batch_size < page_size
-            )
-            if not exceeded_transfer_limit and not server_is_capping:
+            # Server explicitly signalled no more pages.
+            if not exceeded_transfer_limit:
                 break
             offset += current_count
         else:
