@@ -181,6 +181,26 @@
         return { color: "#16a34a", weight: 2, fillOpacity: 0 };
       }
 
+      function extractFootprintGeoJSON(geo) {
+        if (!geo) return null;
+        const candidates = [
+          geo.building_footprint,
+          geo.matched_structure_footprint,
+          geo.data?.building_footprint,
+          geo.data?.matched_structure_footprint,
+          geo.data?.user_selected_structure,
+          geo.data?.auto_detected_structure,
+          geo.property_footprint,
+          geo.structures?.[0]?.geometry,
+        ];
+        for (const c of candidates) {
+          if (c && (c.type === "Polygon" || c.type === "MultiPolygon" || c.type === "Feature" || c.type === "FeatureCollection")) {
+            return c;
+          }
+        }
+        return null;
+      }
+
       function toFeatureCollection(value) {
         if (!value || typeof value !== "object") return null;
         if (value.type === "FeatureCollection" && Array.isArray(value.features)) return value;
@@ -430,14 +450,23 @@
             map.on("click", handleClick);
             map.getContainer().style.cursor = "crosshair";
 
-            // Add clickable footprint snapping layer if footprint data is available
-            console.log('[RF] Footprint layer:', layersRef.current.footprint);
-            console.log('[RF] toGeoJSON result:', layersRef.current.footprint?.toGeoJSON?.());
-            const footprintFC = layersRef.current.footprint
-              ? (() => {
-                  try { return layersRef.current.footprint.toGeoJSON(); } catch (_) { return null; }
-                })()
+            // Add clickable footprint snapping layer — read directly from mapGeometry
+            // to avoid race with Effect 1 which may not have run yet when this fires.
+            const footprintGeo = extractFootprintGeoJSON(mapGeometry);
+            console.log('[RF] footprintGeo from mapGeometry:', footprintGeo?.type);
+            if (!footprintGeo) {
+              console.log('[RF] No footprint geometry in mapGeometry — skipping snapping layer');
+            }
+            const footprintFC = footprintGeo
+              ? (footprintGeo.type === "FeatureCollection"
+                  ? footprintGeo
+                  : { type: "FeatureCollection", features: [
+                      footprintGeo.type === "Feature"
+                        ? footprintGeo
+                        : { type: "Feature", geometry: footprintGeo, properties: {} }
+                    ] })
               : null;
+            console.log('[RF] footprintGeo from mapGeometry:', footprintGeo?.type, 'features:', footprintFC?.features?.length);
 
             if (footprintFC && window.L) {
               const repositionStyle = {
@@ -480,7 +509,7 @@
               layersRef.current.repositionFootprint = null;
             }
           };
-        }, [repositionMode, onRepositionClick]);
+        }, [repositionMode, onRepositionClick, mapGeometry]);
 
         // Cleanup on unmount
         useEffect(() => {
@@ -608,18 +637,24 @@
           setMapGeometry(mapResult.status === "fulfilled" ? mapResult.value : null);
         }
 
-        async function finalizeAssessment(result, { showBanner = false } = {}) {
+        async function finalizeAssessment(result, { showBanner = false, attributesToOffer = null } = {}) {
           setAssessment(result);
           setError(null);
           setScreen("results");
-          console.log('[Banner] showBanner flag:', showBanner, 'lastSubmittedAttributes:', lastSubmittedAttributes);
-          if (showBanner) setShowApplyBanner(true);
+          console.log('[Banner] finalizeAssessment called with showBanner:', showBanner, 'attributesToOffer:', !!attributesToOffer);
+          if (showBanner && attributesToOffer) {
+            setLastSubmittedAttributes(attributesToOffer);
+            setShowApplyBanner(true);
+          }
           await loadResultExtras(result.assessment_id);
         }
 
         async function runAssessment() {
           const address = String(addressInput || "").trim();
           if (!address) return;
+
+          // Capture before state resets below — used to offer re-apply after new assess
+          const attrsToOffer = lastSubmittedAttributes;
 
           setScreen("loading");
           setError(null);
@@ -648,7 +683,10 @@
               setScreen("confirm");
               return;
             }
-            await finalizeAssessment(result, { showBanner: !!lastSubmittedAttributes });
+            await finalizeAssessment(result, {
+              showBanner: !!attrsToOffer,
+              attributesToOffer: attrsToOffer,
+            });
           } catch (err) {
             setError(classifyInputError(err));
             setScreen("error");
@@ -751,6 +789,7 @@
           if (repositionedAnchor) {
             reassessBody.property_anchor_point = repositionedAnchor;
           }
+          console.log('[Banner] Applying attributes:', attrs);
           setShowApplyBanner(false);
           setDetailsBusy(true);
           setDetailsError("");
@@ -916,7 +955,13 @@
                   {
                     className: "rounded-lg px-4 py-2 text-white touch-target",
                     style: { background: "var(--brand)" },
-                    onClick: () => finalizeAssessment(pendingAssessment, { showBanner: !!lastSubmittedAttributes }),
+                    onClick: () => {
+                      const attrsToOffer = lastSubmittedAttributes;
+                      finalizeAssessment(pendingAssessment, {
+                        showBanner: !!attrsToOffer,
+                        attributesToOffer: attrsToOffer,
+                      });
+                    },
                   },
                   "Yes, that's correct"
                 ),
