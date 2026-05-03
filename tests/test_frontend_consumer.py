@@ -164,7 +164,8 @@ def test_reposition_pin_ui_present() -> None:
     script = _script_block(_frontend_html())
     assert "Reposition pin" in script
     assert "repositionMode" in script
-    assert "requested_property_anchor_point" in script
+    # Backend AddressRequest model field is property_anchor_point (not requested_property_anchor_point)
+    assert "property_anchor_point" in script
 
 
 def test_score_range_context_present() -> None:
