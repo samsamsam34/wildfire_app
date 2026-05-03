@@ -447,6 +447,7 @@
         const [mapGeometry, setMapGeometry] = useState(null);
         const [showDetailsPanel, setShowDetailsPanel] = useState(false);
         const [repositionMode, setRepositionMode] = useState(false);
+        const [repositionedAnchor, setRepositionedAnchor] = useState(null);
         const [toast, setToast] = useState(null);
         const [error, setError] = useState(null);
 
@@ -526,6 +527,7 @@
           setAssessment(null);
           setReport(null);
           setMapGeometry(null);
+          setRepositionedAnchor(null);
 
           try {
             const result = await apiFetch("/risk/assess", {
@@ -574,6 +576,7 @@
                 property_anchor_point: { latitude: lat, longitude: lng },
               },
             });
+            setRepositionedAnchor({ latitude: lat, longitude: lng });
             await finalizeAssessment(result);
           } catch (err) {
             setError(classifyInputError(err));
@@ -611,13 +614,17 @@
               confirmed_fields.push("siding_type");
             }
 
+            const reassessBody = {
+              attributes,
+              confirmed_fields,
+              audience: "homeowner",
+            };
+            if (repositionedAnchor) {
+              reassessBody.property_anchor_point = repositionedAnchor;
+            }
             const updated = await apiFetch(`/risk/reassess/${assessment.assessment_id}`, {
               method: "POST",
-              body: {
-                attributes,
-                confirmed_fields,
-                audience: "homeowner",
-              },
+              body: reassessBody,
             });
 
             setAssessment(updated);

@@ -14607,6 +14607,7 @@ async def reassess_risk(
         tags=base_req.tags,
         organization_id=existing.organization_id,
         ruleset_id=ruleset.ruleset_id,
+        property_anchor_point=payload.property_anchor_point or base_req.property_anchor_point,
     )
     result = _compute_assessment(
         req,

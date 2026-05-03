@@ -155,6 +155,7 @@ class ReassessmentRequest(BaseModel):
     confirmed_fields: List[str] = Field(default_factory=list)
     audience: Audience = "homeowner"
     ruleset_id: Optional[str] = None
+    property_anchor_point: Optional[Coordinates] = None
 
 
 class HomeownerImprovementRunRequest(BaseModel):
