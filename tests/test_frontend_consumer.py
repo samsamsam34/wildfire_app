@@ -180,14 +180,37 @@ def test_toast_feedback_on_reassess() -> None:
     assert "Assessment updated" in script
 
 
-def test_footprint_snapping_uses_stop_propagation() -> None:
+def test_extract_footprint_geojson_removed() -> None:
     script = _script_block(_frontend_html())
-    assert "stopPropagation" in script
+    assert "extractFootprintGeoJSON" not in script
 
 
-def test_footprint_snapping_layer_removed_on_exit() -> None:
+def test_rf_layer_removed() -> None:
     script = _script_block(_frontend_html())
-    # Layer is tracked as repositionFootprintLayer and removed when reposition mode exits
+    assert "rfLayer" not in script
+
+
+def test_pulse_marker_present() -> None:
+    html = _frontend_html()
+    assert "pulse-marker" in html
+    assert "pulse" in html  # @keyframes pulse
+
+
+def test_crosshair_cursor_code_present() -> None:
+    script = _script_block(_frontend_html())
+    assert "crosshair" in script
+    assert "getContainer" in script
+
+
+def test_reposition_passes_attrs_to_offer() -> None:
+    script = _script_block(_frontend_html())
+    # Every /risk/assess finalizeAssessment call should pass attributesToOffer
+    assert script.count("attributesToOffer: attrsToOffer") >= 2
+
+
+def test_reposition_footprint_marker_removed_on_exit() -> None:
+    script = _script_block(_frontend_html())
+    # Pulse marker tracked in repositionFootprint and removed on exit
     assert "repositionFootprint" in script
     assert "removeLayer" in script
 
@@ -218,9 +241,11 @@ def test_show_all_actions_toggle_present() -> None:
     assert "Show fewer" in script
 
 
-def test_parcel_polygon_in_footprint_candidates() -> None:
+def test_pulse_marker_style_uses_brand_red() -> None:
     script = _script_block(_frontend_html())
-    assert "parcel_polygon" in script
+    # Pulse marker uses the risk-critical red (#dc2626)
+    assert "#dc2626" in script
+    assert "circleMarker" in script
 
 
 def test_no_debug_console_logs_present() -> None:

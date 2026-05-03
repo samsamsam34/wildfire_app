@@ -103,6 +103,13 @@
         padding: 8px 0;
         text-decoration: underline;
       }
+
+      @keyframes pulse {
+        0% { opacity: 1; }
+        50% { opacity: 0.4; }
+        100% { opacity: 1; }
+      }
+      .pulse-marker { animation: pulse 1.5s ease-in-out infinite; }
     </style>
   </head>
   <body>
@@ -179,30 +186,6 @@
         if (zone.includes("5_30")) return { color: "#ea580c", weight: 2, fillOpacity: 0 };
         if (zone.includes("30_100")) return { color: "#d97706", weight: 2, fillOpacity: 0 };
         return { color: "#16a34a", weight: 2, fillOpacity: 0 };
-      }
-
-      function extractFootprintGeoJSON(geo) {
-        if (!geo) return null;
-        const structureCandidates = [
-          geo.building_footprint,
-          geo.matched_structure_footprint,
-          geo.data?.building_footprint,
-          geo.data?.matched_structure_footprint,
-          geo.data?.user_selected_structure,
-          geo.data?.auto_detected_structure,
-          geo.property_footprint,
-          geo.structures?.[0]?.geometry,
-        ];
-        for (const c of structureCandidates) {
-          if (c && (c.type === "Polygon" || c.type === "MultiPolygon" || c.type === "Feature" || c.type === "FeatureCollection")) {
-            return { geometry: c, isParcel: false };
-          }
-        }
-        // Parcel boundary as last fallback — useful for snapping when no structure matched
-        if (geo.parcel_polygon && (geo.parcel_polygon.type === "Polygon" || geo.parcel_polygon.type === "MultiPolygon" || geo.parcel_polygon.type === "Feature" || geo.parcel_polygon.type === "FeatureCollection")) {
-          return { geometry: geo.parcel_polygon, isParcel: true };
-        }
-        return null;
       }
 
       function toFeatureCollection(value) {
@@ -434,12 +417,12 @@
           }
         }, [showFootprint, showRings]);
 
-        // Effect 3: click-to-reposition handler + footprint snapping layer
+        // Effect 3: click-to-reposition handler + pulse marker at current anchor
         useEffect(() => {
           const map = leafletMapRef.current;
           if (!map) return;
 
-          // Remove any existing reposition footprint layer first
+          // Remove any existing pulse marker
           if (layersRef.current.repositionFootprint) {
             map.removeLayer(layersRef.current.repositionFootprint);
             layersRef.current.repositionFootprint = null;
@@ -453,42 +436,19 @@
             map.on("click", handleClick);
             map.getContainer().style.cursor = "crosshair";
 
-            // Add clickable snapping layer — read directly from mapGeometry to avoid
-            // race with Effect 1. Falls back to parcel_polygon if no structure matched.
-            const extracted = extractFootprintGeoJSON(mapGeometry);
-            if (extracted) {
-              const { geometry: footprintGeo, isParcel } = extracted;
-              const footprintFC = footprintGeo.type === "FeatureCollection"
-                ? footprintGeo
-                : { type: "FeatureCollection", features: [
-                    footprintGeo.type === "Feature"
-                      ? footprintGeo
-                      : { type: "Feature", geometry: footprintGeo, properties: {} }
-                  ] };
-
-              const repositionStyle = isParcel
-                ? { color: "#1e40af", weight: 2, fillColor: "#1e40af", fillOpacity: 0.1, dashArray: "6 4" }
-                : { color: "#1e40af", weight: 2, fillColor: "#1e40af", fillOpacity: 0.15 };
-
-              const rfLayer = window.L.geoJSON(footprintFC, {
-                style: repositionStyle,
-                onEachFeature: function (feature, layer) {
-                  layer.on("click", function (e) {
-                    window.L.DomEvent.stopPropagation(e);
-                    const bounds = layer.getBounds();
-                    const center = bounds.getCenter();
-                    if (onRepositionClick) onRepositionClick(center.lat, center.lng);
-                  });
-                  layer.on("mouseover", function () {
-                    layer.setStyle({ fillOpacity: isParcel ? 0.25 : 0.35, weight: 3 });
-                  });
-                  layer.on("mouseout", function () {
-                    layer.setStyle(repositionStyle);
-                  });
-                },
-              });
-              rfLayer.addTo(map);
-              layersRef.current.repositionFootprint = rfLayer;
+            // Pulsing circle at current anchor so the user can see where it is now
+            const currentLat = mapGeometry?.center?.latitude ?? assessment?.latitude;
+            const currentLng = mapGeometry?.center?.longitude ?? assessment?.longitude;
+            if (currentLat != null && currentLng != null && window.L) {
+              const pulseMarker = window.L.circleMarker([currentLat, currentLng], {
+                radius: 12,
+                color: "#dc2626",
+                weight: 2,
+                fillColor: "#dc2626",
+                fillOpacity: 0.15,
+                className: "pulse-marker",
+              }).addTo(map);
+              layersRef.current.repositionFootprint = pulseMarker;
             }
           } else {
             map.getContainer().style.cursor = "";
@@ -502,7 +462,7 @@
               layersRef.current.repositionFootprint = null;
             }
           };
-        }, [repositionMode, onRepositionClick, mapGeometry]);
+        }, [repositionMode, onRepositionClick, mapGeometry, assessment]);
 
         // Cleanup on unmount
         useEffect(() => {
@@ -685,6 +645,10 @@
         async function runRepositionedAssessment(lat, lng) {
           const address = matchedAddress || String(addressInput || "").trim();
           if (!address) return;
+
+          // Capture before state resets below — same pattern as runAssessment
+          const attrsToOffer = lastSubmittedAttributes;
+
           setRepositionMode(false);
           setScreen("loading");
           setError(null);
@@ -704,7 +668,10 @@
               },
             });
             setRepositionedAnchor({ latitude: lat, longitude: lng });
-            await finalizeAssessment(result);
+            await finalizeAssessment(result, {
+              showBanner: !!attrsToOffer,
+              attributesToOffer: attrsToOffer,
+            });
           } catch (err) {
             setError(classifyInputError(err));
             setScreen("error");
@@ -1165,7 +1132,7 @@
                 repositionMode && React.createElement(
                   "p",
                   { className: "mb-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800" },
-                  "Click a highlighted area or anywhere on the map to move the assessment pin to your structure's location."
+                  "Zoom in using the map controls, then click your property's location to move the assessment pin."
                 ),
                 React.createElement(AssessmentMap, {
                   assessment,
