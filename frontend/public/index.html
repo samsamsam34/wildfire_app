@@ -413,6 +413,7 @@
         // Effect 3: click-to-reposition handler + footprint snapping layer
         useEffect(() => {
           const map = leafletMapRef.current;
+          console.log('[RF] Effect fired. repositionMode:', repositionMode, 'footprint layer exists:', !!layersRef.current.footprint, 'map exists:', !!mapRef.current);
           if (!map) return;
 
           // Remove any existing reposition footprint layer first
@@ -430,6 +431,8 @@
             map.getContainer().style.cursor = "crosshair";
 
             // Add clickable footprint snapping layer if footprint data is available
+            console.log('[RF] Footprint layer:', layersRef.current.footprint);
+            console.log('[RF] toGeoJSON result:', layersRef.current.footprint?.toGeoJSON?.());
             const footprintFC = layersRef.current.footprint
               ? (() => {
                   try { return layersRef.current.footprint.toGeoJSON(); } catch (_) { return null; }
@@ -462,6 +465,7 @@
               });
               rfLayer.addTo(map);
               layersRef.current.repositionFootprint = rfLayer;
+              console.log('[RF] rfLayer added to map. Feature count:', rfLayer.getLayers().length);
             }
           } else {
             map.getContainer().style.cursor = "";
@@ -471,6 +475,7 @@
             map.off("click", handleClick);
             map.getContainer().style.cursor = "";
             if (layersRef.current.repositionFootprint) {
+              console.log('[RF] Cleaning up reposition footprint layer');
               map.removeLayer(layersRef.current.repositionFootprint);
               layersRef.current.repositionFootprint = null;
             }
@@ -569,6 +574,10 @@
           setShowAllActions(false);
         }, [assessment]);
 
+        useEffect(() => {
+          console.log('[Banner] Render check — showApplyBanner:', showApplyBanner, 'lastSubmittedAttributes:', !!lastSubmittedAttributes);
+        }, [showApplyBanner, lastSubmittedAttributes]);
+
         const score = Number(assessment?.wildfire_risk_score ?? assessment?.overall_wildfire_risk ?? 0);
         const level = scoreLevel(score);
         const matchedAddress =
@@ -603,6 +612,7 @@
           setAssessment(result);
           setError(null);
           setScreen("results");
+          console.log('[Banner] showBanner flag:', showBanner, 'lastSubmittedAttributes:', lastSubmittedAttributes);
           if (showBanner) setShowApplyBanner(true);
           await loadResultExtras(result.assessment_id);
         }
