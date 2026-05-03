@@ -183,7 +183,7 @@
 
       function extractFootprintGeoJSON(geo) {
         if (!geo) return null;
-        const candidates = [
+        const structureCandidates = [
           geo.building_footprint,
           geo.matched_structure_footprint,
           geo.data?.building_footprint,
@@ -193,10 +193,14 @@
           geo.property_footprint,
           geo.structures?.[0]?.geometry,
         ];
-        for (const c of candidates) {
+        for (const c of structureCandidates) {
           if (c && (c.type === "Polygon" || c.type === "MultiPolygon" || c.type === "Feature" || c.type === "FeatureCollection")) {
-            return c;
+            return { geometry: c, isParcel: false };
           }
+        }
+        // Parcel boundary as last fallback — useful for snapping when no structure matched
+        if (geo.parcel_polygon && (geo.parcel_polygon.type === "Polygon" || geo.parcel_polygon.type === "MultiPolygon" || geo.parcel_polygon.type === "Feature" || geo.parcel_polygon.type === "FeatureCollection")) {
+          return { geometry: geo.parcel_polygon, isParcel: true };
         }
         return null;
       }
@@ -433,7 +437,6 @@
         // Effect 3: click-to-reposition handler + footprint snapping layer
         useEffect(() => {
           const map = leafletMapRef.current;
-          console.log('[RF] Effect fired. repositionMode:', repositionMode, 'footprint layer exists:', !!layersRef.current.footprint, 'map exists:', !!mapRef.current);
           if (!map) return;
 
           // Remove any existing reposition footprint layer first
@@ -450,31 +453,23 @@
             map.on("click", handleClick);
             map.getContainer().style.cursor = "crosshair";
 
-            // Add clickable footprint snapping layer — read directly from mapGeometry
-            // to avoid race with Effect 1 which may not have run yet when this fires.
-            const footprintGeo = extractFootprintGeoJSON(mapGeometry);
-            console.log('[RF] footprintGeo from mapGeometry:', footprintGeo?.type);
-            if (!footprintGeo) {
-              console.log('[RF] No footprint geometry in mapGeometry — skipping snapping layer');
-            }
-            const footprintFC = footprintGeo
-              ? (footprintGeo.type === "FeatureCollection"
-                  ? footprintGeo
-                  : { type: "FeatureCollection", features: [
-                      footprintGeo.type === "Feature"
-                        ? footprintGeo
-                        : { type: "Feature", geometry: footprintGeo, properties: {} }
-                    ] })
-              : null;
-            console.log('[RF] footprintGeo from mapGeometry:', footprintGeo?.type, 'features:', footprintFC?.features?.length);
+            // Add clickable snapping layer — read directly from mapGeometry to avoid
+            // race with Effect 1. Falls back to parcel_polygon if no structure matched.
+            const extracted = extractFootprintGeoJSON(mapGeometry);
+            if (extracted) {
+              const { geometry: footprintGeo, isParcel } = extracted;
+              const footprintFC = footprintGeo.type === "FeatureCollection"
+                ? footprintGeo
+                : { type: "FeatureCollection", features: [
+                    footprintGeo.type === "Feature"
+                      ? footprintGeo
+                      : { type: "Feature", geometry: footprintGeo, properties: {} }
+                  ] };
 
-            if (footprintFC && window.L) {
-              const repositionStyle = {
-                color: "#1e40af",
-                weight: 2,
-                fillColor: "#1e40af",
-                fillOpacity: 0.15,
-              };
+              const repositionStyle = isParcel
+                ? { color: "#1e40af", weight: 2, fillColor: "#1e40af", fillOpacity: 0.1, dashArray: "6 4" }
+                : { color: "#1e40af", weight: 2, fillColor: "#1e40af", fillOpacity: 0.15 };
+
               const rfLayer = window.L.geoJSON(footprintFC, {
                 style: repositionStyle,
                 onEachFeature: function (feature, layer) {
@@ -485,7 +480,7 @@
                     if (onRepositionClick) onRepositionClick(center.lat, center.lng);
                   });
                   layer.on("mouseover", function () {
-                    layer.setStyle({ fillOpacity: 0.35, weight: 3 });
+                    layer.setStyle({ fillOpacity: isParcel ? 0.25 : 0.35, weight: 3 });
                   });
                   layer.on("mouseout", function () {
                     layer.setStyle(repositionStyle);
@@ -494,7 +489,6 @@
               });
               rfLayer.addTo(map);
               layersRef.current.repositionFootprint = rfLayer;
-              console.log('[RF] rfLayer added to map. Feature count:', rfLayer.getLayers().length);
             }
           } else {
             map.getContainer().style.cursor = "";
@@ -504,7 +498,6 @@
             map.off("click", handleClick);
             map.getContainer().style.cursor = "";
             if (layersRef.current.repositionFootprint) {
-              console.log('[RF] Cleaning up reposition footprint layer');
               map.removeLayer(layersRef.current.repositionFootprint);
               layersRef.current.repositionFootprint = null;
             }
@@ -603,10 +596,6 @@
           setShowAllActions(false);
         }, [assessment]);
 
-        useEffect(() => {
-          console.log('[Banner] Render check — showApplyBanner:', showApplyBanner, 'lastSubmittedAttributes:', !!lastSubmittedAttributes);
-        }, [showApplyBanner, lastSubmittedAttributes]);
-
         const score = Number(assessment?.wildfire_risk_score ?? assessment?.overall_wildfire_risk ?? 0);
         const level = scoreLevel(score);
         const matchedAddress =
@@ -639,9 +628,9 @@
 
         async function finalizeAssessment(result, { showBanner = false, attributesToOffer = null } = {}) {
           setAssessment(result);
+          window._lastAssessmentId = result.assessment_id;
           setError(null);
           setScreen("results");
-          console.log('[Banner] finalizeAssessment called with showBanner:', showBanner, 'attributesToOffer:', !!attributesToOffer);
           if (showBanner && attributesToOffer) {
             setLastSubmittedAttributes(attributesToOffer);
             setShowApplyBanner(true);
@@ -789,7 +778,6 @@
           if (repositionedAnchor) {
             reassessBody.property_anchor_point = repositionedAnchor;
           }
-          console.log('[Banner] Applying attributes:', attrs);
           setShowApplyBanner(false);
           setDetailsBusy(true);
           setDetailsError("");
@@ -1177,7 +1165,7 @@
                 repositionMode && React.createElement(
                   "p",
                   { className: "mb-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800" },
-                  "Click anywhere on the map to move the pin to the correct location."
+                  "Click a highlighted area or anywhere on the map to move the assessment pin to your structure's location."
                 ),
                 React.createElement(AssessmentMap, {
                   assessment,

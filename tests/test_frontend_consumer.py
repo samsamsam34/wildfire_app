@@ -216,3 +216,19 @@ def test_show_all_actions_toggle_present() -> None:
     assert "Show" in script
     # Show more / show fewer toggle text
     assert "Show fewer" in script
+
+
+def test_parcel_polygon_in_footprint_candidates() -> None:
+    script = _script_block(_frontend_html())
+    assert "parcel_polygon" in script
+
+
+def test_no_debug_console_logs_present() -> None:
+    html = _frontend_html()
+    assert "[RF]" not in html
+    assert "[Banner]" not in html
+
+
+def test_window_last_assessment_id_set() -> None:
+    script = _script_block(_frontend_html())
+    assert "window._lastAssessmentId" in script
