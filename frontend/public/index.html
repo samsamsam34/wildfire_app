@@ -93,6 +93,16 @@
           border-left: none;
         }
       }
+
+      .show-more-link {
+        background: none;
+        border: none;
+        color: var(--text-muted);
+        font-size: 14px;
+        cursor: pointer;
+        padding: 8px 0;
+        text-decoration: underline;
+      }
     </style>
   </head>
   <body>
@@ -115,6 +125,29 @@
         "Computing risk scores...",
         "Building your report...",
       ];
+
+      const ROOF_TYPE_LABELS = {
+        asphalt_shingle: "Asphalt shingle roof",
+        metal: "Metal roof",
+        tile: "Clay/concrete tile roof",
+        wood_shake: "Wood shake roof",
+      };
+
+      function summarizeAttributes(attrs) {
+        if (!attrs) return "Home details";
+        const parts = [];
+        if (attrs.roof_type && attrs.roof_type !== "unknown")
+          parts.push(ROOF_TYPE_LABELS[attrs.roof_type] || attrs.roof_type);
+        if (attrs.vent_type && attrs.vent_type !== "unknown")
+          parts.push(attrs.vent_type === "screened" ? "Screened vents" : "Unscreened vents");
+        if (attrs.defensible_space_ft)
+          parts.push(`${attrs.defensible_space_ft}ft clearance`);
+        if (attrs.construction_year)
+          parts.push(`Built ${attrs.construction_year}`);
+        if (attrs.siding_type && attrs.siding_type !== "unknown")
+          parts.push(attrs.siding_type);
+        return parts.length > 0 ? parts.join(", ") : "Home details";
+      }
 
       function scoreLevel(score) {
         const value = Number(score ?? 0);
@@ -276,13 +309,13 @@
           });
         }
 
-        return actions.slice(0, 5);
+        return actions;
       }
 
       function AssessmentMap({ assessment, mapGeometry, repositionMode, onRepositionClick }) {
         const mapRef = useRef(null);
         const leafletMapRef = useRef(null);
-        const layersRef = useRef({ marker: null, footprint: null, rings: null });
+        const layersRef = useRef({ marker: null, footprint: null, rings: null, repositionFootprint: null });
         const [showFootprint, setShowFootprint] = useState(true);
         const [showRings, setShowRings] = useState(true);
         // Refs allow Effect 1 to read current visibility without adding them as deps
@@ -377,22 +410,70 @@
           }
         }, [showFootprint, showRings]);
 
-        // Effect 3: click-to-reposition handler
+        // Effect 3: click-to-reposition handler + footprint snapping layer
         useEffect(() => {
           const map = leafletMapRef.current;
           if (!map) return;
+
+          // Remove any existing reposition footprint layer first
+          if (layersRef.current.repositionFootprint) {
+            map.removeLayer(layersRef.current.repositionFootprint);
+            layersRef.current.repositionFootprint = null;
+          }
+
           function handleClick(e) {
             if (onRepositionClick) onRepositionClick(e.latlng.lat, e.latlng.lng);
           }
+
           if (repositionMode) {
             map.on("click", handleClick);
             map.getContainer().style.cursor = "crosshair";
+
+            // Add clickable footprint snapping layer if footprint data is available
+            const footprintFC = layersRef.current.footprint
+              ? (() => {
+                  try { return layersRef.current.footprint.toGeoJSON(); } catch (_) { return null; }
+                })()
+              : null;
+
+            if (footprintFC && window.L) {
+              const repositionStyle = {
+                color: "#1e40af",
+                weight: 2,
+                fillColor: "#1e40af",
+                fillOpacity: 0.15,
+              };
+              const rfLayer = window.L.geoJSON(footprintFC, {
+                style: repositionStyle,
+                onEachFeature: function (feature, layer) {
+                  layer.on("click", function (e) {
+                    window.L.DomEvent.stopPropagation(e);
+                    const bounds = layer.getBounds();
+                    const center = bounds.getCenter();
+                    if (onRepositionClick) onRepositionClick(center.lat, center.lng);
+                  });
+                  layer.on("mouseover", function () {
+                    layer.setStyle({ fillOpacity: 0.35, weight: 3 });
+                  });
+                  layer.on("mouseout", function () {
+                    layer.setStyle(repositionStyle);
+                  });
+                },
+              });
+              rfLayer.addTo(map);
+              layersRef.current.repositionFootprint = rfLayer;
+            }
           } else {
             map.getContainer().style.cursor = "";
           }
+
           return () => {
             map.off("click", handleClick);
             map.getContainer().style.cursor = "";
+            if (layersRef.current.repositionFootprint) {
+              map.removeLayer(layersRef.current.repositionFootprint);
+              layersRef.current.repositionFootprint = null;
+            }
           };
         }, [repositionMode, onRepositionClick]);
 
@@ -448,6 +529,8 @@
         const [showDetailsPanel, setShowDetailsPanel] = useState(false);
         const [repositionMode, setRepositionMode] = useState(false);
         const [repositionedAnchor, setRepositionedAnchor] = useState(null);
+        const [lastSubmittedAttributes, setLastSubmittedAttributes] = useState(null);
+        const [showApplyBanner, setShowApplyBanner] = useState(false);
         const [toast, setToast] = useState(null);
         const [error, setError] = useState(null);
 
@@ -457,6 +540,8 @@
         const [downloadBusy, setDownloadBusy] = useState(false);
         const [detailsBusy, setDetailsBusy] = useState(false);
         const [detailsError, setDetailsError] = useState("");
+
+        const [showAllActions, setShowAllActions] = useState(false);
 
         const [detailsForm, setDetailsForm] = useState({
           roof_type: "",
@@ -479,6 +564,10 @@
           const t = setTimeout(() => setToast(null), 3000);
           return () => clearTimeout(t);
         }, [toast]);
+
+        useEffect(() => {
+          setShowAllActions(false);
+        }, [assessment]);
 
         const score = Number(assessment?.wildfire_risk_score ?? assessment?.overall_wildfire_risk ?? 0);
         const level = scoreLevel(score);
@@ -510,10 +599,11 @@
           setMapGeometry(mapResult.status === "fulfilled" ? mapResult.value : null);
         }
 
-        async function finalizeAssessment(result) {
+        async function finalizeAssessment(result, { showBanner = false } = {}) {
           setAssessment(result);
           setError(null);
           setScreen("results");
+          if (showBanner) setShowApplyBanner(true);
           await loadResultExtras(result.assessment_id);
         }
 
@@ -548,7 +638,7 @@
               setScreen("confirm");
               return;
             }
-            await finalizeAssessment(result);
+            await finalizeAssessment(result, { showBanner: !!lastSubmittedAttributes });
           } catch (err) {
             setError(classifyInputError(err));
             setScreen("error");
@@ -629,10 +719,42 @@
 
             setAssessment(updated);
             await loadResultExtras(updated.assessment_id);
+            setLastSubmittedAttributes(attributes);
+            setShowApplyBanner(false);
             setToast("Assessment updated");
             setShowDetailsPanel(false);
           } catch (err) {
             setDetailsError(String(err?.message || "Unable to update your assessment right now."));
+          } finally {
+            setDetailsBusy(false);
+          }
+        }
+
+        async function runReassessWithAttributes(attrs) {
+          if (!assessment?.assessment_id) return;
+          const confirmed_fields = Object.keys(attrs);
+          const reassessBody = {
+            attributes: attrs,
+            confirmed_fields,
+            audience: "homeowner",
+          };
+          if (repositionedAnchor) {
+            reassessBody.property_anchor_point = repositionedAnchor;
+          }
+          setShowApplyBanner(false);
+          setDetailsBusy(true);
+          setDetailsError("");
+          try {
+            const updated = await apiFetch(`/risk/reassess/${assessment.assessment_id}`, {
+              method: "POST",
+              body: reassessBody,
+            });
+            setAssessment(updated);
+            await loadResultExtras(updated.assessment_id);
+            setLastSubmittedAttributes(attrs);
+            setToast("Home details applied");
+          } catch (err) {
+            setDetailsError(String(err?.message || "Unable to apply home details right now."));
           } finally {
             setDetailsBusy(false);
           }
@@ -784,7 +906,7 @@
                   {
                     className: "rounded-lg px-4 py-2 text-white touch-target",
                     style: { background: "var(--brand)" },
-                    onClick: () => finalizeAssessment(pendingAssessment),
+                    onClick: () => finalizeAssessment(pendingAssessment, { showBanner: !!lastSubmittedAttributes }),
                   },
                   "Yes, that's correct"
                 ),
@@ -830,6 +952,49 @@
                     `Assessment date: ${assessmentDate} · ID ${shortAssessmentId}`
                   )
                 ),
+                showApplyBanner && lastSubmittedAttributes &&
+                  React.createElement(
+                    "div",
+                    {
+                      className: "rounded-xl border-l-4 bg-blue-50 p-3",
+                      style: { borderLeftColor: "var(--brand)" },
+                    },
+                    React.createElement(
+                      "p",
+                      { className: "text-sm font-semibold", style: { color: "var(--brand)" } },
+                      "Apply saved home details?"
+                    ),
+                    React.createElement(
+                      "p",
+                      { className: "mt-1 text-xs", style: { color: "var(--text-muted)" } },
+                      `Saved: ${summarizeAttributes(lastSubmittedAttributes)}`
+                    ),
+                    React.createElement(
+                      "div",
+                      { className: "mt-2 flex gap-3" },
+                      React.createElement(
+                        "button",
+                        {
+                          type: "button",
+                          className: "rounded-lg px-3 py-1 text-xs text-white",
+                          style: { background: "var(--brand)" },
+                          disabled: detailsBusy,
+                          onClick: () => runReassessWithAttributes(lastSubmittedAttributes),
+                        },
+                        "Apply home details"
+                      ),
+                      React.createElement(
+                        "button",
+                        {
+                          type: "button",
+                          className: "text-xs",
+                          style: { color: "var(--text-muted)", background: "none", border: "none", cursor: "pointer" },
+                          onClick: () => { setShowApplyBanner(false); setLastSubmittedAttributes(null); },
+                        },
+                        "Dismiss"
+                      )
+                    )
+                  ),
                 React.createElement(
                   "div",
                   {
@@ -987,38 +1152,58 @@
                 style: { borderColor: "var(--border)", boxShadow: "var(--shadow)" },
               },
               React.createElement("h2", { className: "text-lg font-semibold" }, "What you can do to reduce your risk"),
-              React.createElement(
-                "div",
-                { className: "mt-4 grid grid-cols-1 gap-3 md:grid-cols-2" },
-                mitigationActions.slice(0, 5).map((action, index) => {
-                  const tag = priorityTag(action.priority);
-                  return React.createElement(
-                    "article",
-                    {
-                      key: `${action.title}-${index}`,
-                      className: "rounded-lg border p-3",
-                      style: { borderColor: "var(--border)" },
-                    },
+              (() => {
+                const visibleActions = showAllActions ? mitigationActions : mitigationActions.slice(0, 5);
+                const hiddenCount = mitigationActions.length - 5;
+                return React.createElement(
+                  React.Fragment,
+                  null,
+                  React.createElement(
+                    "div",
+                    { className: "mt-4 grid grid-cols-1 gap-3 md:grid-cols-2" },
+                    visibleActions.map((action, index) => {
+                      const tag = priorityTag(action.priority);
+                      return React.createElement(
+                        "article",
+                        {
+                          key: `${action.title}-${index}`,
+                          className: "rounded-lg border p-3",
+                          style: { borderColor: "var(--border)" },
+                        },
+                        React.createElement(
+                          "span",
+                          { className: `inline-block rounded-full border px-2 py-1 text-xs font-semibold ${tag.cls}` },
+                          tag.label
+                        ),
+                        React.createElement("h3", { className: "mt-2 font-semibold" }, action.title),
+                        React.createElement(
+                          "p",
+                          { className: "mt-1 text-sm", style: { color: "var(--text-muted)" } },
+                          action.description || "Action details unavailable."
+                        ),
+                        action.estimatedRiskReduction !== null &&
+                          React.createElement(
+                            "p",
+                            { className: "mt-2 text-xs", style: { color: "var(--text-muted)" } },
+                            `Could reduce score by ~${action.estimatedRiskReduction} points`
+                          )
+                      );
+                    })
+                  ),
+                  !showAllActions && hiddenCount > 0 &&
                     React.createElement(
-                      "span",
-                      { className: `inline-block rounded-full border px-2 py-1 text-xs font-semibold ${tag.cls}` },
-                      tag.label
+                      "button",
+                      { className: "show-more-link", onClick: () => setShowAllActions(true) },
+                      `Show ${hiddenCount} more action${hiddenCount > 1 ? "s" : ""}`
                     ),
-                    React.createElement("h3", { className: "mt-2 font-semibold" }, action.title),
+                  showAllActions && hiddenCount > 0 &&
                     React.createElement(
-                      "p",
-                      { className: "mt-1 text-sm", style: { color: "var(--text-muted)" } },
-                      action.description || "Action details unavailable."
-                    ),
-                    action.estimatedRiskReduction !== null &&
-                      React.createElement(
-                        "p",
-                        { className: "mt-2 text-xs", style: { color: "var(--text-muted)" } },
-                        `Could reduce score by ~${action.estimatedRiskReduction} points`
-                      )
-                  );
-                })
-              ),
+                      "button",
+                      { className: "show-more-link", onClick: () => setShowAllActions(false) },
+                      "Show fewer"
+                    )
+                );
+              })(),
               React.createElement(
                 "div",
                 { className: "mt-5 grid grid-cols-1 gap-3 sm:grid-cols-2" },

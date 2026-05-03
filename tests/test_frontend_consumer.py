@@ -178,3 +178,41 @@ def test_toast_feedback_on_reassess() -> None:
     script = _script_block(_frontend_html())
     assert "setToast" in script
     assert "Assessment updated" in script
+
+
+def test_footprint_snapping_uses_stop_propagation() -> None:
+    script = _script_block(_frontend_html())
+    assert "stopPropagation" in script
+
+
+def test_footprint_snapping_layer_removed_on_exit() -> None:
+    script = _script_block(_frontend_html())
+    # Layer is tracked as repositionFootprintLayer and removed when reposition mode exits
+    assert "repositionFootprint" in script
+    assert "removeLayer" in script
+
+
+def test_last_submitted_attributes_state_exists() -> None:
+    script = _script_block(_frontend_html())
+    assert "lastSubmittedAttributes" in script
+
+
+def test_summarize_attributes_function_exists() -> None:
+    script = _script_block(_frontend_html())
+    assert "summarizeAttributes" in script
+    # Must produce a plain-English summary with known field labels
+    assert "Screened vents" in script
+
+
+def test_dismiss_clears_last_submitted_attributes() -> None:
+    script = _script_block(_frontend_html())
+    # Dismiss button must set lastSubmittedAttributes to null
+    assert "setLastSubmittedAttributes(null)" in script
+
+
+def test_show_all_actions_toggle_present() -> None:
+    script = _script_block(_frontend_html())
+    assert "showAllActions" in script
+    assert "Show" in script
+    # Show more / show fewer toggle text
+    assert "Show fewer" in script
