@@ -116,3 +116,64 @@ def test_home_details_api_fields_match_models_contract() -> None:
         "siding_type",
     ]:
         assert field_name in html
+
+
+def test_overlay_z_index_above_leaflet() -> None:
+    html = _frontend_html()
+    # .overlay must sit above all Leaflet panes (max z-index 700) and above
+    # the leaflet-container stacking context (z-index 400).
+    assert "z-index: 1000" in html
+
+
+def test_details_panel_z_index_above_overlay() -> None:
+    html = _frontend_html()
+    assert "z-index: 1001" in html
+
+
+def test_close_button_has_aria_label() -> None:
+    script = _script_block(_frontend_html())
+    assert "Close home details panel" in script
+
+
+def test_details_panel_has_dialog_role() -> None:
+    script = _script_block(_frontend_html())
+    assert 'role: "dialog"' in script
+    assert '"aria-modal": "true"' in script
+
+
+def test_rate_limit_error_has_specific_message() -> None:
+    script = _script_block(_frontend_html())
+    assert "rate_limit_exceeded" in script
+    assert "wait a minute" in script.lower()
+
+
+def test_network_error_has_specific_message() -> None:
+    script = _script_block(_frontend_html())
+    assert "network_error" in script
+    assert "connection" in script.lower()
+
+
+def test_load_result_extras_uses_allsettled() -> None:
+    script = _script_block(_frontend_html())
+    assert "Promise.allSettled" in script
+    # The old Promise.all-based dual-fetch should be gone.
+    assert script.count("apiFetch(`/report/${assessmentId}/homeowner`)") == 1
+
+
+def test_reposition_pin_ui_present() -> None:
+    script = _script_block(_frontend_html())
+    assert "Reposition pin" in script
+    assert "repositionMode" in script
+    assert "requested_property_anchor_point" in script
+
+
+def test_score_range_context_present() -> None:
+    script = _script_block(_frontend_html())
+    assert "0\u2013100" in script or "0-100" in script
+    assert "national median" in script.lower()
+
+
+def test_toast_feedback_on_reassess() -> None:
+    script = _script_block(_frontend_html())
+    assert "setToast" in script
+    assert "Assessment updated" in script
