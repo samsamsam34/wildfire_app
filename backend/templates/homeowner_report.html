@@ -80,8 +80,35 @@
       }
       .risk-score {
         color: $risk_level_color;
-        font-size: 36pt;
+        font-size: 18pt;
         font-weight: 700;
+      }
+      .insurability-row {
+        margin: 8px 0 12px 0;
+        font-size: 11pt;
+      }
+      .insurability-label { font-weight: 600; color: #0f172a; }
+      .insurability-value { font-weight: 700; margin-left: 6px; }
+      .insurability-at-risk { color: #dc2626; }
+      .insurability-manageable { color: #d97706; }
+      .insurability-favorable { color: #16a34a; }
+      .insurability-reasons {
+        margin: 4px 0 0 0;
+        padding-left: 18px;
+        font-size: 9.5pt;
+        color: #64748b;
+      }
+      .insurability-reasons li { margin: 2px 0; }
+      .confidence-summary-text { font-size: 10pt; color: #0f172a; margin: 4px 0; }
+      .specificity-note { font-size: 9pt; color: #64748b; margin: 2px 0; font-style: italic; }
+      .confidence-cta { color: #1e40af; font-size: 9pt; margin-left: 4px; }
+      .confidence-line { font-size: 9.5pt; color: #64748b; margin: 4px 0; }
+      .use-restriction-note { font-size: 8.5pt; color: #92400e; }
+      .score-scale-note {
+        font-size: 8.5pt;
+        color: #94a3b8;
+        margin: 6px 0 0 0;
+        text-align: right;
       }
       .risk-summary { margin-top: 8px; font-size: 11pt; }
       .score-grid { margin-top: 10px; }
@@ -196,17 +223,20 @@
         <div class="risk-summary">$risk_level_summary</div>
       </div>
 
+      $insurability_row_html
+
       <div class="score-grid">
         $score_rows_html
       </div>
+      $score_scale_note_html
 
-      <div class="note">Data Confidence: $environmental_confidence_tier_label | Home Details: $structural_confidence_tier_label</div>
+      $confidence_block_html
       <div class="italic">$coverage_note</div>
 
       <div class="legal">
         This report is generated for informational purposes only and does not constitute professional engineering advice,
         guarantee insurability, or predict future wildfire behavior. Risk assessments are based on publicly available data
-        and may not reflect recent changes to property conditions.
+        and may not reflect recent changes to property conditions.$use_restriction_html
       </div>
 
       <div class="footer">Page 1 of 4</div>

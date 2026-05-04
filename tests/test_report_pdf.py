@@ -207,3 +207,85 @@ def test_confidence_improvement_actions_use_display_labels() -> None:
 def test_pdf_file_size_ceiling() -> None:
     pdf_bytes = generate_homeowner_pdf(_sample_report())
     assert len(pdf_bytes) < 600_000
+
+
+# --- Pass 1 improvement tests ---
+
+
+def _sample_report_with_new_fields(**overrides: object) -> dict[str, object]:
+    base = _sample_report()
+    base["insurability_status"] = "At Risk"
+    base["insurability_status_reasons"] = [
+        "Defensible space is insufficient",
+        "Adjacent fuel pressure is very high",
+    ]
+    base["headline_risk_summary"] = "This property has elevated risk due to dense adjacent fuels."
+    base["confidence_summary_text"] = "Environmental data is high confidence. Add home details for a complete assessment."
+    base["specificity_summary"] = {"what_this_means": "Nearby homes may appear similar based on shared regional data.", "specificity_tier": "regional_estimate"}
+    base["score_summary"] = dict(base.get("score_summary", {}))  # type: ignore[arg-type]
+    base["score_summary"]["use_restriction"] = "not_for_underwriting_or_binding"  # type: ignore[index]
+    base.update(overrides)
+    return base
+
+
+def test_insurability_status_appears_in_html() -> None:
+    html_out = render_homeowner_report_html(_sample_report_with_new_fields())
+    assert "At Risk" in html_out
+    assert "Insurance Readiness" in html_out
+
+
+def test_insurability_reasons_appear_in_html() -> None:
+    html_out = render_homeowner_report_html(_sample_report_with_new_fields())
+    assert "Defensible space is insufficient" in html_out
+    assert "Adjacent fuel pressure is very high" in html_out
+
+
+def test_headline_risk_summary_overrides_hardcoded_string() -> None:
+    html_out = render_homeowner_report_html(_sample_report_with_new_fields())
+    assert "This property has elevated risk due to dense adjacent fuels." in html_out
+    assert "Several important improvements are needed" not in html_out
+
+
+def test_confidence_summary_text_replaces_debug_line() -> None:
+    html_out = render_homeowner_report_html(_sample_report_with_new_fields())
+    assert "Environmental data is high confidence" in html_out
+    assert "Data Confidence:" not in html_out
+
+
+def test_use_restriction_appears_in_legal_footer() -> None:
+    html_out = render_homeowner_report_html(_sample_report_with_new_fields())
+    assert "not approved for underwriting or binding decisions" in html_out.lower()
+    assert "use-restriction-note" in html_out
+
+
+def test_score_label_home_ignition_vulnerability() -> None:
+    html_out = render_homeowner_report_html(_sample_report())
+    assert "Home Ignition Vulnerability" in html_out
+    assert "Home Fire Vulnerability" not in html_out
+
+
+def test_score_label_site_hazard() -> None:
+    html_out = render_homeowner_report_html(_sample_report())
+    assert "Site Hazard" in html_out
+    assert "Site &amp; Landscape Hazard" not in html_out
+    assert "Site & Landscape Hazard" not in html_out
+
+
+def test_score_direction_indicators_on_all_bars() -> None:
+    html_out = render_homeowner_report_html(_sample_report())
+    assert html_out.count("higher = more risk") >= 2
+    assert "higher is better" in html_out
+
+
+def test_score_scale_note_present() -> None:
+    html_out = render_homeowner_report_html(_sample_report())
+    assert "0–100" in html_out or "0–100" in html_out
+    assert "median" in html_out.lower()
+
+
+def test_legacy_invisible_markers_removed_from_pdf() -> None:
+    pdf_bytes = generate_homeowner_pdf(_sample_report())
+    pdf_text = pdf_bytes.decode("latin-1", errors="replace")
+    assert "layout-marker" not in pdf_text
+    assert "compatibility_markers" not in pdf_text
+    assert "Wildfire risk level:" not in pdf_text

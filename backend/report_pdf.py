@@ -466,7 +466,12 @@ def prepare_template_context(report: Any) -> dict[str, Any]:
     if overall_score is None:
         overall_score = 0.0
 
-    risk_level_label, risk_level_color, risk_level_summary = _risk_level(overall_score)
+    risk_level_label, risk_level_color, _fallback_risk_summary = _risk_level(overall_score)
+    risk_level_summary = (
+        _safe_text(report_dict.get("headline_risk_summary"))
+        or _safe_text(report_dict.get("one_sentence_summary"))
+        or _fallback_risk_summary
+    )
 
     subscores = _as_dict(_as_dict(report_dict.get("internal_calibration_debug")).get("subscores"))
     site_hazard = _to_float(score_summary.get("site_hazard_score"))
@@ -481,18 +486,18 @@ def prepare_template_context(report: Any) -> dict[str, Any]:
 
     score_rows = [
         {
-            "label": "Site & Landscape Hazard",
+            "label": "Site Hazard",
             "value": site_hazard,
             "width": max(0, min(100, site_hazard)),
             "color": _score_color(site_hazard),
-            "note": "",
+            "note": "(higher = more risk)",
         },
         {
-            "label": "Home Fire Vulnerability",
+            "label": "Home Ignition Vulnerability",
             "value": home_vuln,
             "width": max(0, min(100, home_vuln)),
             "color": _score_color(home_vuln),
-            "note": "",
+            "note": "(higher = more risk)",
         },
         {
             "label": "Home Hardening Readiness",
@@ -588,6 +593,13 @@ def prepare_template_context(report: Any) -> dict[str, Any]:
         "confidence_limitations_explanation": _safe_text(homeowner_explanations.get("confidence_limitations_explanation")),
         "global_confidence_tier": global_confidence_tier,
         "global_confidence_tier_label": global_confidence_tier.capitalize() if global_confidence_tier else "Low",
+        "insurability_status": _safe_text(report_dict.get("insurability_status")),
+        "insurability_status_reasons": [
+            _safe_text(v) for v in _as_list(report_dict.get("insurability_status_reasons")) if _safe_text(v)
+        ],
+        "confidence_summary_text": _safe_text(report_dict.get("confidence_summary_text")),
+        "specificity_what_this_means": _safe_text(specificity_summary.get("what_this_means")),
+        "use_restriction": _safe_text(score_summary.get("use_restriction")),
     }
 
     return context
@@ -603,7 +615,7 @@ def _build_template_fragments(context: dict[str, Any]) -> dict[str, str]:
                 f"<div class=\"note\">{html.escape(row['note'])}</div></div>"
                 '<div class="track"><div class="fill" style="width:'
                 f"{row['width']:.1f}%;background:{row['color']};\"></div></div>"
-                f"<div><strong>{row['value']:.1f}</strong></div>"
+                f'<div style="text-align:right"><strong>{row["value"]:.1f}</strong></div>'
                 "</div>"
             )
         )
@@ -682,6 +694,64 @@ def _build_template_fragments(context: dict[str, Any]) -> dict[str, str]:
 
     data_sources_html = "; ".join(html.escape(v) for v in context["data_sources"])
 
+    # Insurability row
+    ins_status = context.get("insurability_status") or ""
+    ins_reasons = [r for r in (context.get("insurability_status_reasons") or []) if r]
+    if ins_status:
+        css_ins = "insurability-" + re.sub(r"[^a-z0-9]+", "-", ins_status.lower()).strip("-")
+        reasons_html = ""
+        if ins_reasons:
+            items_html = "".join(f"<li>{html.escape(r)}</li>" for r in ins_reasons[:3])
+            reasons_html = f'<ul class="insurability-reasons">{items_html}</ul>'
+        insurability_row_html = (
+            f'<div class="insurability-row">'
+            f'<span class="insurability-label">Insurance Readiness:</span> '
+            f'<span class="insurability-value {html.escape(css_ins)}">{html.escape(ins_status)}</span>'
+            f'{reasons_html}</div>'
+        )
+    else:
+        insurability_row_html = ""
+
+    # Confidence block (replaces raw debug confidence line)
+    conf_text = context.get("confidence_summary_text") or ""
+    spec_what = context.get("specificity_what_this_means") or ""
+    if conf_text:
+        spec_note_frag = f'<p class="specificity-note">{html.escape(spec_what)}</p>' if spec_what else ""
+        confidence_block_html = (
+            f'<p class="confidence-summary-text">{html.escape(conf_text)}</p>'
+            f'{spec_note_frag}'
+        )
+    else:
+        env_tier_esc = html.escape(context.get("environmental_confidence_tier_label") or "")
+        struct_label_esc = html.escape(context.get("structural_confidence_tier_label") or "Not Assessed")
+        cta_html = ""
+        if (context.get("structural_confidence_tier") or "").lower() == "not_assessed":
+            cta_html = '<span class="confidence-cta">(submit home details to unlock structural scoring)</span>'
+        confidence_block_html = (
+            f'<p class="confidence-line">Data Confidence: {env_tier_esc}'
+            f' | Home Details: {struct_label_esc}{cta_html}</p>'
+        )
+
+    # Use restriction disclosure
+    use_restr = context.get("use_restriction") or ""
+    if use_restr:
+        display_restr = html.escape(use_restr.replace("_", " "))
+        use_restriction_html = (
+            f' <span class="use-restriction-note">Scores are flagged: '
+            f'<em>{display_restr}</em>. '
+            f'Not approved for underwriting or binding decisions.</span>'
+        )
+    else:
+        use_restriction_html = ""
+
+    # Scale context note
+    score_scale_note_html = (
+        '<p class="score-scale-note">'
+        'All scores are on a 0–100 scale. '
+        'National median wildfire risk score ≈ 18.'
+        '</p>'
+    )
+
     return {
         "score_rows_html": "\n".join(score_rows_html),
         "driver_rows_html": "\n".join(driver_rows_html),
@@ -691,6 +761,10 @@ def _build_template_fragments(context: dict[str, Any]) -> dict[str, str]:
         "mitigation_table_rows_html": "\n".join(mitigation_table_rows_html),
         "details_or_confidence_html": details_or_confidence_html,
         "data_sources_html": data_sources_html,
+        "insurability_row_html": insurability_row_html,
+        "confidence_block_html": confidence_block_html,
+        "use_restriction_html": use_restriction_html,
+        "score_scale_note_html": score_scale_note_html,
     }
 
 
@@ -809,8 +883,8 @@ def _build_pdf_pages(context: dict[str, Any]) -> list[_PdfPage]:
     risk_rgb = _hex_to_rgb(context["risk_level_color"])
     p1.rect(48, y - 98, 512, 98, fill=(1, 1, 1), stroke=_hex_to_rgb("#e2e8f0"))
     p1.rect(48, y - 98, 8, 98, fill=risk_rgb)
-    p1.text(62, y - 26, context["risk_level_label"], font="F2", size=22, color=risk_rgb)
-    p1.text(425, y - 30, context["overall_score_text"], font="F2", size=28, color=risk_rgb)
+    p1.text(62, y - 26, context["risk_level_label"], font="F2", size=24, color=risk_rgb)
+    p1.text(425, y - 30, context["overall_score_text"], font="F2", size=18, color=risk_rgb)
     _add_wrapped(p1, 62, y - 50, context["risk_level_summary"], font="F1", size=10.5, width=74, leading=12)
 
     y -= 120
@@ -821,12 +895,33 @@ def _build_pdf_pages(context: dict[str, Any]) -> list[_PdfPage]:
             p1.text(48, yy - 10, row["note"], font="F1", size=8, color=_hex_to_rgb("#64748b"))
         p1.rect(230, yy - 8, 220, 8, fill=_hex_to_rgb("#e2e8f0"))
         p1.rect(230, yy - 8, 2.2 * float(row["width"]), 8, fill=_hex_to_rgb(row["color"]))
-        p1.text(468, yy - 1, f"{float(row['value']):.1f}", font="F2", size=10)
+        score_text = f"{float(row['value']):.1f}"
+        # Right-align: approximate char width ~5.5 units at 10pt Helvetica Bold
+        x_score = 488 - len(score_text) * 5.5
+        p1.text(x_score, yy - 1, score_text, font="F2", size=10)
 
     y -= 92
-    p1.text(48, y, f"Data Confidence: {context['environmental_confidence_tier_label']} | Home Details: {context['structural_confidence_tier_label']}", size=9.5, color=_hex_to_rgb("#64748b"))
+    # Scale context note
+    p1.text(48, y, "All scores are on a 0–100 scale. National median wildfire risk score ≈ 18.", size=8.5, color=_hex_to_rgb("#94a3b8"))
+    y -= 13
+    # Confidence line: use computed summary text when available
+    conf_text_pdf = context.get("confidence_summary_text") or ""
+    if conf_text_pdf:
+        _add_wrapped(p1, 48, y, conf_text_pdf, font="F1", size=9.5, color=_hex_to_rgb("#64748b"), width=94, leading=11)
+    else:
+        p1.text(48, y, f"Data Confidence: {context['environmental_confidence_tier_label']} | Home Details: {context['structural_confidence_tier_label']}", size=9.5, color=_hex_to_rgb("#64748b"))
     y -= 14
     _add_wrapped(p1, 48, y, context["coverage_note"], font="F1", size=9, color=_hex_to_rgb("#64748b"), width=94, leading=11)
+
+    # Insurability status
+    ins_status_pdf = context.get("insurability_status") or ""
+    if ins_status_pdf:
+        y -= 14
+        p1.text(48, y, f"Insurance Readiness: {ins_status_pdf}", font="F2", size=9.5, color=_hex_to_rgb("#0f172a"))
+        ins_reasons_pdf = context.get("insurability_status_reasons") or []
+        for reason in ins_reasons_pdf[:3]:
+            y -= 11
+            p1.text(54, y, f"- {reason}", size=8.5, color=_hex_to_rgb("#64748b"))
 
     y = 96
     legal = (
@@ -834,6 +929,9 @@ def _build_pdf_pages(context: dict[str, Any]) -> list[_PdfPage]:
         "guarantee insurability, or predict future wildfire behavior. Risk assessments are based on publicly available data "
         "and may not reflect recent changes to property conditions."
     )
+    use_restr_pdf = context.get("use_restriction") or ""
+    if use_restr_pdf:
+        legal += f" Scores are flagged: {use_restr_pdf.replace('_', ' ')}. Not approved for underwriting or binding decisions."
     _add_wrapped(p1, 48, y, legal, font="F1", size=8.5, color=_hex_to_rgb("#64748b"), width=96, leading=10)
 
     # Page 2
@@ -961,52 +1059,6 @@ def _build_pdf_pages(context: dict[str, Any]) -> list[_PdfPage]:
         y = _add_wrapped(p4, 48, y, line, size=9.3, width=94, leading=11)
         y -= 3
 
-    # Keep historical phrases expected by existing tests while preserving the new document.
-    legacy_phrase = (
-        "Wildfire Risk Report | Homeowner Decision Snapshot | Top 3 Risk Drivers | Top 3 Recommended Actions | "
-        "Before vs After Snapshot | Confidence Note | Risk Breakdown and Subscores | Property Context and Map | "
-        "Local Map View | Mitigation Details | If You Complete These Actions | Confidence and Limitations | Advanced Details"
-    )
-    p4.text(48, 64, legacy_phrase, size=6.5, color=_hex_to_rgb("#64748b"))
-    compatibility_markers = (
-        f"Wildfire risk level: {context['risk_level_label']} | Confidence level: {context['global_confidence_tier_label']} | "
-        "One-sentence summary: homeowner guidance summary | Property Address: "
-        f"{context['property_address']} | Location context: Local map context | "
-        "Observed for this report | Missing or estimated | Ring legend: "
-        "0-5ft red, 5-30ft orange, 30-100ft yellow, 100-300ft green | "
-        "Map centered on this report location: yes | Most Important Next Step | Effort level: medium | "
-        "lower wildfire exposure | Data completeness: varies by source | "
-        f"Specificity: {context['specificity_label']} | "
-        "Map note: geometry is anchored to property-level footprint and parcel context | "
-        "Map note: geometry is approximate | "
-        "Specificity: Regional estimate | "
-        "nearby debris"
-    )
-    p4.text(48, 56, compatibility_markers, size=6.3, color=_hex_to_rgb("#64748b"))
-    if context.get("global_confidence_tier") in {"low", "preliminary"}:
-        p4.text(
-            48,
-            48,
-            "Why this may be broader: regional data was used for some factors | Limited-data case",
-            size=6.8,
-            color=_hex_to_rgb("#64748b"),
-        )
-    if context.get("headline_summary"):
-        p4.text(48, 46, context["headline_summary"], size=7.5)
-    if context.get("confidence_limitations_explanation"):
-        p4.text(48, 44, context["confidence_limitations_explanation"], size=7.5)
-    # Compatibility marker retained for historical layout tests.
-    p4.text(48, 44, "layout-marker", font="F2", size=13.5, color=_hex_to_rgb("#64748b"))
-
-    # Confidence phrase compatibility for existing homeowner tests.
-    tier = str(context.get("global_confidence_tier") or context.get("environmental_confidence_tier") or "low").lower()
-    if tier == "high":
-        p4.text(48, 52, "Most key inputs were directly observed for this report.", size=7.5)
-        p4.text(48, 44, "helps lower ignition pressure around the home", size=7.5)
-    else:
-        p4.text(48, 52, "Several details were estimated or missing, so treat this as a screening assessment.", size=7.5)
-        p4.text(48, 44, "may be increasing wildfire exposure", size=7.5)
-        p4.text(310, 44, "could lower ignition pressure around the home", size=7.5)
 
     return pages
 
