@@ -668,10 +668,45 @@
               },
             });
             setRepositionedAnchor({ latitude: lat, longitude: lng });
-            await finalizeAssessment(result, {
-              showBanner: !!attrsToOffer,
-              attributesToOffer: attrsToOffer,
+
+            // Same property, better location — auto-apply previously submitted
+            // home details rather than forcing the user to click a banner.
+            let finalResult = result;
+            let autoApplied = false;
+            if (attrsToOffer && result.assessment_id) {
+              try {
+                const controller = new AbortController();
+                const timeout = setTimeout(() => controller.abort(), 15000);
+                const reassessResp = await fetch(
+                  `${API_BASE}/risk/reassess/${result.assessment_id}`,
+                  {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json", "X-API-Key": API_KEY },
+                    body: JSON.stringify({
+                      attributes: attrsToOffer,
+                      confirmed_fields: Object.keys(attrsToOffer),
+                      audience: "homeowner",
+                      property_anchor_point: { latitude: lat, longitude: lng },
+                    }),
+                    signal: controller.signal,
+                  }
+                );
+                clearTimeout(timeout);
+                if (reassessResp.ok) {
+                  finalResult = await reassessResp.json();
+                  autoApplied = true;
+                }
+              } catch (e) {
+                // Auto-reassess timed out or failed — fall through to banner
+                console.warn("Auto-reassess after reposition failed:", e);
+              }
+            }
+
+            await finalizeAssessment(finalResult, {
+              showBanner: !autoApplied && !!attrsToOffer,
+              attributesToOffer: autoApplied ? null : attrsToOffer,
             });
+            if (autoApplied) setLastSubmittedAttributes(attrsToOffer);
           } catch (err) {
             setError(classifyInputError(err));
             setScreen("error");

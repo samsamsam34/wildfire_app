@@ -257,3 +257,23 @@ def test_no_debug_console_logs_present() -> None:
 def test_window_last_assessment_id_set() -> None:
     script = _script_block(_frontend_html())
     assert "window._lastAssessmentId" in script
+
+
+def test_reposition_auto_reassess_path_exists() -> None:
+    """runRepositionedAssessment must contain a /risk/reassess fetch for auto-apply."""
+    script = _script_block(_frontend_html())
+    # The auto-reassess fetch is inside runRepositionedAssessment
+    assert "/risk/reassess/${result.assessment_id}" in script
+
+
+def test_reposition_auto_reassess_conditional_on_attrs() -> None:
+    """Auto-reassess must be guarded by attrsToOffer being non-null."""
+    script = _script_block(_frontend_html())
+    # Guard: only fires when attrsToOffer and result.assessment_id exist
+    assert "attrsToOffer && result.assessment_id" in script
+
+
+def test_reposition_show_banner_false_when_auto_applied() -> None:
+    """showBanner must be false when autoApplied is true."""
+    script = _script_block(_frontend_html())
+    assert "showBanner: !autoApplied && !!attrsToOffer" in script
