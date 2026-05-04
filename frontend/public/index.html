@@ -770,6 +770,7 @@
         }
 
         async function runReassessWithAttributes(attrs) {
+          console.log('[Apply] runReassessWithAttributes called with attrs:', attrs, 'assessmentId:', assessment?.assessment_id);
           if (!assessment?.assessment_id) return;
           const confirmed_fields = Object.keys(attrs);
           const reassessBody = {
@@ -784,15 +785,18 @@
           setDetailsBusy(true);
           setDetailsError("");
           try {
+            console.log('[Apply] Fetching reassess for id:', assessment.assessment_id, 'body:', JSON.stringify(reassessBody));
             const updated = await apiFetch(`/risk/reassess/${assessment.assessment_id}`, {
               method: "POST",
               body: reassessBody,
             });
+            console.log('[Apply] Reassess result:', updated?.assessment_id, 'structural_confidence_tier:', updated?.structural_confidence_tier, 'home_hardening_readiness:', updated?.home_hardening_readiness);
             setAssessment(updated);
             await loadResultExtras(updated.assessment_id);
             setLastSubmittedAttributes(attrs);
             setToast("Home details applied");
           } catch (err) {
+            console.log('[Apply] Reassess error:', err?.message, 'status:', err?.status);
             setDetailsError(String(err?.message || "Unable to apply home details right now."));
           } finally {
             setDetailsBusy(false);
@@ -1024,7 +1028,7 @@
                           className: "rounded-lg px-3 py-1 text-xs text-white",
                           style: { background: "var(--brand)" },
                           disabled: detailsBusy,
-                          onClick: () => runReassessWithAttributes(lastSubmittedAttributes),
+                          onClick: () => { console.log('[Apply] Button clicked. lastSubmittedAttributes:', lastSubmittedAttributes, 'assessment?.assessment_id:', assessment?.assessment_id); runReassessWithAttributes(lastSubmittedAttributes); },
                         },
                         "Apply home details"
                       ),
