@@ -277,3 +277,26 @@ def test_reposition_show_banner_false_when_auto_applied() -> None:
     """showBanner must be false when autoApplied is true."""
     script = _script_block(_frontend_html())
     assert "showBanner: !autoApplied && !!attrsToOffer" in script
+
+
+def test_reposition_clears_stale_banner_state() -> None:
+    """runRepositionedAssessment must reset showApplyBanner at start."""
+    html = _frontend_html()
+    # setShowApplyBanner(false) must appear inside runRepositionedAssessment
+    # (before the fetch), not only inside runReassessWithAttributes.
+    assert html.count("setShowApplyBanner(false)") >= 2
+
+
+def test_apply_banner_error_uses_toast() -> None:
+    """Errors from runReassessWithAttributes must call setToast so they are
+    visible even when the details panel is closed."""
+    script = _script_block(_frontend_html())
+    # The catch block in runReassessWithAttributes must call setToast
+    assert "setToast(msg)" in script
+
+
+def test_reassess_with_attributes_captures_id_early() -> None:
+    """assessmentId must be captured before any await in runReassessWithAttributes."""
+    script = _script_block(_frontend_html())
+    assert "const assessmentId = assessment?.assessment_id" in script
+    assert "assessmentId) return" in script

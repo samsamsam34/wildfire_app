@@ -655,6 +655,7 @@
           setAssessment(null);
           setReport(null);
           setMapGeometry(null);
+          setShowApplyBanner(false);
 
           try {
             const result = await apiFetch("/risk/assess", {
@@ -770,8 +771,10 @@
         }
 
         async function runReassessWithAttributes(attrs) {
-          console.log('[Apply] runReassessWithAttributes called with attrs:', attrs, 'assessmentId:', assessment?.assessment_id);
-          if (!assessment?.assessment_id) return;
+          // Capture assessment_id synchronously before any awaits so the
+          // closure value can't drift if a re-render fires mid-flight.
+          const assessmentId = assessment?.assessment_id;
+          if (!assessmentId) return;
           const confirmed_fields = Object.keys(attrs);
           const reassessBody = {
             attributes: attrs,
@@ -785,19 +788,20 @@
           setDetailsBusy(true);
           setDetailsError("");
           try {
-            console.log('[Apply] Fetching reassess for id:', assessment.assessment_id, 'body:', JSON.stringify(reassessBody));
-            const updated = await apiFetch(`/risk/reassess/${assessment.assessment_id}`, {
+            const updated = await apiFetch(`/risk/reassess/${assessmentId}`, {
               method: "POST",
               body: reassessBody,
             });
-            console.log('[Apply] Reassess result:', updated?.assessment_id, 'structural_confidence_tier:', updated?.structural_confidence_tier, 'home_hardening_readiness:', updated?.home_hardening_readiness);
             setAssessment(updated);
             await loadResultExtras(updated.assessment_id);
             setLastSubmittedAttributes(attrs);
             setToast("Home details applied");
           } catch (err) {
-            console.log('[Apply] Reassess error:', err?.message, 'status:', err?.status);
-            setDetailsError(String(err?.message || "Unable to apply home details right now."));
+            // Surface the error as a toast — detailsError only renders inside
+            // the details panel, which is closed after a reposition.
+            const msg = String(err?.message || "Unable to apply home details right now.");
+            setDetailsError(msg);
+            setToast(msg);
           } finally {
             setDetailsBusy(false);
           }
@@ -1028,7 +1032,7 @@
                           className: "rounded-lg px-3 py-1 text-xs text-white",
                           style: { background: "var(--brand)" },
                           disabled: detailsBusy,
-                          onClick: () => { console.log('[Apply] Button clicked. lastSubmittedAttributes:', lastSubmittedAttributes, 'assessment?.assessment_id:', assessment?.assessment_id); runReassessWithAttributes(lastSubmittedAttributes); },
+                          onClick: () => runReassessWithAttributes(lastSubmittedAttributes),
                         },
                         "Apply home details"
                       ),
