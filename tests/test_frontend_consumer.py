@@ -170,7 +170,7 @@ def test_reposition_pin_ui_present() -> None:
 
 def test_score_range_context_present() -> None:
     script = _script_block(_frontend_html())
-    assert "0\u2013100" in script or "0-100" in script
+    assert "0–100" in script or "0-100" in script
     assert "national median" in script.lower()
 
 
@@ -202,12 +202,6 @@ def test_crosshair_cursor_code_present() -> None:
     assert "getContainer" in script
 
 
-def test_reposition_passes_attrs_to_offer() -> None:
-    script = _script_block(_frontend_html())
-    # Every /risk/assess finalizeAssessment call should pass attributesToOffer
-    assert script.count("attributesToOffer: attrsToOffer") >= 2
-
-
 def test_reposition_footprint_marker_removed_on_exit() -> None:
     script = _script_block(_frontend_html())
     # Pulse marker tracked in repositionFootprint and removed on exit
@@ -225,12 +219,6 @@ def test_summarize_attributes_function_exists() -> None:
     assert "summarizeAttributes" in script
     # Must produce a plain-English summary with known field labels
     assert "Screened vents" in script
-
-
-def test_dismiss_clears_last_submitted_attributes() -> None:
-    script = _script_block(_frontend_html())
-    # Dismiss button must set lastSubmittedAttributes to null
-    assert "setLastSubmittedAttributes(null)" in script
 
 
 def test_show_all_actions_toggle_present() -> None:
@@ -252,6 +240,7 @@ def test_no_debug_console_logs_present() -> None:
     html = _frontend_html()
     assert "[RF]" not in html
     assert "[Banner]" not in html
+    assert "[Apply]" not in html
 
 
 def test_window_last_assessment_id_set() -> None:
@@ -259,44 +248,34 @@ def test_window_last_assessment_id_set() -> None:
     assert "window._lastAssessmentId" in script
 
 
-def test_reposition_auto_reassess_path_exists() -> None:
-    """runRepositionedAssessment must contain a /risk/reassess fetch for auto-apply."""
-    script = _script_block(_frontend_html())
-    # The auto-reassess fetch is inside runRepositionedAssessment
-    assert "/risk/reassess/${result.assessment_id}" in script
+# --- Banner removal assertions ---
 
-
-def test_reposition_auto_reassess_conditional_on_attrs() -> None:
-    """Auto-reassess must be guarded by attrsToOffer being non-null."""
-    script = _script_block(_frontend_html())
-    # Guard: only fires when attrsToOffer and result.assessment_id exist
-    assert "attrsToOffer && result.assessment_id" in script
-
-
-def test_reposition_show_banner_false_when_auto_applied() -> None:
-    """showBanner must be false when autoApplied is true."""
-    script = _script_block(_frontend_html())
-    assert "showBanner: !autoApplied && !!attrsToOffer" in script
-
-
-def test_reposition_clears_stale_banner_state() -> None:
-    """runRepositionedAssessment must reset showApplyBanner at start."""
+def test_show_apply_banner_removed() -> None:
+    """showApplyBanner must not appear anywhere — banner flow was replaced by
+    silent auto-apply inside finalizeAssessment."""
     html = _frontend_html()
-    # setShowApplyBanner(false) must appear inside runRepositionedAssessment
-    # (before the fetch), not only inside runReassessWithAttributes.
-    assert html.count("setShowApplyBanner(false)") >= 2
+    assert "showApplyBanner" not in html
 
 
-def test_apply_banner_error_uses_toast() -> None:
-    """Errors from runReassessWithAttributes must call setToast so they are
-    visible even when the details panel is closed."""
+def test_reassess_with_attributes_removed() -> None:
+    """runReassessWithAttributes must not appear — its logic now lives inside
+    finalizeAssessment as a silent auto-apply step."""
+    html = _frontend_html()
+    assert "runReassessWithAttributes" not in html
+
+
+def test_last_submitted_attributes_still_present() -> None:
+    """lastSubmittedAttributes state must remain — it feeds the auto-apply in
+    finalizeAssessment and pre-fills the manual details form."""
     script = _script_block(_frontend_html())
-    # The catch block in runReassessWithAttributes must call setToast
-    assert "setToast(msg)" in script
+    assert "lastSubmittedAttributes" in script
 
 
-def test_reassess_with_attributes_captures_id_early() -> None:
-    """assessmentId must be captured before any await in runReassessWithAttributes."""
+def test_finalize_assessment_auto_applies_saved_attrs() -> None:
+    """finalizeAssessment must contain the /risk/reassess fetch that silently
+    applies saved home details when present."""
     script = _script_block(_frontend_html())
-    assert "const assessmentId = assessment?.assessment_id" in script
-    assert "assessmentId) return" in script
+    # This specific interpolation only appears in finalizeAssessment's auto-apply
+    assert "/risk/reassess/${result.assessment_id}" in script
+    # The fetch is conditional on savedAttrs being non-null
+    assert "savedAttrs && result.assessment_id" in script

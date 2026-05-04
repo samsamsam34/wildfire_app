@@ -517,7 +517,6 @@
         const [repositionMode, setRepositionMode] = useState(false);
         const [repositionedAnchor, setRepositionedAnchor] = useState(null);
         const [lastSubmittedAttributes, setLastSubmittedAttributes] = useState(null);
-        const [showApplyBanner, setShowApplyBanner] = useState(false);
         const [toast, setToast] = useState(null);
         const [error, setError] = useState(null);
 
@@ -586,14 +585,38 @@
           setMapGeometry(mapResult.status === "fulfilled" ? mapResult.value : null);
         }
 
-        async function finalizeAssessment(result, { showBanner = false, attributesToOffer = null } = {}) {
+        async function finalizeAssessment(result) {
           setAssessment(result);
           window._lastAssessmentId = result.assessment_id;
           setError(null);
           setScreen("results");
-          if (showBanner && attributesToOffer) {
-            setLastSubmittedAttributes(attributesToOffer);
-            setShowApplyBanner(true);
+          // Silently auto-apply saved home details when present — same property,
+          // attributes haven't changed regardless of whether the location was
+          // corrected or the address string was re-entered.
+          const savedAttrs = lastSubmittedAttributes;
+          if (savedAttrs && result.assessment_id) {
+            try {
+              const reassessResp = await fetch(
+                `${API_BASE}/risk/reassess/${result.assessment_id}`,
+                {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json", "X-API-Key": API_KEY },
+                  body: JSON.stringify({
+                    attributes: savedAttrs,
+                    confirmed_fields: Object.keys(savedAttrs),
+                    audience: "homeowner",
+                  }),
+                }
+              );
+              if (reassessResp.ok) {
+                const reassessResult = await reassessResp.json();
+                setAssessment(reassessResult);
+              }
+            } catch (e) {
+              // Silent fail — user sees the bare assess result and can re-enter
+              // details manually via the form.
+              console.warn("Auto-apply home details failed:", e);
+            }
           }
           await loadResultExtras(result.assessment_id);
         }
@@ -601,9 +624,6 @@
         async function runAssessment() {
           const address = String(addressInput || "").trim();
           if (!address) return;
-
-          // Capture before state resets below — used to offer re-apply after new assess
-          const attrsToOffer = lastSubmittedAttributes;
 
           setScreen("loading");
           setError(null);
@@ -632,10 +652,7 @@
               setScreen("confirm");
               return;
             }
-            await finalizeAssessment(result, {
-              showBanner: !!attrsToOffer,
-              attributesToOffer: attrsToOffer,
-            });
+            await finalizeAssessment(result);
           } catch (err) {
             setError(classifyInputError(err));
             setScreen("error");
@@ -646,16 +663,12 @@
           const address = matchedAddress || String(addressInput || "").trim();
           if (!address) return;
 
-          // Capture before state resets below — same pattern as runAssessment
-          const attrsToOffer = lastSubmittedAttributes;
-
           setRepositionMode(false);
           setScreen("loading");
           setError(null);
           setAssessment(null);
           setReport(null);
           setMapGeometry(null);
-          setShowApplyBanner(false);
 
           try {
             const result = await apiFetch("/risk/assess", {
@@ -669,45 +682,7 @@
               },
             });
             setRepositionedAnchor({ latitude: lat, longitude: lng });
-
-            // Same property, better location — auto-apply previously submitted
-            // home details rather than forcing the user to click a banner.
-            let finalResult = result;
-            let autoApplied = false;
-            if (attrsToOffer && result.assessment_id) {
-              try {
-                const controller = new AbortController();
-                const timeout = setTimeout(() => controller.abort(), 15000);
-                const reassessResp = await fetch(
-                  `${API_BASE}/risk/reassess/${result.assessment_id}`,
-                  {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json", "X-API-Key": API_KEY },
-                    body: JSON.stringify({
-                      attributes: attrsToOffer,
-                      confirmed_fields: Object.keys(attrsToOffer),
-                      audience: "homeowner",
-                      property_anchor_point: { latitude: lat, longitude: lng },
-                    }),
-                    signal: controller.signal,
-                  }
-                );
-                clearTimeout(timeout);
-                if (reassessResp.ok) {
-                  finalResult = await reassessResp.json();
-                  autoApplied = true;
-                }
-              } catch (e) {
-                // Auto-reassess timed out or failed — fall through to banner
-                console.warn("Auto-reassess after reposition failed:", e);
-              }
-            }
-
-            await finalizeAssessment(finalResult, {
-              showBanner: !autoApplied && !!attrsToOffer,
-              attributesToOffer: autoApplied ? null : attrsToOffer,
-            });
-            if (autoApplied) setLastSubmittedAttributes(attrsToOffer);
+            await finalizeAssessment(result);
           } catch (err) {
             setError(classifyInputError(err));
             setScreen("error");
@@ -760,48 +735,10 @@
             setAssessment(updated);
             await loadResultExtras(updated.assessment_id);
             setLastSubmittedAttributes(attributes);
-            setShowApplyBanner(false);
             setToast("Assessment updated");
             setShowDetailsPanel(false);
           } catch (err) {
             setDetailsError(String(err?.message || "Unable to update your assessment right now."));
-          } finally {
-            setDetailsBusy(false);
-          }
-        }
-
-        async function runReassessWithAttributes(attrs) {
-          // Capture assessment_id synchronously before any awaits so the
-          // closure value can't drift if a re-render fires mid-flight.
-          const assessmentId = assessment?.assessment_id;
-          if (!assessmentId) return;
-          const confirmed_fields = Object.keys(attrs);
-          const reassessBody = {
-            attributes: attrs,
-            confirmed_fields,
-            audience: "homeowner",
-          };
-          if (repositionedAnchor) {
-            reassessBody.property_anchor_point = repositionedAnchor;
-          }
-          setShowApplyBanner(false);
-          setDetailsBusy(true);
-          setDetailsError("");
-          try {
-            const updated = await apiFetch(`/risk/reassess/${assessmentId}`, {
-              method: "POST",
-              body: reassessBody,
-            });
-            setAssessment(updated);
-            await loadResultExtras(updated.assessment_id);
-            setLastSubmittedAttributes(attrs);
-            setToast("Home details applied");
-          } catch (err) {
-            // Surface the error as a toast — detailsError only renders inside
-            // the details panel, which is closed after a reposition.
-            const msg = String(err?.message || "Unable to apply home details right now.");
-            setDetailsError(msg);
-            setToast(msg);
           } finally {
             setDetailsBusy(false);
           }
@@ -953,13 +890,7 @@
                   {
                     className: "rounded-lg px-4 py-2 text-white touch-target",
                     style: { background: "var(--brand)" },
-                    onClick: () => {
-                      const attrsToOffer = lastSubmittedAttributes;
-                      finalizeAssessment(pendingAssessment, {
-                        showBanner: !!attrsToOffer,
-                        attributesToOffer: attrsToOffer,
-                      });
-                    },
+                    onClick: () => finalizeAssessment(pendingAssessment),
                   },
                   "Yes, that's correct"
                 ),
@@ -1005,49 +936,6 @@
                     `Assessment date: ${assessmentDate} · ID ${shortAssessmentId}`
                   )
                 ),
-                showApplyBanner && lastSubmittedAttributes &&
-                  React.createElement(
-                    "div",
-                    {
-                      className: "rounded-xl border-l-4 bg-blue-50 p-3",
-                      style: { borderLeftColor: "var(--brand)" },
-                    },
-                    React.createElement(
-                      "p",
-                      { className: "text-sm font-semibold", style: { color: "var(--brand)" } },
-                      "Apply saved home details?"
-                    ),
-                    React.createElement(
-                      "p",
-                      { className: "mt-1 text-xs", style: { color: "var(--text-muted)" } },
-                      `Saved: ${summarizeAttributes(lastSubmittedAttributes)}`
-                    ),
-                    React.createElement(
-                      "div",
-                      { className: "mt-2 flex gap-3" },
-                      React.createElement(
-                        "button",
-                        {
-                          type: "button",
-                          className: "rounded-lg px-3 py-1 text-xs text-white",
-                          style: { background: "var(--brand)" },
-                          disabled: detailsBusy,
-                          onClick: () => runReassessWithAttributes(lastSubmittedAttributes),
-                        },
-                        "Apply home details"
-                      ),
-                      React.createElement(
-                        "button",
-                        {
-                          type: "button",
-                          className: "text-xs",
-                          style: { color: "var(--text-muted)", background: "none", border: "none", cursor: "pointer" },
-                          onClick: () => { setShowApplyBanner(false); setLastSubmittedAttributes(null); },
-                        },
-                        "Dismiss"
-                      )
-                    )
-                  ),
                 React.createElement(
                   "div",
                   {
