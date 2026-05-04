@@ -202,6 +202,55 @@
         font-size: 9pt;
         color: var(--muted);
       }
+      .section-subheading {
+        font-size: 12pt;
+        color: #0f172a;
+        margin: 10px 0 6px;
+        font-weight: 600;
+      }
+      .readiness-blockers-section { margin: 12px 0; }
+      .blocker-list { margin: 4px 0; padding-left: 16px; font-size: 10pt; }
+      .blocker-item { color: #dc2626; margin: 3px 0; }
+      .blocker-item::marker { color: #dc2626; }
+      .driver-impact-numeric {
+        background: #fee2e2;
+        color: #991b1b;
+        border-color: #fecaca;
+      }
+      .what-to-do-first {
+        border: 2px solid #1e40af;
+        border-radius: 6px;
+        padding: 12px 16px;
+        margin: 16px 0 8px 0;
+        background: #f0f4ff;
+      }
+      .wtdf-label {
+        font-size: 8pt;
+        font-weight: 700;
+        color: #1e40af;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        margin-bottom: 4px;
+      }
+      .wtdf-action {
+        font-size: 12pt;
+        font-weight: 700;
+        color: #0f172a;
+        margin-bottom: 4px;
+      }
+      .wtdf-why { font-size: 10pt; color: #334155; margin-bottom: 4px; }
+      .wtdf-effort { font-size: 9pt; color: #64748b; }
+      .action-impact-context { font-size: 8.5pt; color: #94a3b8; margin-left: 4px; }
+      .defensible-space-section { margin: 12px 0; }
+      .ds-table { width: 100%; border-collapse: collapse; font-size: 9.5pt; }
+      .ds-zone {
+        width: 30%;
+        font-weight: 600;
+        color: #334155;
+        padding: 3px 8px 3px 0;
+        vertical-align: top;
+      }
+      .ds-finding { color: #475569; padding: 3px 0; vertical-align: top; }
     </style>
   </head>
   <body>
@@ -252,10 +301,13 @@
       <div class="note">Top 3 Risk Drivers</div>
       $driver_rows_html
 
+      $readiness_blockers_html
+
       <h2>Home Factors</h2>
       $home_factors_html
 
       $fire_history_callout_html
+      $defensible_space_html
 
       <div class="footer">Page 2 of 4</div>
     </section>
@@ -272,18 +324,7 @@
 
       $mitigation_cards_html
 
-      <table>
-        <thead>
-          <tr>
-            <th>Action</th>
-            <th>Priority</th>
-            <th>Est. Risk Reduction</th>
-          </tr>
-        </thead>
-        <tbody>
-          $mitigation_table_rows_html
-        </tbody>
-      </table>
+      $what_to_do_first_html
 
       <div class="footer">Page 3 of 4</div>
     </section>
@@ -302,6 +343,7 @@
         <tbody>
           <tr><th>Assessment ID</th><td>$assessment_id_full</td></tr>
           <tr><th>Generated</th><td>$generated_at</td></tr>
+          $gps_row_html
           <tr><th>Data sources</th><td>$data_sources_html</td></tr>
           <tr><th>Validity note</th><td>Risk scores reflect conditions at the time of assessment. Reassess after significant property changes or annually.</td></tr>
         </tbody>

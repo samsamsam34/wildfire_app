@@ -550,6 +550,44 @@ def prepare_template_context(report: Any) -> dict[str, Any]:
 
     property_summary = _as_dict(report_dict.get("property_summary"))
     report_header = _as_dict(report_dict.get("report_header"))
+
+    # Insurance readiness blockers and factors
+    ins_readiness = _as_dict(report_dict.get("insurance_readiness_summary"))
+    readiness_blockers = [
+        _safe_text(v) for v in _as_list(ins_readiness.get("readiness_blockers")) if _safe_text(v)
+    ]
+    readiness_factors_raw = [
+        _as_dict(v) for v in _as_list(ins_readiness.get("readiness_factors")) if _as_dict(v)
+    ]
+    readiness_factors = sorted(
+        readiness_factors_raw,
+        key=lambda f: abs(_to_float(f.get("score_impact")) or 0.0),
+        reverse=True,
+    )[:5]
+
+    # What to do first
+    wtdf_raw = _as_dict(report_dict.get("what_to_do_first"))
+    what_to_do_first = {
+        "action": _safe_text(wtdf_raw.get("action") or wtdf_raw.get("title")),
+        "why_it_matters": _safe_text(
+            wtdf_raw.get("why_it_matters") or wtdf_raw.get("why_this_matters") or wtdf_raw.get("description")
+        ),
+        "effort_level": _safe_text(wtdf_raw.get("effort_level") or wtdf_raw.get("effort")),
+    } if wtdf_raw else {}
+
+    # Defensible space zone findings
+    ds_summary = _as_dict(report_dict.get("defensible_space_summary"))
+    zone_findings_raw = ds_summary.get("zone_findings")
+    if isinstance(zone_findings_raw, list):
+        defensible_space_zones: list[dict[str, Any]] = [_as_dict(v) for v in zone_findings_raw[:4]]
+    elif isinstance(zone_findings_raw, dict):
+        defensible_space_zones = [{"zone": k, "finding": v} for k, v in list(zone_findings_raw.items())[:4]]
+    else:
+        defensible_space_zones = []
+
+    # GPS coordinates
+    property_latitude = _to_float(property_summary.get("latitude"))
+    property_longitude = _to_float(property_summary.get("longitude"))
     specificity_summary = _as_dict(report_dict.get("specificity_summary"))
     specificity_tier = _safe_text(specificity_summary.get("specificity_tier")).lower()
     specificity_label = SPECIFICITY_LABELS.get(specificity_tier) or (
@@ -600,6 +638,12 @@ def prepare_template_context(report: Any) -> dict[str, Any]:
         "confidence_summary_text": _safe_text(report_dict.get("confidence_summary_text")),
         "specificity_what_this_means": _safe_text(specificity_summary.get("what_this_means")),
         "use_restriction": _safe_text(score_summary.get("use_restriction")),
+        "readiness_blockers": readiness_blockers,
+        "readiness_factors": readiness_factors,
+        "what_to_do_first": what_to_do_first,
+        "defensible_space_zones": defensible_space_zones,
+        "property_latitude": property_latitude,
+        "property_longitude": property_longitude,
     }
 
     return context
@@ -627,15 +671,41 @@ def _build_template_fragments(context: dict[str, Any]) -> dict[str, str]:
         "LOW": "background:#ecfccb;color:#3f6212;border-color:#bef264;",
     }
 
+    # Build score_impact lookup from readiness_factors for driver row annotation
+    factor_impacts: dict[str, float] = {}
+    for _f in (context.get("readiness_factors") or []):
+        _fname = _safe_text(_f.get("name") if isinstance(_f, dict) else "").lower()
+        _fimpact = _to_float(_f.get("score_impact") if isinstance(_f, dict) else None)
+        if _fname and _fimpact is not None:
+            factor_impacts[_fname] = _fimpact
+
+    def _match_factor_impact(description: str) -> float | None:
+        desc_lower = description.lower()
+        best: float | None = None
+        for _fn, _fi in factor_impacts.items():
+            tokens = [t for t in re.split(r"[_\s]+", _fn) if len(t) > 3]
+            if tokens and any(t in desc_lower for t in tokens):
+                if best is None or abs(_fi) > abs(best):
+                    best = _fi
+        return best
+
     driver_rows_html = []
     for row in context["driver_rows"]:
-        impact = row.get("impact_label", "MEDIUM")
+        score_impact = _match_factor_impact(row.get("description", ""))
+        if score_impact is not None:
+            impact_badge = f'<span class="badge driver-impact-numeric">−{abs(score_impact):.0f} pts</span>'
+        else:
+            impact = row.get("impact_label", "MEDIUM")
+            impact_badge = (
+                f'<span class="badge" style="{impact_styles.get(impact, impact_styles["MEDIUM"])}">'
+                f'{html.escape(impact)} impact</span>'
+            )
         driver_rows_html.append(
             '<div class="driver-row">'
-            f"<div class=\"dot\" style=\"background:{severity_colors.get(row.get('severity','medium'),'#ea580c')}\"></div>"
-            f"<div>{html.escape(_safe_text(row.get('description')))}</div>"
-            f"<div class=\"badge\" style=\"{impact_styles.get(impact, impact_styles['MEDIUM'])}\">{html.escape(impact)} impact</div>"
-            "</div>"
+            f'<div class="dot" style="background:{severity_colors.get(row.get("severity", "medium"), "#ea580c")}"></div>'
+            f'<div>{html.escape(_safe_text(row.get("description")))}</div>'
+            f'{impact_badge}'
+            '</div>'
         )
 
     if context["details_rows"]:
@@ -660,18 +730,20 @@ def _build_template_fragments(context: dict[str, Any]) -> dict[str, str]:
 
     mitigation_cards_html = []
     mitigation_table_rows_html = []
+    overall_score_val = context.get("overall_score") or 0.0
     for row in context["mitigation_rows"]:
         priority = row["priority"]
         bg, fg = PRIORITY_STYLES.get(priority, PRIORITY_STYLES["MEDIUM"])
         impact_text = f"-{row['impact_points']:.1f} points"
+        impact_ctx = f'<span class="action-impact-context">(current: {overall_score_val:.1f}/100)</span>'
         meta_bits = [b for b in (row.get("cost"), row.get("timeline")) if b]
         meta_text = " | ".join(meta_bits)
         mitigation_cards_html.append(
             '<div class="action-card">'
             '<div class="action-top">'
-            f"<span class=\"badge\" style=\"background:{bg};color:{fg};\">{html.escape(priority)}</span>"
-            f"<span class=\"action-title\">{html.escape(row['title'])}</span>"
-            f"<span><strong>{impact_text}</strong></span>"
+            f'<span class="badge" style="background:{bg};color:{fg};">{html.escape(priority)}</span>'
+            f'<span class="action-title">{html.escape(row["title"])}</span>'
+            f'<span><strong>{impact_text}</strong> {impact_ctx}</span>'
             "</div>"
             f"<p>{html.escape(row['description'])}</p>"
             + (f"<div class=\"note\">{html.escape(meta_text)}</div>" if meta_text else "")
@@ -752,6 +824,66 @@ def _build_template_fragments(context: dict[str, Any]) -> dict[str, str]:
         '</p>'
     )
 
+    # Readiness blockers section (page 2)
+    blockers = context.get("readiness_blockers") or []
+    if blockers:
+        items_h = "".join(f'<li class="blocker-item">{html.escape(b)}</li>' for b in blockers[:5])
+        readiness_blockers_html = (
+            '<div class="readiness-blockers-section">'
+            '<h3 class="section-subheading">Insurance Readiness Flags</h3>'
+            f'<ul class="blocker-list">{items_h}</ul>'
+            '</div>'
+        )
+    else:
+        readiness_blockers_html = ""
+
+    # "What to do first" callout (replaces redundant action table on page 3)
+    wtdf = context.get("what_to_do_first") or {}
+    action_text = _safe_text(wtdf.get("action") or "")
+    if action_text:
+        why_h = (
+            f'<div class="wtdf-why">{html.escape(_safe_text(wtdf.get("why_it_matters") or ""))}</div>'
+            if wtdf.get("why_it_matters") else ""
+        )
+        effort_raw = _safe_text(wtdf.get("effort_level") or "")
+        effort_h = f'<div class="wtdf-effort">Effort: {html.escape(effort_raw.title())}</div>' if effort_raw else ""
+        what_to_do_first_html = (
+            '<div class="what-to-do-first">'
+            '<div class="wtdf-label">Start Here</div>'
+            f'<div class="wtdf-action">{html.escape(action_text)}</div>'
+            f'{why_h}{effort_h}'
+            '</div>'
+        )
+    else:
+        what_to_do_first_html = ""
+
+    # GPS coordinates row for metadata table (page 4)
+    lat = context.get("property_latitude")
+    lon = context.get("property_longitude")
+    if lat is not None and lon is not None:
+        gps_row_html = f'<tr><th>Coordinates</th><td>{lat:.5f}, {lon:.5f}</td></tr>'
+    else:
+        gps_row_html = ""
+
+    # Defensible space zone findings (page 2)
+    zones = context.get("defensible_space_zones") or []
+    if zones:
+        zone_rows = ""
+        for zone in zones[:4]:
+            z_label = html.escape(_safe_text(zone.get("zone") or zone.get("ring") or zone.get("name") or ""))
+            z_finding = html.escape(_safe_text(
+                zone.get("finding") or zone.get("summary") or zone.get("description") or str(zone)
+            ))
+            zone_rows += f'<tr><td class="ds-zone">{z_label}</td><td class="ds-finding">{z_finding}</td></tr>'
+        defensible_space_html = (
+            '<div class="defensible-space-section">'
+            '<h3 class="section-subheading">Defensible Space Analysis</h3>'
+            f'<table class="ds-table"><tbody>{zone_rows}</tbody></table>'
+            '</div>'
+        )
+    else:
+        defensible_space_html = ""
+
     return {
         "score_rows_html": "\n".join(score_rows_html),
         "driver_rows_html": "\n".join(driver_rows_html),
@@ -765,6 +897,10 @@ def _build_template_fragments(context: dict[str, Any]) -> dict[str, str]:
         "confidence_block_html": confidence_block_html,
         "use_restriction_html": use_restriction_html,
         "score_scale_note_html": score_scale_note_html,
+        "readiness_blockers_html": readiness_blockers_html,
+        "what_to_do_first_html": what_to_do_first_html,
+        "gps_row_html": gps_row_html,
+        "defensible_space_html": defensible_space_html,
     }
 
 

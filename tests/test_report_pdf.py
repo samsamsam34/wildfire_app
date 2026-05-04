@@ -289,3 +289,80 @@ def test_legacy_invisible_markers_removed_from_pdf() -> None:
     assert "layout-marker" not in pdf_text
     assert "compatibility_markers" not in pdf_text
     assert "Wildfire risk level:" not in pdf_text
+
+
+# --- Pass 2 improvement tests ---
+
+
+def _sample_report_pass2(**overrides: object) -> dict[str, object]:
+    base = _sample_report()
+    base["insurance_readiness_summary"] = {
+        "readiness_blockers": [
+            "Inspection required before underwriting decision",
+            "Very high adjacent fuel proximity",
+        ],
+        "readiness_factors": [
+            {"name": "adjacent_fuel_pressure", "status": "fail", "score_impact": -15.0, "detail": "Fuel very close."},
+            {"name": "defensible_space_distance", "status": "watch", "score_impact": -8.0, "detail": "Space insufficient."},
+        ],
+    }
+    base["what_to_do_first"] = {
+        "action": "Clear debris within 30 feet of all structures",
+        "why_it_matters": "Defensible space is the highest-impact single action.",
+        "effort_level": "medium",
+    }
+    base["property_summary"] = {
+        "address": "1355 Pattee Canyon Rd, Missoula, MT 59803",
+        "latitude": 46.83000,
+        "longitude": -113.98000,
+    }
+    base["defensible_space_summary"] = {
+        "zone_findings": [
+            {"zone": "0-5 ft", "finding": "No combustible materials observed."},
+            {"zone": "5-30 ft", "finding": "Dense brush present, needs clearing."},
+        ],
+    }
+    base.update(overrides)
+    return base
+
+
+def test_readiness_blockers_appear_in_html() -> None:
+    html_out = render_homeowner_report_html(_sample_report_pass2())
+    assert "Inspection required before underwriting decision" in html_out
+    assert "Very high adjacent fuel proximity" in html_out
+    assert "Insurance Readiness Flags" in html_out
+
+
+def test_what_to_do_first_appears_in_html() -> None:
+    html_out = render_homeowner_report_html(_sample_report_pass2())
+    assert "Clear debris within 30 feet of all structures" in html_out
+    assert "Start Here" in html_out
+    assert "Defensible space is the highest-impact single action." in html_out
+
+
+def test_score_impact_shown_on_driver_rows() -> None:
+    html_out = render_homeowner_report_html(_sample_report_pass2())
+    # Numeric pts badge should appear for at least one driver row
+    assert "pts" in html_out
+
+
+def test_action_baseline_context_shown() -> None:
+    html_out = render_homeowner_report_html(_sample_report_pass2())
+    assert "(current:" in html_out
+
+
+def test_gps_coordinates_in_metadata() -> None:
+    html_out = render_homeowner_report_html(_sample_report_pass2())
+    assert "46.83000" in html_out
+    assert "-113.98000" in html_out
+
+
+def test_defensible_space_zones_appear() -> None:
+    html_out = render_homeowner_report_html(_sample_report_pass2())
+    assert "0-5 ft" in html_out
+    assert "Dense brush present" in html_out
+
+
+def test_redundant_action_table_removed() -> None:
+    html_out = render_homeowner_report_html(_sample_report())
+    assert "Est. Risk Reduction" not in html_out
