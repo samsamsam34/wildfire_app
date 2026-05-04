@@ -165,6 +165,14 @@
         return { label: "CRITICAL", color: "var(--risk-critical)" };
       }
 
+      const RISK_DESCRIPTIONS = {
+        CRITICAL: "Extreme fire danger — immediate action strongly recommended.",
+        HIGH: "Significant risk — several important improvements are needed.",
+        ELEVATED: "Above-average risk — targeted improvements will help.",
+        MODERATE: "Moderate risk — basic precautions are available.",
+        LOW: "Relatively low risk based on available data.",
+      };
+
       function confidenceBadge(tier) {
         const key = String(tier || "").toLowerCase();
         if (key === "high") return "bg-emerald-100 text-emerald-800 border-emerald-200";
@@ -944,7 +952,13 @@
                   },
                   React.createElement("p", { className: "text-sm font-semibold", style: { color: "var(--text-muted)" } }, "Overall Wildfire Risk"),
                   React.createElement("p", { className: "mt-1 text-3xl font-bold" }, `${level.label} · ${score.toFixed(1)}`),
-                  React.createElement("p", { className: "mt-1 text-xs", style: { color: "var(--text-muted)" } }, "Scores range 0–100. National median ≈ 18. Higher means greater risk.")
+                  React.createElement("p", { className: "mt-1 text-xs", style: { color: "var(--text-muted)" } }, "Scores range 0–100. National median ≈ 18. Higher means greater risk."),
+                  (report?.confidence_summary_text || RISK_DESCRIPTIONS[level.label]) &&
+                    React.createElement(
+                      "p",
+                      { className: "mt-2 text-sm", style: { color: "var(--text-muted)" } },
+                      report?.confidence_summary_text || RISK_DESCRIPTIONS[level.label]
+                    )
                 ),
                 React.createElement(
                   "div",
@@ -977,7 +991,12 @@
                         })
                       )
                     );
-                  })
+                  }),
+                  React.createElement(
+                    "p",
+                    { className: "mt-3 text-xs", style: { color: "var(--text-muted)" } },
+                    "For Site Hazard and Home Vulnerability, higher scores indicate greater risk. For Home Hardening Readiness, higher scores are better."
+                  )
                 ),
                 React.createElement(
                   "div",

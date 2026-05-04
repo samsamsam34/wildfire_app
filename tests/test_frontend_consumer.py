@@ -279,3 +279,23 @@ def test_finalize_assessment_auto_applies_saved_attrs() -> None:
     assert "/risk/reassess/${result.assessment_id}" in script
     # The fetch is conditional on savedAttrs being non-null
     assert "savedAttrs && result.assessment_id" in script
+
+
+def test_finalize_assessment_no_show_banner_param() -> None:
+    """finalizeAssessment must not accept showBanner — banner was removed."""
+    script = _script_block(_frontend_html())
+    assert "showBanner" not in script
+
+
+def test_risk_descriptions_object_present() -> None:
+    """RISK_DESCRIPTIONS fallback must cover all five risk levels."""
+    script = _script_block(_frontend_html())
+    assert "RISK_DESCRIPTIONS" in script
+    for level in ["CRITICAL", "HIGH", "ELEVATED", "MODERATE", "LOW"]:
+        assert level in script
+
+
+def test_executive_summary_field_referenced() -> None:
+    """confidence_summary_text must be referenced in the render section."""
+    script = _script_block(_frontend_html())
+    assert "confidence_summary_text" in script
