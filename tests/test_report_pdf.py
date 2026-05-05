@@ -369,3 +369,43 @@ def test_defensible_space_zones_appear() -> None:
 def test_redundant_action_table_removed() -> None:
     html_out = render_homeowner_report_html(_sample_report())
     assert "Est. Risk Reduction" not in html_out
+
+
+# --- Pass 3 improvement tests ---
+
+
+def _sample_report_pass3(**overrides: object) -> dict[str, object]:
+    base = _sample_report_pass2()
+    base["score_summary"] = dict(base.get("score_summary", {}))  # type: ignore[arg-type]
+    base["score_summary"]["wildfire_risk_band"] = "elevated"  # type: ignore[index]
+    base["confidence_and_limitations"] = {
+        "observed_data": ["address", "parcel boundary geometry"],
+        "missing_data": ["building footprint", "construction year", "defensible space distance"],
+        "property_confidence_summary": {
+            "user_action_recommended": "Move pin to your home and confirm the building footprint.",
+        },
+    }
+    base["specificity_summary"] = {
+        "specificity_tier": "regional_estimate",
+        "comparison_allowed": False,
+    }
+    base.update(overrides)
+    return base
+
+
+def test_wildfire_risk_band_in_context() -> None:
+    context = prepare_template_context(_sample_report_pass3())
+    assert context.get("wildfire_risk_band") == "elevated"
+
+
+def test_directly_observed_appears_in_html() -> None:
+    html_out = render_homeowner_report_html(_sample_report_pass3())
+    assert "Directly observed" in html_out
+    assert "parcel boundary geometry" in html_out
+    assert "Not yet assessed" in html_out
+    assert "building footprint" in html_out
+
+
+def test_comparison_disclosure_when_not_allowed() -> None:
+    html_out = render_homeowner_report_html(_sample_report_pass3())
+    assert "Adjacent-property score comparisons are not supported" in html_out

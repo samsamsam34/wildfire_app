@@ -720,12 +720,23 @@ def prepare_template_context(report: Any) -> dict[str, Any]:
         "specificity_comparison_allowed": specificity_summary.get("comparison_allowed"),
         "specificity_geometry_source": _safe_text(specificity_summary.get("geometry_source") or specificity_summary.get("anchor_source") or ""),
         "use_restriction": _safe_text(score_summary.get("use_restriction")),
+        "wildfire_risk_band": _safe_text(score_summary.get("wildfire_risk_band")),
         "readiness_blockers": readiness_blockers,
         "readiness_factors": readiness_factors,
         "what_to_do_first": what_to_do_first,
         "defensible_space_zones": defensible_space_zones,
         "property_latitude": property_latitude,
         "property_longitude": property_longitude,
+        "directly_observed": [
+            _safe_text(v) for v in _as_list(confidence.get("observed_data"))
+            if _safe_text(v) and "_" not in (_safe_text(v).split(": ")[-1])
+        ],
+        "missing_or_unknown": [
+            _safe_text(v) for v in _as_list(confidence.get("missing_data")) if _safe_text(v)
+        ],
+        "user_action_recommended": _safe_text(
+            _as_dict(confidence.get("property_confidence_summary")).get("user_action_recommended")
+        ),
     }
 
     return context
@@ -919,6 +930,55 @@ def _build_template_fragments(context: dict[str, Any]) -> dict[str, str]:
     # "What to do first" callout — removed from rendering (context kept for downstream use)
     what_to_do_first_html = ""
 
+    # Risk band note (page 1 risk badge)
+    band = _safe_text(context.get("wildfire_risk_band") or "")
+    risk_label_upper = (context.get("risk_level_label") or "").upper()
+    if band and band.upper() not in risk_label_upper:
+        risk_band_html = f'<div class="risk-band-note">Environmental band: {html.escape(band.title())}</div>'
+    else:
+        risk_band_html = ""
+
+    # Comparison disclosure (page 1 legal)
+    comparison_allowed = context.get("specificity_comparison_allowed")
+    if comparison_allowed is False:
+        comparison_disclosure_html = (
+            ' <span class="comparison-note">'
+            'Adjacent-property score comparisons are not supported for this assessment.'
+            '</span>'
+        )
+    else:
+        comparison_disclosure_html = ""
+
+    # Data quality section (page 4)
+    directly_observed = context.get("directly_observed") or []
+    missing_or_unknown = context.get("missing_or_unknown") or []
+    user_action = _safe_text(context.get("user_action_recommended") or "")
+    if directly_observed or missing_or_unknown:
+        obs_html = ""
+        if directly_observed:
+            obs_html = (
+                '<p class="dq-label">Directly observed:</p>'
+                f'<p class="dq-items">{html.escape(", ".join(directly_observed))}</p>'
+            )
+        miss_html = ""
+        if missing_or_unknown:
+            miss_html = (
+                '<p class="dq-label">Not yet assessed:</p>'
+                f'<p class="dq-items">{html.escape(", ".join(missing_or_unknown[:6]))}</p>'
+            )
+        action_html = (
+            f'<p class="dq-action">Next step: {html.escape(user_action)}</p>'
+            if user_action else ""
+        )
+        data_quality_html = (
+            '<div class="data-quality-section">'
+            '<h3 class="section-subheading">What Was Measured</h3>'
+            f'{obs_html}{miss_html}{action_html}'
+            '</div>'
+        )
+    else:
+        data_quality_html = ""
+
     # GPS coordinates row for metadata table (page 4)
     lat = context.get("property_latitude")
     lon = context.get("property_longitude")
@@ -963,6 +1023,9 @@ def _build_template_fragments(context: dict[str, Any]) -> dict[str, str]:
         "what_to_do_first_html": what_to_do_first_html,
         "gps_row_html": gps_row_html,
         "defensible_space_html": defensible_space_html,
+        "risk_band_html": risk_band_html,
+        "comparison_disclosure_html": comparison_disclosure_html,
+        "data_quality_html": data_quality_html,
     }
 
 
@@ -1070,13 +1133,19 @@ def _build_pdf_pages(context: dict[str, Any]) -> list[_PdfPage]:
 
     y -= 26
     risk_rgb = _hex_to_rgb(context["risk_level_color"])
-    p1.rect(48, y - 98, 512, 98, fill=(1, 1, 1), stroke=_hex_to_rgb("#e2e8f0"))
-    p1.rect(48, y - 98, 8, 98, fill=risk_rgb)
+    band_pdf = _safe_text(context.get("wildfire_risk_band") or "")
+    risk_label_upper_pdf = (context.get("risk_level_label") or "").upper()
+    show_band = band_pdf and band_pdf.upper() not in risk_label_upper_pdf
+    badge_height = 112 if show_band else 98
+    p1.rect(48, y - badge_height, 512, badge_height, fill=(1, 1, 1), stroke=_hex_to_rgb("#e2e8f0"))
+    p1.rect(48, y - badge_height, 8, badge_height, fill=risk_rgb)
     p1.text(62, y - 26, context["risk_level_label"], font="F2", size=24, color=risk_rgb)
     p1.text(425, y - 30, context["overall_score_text"], font="F2", size=18, color=risk_rgb)
     _add_wrapped(p1, 62, y - 50, context["risk_level_summary"], font="F1", size=10.5, width=74, leading=12)
+    if show_band:
+        p1.text(62, y - badge_height + 10, f"Environmental band: {band_pdf.title()}", font="F1", size=8.5, color=_hex_to_rgb("#64748b"))
 
-    y -= 120
+    y -= badge_height + 22
     for idx, row in enumerate(context["score_rows"]):
         yy = y - idx * 28
         p1.text(48, yy, row["label"], font="F1", size=10)
@@ -1132,6 +1201,8 @@ def _build_pdf_pages(context: dict[str, Any]) -> list[_PdfPage]:
     use_restr_pdf = context.get("use_restriction") or ""
     if use_restr_pdf:
         legal += f" Scores are flagged: {use_restr_pdf.replace('_', ' ')}. Not approved for underwriting or binding decisions."
+    if context.get("specificity_comparison_allowed") is False:
+        legal += " Adjacent-property score comparisons are not supported for this assessment."
     _add_wrapped(p1, 48, y, legal, font="F1", size=8.5, color=_hex_to_rgb("#64748b"), width=96, leading=10)
 
     # Page 2
@@ -1290,6 +1361,27 @@ def _build_pdf_pages(context: dict[str, Any]) -> list[_PdfPage]:
             y -= max(40, (y - y2) + 12)
 
     y -= 8
+
+    # "What Was Measured" section from confidence_and_limitations
+    pdf_observed = context.get("directly_observed") or []
+    pdf_missing = context.get("missing_or_unknown") or []
+    pdf_action = _safe_text(context.get("user_action_recommended") or "")
+    if pdf_observed or pdf_missing:
+        p4.text(48, y, "What Was Measured", font="F2", size=12, color=_hex_to_rgb("#0f172a"))
+        y -= 14
+        if pdf_observed:
+            obs_line = "Directly observed: " + ", ".join(pdf_observed)
+            y2 = _add_wrapped(p4, 48, y, _sanitize_text(obs_line), font="F1", size=9, color=_hex_to_rgb("#334155"), width=94, leading=11)
+            y = min(y - 12, y2 - 2)
+        if pdf_missing:
+            miss_line = "Not yet assessed: " + ", ".join(pdf_missing[:6])
+            y2 = _add_wrapped(p4, 48, y, _sanitize_text(miss_line), font="F1", size=9, color=_hex_to_rgb("#64748b"), width=94, leading=11)
+            y = min(y - 12, y2 - 2)
+        if pdf_action:
+            y2 = _add_wrapped(p4, 48, y, f"Next step: {_sanitize_text(pdf_action)}", font="F1", size=8.5, color=_hex_to_rgb("#1e40af"), width=94, leading=10)
+            y = min(y - 12, y2 - 2)
+        y -= 6
+
     p4.text(48, y, "Assessment Metadata", font="F2", size=14, color=_hex_to_rgb("#1e40af"))
     y -= 16
     meta_lines = [

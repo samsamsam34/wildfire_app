@@ -255,6 +255,18 @@
         vertical-align: top;
       }
       .ds-finding { color: #475569; padding: 3px 0; vertical-align: top; }
+      .risk-band-note { font-size: 9pt; color: #64748b; margin-top: 4px; }
+      .comparison-note { font-size: 8.5pt; color: #92400e; }
+      .data-quality-section {
+        margin: 12px 0;
+        padding: 10px 12px;
+        background: #f8fafc;
+        border-left: 3px solid #e2e8f0;
+        font-size: 9.5pt;
+      }
+      .dq-label { font-weight: 600; color: #334155; margin: 4px 0 2px 0; }
+      .dq-items { color: #64748b; margin: 0 0 6px 0; }
+      .dq-action { color: #1e40af; font-style: italic; margin: 6px 0 0 0; }
     </style>
   </head>
   <body>
@@ -274,6 +286,7 @@
           <div class="risk-score">$overall_score_text</div>
         </div>
         <div class="risk-summary">$risk_level_summary</div>
+        $risk_band_html
       </div>
 
       $insurability_row_html
@@ -289,7 +302,7 @@
       <div class="legal">
         This report is generated for informational purposes only and does not constitute professional engineering advice,
         guarantee insurability, or predict future wildfire behavior. Risk assessments are based on publicly available data
-        and may not reflect recent changes to property conditions.$use_restriction_html
+        and may not reflect recent changes to property conditions.$use_restriction_html$comparison_disclosure_html
       </div>
 
       <div class="footer">Page 1 of 4</div>
@@ -339,6 +352,8 @@
 
       <h2>Assessment Details &amp; How to Improve Your Score</h2>
       $details_or_confidence_html
+
+      $data_quality_html
 
       <h2>Assessment Metadata</h2>
       <table>
