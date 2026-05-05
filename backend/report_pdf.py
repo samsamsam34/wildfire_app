@@ -352,13 +352,6 @@ def _build_driver_rows(report: Any, overall_score: float) -> list[dict[str, str]
             "MEDIUM",
         )
 
-    if not rows:
-        add_row(
-            "Nearby wildland vegetation and terrain conditions contribute to wildfire exposure for this property.",
-            "medium",
-            "MEDIUM",
-        )
-
     return rows[:6]
 
 
@@ -862,15 +855,15 @@ def _build_template_fragments(context: dict[str, Any]) -> dict[str, str]:
             f'{spec_note_frag}'
         )
     else:
-        env_tier_esc = html.escape(context.get("environmental_confidence_tier_label") or "")
-        struct_label_esc = html.escape(context.get("structural_confidence_tier_label") or "Not Assessed")
-        cta_html = ""
-        if (context.get("structural_confidence_tier") or "").lower() == "not_assessed":
-            cta_html = '<span class="confidence-cta">(submit home details to unlock structural scoring)</span>'
-        confidence_block_html = (
-            f'<p class="confidence-line">Data Confidence: {env_tier_esc}'
-            f' | Home Details: {struct_label_esc}{cta_html}</p>'
-        )
+        env_tier = (context.get("environmental_confidence_tier") or "").lower()
+        struct_tier = (context.get("structural_confidence_tier") or "not_assessed").lower()
+        fallback_sent = f"Environmental risk data is {env_tier} confidence." if env_tier else ""
+        if struct_tier == "not_assessed":
+            cta = '<span class="confidence-cta">(submit home details to unlock structural scoring)</span>'
+            confidence_block_html = f'<p class="confidence-line">{html.escape(fallback_sent)} {cta}</p>'
+        else:
+            extra = f" Home details: {struct_tier} confidence."
+            confidence_block_html = f'<p class="confidence-line">{html.escape(fallback_sent + extra)}</p>'
 
     # Use restriction disclosure
     use_restr = context.get("use_restriction") or ""
@@ -1099,13 +1092,24 @@ def _build_pdf_pages(context: dict[str, Any]) -> list[_PdfPage]:
     # Scale context note
     p1.text(48, y, "All scores are on a 0-100 scale. National median wildfire risk score ~18.", size=8.5, color=_hex_to_rgb("#94a3b8"))
     y -= 13
-    # Confidence line: use computed summary text when available
+    # Confidence line: prefer plain-English summary; build one from tiers if absent
     conf_text_pdf = context.get("confidence_summary_text") or ""
+    if not conf_text_pdf:
+        env_tier = (context.get("environmental_confidence_tier") or "").lower()
+        struct_tier = (context.get("structural_confidence_tier") or "not_assessed").lower()
+        conf_text_pdf = f"Environmental risk data is {env_tier} confidence." if env_tier else ""
+        if struct_tier == "not_assessed":
+            conf_text_pdf += " Add your home's details to get a complete assessment."
+        elif struct_tier:
+            conf_text_pdf += f" Home details: {struct_tier} confidence."
     if conf_text_pdf:
-        _add_wrapped(p1, 48, y, conf_text_pdf, font="F1", size=9.5, color=_hex_to_rgb("#64748b"), width=94, leading=11)
-    else:
-        p1.text(48, y, f"Data Confidence: {context['environmental_confidence_tier_label']} | Home Details: {context['structural_confidence_tier_label']}", size=9.5, color=_hex_to_rgb("#64748b"))
-    y -= 14
+        y2 = _add_wrapped(p1, 48, y, conf_text_pdf, font="F1", size=9.5, color=_hex_to_rgb("#64748b"), width=94, leading=11)
+        y = min(y - 14, y2 - 3)
+    # Specificity note in smaller muted text
+    spec_note = context.get("specificity_what_this_means") or ""
+    if spec_note:
+        y2 = _add_wrapped(p1, 48, y, spec_note, font="F1", size=8.5, color=_hex_to_rgb("#94a3b8"), width=94, leading=10)
+        y = min(y - 12, y2 - 3)
     _add_wrapped(p1, 48, y, context["coverage_note"], font="F1", size=9, color=_hex_to_rgb("#64748b"), width=94, leading=11)
 
     # Insurability status
@@ -1138,12 +1142,36 @@ def _build_pdf_pages(context: dict[str, Any]) -> list[_PdfPage]:
     y -= 34
 
     severity_colors = {"high": "#dc2626", "medium": "#ea580c", "low": "#d97706"}
+
+    # Build score_impact lookup from readiness_factors for driver badge annotation
+    _pdf_factor_impacts: dict[str, float] = {}
+    for _f in (context.get("readiness_factors") or []):
+        _fname = _safe_text(_f.get("name") if isinstance(_f, dict) else "").lower()
+        _fimpact = _to_float(_f.get("score_impact") if isinstance(_f, dict) else None)
+        if _fname and _fimpact is not None:
+            _pdf_factor_impacts[_fname] = _fimpact
+
+    def _pdf_match_impact(description: str) -> float | None:
+        desc_lower = description.lower()
+        best: float | None = None
+        for _fn, _fi in _pdf_factor_impacts.items():
+            tokens = [t for t in re.split(r"[_\s]+", _fn) if len(t) > 3]
+            if tokens and any(t in desc_lower for t in tokens):
+                if best is None or abs(_fi) > abs(best):
+                    best = _fi
+        return best
+
     for row in context["driver_rows"][:6]:
         p2.rect(48, y - 42, 512, 38, fill=(1, 1, 1), stroke=_hex_to_rgb("#e2e8f0"), line_width=0.8)
         dot_color = _hex_to_rgb(severity_colors.get(row.get("severity", "medium"), "#ea580c"))
         p2.rect(56, y - 23, 8, 8, fill=dot_color)
         y2 = _add_wrapped(p2, 70, y - 14, _sanitize_text(row["description"]), size=9.5, width=72, leading=11)
-        p2.text(470, y - 14, f"{row['impact_label']} impact", font="F2", size=8.5, color=_hex_to_rgb("#92400e"))
+        score_impact = _pdf_match_impact(row.get("description", ""))
+        if score_impact is not None:
+            impact_text = f"-{abs(score_impact):.0f} pts"
+        else:
+            impact_text = f"{row['impact_label']} impact"
+        p2.text(470, y - 14, impact_text, font="F2", size=8.5, color=_hex_to_rgb("#92400e"))
         y = min(y - 48, y2 - 10)
 
     y -= 4
@@ -1204,8 +1232,7 @@ def _build_pdf_pages(context: dict[str, Any]) -> list[_PdfPage]:
     _draw_header(p3, 3)
     y = 736
     p3.text(48, y, "Your Action Plan", font="F2", size=16, color=_hex_to_rgb("#1e40af"))
-    p3.text(48, y - 16, "Top 3 Recommended Actions", font="F2", size=10)
-    y -= 32
+    y -= 24
     y = _add_wrapped(
         p3,
         48,
@@ -1217,6 +1244,24 @@ def _build_pdf_pages(context: dict[str, Any]) -> list[_PdfPage]:
     )
     y -= 8
 
+    # "Start Here" callout FIRST — single highest-priority action
+    wtdf = context.get("what_to_do_first") or {}
+    action_text = _safe_text(wtdf.get("action") or "")
+    if action_text:
+        p3.rect(48, y - 60, 512, 56, fill=_hex_to_rgb("#f0f4ff"), stroke=_hex_to_rgb("#1e40af"), line_width=1.5)
+        p3.text(54, y - 14, "Start Here", font="F2", size=8, color=_hex_to_rgb("#1e40af"))
+        p3.text(54, y - 28, _sanitize_text(action_text), font="F2", size=11)
+        why_text = _safe_text(wtdf.get("why_it_matters") or "")
+        if why_text:
+            _add_wrapped(p3, 54, y - 42, _sanitize_text(why_text), size=9.3, width=88, leading=11)
+        effort_raw = _safe_text(wtdf.get("effort_level") or "")
+        if effort_raw:
+            p3.text(54, y - 54, f"Effort: {effort_raw.title()}", size=8.5, color=_hex_to_rgb("#64748b"))
+        y -= 68
+
+    p3.text(48, y, "Top 3 Recommended Actions", font="F2", size=10)
+    y -= 16
+
     for row in context["mitigation_rows"][:5]:
         priority = row["priority"]
         bg, fg = PRIORITY_STYLES.get(priority, PRIORITY_STYLES["MEDIUM"])
@@ -1227,23 +1272,8 @@ def _build_pdf_pages(context: dict[str, Any]) -> list[_PdfPage]:
         p3.text(454, y - 16, f"-{row['impact_points']:.1f} points", font="F2", size=9)
         _add_wrapped(p3, 58, y - 34, _sanitize_text(row["description"]), size=9.3, width=90, leading=11)
         y -= 72
-        if y < 180:
+        if y < 120:
             break
-
-    # "What to do first" callout
-    wtdf = context.get("what_to_do_first") or {}
-    action_text = _safe_text(wtdf.get("action") or "")
-    if action_text and y > 140:
-        y -= 8
-        p3.rect(48, y - 60, 512, 56, fill=_hex_to_rgb("#f0f4ff"), stroke=_hex_to_rgb("#1e40af"), line_width=1.5)
-        p3.text(54, y - 14, "Start Here", font="F2", size=8, color=_hex_to_rgb("#1e40af"))
-        p3.text(54, y - 28, _sanitize_text(action_text), font="F2", size=11)
-        why_text = _safe_text(wtdf.get("why_it_matters") or "")
-        if why_text:
-            _add_wrapped(p3, 54, y - 42, _sanitize_text(why_text), size=9.3, width=88, leading=11)
-        effort_raw = _safe_text(wtdf.get("effort_level") or "")
-        if effort_raw:
-            p3.text(54, y - 54, f"Effort: {effort_raw.title()}", size=8.5, color=_hex_to_rgb("#64748b"))
 
     # Page 4
     p4 = pages[3]
@@ -1279,6 +1309,12 @@ def _build_pdf_pages(context: dict[str, Any]) -> list[_PdfPage]:
     meta_lines = [
         f"Assessment ID: {context['assessment_id_full']}",
         f"Generated: {context['generated_at']}",
+    ]
+    lat = context.get("property_latitude")
+    lon = context.get("property_longitude")
+    if lat is not None and lon is not None:
+        meta_lines.append(f"Coordinates: {lat:.5f}, {lon:.5f}")
+    meta_lines += [
         f"Data sources: {'; '.join(context['data_sources'])}",
         "Validity note: Risk scores reflect conditions at the time of assessment. Reassess after significant property changes or annually.",
     ]
