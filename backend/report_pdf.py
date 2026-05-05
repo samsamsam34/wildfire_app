@@ -173,6 +173,19 @@ def _safe_text(value: Any) -> str:
     return " ".join(str(value or "").replace("\n", " ").split()).strip()
 
 
+_UNICODE_REPLACEMENTS = {
+    '’': "'", '‘': "'", '“': '"', '”': '"',
+    '–': '-', '—': '--', '®': '(R)', '™': '(TM)',
+    ' ': ' ', '…': '...', '°': 'deg',
+}
+
+
+def _sanitize_text(text: str) -> str:
+    for char, replacement in _UNICODE_REPLACEMENTS.items():
+        text = text.replace(char, replacement)
+    return text
+
+
 def _normalize_action_key(value: Any) -> str:
     cleaned = re.sub(r"[^a-z0-9]+", " ", _safe_text(value).lower())
     return " ".join(cleaned.split()).strip()
@@ -508,25 +521,10 @@ def prepare_template_context(report: Any) -> dict[str, Any]:
         },
     ]
 
-    homeowner_explanations = _as_dict(metadata.get("homeowner_explanations"))
-    action_explanation_overrides: dict[str, str] = {}
-    for key, value in _as_dict(homeowner_explanations.get("recommended_action_explanations_by_action")).items():
-        norm_key = _normalize_action_key(key)
-        explanation = _safe_text(value)
-        if norm_key and explanation:
-            action_explanation_overrides[norm_key] = explanation
-    for row in _as_list(homeowner_explanations.get("recommended_action_explanations")):
-        row_dict = _as_dict(row)
-        action_name = _normalize_action_key(row_dict.get("action"))
-        explanation = _safe_text(row_dict.get("explanation"))
-        if action_name and explanation:
-            action_explanation_overrides[action_name] = explanation
+    homeowner_explanations = _as_dict(_as_dict(metadata.get("homeowner_explanations")))
 
     driver_rows = _build_driver_rows(report_dict, overall_score)
-    mitigation_rows = _build_mitigation_rows(
-        report_dict,
-        action_explanation_overrides=action_explanation_overrides,
-    )
+    mitigation_rows = _build_mitigation_rows(report_dict)
     confidence_actions = _build_confidence_actions(report_dict)
     details_rows = _details_table(report_dict)
 
@@ -736,8 +734,6 @@ def _build_template_fragments(context: dict[str, Any]) -> dict[str, str]:
         bg, fg = PRIORITY_STYLES.get(priority, PRIORITY_STYLES["MEDIUM"])
         impact_text = f"-{row['impact_points']:.1f} points"
         impact_ctx = f'<span class="action-impact-context">(current: {overall_score_val:.1f}/100)</span>'
-        meta_bits = [b for b in (row.get("cost"), row.get("timeline")) if b]
-        meta_text = " | ".join(meta_bits)
         mitigation_cards_html.append(
             '<div class="action-card">'
             '<div class="action-top">'
@@ -746,8 +742,7 @@ def _build_template_fragments(context: dict[str, Any]) -> dict[str, str]:
             f'<span><strong>{impact_text}</strong> {impact_ctx}</span>'
             "</div>"
             f"<p>{html.escape(row['description'])}</p>"
-            + (f"<div class=\"note\">{html.escape(meta_text)}</div>" if meta_text else "")
-            + "</div>"
+            "</div>"
         )
         mitigation_table_rows_html.append(
             f"<tr><td>{html.escape(row['title'])}</td><td>{html.escape(priority)}</td><td>-{row['impact_points']:.1f}</td></tr>"
@@ -819,8 +814,8 @@ def _build_template_fragments(context: dict[str, Any]) -> dict[str, str]:
     # Scale context note
     score_scale_note_html = (
         '<p class="score-scale-note">'
-        'All scores are on a 0–100 scale. '
-        'National median wildfire risk score ≈ 18.'
+        'All scores are on a 0&ndash;100 scale. '
+        'National median wildfire risk score &asymp;&thinsp;18.'
         '</p>'
     )
 
@@ -1038,7 +1033,7 @@ def _build_pdf_pages(context: dict[str, Any]) -> list[_PdfPage]:
 
     y -= 92
     # Scale context note
-    p1.text(48, y, "All scores are on a 0–100 scale. National median wildfire risk score ≈ 18.", size=8.5, color=_hex_to_rgb("#94a3b8"))
+    p1.text(48, y, "All scores are on a 0-100 scale. National median wildfire risk score ~18.", size=8.5, color=_hex_to_rgb("#94a3b8"))
     y -= 13
     # Confidence line: use computed summary text when available
     conf_text_pdf = context.get("confidence_summary_text") or ""
@@ -1083,7 +1078,7 @@ def _build_pdf_pages(context: dict[str, Any]) -> list[_PdfPage]:
         p2.rect(48, y - 42, 512, 38, fill=(1, 1, 1), stroke=_hex_to_rgb("#e2e8f0"), line_width=0.8)
         dot_color = _hex_to_rgb(severity_colors.get(row.get("severity", "medium"), "#ea580c"))
         p2.rect(56, y - 23, 8, 8, fill=dot_color)
-        y2 = _add_wrapped(p2, 70, y - 14, row["description"], size=9.5, width=72, leading=11)
+        y2 = _add_wrapped(p2, 70, y - 14, _sanitize_text(row["description"]), size=9.5, width=72, leading=11)
         p2.text(470, y - 14, f"{row['impact_label']} impact", font="F2", size=8.5, color=_hex_to_rgb("#92400e"))
         y = min(y - 48, y2 - 10)
 
@@ -1135,23 +1130,11 @@ def _build_pdf_pages(context: dict[str, Any]) -> list[_PdfPage]:
         p3.rect(48, y - 66, 512, 62, fill=(1, 1, 1), stroke=_hex_to_rgb("#e2e8f0"), line_width=0.8)
         p3.rect(58, y - 22, 68, 16, fill=_hex_to_rgb(bg))
         p3.text(66, y - 16, priority, font="F2", size=8, color=_hex_to_rgb(fg))
-        p3.text(136, y - 16, row["title"], font="F2", size=11)
+        p3.text(136, y - 16, _sanitize_text(row["title"]), font="F2", size=11)
         p3.text(454, y - 16, f"-{row['impact_points']:.1f} points", font="F2", size=9)
-        y2 = _add_wrapped(p3, 58, y - 34, row["description"], size=9.3, width=90, leading=11)
-        meta = " | ".join(v for v in (row.get("cost"), row.get("timeline")) if v)
-        if meta:
-            p3.text(58, y2 - 2, meta, size=8.5, color=_hex_to_rgb("#64748b"))
+        _add_wrapped(p3, 58, y - 34, _sanitize_text(row["description"]), size=9.3, width=90, leading=11)
         y -= 72
         if y < 180:
-            break
-
-    y = max(170, y)
-    p3.text(48, y, "Action | Priority | Est. Risk Reduction", font="F2", size=9)
-    y -= 12
-    for row in context["mitigation_rows"][:5]:
-        p3.text(48, y, f"{row['title']} | {row['priority']} | -{row['impact_points']:.1f}", size=8.8)
-        y -= 11
-        if y < 120:
             break
 
     # Page 4
@@ -1165,22 +1148,22 @@ def _build_pdf_pages(context: dict[str, Any]) -> list[_PdfPage]:
         p4.text(48, y, "Detail | Your Property | Risk Implication", font="F2", size=9.5)
         y -= 12
         for row in context["details_rows"]:
-            p4.rect(48, y - 26, 512, 22, fill=(1, 1, 1), stroke=_hex_to_rgb("#e2e8f0"), line_width=0.8)
+            p4.rect(48, y - 36, 512, 32, fill=(1, 1, 1), stroke=_hex_to_rgb("#e2e8f0"), line_width=0.8)
             p4.text(54, y - 15, row["detail"], size=8.8)
             p4.text(185, y - 15, row["value"], size=8.8)
-            p4.text(318, y - 15, row["implication"][:46], size=8.4)
-            y -= 28
+            y2 = _add_wrapped(p4, 318, y - 15, _sanitize_text(row["implication"]), size=8.4, width=56, leading=10)
+            y -= max(38, (y - y2) + 12)
     else:
         p4.text(48, y, "Adding the following details would improve your assessment:", size=9.8)
         y -= 14
         p4.text(48, y, "Detail to Add | Estimated Score Impact | Why It Matters", font="F2", size=9.2)
         y -= 12
         for row in context["confidence_actions"][:5]:
-            p4.rect(48, y - 28, 512, 24, fill=(1, 1, 1), stroke=_hex_to_rgb("#e2e8f0"), line_width=0.8)
+            p4.rect(48, y - 38, 512, 34, fill=(1, 1, 1), stroke=_hex_to_rgb("#e2e8f0"), line_width=0.8)
             p4.text(54, y - 16, row["display_label"], size=8.7)
             p4.text(210, y - 16, f"+{row['confidence_gain']} pts", size=8.7)
-            p4.text(300, y - 16, row["why_it_matters"][:42], size=8.2)
-            y -= 30
+            y2 = _add_wrapped(p4, 300, y - 16, _sanitize_text(row["why_it_matters"]), size=8.2, width=60, leading=10)
+            y -= max(40, (y - y2) + 12)
 
     y -= 8
     p4.text(48, y, "Assessment Metadata", font="F2", size=14, color=_hex_to_rgb("#1e40af"))

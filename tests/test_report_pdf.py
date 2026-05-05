@@ -279,7 +279,7 @@ def test_score_direction_indicators_on_all_bars() -> None:
 
 def test_score_scale_note_present() -> None:
     html_out = render_homeowner_report_html(_sample_report())
-    assert "0–100" in html_out or "0–100" in html_out
+    assert "0&ndash;100" in html_out or "0–100" in html_out
     assert "median" in html_out.lower()
 
 
