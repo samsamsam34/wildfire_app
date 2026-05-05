@@ -186,6 +186,15 @@ def _sanitize_text(text: str) -> str:
     return text
 
 
+def _filter_confidence_summary(text: str) -> str:
+    # Suppress bare tier labels generated as a scoring-engine fallback
+    # (e.g. "Assessment confidence: low.") — they read as debug output.
+    # The fallback "Data Confidence: X | Home Details: Y" rendering is clearer.
+    if re.match(r"^assessment confidence:\s+\S+\.?\s*$", text.lower()):
+        return ""
+    return text
+
+
 def _normalize_action_key(value: Any) -> str:
     cleaned = re.sub(r"[^a-z0-9]+", " ", _safe_text(value).lower())
     return " ".join(cleaned.split()).strip()
@@ -284,6 +293,33 @@ def _build_driver_rows(report: Any, overall_score: float) -> list[dict[str, str]
         rows.append({"description": description, "severity": severity, "impact_label": impact})
 
     high_impact = "HIGH" if overall_score >= 65 else "MEDIUM"
+
+    # Structural driver rows — only when structural attributes were actually submitted.
+    struct_tier = _safe_text(report_dict.get("structural_confidence_tier") or "not_assessed").lower()
+    if struct_tier not in ("not_assessed", ""):
+        prop_facts = _as_dict(report_dict.get("property_facts"))
+        roof = _safe_text(prop_facts.get("roof_type")).lower()
+        vent = _safe_text(prop_facts.get("vent_type")).lower()
+        ds_val = _to_float(prop_facts.get("defensible_space_ft"))
+        if roof == "wood_shake":
+            add_row(
+                "Wood shake roof significantly increases ember ignition risk — most vulnerable roof type.",
+                "high",
+                "HIGH",
+            )
+        if vent == "unscreened":
+            add_row(
+                "Unscreened vents are the primary ember entry point for structure ignition.",
+                "high",
+                "HIGH",
+            )
+        if ds_val is not None and ds_val < 10:
+            add_row(
+                f"Defensible space of {int(ds_val)} feet is critically low — "
+                "vegetation within 10 feet poses direct ignition risk.",
+                "high",
+                "HIGH",
+            )
 
     if any(token in blob for token in ("fuel", "vegetation", "wildland")):
         add_row(
@@ -670,7 +706,7 @@ def prepare_template_context(report: Any) -> dict[str, Any]:
         "insurability_status_reasons": [
             _safe_text(v) for v in _as_list(report_dict.get("insurability_status_reasons")) if _safe_text(v)
         ],
-        "confidence_summary_text": _safe_text(report_dict.get("confidence_summary_text")),
+        "confidence_summary_text": _filter_confidence_summary(_safe_text(report_dict.get("confidence_summary_text"))),
         "specificity_what_this_means": _safe_text(specificity_summary.get("what_this_means")),
         "use_restriction": _safe_text(score_summary.get("use_restriction")),
         "readiness_blockers": readiness_blockers,
@@ -1133,6 +1169,35 @@ def _build_pdf_pages(context: dict[str, Any]) -> list[_PdfPage]:
     if fire_text:
         p2.rect(48, y - 48, 512, 44, fill=(1.0, 0.984, 0.922), stroke=_hex_to_rgb("#e2e8f0"), line_width=0.8)
         _add_wrapped(p2, 58, y - 18, fire_text, size=9.6, width=82, leading=11)
+        y -= 56
+
+    # Readiness blockers
+    blockers = context.get("readiness_blockers") or []
+    if blockers and y > 120:
+        y -= 8
+        p2.text(48, y, "Insurance Readiness Flags", font="F2", size=12, color=_hex_to_rgb("#1e40af"))
+        y -= 16
+        for b in blockers[:5]:
+            if y < 100:
+                break
+            p2.text(54, y, f"- {_sanitize_text(b)}", size=9.5, color=_hex_to_rgb("#dc2626"))
+            y -= 13
+        y -= 4
+
+    # Defensible space zone findings
+    zones = context.get("defensible_space_zones") or []
+    if zones and y > 120:
+        y -= 8
+        p2.text(48, y, "Defensible Space Analysis", font="F2", size=12, color=_hex_to_rgb("#1e40af"))
+        y -= 14
+        for zone in zones[:4]:
+            if y < 100:
+                break
+            z_label = _safe_text(zone.get("zone") or zone.get("ring") or zone.get("name") or "")
+            z_finding = _safe_text(zone.get("finding") or zone.get("summary") or zone.get("description") or "")
+            p2.text(54, y, f"{z_label}:", font="F2", size=9.3)
+            y2 = _add_wrapped(p2, 160, y, _sanitize_text(z_finding), size=9.3, width=58, leading=11)
+            y = min(y - 16, y2 - 4)
 
     # Page 3
     p3 = pages[2]
@@ -1164,6 +1229,21 @@ def _build_pdf_pages(context: dict[str, Any]) -> list[_PdfPage]:
         y -= 72
         if y < 180:
             break
+
+    # "What to do first" callout
+    wtdf = context.get("what_to_do_first") or {}
+    action_text = _safe_text(wtdf.get("action") or "")
+    if action_text and y > 140:
+        y -= 8
+        p3.rect(48, y - 60, 512, 56, fill=_hex_to_rgb("#f0f4ff"), stroke=_hex_to_rgb("#1e40af"), line_width=1.5)
+        p3.text(54, y - 14, "Start Here", font="F2", size=8, color=_hex_to_rgb("#1e40af"))
+        p3.text(54, y - 28, _sanitize_text(action_text), font="F2", size=11)
+        why_text = _safe_text(wtdf.get("why_it_matters") or "")
+        if why_text:
+            _add_wrapped(p3, 54, y - 42, _sanitize_text(why_text), size=9.3, width=88, leading=11)
+        effort_raw = _safe_text(wtdf.get("effort_level") or "")
+        if effort_raw:
+            p3.text(54, y - 54, f"Effort: {effort_raw.title()}", size=8.5, color=_hex_to_rgb("#64748b"))
 
     # Page 4
     p4 = pages[3]
