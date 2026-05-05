@@ -1618,6 +1618,7 @@ def build_homeowner_report(
             },
         },
         professional_debug_metadata=professional_debug_metadata,
+        property_facts=dict(result.property_facts or {}),
     )
 
 

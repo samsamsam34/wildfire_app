@@ -403,6 +403,43 @@ def _build_confidence_actions(report: Any) -> list[dict[str, Any]]:
 
 def _details_table(report: Any) -> list[dict[str, str]]:
     report_dict = _as_dict(report)
+
+    # Prefer property_facts when available — contains the actual submitted attribute values.
+    prop_facts = _as_dict(report_dict.get("property_facts"))
+    if prop_facts:
+        rows: list[dict[str, str]] = []
+        roof_raw = _safe_text(prop_facts.get("roof_type")).lower()
+        vent_raw = _safe_text(prop_facts.get("vent_type")).lower()
+        ds_raw = _to_float(prop_facts.get("defensible_space_ft"))
+        year_raw = prop_facts.get("construction_year")
+        if roof_raw and roof_raw != "unknown":
+            rows.append({
+                "detail": "Roof material",
+                "value": ROOF_TYPE_LABELS.get(roof_raw, roof_raw.replace("_", " ").title()),
+                "implication": RISK_IMPLICATIONS["roof"].get(roof_raw, "Roof type affects ember ignition potential."),
+            })
+        if vent_raw and vent_raw != "unknown":
+            rows.append({
+                "detail": "Vent screening",
+                "value": VENT_TYPE_LABELS.get(vent_raw, vent_raw.replace("_", " ").title()),
+                "implication": RISK_IMPLICATIONS["vent"].get(vent_raw, "Vent type affects ember entry risk."),
+            })
+        if ds_raw is not None:
+            rows.append({
+                "detail": "Defensible space",
+                "value": f"{int(ds_raw)} feet",
+                "implication": "More cleared distance generally lowers ignition pressure around the home.",
+            })
+        if year_raw is not None:
+            rows.append({
+                "detail": "Year built",
+                "value": str(int(float(year_raw))),
+                "implication": "Newer code-era homes may include stronger wildfire-resistant construction standards.",
+            })
+        if rows:
+            return rows
+
+    # Fallback: parse values embedded in observed_data strings (e.g. "roof: wood_shake").
     confidence = _as_dict(report_dict.get("confidence_and_limitations"))
     observed = [_safe_text(v).lower() for v in _as_list(confidence.get("observed_data"))]
 
@@ -434,22 +471,22 @@ def _details_table(report: Any) -> list[dict[str, str]]:
     return [
         {
             "detail": "Roof material",
-            "value": ROOF_TYPE_LABELS.get(roof_key, "Unknown"),
+            "value": ROOF_TYPE_LABELS.get(roof_key, "Not provided"),
             "implication": RISK_IMPLICATIONS["roof"].get(roof_key, "Cannot assess without roof type"),
         },
         {
             "detail": "Vent screening",
-            "value": VENT_TYPE_LABELS.get(vent_key, "Unknown"),
+            "value": VENT_TYPE_LABELS.get(vent_key, "Not provided"),
             "implication": RISK_IMPLICATIONS["vent"].get(vent_key, "Cannot assess without vent information"),
         },
         {
             "detail": "Defensible space",
-            "value": ds.title() if ds else "Unknown",
+            "value": ds.title() if ds else "Not provided",
             "implication": "More cleared distance generally lowers ignition pressure around the home.",
         },
         {
             "detail": "Year built",
-            "value": year.title() if year else "Unknown",
+            "value": year.title() if year else "Not provided",
             "implication": "Newer code-era homes may include stronger wildfire-resistant construction standards.",
         },
     ]
@@ -994,15 +1031,6 @@ def _build_pdf_pages(context: dict[str, Any]) -> list[_PdfPage]:
     # Page 1
     p1 = pages[0]
     _draw_header(p1, 1)
-    # Legacy marker ordering retained for compatibility tests.
-    p1.text(
-        48,
-        748,
-        "Wildfire Risk Report | Homeowner Decision Snapshot | Top 3 Risk Drivers | Top 3 Recommended Actions | "
-        "Before vs After Snapshot | Confidence Note | Risk Breakdown and Subscores",
-        size=6.0,
-        color=_hex_to_rgb("#64748b"),
-    )
     y = 736
     p1.text(48, y, context["property_address"], font="F2", size=18)
     y -= 18

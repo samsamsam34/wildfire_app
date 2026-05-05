@@ -1432,6 +1432,7 @@ class HomeownerReport(BaseModel):
     metadata: Dict[str, object] = Field(default_factory=dict)
     professional_debug_metadata: Optional[Dict[str, object]] = None
     specificity_summary: SpecificitySummary = Field(default_factory=SpecificitySummary)
+    property_facts: Dict[str, object] = Field(default_factory=dict)
 
 
 class AssessmentMapLayer(BaseModel):
