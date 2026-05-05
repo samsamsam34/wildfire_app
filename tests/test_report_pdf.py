@@ -333,11 +333,14 @@ def test_readiness_blockers_appear_in_html() -> None:
     assert "Insurance Readiness Flags" in html_out
 
 
-def test_what_to_do_first_appears_in_html() -> None:
+def test_what_to_do_first_in_context() -> None:
+    context = prepare_template_context(_sample_report_pass2())
+    wtdf = context.get("what_to_do_first") or {}
+    assert wtdf.get("action") == "Clear debris within 30 feet of all structures"
+    assert "Defensible space is the highest-impact single action." in (wtdf.get("why_it_matters") or "")
+    # Start Here callout is no longer rendered in HTML
     html_out = render_homeowner_report_html(_sample_report_pass2())
-    assert "Clear debris within 30 feet of all structures" in html_out
-    assert "Start Here" in html_out
-    assert "Defensible space is the highest-impact single action." in html_out
+    assert "Start Here" not in html_out
 
 
 def test_score_impact_shown_on_driver_rows() -> None:

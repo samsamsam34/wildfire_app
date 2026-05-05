@@ -195,6 +195,21 @@ def _filter_confidence_summary(text: str) -> str:
     return text
 
 
+def _get_geometry_note(context: dict[str, Any]) -> str:
+    """Return at most one sentence capturing the most important geometry/specificity limitation."""
+    comparison_allowed = context.get("specificity_comparison_allowed")
+    tier = (context.get("specificity_tier") or "").lower()
+    geometry_source = (context.get("specificity_geometry_source") or "").lower()
+
+    if comparison_allowed is False:
+        return "Neighbor comparisons are not available for this property."
+    if tier in ("regional_estimate", "insufficient", "low"):
+        return "This score is based on regional data; neighborhood-level variations may not be captured."
+    if "parcel" in geometry_source and "proxy" in geometry_source:
+        return "Property boundary used as a proxy for structure location."
+    return ""
+
+
 def _normalize_action_key(value: Any) -> str:
     cleaned = re.sub(r"[^a-z0-9]+", " ", _safe_text(value).lower())
     return " ".join(cleaned.split()).strip()
@@ -701,6 +716,9 @@ def prepare_template_context(report: Any) -> dict[str, Any]:
         ],
         "confidence_summary_text": _filter_confidence_summary(_safe_text(report_dict.get("confidence_summary_text"))),
         "specificity_what_this_means": _safe_text(specificity_summary.get("what_this_means")),
+        "specificity_tier": specificity_tier,
+        "specificity_comparison_allowed": specificity_summary.get("comparison_allowed"),
+        "specificity_geometry_source": _safe_text(specificity_summary.get("geometry_source") or specificity_summary.get("anchor_source") or ""),
         "use_restriction": _safe_text(score_summary.get("use_restriction")),
         "readiness_blockers": readiness_blockers,
         "readiness_factors": readiness_factors,
@@ -847,9 +865,9 @@ def _build_template_fragments(context: dict[str, Any]) -> dict[str, str]:
 
     # Confidence block (replaces raw debug confidence line)
     conf_text = context.get("confidence_summary_text") or ""
-    spec_what = context.get("specificity_what_this_means") or ""
     if conf_text:
-        spec_note_frag = f'<p class="specificity-note">{html.escape(spec_what)}</p>' if spec_what else ""
+        geo_note = _get_geometry_note(context)
+        spec_note_frag = f'<p class="specificity-note">{html.escape(geo_note)}</p>' if geo_note else ""
         confidence_block_html = (
             f'<p class="confidence-summary-text">{html.escape(conf_text)}</p>'
             f'{spec_note_frag}'
@@ -898,25 +916,8 @@ def _build_template_fragments(context: dict[str, Any]) -> dict[str, str]:
     else:
         readiness_blockers_html = ""
 
-    # "What to do first" callout (replaces redundant action table on page 3)
-    wtdf = context.get("what_to_do_first") or {}
-    action_text = _safe_text(wtdf.get("action") or "")
-    if action_text:
-        why_h = (
-            f'<div class="wtdf-why">{html.escape(_safe_text(wtdf.get("why_it_matters") or ""))}</div>'
-            if wtdf.get("why_it_matters") else ""
-        )
-        effort_raw = _safe_text(wtdf.get("effort_level") or "")
-        effort_h = f'<div class="wtdf-effort">Effort: {html.escape(effort_raw.title())}</div>' if effort_raw else ""
-        what_to_do_first_html = (
-            '<div class="what-to-do-first">'
-            '<div class="wtdf-label">Start Here</div>'
-            f'<div class="wtdf-action">{html.escape(action_text)}</div>'
-            f'{why_h}{effort_h}'
-            '</div>'
-        )
-    else:
-        what_to_do_first_html = ""
+    # "What to do first" callout — removed from rendering (context kept for downstream use)
+    what_to_do_first_html = ""
 
     # GPS coordinates row for metadata table (page 4)
     lat = context.get("property_latitude")
@@ -1105,8 +1106,8 @@ def _build_pdf_pages(context: dict[str, Any]) -> list[_PdfPage]:
     if conf_text_pdf:
         y2 = _add_wrapped(p1, 48, y, conf_text_pdf, font="F1", size=9.5, color=_hex_to_rgb("#64748b"), width=94, leading=11)
         y = min(y - 14, y2 - 3)
-    # Specificity note in smaller muted text
-    spec_note = context.get("specificity_what_this_means") or ""
+    # Single geometry/specificity limitation note
+    spec_note = _get_geometry_note(context)
     if spec_note:
         y2 = _add_wrapped(p1, 48, y, spec_note, font="F1", size=8.5, color=_hex_to_rgb("#94a3b8"), width=94, leading=10)
         y = min(y - 12, y2 - 3)
@@ -1231,7 +1232,7 @@ def _build_pdf_pages(context: dict[str, Any]) -> list[_PdfPage]:
     p3 = pages[2]
     _draw_header(p3, 3)
     y = 736
-    p3.text(48, y, "Your Action Plan", font="F2", size=16, color=_hex_to_rgb("#1e40af"))
+    p3.text(48, y, "Your Action Plan — Ranked by Impact", font="F2", size=16, color=_hex_to_rgb("#1e40af"))
     y -= 24
     y = _add_wrapped(
         p3,
@@ -1243,21 +1244,6 @@ def _build_pdf_pages(context: dict[str, Any]) -> list[_PdfPage]:
         leading=11,
     )
     y -= 8
-
-    # "Start Here" callout FIRST — single highest-priority action
-    wtdf = context.get("what_to_do_first") or {}
-    action_text = _safe_text(wtdf.get("action") or "")
-    if action_text:
-        p3.rect(48, y - 60, 512, 56, fill=_hex_to_rgb("#f0f4ff"), stroke=_hex_to_rgb("#1e40af"), line_width=1.5)
-        p3.text(54, y - 14, "Start Here", font="F2", size=8, color=_hex_to_rgb("#1e40af"))
-        p3.text(54, y - 28, _sanitize_text(action_text), font="F2", size=11)
-        why_text = _safe_text(wtdf.get("why_it_matters") or "")
-        if why_text:
-            _add_wrapped(p3, 54, y - 42, _sanitize_text(why_text), size=9.3, width=88, leading=11)
-        effort_raw = _safe_text(wtdf.get("effort_level") or "")
-        if effort_raw:
-            p3.text(54, y - 54, f"Effort: {effort_raw.title()}", size=8.5, color=_hex_to_rgb("#64748b"))
-        y -= 68
 
     p3.text(48, y, "Top 3 Recommended Actions", font="F2", size=10)
     y -= 16
