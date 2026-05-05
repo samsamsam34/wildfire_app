@@ -186,6 +186,20 @@ def _sanitize_text(text: str) -> str:
     return text
 
 
+_SUPPRESS_DRIVER_PHRASES = [
+    "nearby conditions around the home",
+    "nearby conditions may be increasing",
+    "nearby conditions around",
+]
+
+
+def _should_suppress_driver(description: str) -> bool:
+    if not description:
+        return False
+    desc_lower = description.lower().strip()
+    return any(phrase in desc_lower for phrase in _SUPPRESS_DRIVER_PHRASES)
+
+
 def _filter_confidence_summary(text: str) -> str:
     # Suppress bare tier labels generated as a scoring-engine fallback
     # (e.g. "Assessment confidence: low.") — they read as debug output.
@@ -282,6 +296,8 @@ def _extract_fire_history(report: Any) -> str:
 
     for row in top_drivers:
         text = _safe_text(row)
+        if _should_suppress_driver(text):
+            continue
         if "fire" in text.lower() or "historic" in text.lower():
             return text
 
@@ -367,7 +383,7 @@ def _build_driver_rows(report: Any, overall_score: float) -> list[dict[str, str]
             "MEDIUM",
         )
 
-    return rows[:6]
+    return [r for r in rows if not _should_suppress_driver(r["description"])][:6]
 
 
 def _build_mitigation_rows(
@@ -1180,7 +1196,8 @@ def _build_pdf_pages(context: dict[str, Any]) -> list[_PdfPage]:
     if spec_note:
         y2 = _add_wrapped(p1, 48, y, spec_note, font="F1", size=8.5, color=_hex_to_rgb("#94a3b8"), width=94, leading=10)
         y = min(y - 12, y2 - 3)
-    _add_wrapped(p1, 48, y, context["coverage_note"], font="F1", size=9, color=_hex_to_rgb("#64748b"), width=94, leading=11)
+    y2 = _add_wrapped(p1, 48, y, context["coverage_note"], font="F1", size=9, color=_hex_to_rgb("#64748b"), width=94, leading=11)
+    y = min(y - 11, y2 - 3)
 
     # Insurability status
     ins_status_pdf = context.get("insurability_status") or ""
@@ -1303,7 +1320,7 @@ def _build_pdf_pages(context: dict[str, Any]) -> list[_PdfPage]:
     p3 = pages[2]
     _draw_header(p3, 3)
     y = 736
-    p3.text(48, y, "Your Action Plan — Ranked by Impact", font="F2", size=16, color=_hex_to_rgb("#1e40af"))
+    p3.text(48, y, "Your Action Plan - Ranked by Impact", font="F2", size=16, color=_hex_to_rgb("#1e40af"))
     y -= 24
     y = _add_wrapped(
         p3,
@@ -1322,13 +1339,25 @@ def _build_pdf_pages(context: dict[str, Any]) -> list[_PdfPage]:
     for row in context["mitigation_rows"][:5]:
         priority = row["priority"]
         bg, fg = PRIORITY_STYLES.get(priority, PRIORITY_STYLES["MEDIUM"])
-        p3.rect(48, y - 66, 512, 62, fill=(1, 1, 1), stroke=_hex_to_rgb("#e2e8f0"), line_width=0.8)
+        title_text = _sanitize_text(row["title"])
+        desc_text = _sanitize_text(row["description"])
+        # Pre-measure heights to size card dynamically
+        title_line_count = max(1, len(_wrap(title_text, width=48)))
+        desc_line_count = max(1, len(_wrap(desc_text, width=90)))
+        title_h = title_line_count * 13
+        desc_h = desc_line_count * 11
+        # 6 top + 16 badge row + 4 gap + title + 4 gap + desc + 6 bottom
+        card_h = max(62, 36 + title_h + desc_h)
+        p3.rect(48, y - card_h, 512, card_h, fill=(1, 1, 1), stroke=_hex_to_rgb("#e2e8f0"), line_width=0.8)
         p3.rect(58, y - 22, 68, 16, fill=_hex_to_rgb(bg))
         p3.text(66, y - 16, priority, font="F2", size=8, color=_hex_to_rgb(fg))
-        p3.text(136, y - 16, _sanitize_text(row["title"]), font="F2", size=11)
-        p3.text(454, y - 16, f"-{row['impact_points']:.1f} points", font="F2", size=9)
-        _add_wrapped(p3, 58, y - 34, _sanitize_text(row["description"]), size=9.3, width=90, leading=11)
-        y -= 72
+        # Impact at title-start Y, right-aligned — always aligns with line 1 of title
+        p3.text(430, y - 16, f"-{row['impact_points']:.1f} points", font="F2", size=9)
+        # Title wrapped with width limit so it never overwrites the impact label
+        title_y2 = _add_wrapped(p3, 136, y - 16, title_text, font="F2", size=11, width=48, leading=13)
+        # Description starts below the last title line
+        _add_wrapped(p3, 58, title_y2 - 4, desc_text, size=9.3, width=90, leading=11)
+        y -= card_h + 8
         if y < 120:
             break
 
