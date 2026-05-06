@@ -857,6 +857,58 @@ def _parse_proximity_score(action_text: str, what_it_reduces: str) -> float:
     return 0.60
 
 
+_STRUCTURAL_ACTION_TOKENS = frozenset({
+    "roof", "vent", "window", "siding", "year built", "construction year",
+    "attic", "eave", "gutter", "ember-resistant", "fire-resistant shingle",
+})
+
+
+def _is_structural_action(action_text: str) -> bool:
+    """Return True when an action is only meaningful with submitted structural data."""
+    low = str(action_text or "").lower()
+    return any(token in low for token in _STRUCTURAL_ACTION_TOKENS)
+
+
+def _drivers_from_effective_weights(
+    weighted_contributions: Any,
+    detailed_drivers: list[Any],
+    *,
+    limit: int = 3,
+) -> list[str]:
+    """
+    Return up to `limit` plain-language driver descriptions ordered by effective
+    weight, skipping submodels with effective_weight < 0.03 or omitted_due_to_missing.
+    Falls back to the submodel name if no explanation is available in detailed_drivers.
+    """
+    # Build factor → explanation map from detailed_drivers
+    factor_explanation: dict[str, str] = {}
+    for row in list(detailed_drivers or []):
+        factor = str(getattr(row, "factor", "") or "")
+        explanation = str(getattr(row, "explanation", "") or "")
+        if factor and explanation:
+            factor_explanation[factor] = explanation
+
+    candidates: list[tuple[float, str, str]] = []
+    for name, contrib in dict(weighted_contributions or {}).items():
+        if hasattr(contrib, "effective_weight"):
+            ew = float(contrib.effective_weight or 0.0)
+            omitted = bool(contrib.omitted_due_to_missing)
+            basis = str(contrib.basis or "")
+        elif isinstance(contrib, dict):
+            ew = float(contrib.get("effective_weight") or 0.0)
+            omitted = bool(contrib.get("omitted_due_to_missing"))
+            basis = str(contrib.get("basis") or "")
+        else:
+            continue
+        if omitted or ew < 0.03:
+            continue
+        explanation = factor_explanation.get(name) or _plain_driver(name)
+        candidates.append((ew, name, explanation))
+
+    candidates.sort(key=lambda x: -x[0])
+    return [explanation for _, _name, explanation in candidates[:limit] if explanation]
+
+
 def _rank_risk_contribution(impact_level: str) -> float:
     value = str(impact_level or "low").lower()
     if value == "high":
@@ -1222,15 +1274,25 @@ def build_homeowner_report(
         or "This estimate is not precise enough to compare adjacent homes."
     ).strip()
 
-    raw_driver_candidates = list(result.top_risk_drivers or [])
-    if not raw_driver_candidates and result.top_risk_drivers_detailed:
-        raw_driver_candidates = [
-            str(row.explanation or row.factor or "").strip()
-            for row in list(result.top_risk_drivers_detailed or [])
-            if str(row.explanation or row.factor or "").strip()
-        ]
-    if not raw_driver_candidates and str(result.explanation_summary or "").strip():
-        raw_driver_candidates = [str(result.explanation_summary).strip()]
+    # Task 3: prefer effective-weight-ordered drivers when weighted_contributions is available.
+    effective_weight_drivers = _drivers_from_effective_weights(
+        result.weighted_contributions,
+        list(result.top_risk_drivers_detailed or []),
+        limit=3,
+    )
+
+    if effective_weight_drivers:
+        raw_driver_candidates = effective_weight_drivers
+    else:
+        raw_driver_candidates = list(result.top_risk_drivers or [])
+        if not raw_driver_candidates and result.top_risk_drivers_detailed:
+            raw_driver_candidates = [
+                str(row.explanation or row.factor or "").strip()
+                for row in list(result.top_risk_drivers_detailed or [])
+                if str(row.explanation or row.factor or "").strip()
+            ]
+        if not raw_driver_candidates and str(result.explanation_summary or "").strip():
+            raw_driver_candidates = [str(result.explanation_summary).strip()]
 
     key_risk_drivers = [_plain_driver(row) for row in raw_driver_candidates]
     key_risk_drivers = [row for row in key_risk_drivers if row][:6]
@@ -1245,6 +1307,16 @@ def build_homeowner_report(
         ]
         key_risk_drivers = [nearby_home_comparison_safeguard_message] + key_risk_drivers
         key_risk_drivers = list(dict.fromkeys(key_risk_drivers))[:6]
+
+    # Task 2: resolve structure/historic-fire data availability for mitigation gating.
+    _report_structure_mode = str(result.structure_assumption_mode or "unknown")
+    _historic_fire_available = True
+    try:
+        from backend.scoring_config import load_scoring_config  # noqa: PLC0415
+        _historic_fire_available = load_scoring_config().historic_fire_risk_data_available
+    except Exception:
+        pass
+
     prioritized_actions = _prioritized_actions(result)
 
     defensible_space_analysis = result.defensible_space_analysis if isinstance(result.defensible_space_analysis, dict) else {}
@@ -1285,6 +1357,14 @@ def build_homeowner_report(
     ]
     if confidence_limitations:
         combined_limitations = list(dict.fromkeys(confidence_limitations + combined_limitations))[:6]
+
+    # Task 3: prepend fallback caveat when the score is primarily regional/env data.
+    if float(result.fallback_weight_fraction or 0.0) >= 0.45:
+        _fallback_caveat = (
+            "This score is based primarily on regional and environmental data. "
+            "Providing home details will improve accuracy."
+        )
+        combined_limitations = list(dict.fromkeys([_fallback_caveat] + combined_limitations))[:6]
 
     _assumption_mode = str(getattr(result, "structure_assumption_mode", "") or "unknown")
     _structure_assumption_notes: dict[str, str] = {
@@ -1349,6 +1429,38 @@ def build_homeowner_report(
         tone_level=tone_level,
         limit=3,
     )
+
+    # Task 2: when structural data is absent, split structural-specific actions into a
+    # secondary section so they don't displace evidenced environmental recommendations.
+    if _report_structure_mode == "default_assumed":
+        _primary_actions = [
+            a for a in prioritized_actions_summary
+            if not _is_structural_action(str(a.get("action") or ""))
+        ]
+        _structural_detail_actions = [
+            a for a in prioritized_actions_summary
+            if _is_structural_action(str(a.get("action") or ""))
+        ]
+        # Keep primary list non-empty: fall back to full list if all actions are structural.
+        prioritized_actions_summary = _primary_actions or prioritized_actions_summary
+    else:
+        _structural_detail_actions = []
+
+    # Task 2: when historic fire data is unavailable, remove actions whose only
+    # justification references historical fire exposure.
+    if not _historic_fire_available:
+        _HISTORIC_FIRE_TOKENS = frozenset({"historic fire", "historical fire", "past fire", "fire history"})
+        prioritized_actions_summary = [
+            a for a in prioritized_actions_summary
+            if not (
+                _is_structural_action(str(a.get("action") or "")) is False
+                and all(
+                    token in str(a.get("why_it_matters") or a.get("what_it_reduces") or "").lower()
+                    for token in _HISTORIC_FIRE_TOKENS
+                )
+            )
+        ] or prioritized_actions_summary
+
     ranked_actions, most_impactful_actions = _rank_mitigation_actions(prioritized_actions_summary)
     what_to_do_first = ranked_actions[0] if ranked_actions else (prioritized_actions_summary[0] if prioritized_actions_summary else {})
     headline_risk_summary = _headline_risk_summary(
@@ -1470,6 +1582,13 @@ def build_homeowner_report(
         "note": (
             "Advanced details are retained for model-calibration and internal review workflows; "
             "homeowner-first guidance appears in summary sections above."
+        ),
+        # Task 2: structural-specific actions demoted when structure_assumption_mode=default_assumed.
+        # Frontend renders these under "Additional steps if you provide home details".
+        "structural_detail_actions": _structural_detail_actions,
+        "structural_detail_actions_section_title": (
+            "Additional steps if you provide home details"
+            if _structural_detail_actions else ""
         ),
     }
 
@@ -2125,6 +2244,8 @@ def _generate_homeowner_explanations_with_llm(
     if not model:
         model = "gpt-4o-mini"
 
+    historic_available = bool(payload.get("historic_fire_available", True))
+    struct_mode = str(payload.get("structure_assumption_mode") or "unknown")
     system_prompt = (
         "You write homeowner-facing wildfire explanations. Return strict JSON with keys: "
         "headline_summary (string), "
@@ -2133,7 +2254,20 @@ def _generate_homeowner_explanations_with_llm(
         "confidence_limitations_explanation (string). "
         "Each explanation must be a single short sentence in plain language, no technical jargon, no percentages, "
         "and no repeated phrases such as 'may help reduce risk' across multiple items. "
-        "Tie each action explanation to its matching action text."
+        "Tie each action explanation to its matching action text. "
+        "Use effective_weights (not base_weights) when describing which factors most influenced this score. "
+        "Do not mention submodels whose effective_weight is below 0.03 — they had no meaningful influence."
+        + (
+            " Do not reference historical fire activity in this area as a score driver — "
+            "historic fire history data is not available for this assessment."
+            if not historic_available else ""
+        )
+        + (
+            " The homeowner has not submitted structural details (roof type, vent screening, etc.). "
+            "Do not present structural upgrades as primary recommended actions — "
+            "focus explanations on environmental and landscape factors."
+            if struct_mode == "default_assumed" else ""
+        )
     )
     user_prompt = (
         "Generate concise homeowner explanations from this assessment summary JSON.\n"
@@ -2188,6 +2322,27 @@ def generate_homeowner_explanations(
     template = _template_homeowner_explanations(assessment)
     top_actions = _extract_assessment_actions(assessment, limit=3)
 
+    # Build effective_weight_summary from weighted_contributions so the LLM uses
+    # post-redistribution, post-suppression weights rather than nominal base weights.
+    effective_weight_summary: dict[str, float] = {}
+    for _submodel, _contrib in dict(assessment.weighted_contributions or {}).items():
+        if hasattr(_contrib, "effective_weight"):
+            _ew = float(_contrib.effective_weight or 0.0)
+        elif isinstance(_contrib, dict):
+            _ew = float(_contrib.get("effective_weight") or 0.0)
+        else:
+            _ew = 0.0
+        if _ew >= 0.01:
+            effective_weight_summary[_submodel] = round(_ew, 4)
+
+    _structure_mode = str(assessment.structure_assumption_mode or "unknown")
+    _historic_available = True
+    try:
+        from backend.scoring_config import load_scoring_config  # noqa: PLC0415
+        _historic_available = load_scoring_config().historic_fire_risk_data_available
+    except Exception:
+        pass
+
     llm_payload = {
         "address": assessment.address,
         "confidence_tier": str(assessment.confidence_tier or "preliminary"),
@@ -2204,6 +2359,10 @@ def generate_homeowner_explanations(
         ),
         "top_risk_drivers": list(assessment.top_risk_drivers or [])[:3],
         "top_actions": top_actions,
+        "effective_weights": effective_weight_summary,
+        "structure_assumption_mode": _structure_mode,
+        "historic_fire_available": _historic_available,
+        "fallback_weight_fraction": round(float(assessment.fallback_weight_fraction or 0.0), 3),
     }
 
     llm_generated = _generate_homeowner_explanations_with_llm(llm_payload, llm_client=llm_client)
