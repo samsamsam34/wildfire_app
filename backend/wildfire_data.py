@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import math
 import os
 from dataclasses import asdict, dataclass, field
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
+
+LOGGER = logging.getLogger("wildfire_app.wildfire_data")
 
 from backend.building_footprints import (
     BuildingFootprintClient,
@@ -44,6 +47,7 @@ from backend.open_data_adapters import (
 )
 from backend.data_prep.region_lookup import find_region_for_point as lookup_region_for_point
 from backend.region_registry import (
+    list_prepared_regions,
     resolve_region_file,
     validate_region_files,
 )
@@ -231,6 +235,8 @@ class WildfireDataClient:
         self.mtbs_adapter = MTBSAdapter()
         self.osm_adapter = OSMRoadAdapter()
         self.feature_bundle_cache = FeatureBundleCache()
+
+        self._log_whp_availability_matrix()
 
         # Optional LANDFIRE WCS COG client — enabled by default; disable via env var.
         self._landfire_cog_client = None
@@ -821,6 +827,15 @@ class WildfireDataClient:
                             break
                     if resolved:
                         runtime_paths[runtime_key] = resolved
+
+                if "whp" not in runtime_paths and "burn_prob" not in runtime_paths:
+                    LOGGER.warning(
+                        "wildfire_data: region %r has no WHP raster (burn_prob/whp) — "
+                        "burn_probability_index will be None and ember_exposure_risk "
+                        "burn_probability sub-weight (0.31) will be suppressed for this assessment.",
+                        region_manifest.get("region_id"),
+                    )
+
                 geometry_source_manifest = (
                     dict(region_manifest.get("geometry_source_manifest"))
                     if isinstance(region_manifest.get("geometry_source_manifest"), dict)
@@ -1116,12 +1131,67 @@ class WildfireDataClient:
 
         return ordered
 
+    def _log_whp_availability_matrix(self) -> None:
+        """Log a startup summary of which prepared regions have WHP raster data."""
+        try:
+            regions = list_prepared_regions(base_dir=self.region_data_dir)
+        except Exception:
+            return
+        if not regions:
+            return
+        whp_keys = ("burn_prob", "whp", "wildfire_hazard_potential", "burn_probability")
+        have_whp: list[str] = []
+        missing_whp: list[str] = []
+        for manifest in regions:
+            region_id = str(manifest.get("region_id") or manifest.get("display_name") or "unknown")
+            found = False
+            for key in whp_keys:
+                path = resolve_region_file(manifest, key, base_dir=self.region_data_dir)
+                if path:
+                    found = True
+                    break
+            if found:
+                have_whp.append(region_id)
+            else:
+                missing_whp.append(region_id)
+        total = len(regions)
+        n_have = len(have_whp)
+        if missing_whp:
+            LOGGER.info(
+                "WHP availability: %d of %d regions have burn_probability data (%s). "
+                "ember_exposure_risk burn_probability sub-weight will be suppressed for: %s.",
+                n_have,
+                total,
+                ", ".join(have_whp) if have_whp else "none",
+                ", ".join(missing_whp),
+            )
+        else:
+            LOGGER.info(
+                "WHP availability: all %d regions have burn_probability data.",
+                total,
+            )
+
     @lru_cache(maxsize=16)
     def _open_raster(self, path: str):
         return rasterio.open(path)
 
     @lru_cache(maxsize=8)
     def _load_perimeters(self, path: str) -> List[Any]:
+        path_obj = Path(path)
+        try:
+            file_size = path_obj.stat().st_size
+        except OSError:
+            file_size = 0
+        if file_size < 500:
+            LOGGER.critical(
+                "wildfire_data: fire_perimeters file at %s is only %d bytes — "
+                "treating as empty/missing (no features will be scored for this region). "
+                "Re-run data prep to regenerate a valid fire_perimeters.geojson.",
+                path,
+                file_size,
+            )
+            return []
+
         with open(path, "r", encoding="utf-8") as f:
             payload = json.load(f)
 
@@ -1131,6 +1201,14 @@ class WildfireDataClient:
             geom = feat.get("geometry") if isinstance(feat, dict) else None
             if geom:
                 geoms.append(shape(geom))
+
+        if not geoms:
+            LOGGER.critical(
+                "wildfire_data: fire_perimeters file at %s parsed successfully but contains "
+                "0 features — historic fire scoring disabled for this region. "
+                "Re-run data prep to regenerate a valid fire_perimeters.geojson.",
+                path,
+            )
         return geoms
 
     def _to_dataset_crs(self, ds, lon: float, lat: float) -> tuple[float, float]:

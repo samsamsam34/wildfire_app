@@ -1277,6 +1277,16 @@ def build_homeowner_report(
     if confidence_limitations:
         combined_limitations = list(dict.fromkeys(confidence_limitations + combined_limitations))[:6]
 
+    _assumption_mode = str(getattr(result, "structure_assumption_mode", "") or "unknown")
+    _structure_assumption_notes: dict[str, str] = {
+        "default_assumed": (
+            "Your structure score could not be calculated — no home detail data was provided. "
+            "Submitting roof type, vent type, and construction year may significantly change your score."
+        ),
+        "mixed": "Some structural details were provided but others were estimated from defaults.",
+    }
+    structure_assumption_note = _structure_assumption_notes.get(_assumption_mode, "")
+
     confidence_and_limitations: dict[str, object] = {
         "confidence_score": result.confidence_score,
         "confidence_tier": result.confidence_tier,
@@ -1294,6 +1304,8 @@ def build_homeowner_report(
             "it is not a prediction or guarantee of insurer underwriting approval, insurability, or wildfire safety."
         ),
         "property_confidence_summary": property_confidence_summary,
+        "structure_assumption_mode": _assumption_mode,
+        "structure_assumption_note": structure_assumption_note,
     }
     if include_professional_debug_metadata:
         confidence_and_limitations["fallback_decisions"] = [

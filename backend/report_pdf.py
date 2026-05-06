@@ -753,6 +753,8 @@ def prepare_template_context(report: Any) -> dict[str, Any]:
         "user_action_recommended": _safe_text(
             _as_dict(confidence.get("property_confidence_summary")).get("user_action_recommended")
         ),
+        "structure_assumption_mode": _safe_text(confidence.get("structure_assumption_mode")),
+        "structure_assumption_note": _safe_text(confidence.get("structure_assumption_note")),
     }
 
     return context
@@ -909,6 +911,15 @@ def _build_template_fragments(context: dict[str, Any]) -> dict[str, str]:
         else:
             extra = f" Home details: {struct_tier} confidence."
             confidence_block_html = f'<p class="confidence-line">{html.escape(fallback_sent + extra)}</p>'
+
+    # Append structure assumption note when present
+    structure_note = _safe_text(context.get("structure_assumption_note") or "")
+    if structure_note:
+        confidence_block_html += (
+            f'<p class="confidence-line structure-assumption-note">'
+            f'{html.escape(structure_note)}'
+            f'</p>'
+        )
 
     # Use restriction disclosure
     use_restr = context.get("use_restriction") or ""
