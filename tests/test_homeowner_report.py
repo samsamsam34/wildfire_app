@@ -5,6 +5,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 import backend.auth as auth
+import backend.calibration as calibration_module
 import backend.main as app_main
 import backend.homeowner_report as homeowner_report_module
 from backend.database import AssessmentStore
@@ -1432,6 +1433,11 @@ def test_homeowner_report_composes_existing_outputs_without_mitigation_fallback_
         "limited defensible space within 30 feet",
         "close proximity to wildland fuels",
     ]
+    # Clear weighted_contributions so _drivers_from_effective_weights falls through
+    # to the stored top_risk_drivers above — this validates the "compose stored
+    # outputs" path without interference from effective-weight override logic.
+    patched.weighted_contributions = None
+    patched.top_risk_drivers_detailed = []
     patched.prioritized_mitigation_actions = [
         HomeownerPrioritizedAction(action="Action A", impact_level="high", effort_level="low", data_confidence="high", priority=1),
         HomeownerPrioritizedAction(action="Action B", impact_level="medium", effort_level="low", data_confidence="high", priority=2),
@@ -1550,6 +1556,9 @@ def test_export_homeowner_report_low_confidence_includes_clear_limitations_and_p
 
 
 def test_homeowner_report_demotes_optional_calibration_metadata_in_consumer_view(monkeypatch, tmp_path: Path):
+    # _optional_public_outcome_calibration_metadata checks CALIBRATION_ARTIFACT_SAFE;
+    # patch True so the stored calibration_applied=True result is surfaced.
+    monkeypatch.setattr(calibration_module, "CALIBRATION_ARTIFACT_SAFE", True)
     context = _ctx(env=54.0, wildland=43.0, historic=29.0)
     _setup(monkeypatch, tmp_path, context)
     assessed = _run_assessment("77 Optional Calibration Ln, Missoula, MT 59802")
@@ -1626,6 +1635,7 @@ def test_homeowner_report_demotes_optional_calibration_metadata_in_consumer_view
 
 
 def test_export_homeowner_report_includes_optional_calibration_block_without_foregrounding(monkeypatch, tmp_path: Path):
+    monkeypatch.setattr(calibration_module, "CALIBRATION_ARTIFACT_SAFE", True)
     context = _ctx(env=51.0, wildland=40.0, historic=26.0)
     _setup(monkeypatch, tmp_path, context)
     assessed = _run_assessment("78 Optional Calibration Export Ln, Missoula, MT 59802")

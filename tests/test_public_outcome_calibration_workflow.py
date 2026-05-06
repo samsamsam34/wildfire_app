@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import backend.calibration as calibration_module
 from backend.calibration import resolve_public_calibration
 from scripts.fit_public_outcome_calibration import (
     fit_calibration,
@@ -79,7 +80,8 @@ def test_run_public_outcome_calibration_writes_bundle(tmp_path: Path) -> None:
     assert (run_dir / "manifest.json").exists()
 
 
-def test_fit_calibration_exports_artifact_and_runtime_loader_applies(tmp_path: Path) -> None:
+def test_fit_calibration_exports_artifact_and_runtime_loader_applies(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(calibration_module, "CALIBRATION_ARTIFACT_SAFE", True)
     dataset = tmp_path / "evaluation_dataset.json"
     _write_dataset(dataset)
     artifact_path = tmp_path / "public_calibration.json"
