@@ -30,10 +30,14 @@ from typing import Any, Optional
 
 LOGGER = logging.getLogger("wildfire_app.national_fire_history_client")
 
-# Minimum feature count for a healthy national MTBS GeoPackage.
-# A count below this threshold indicates a dev stub, partial download, or
-# corrupt file — all of which silently degrade fire history scoring.
-_MINIMUM_EXPECTED_FEATURES = 25_000
+# Feature count thresholds for national MTBS GeoPackage health checks.
+# The full national dataset should contain ~80,000+ perimeters (1984–present).
+# Below CRITICAL: file is effectively a stub; client is disabled so
+#   historic_fire_index returns None rather than silently scoring wrong.
+# Below MINIMUM: file is likely a partial download; a WARNING is logged but
+#   the client continues so partially-covered regions still benefit.
+_CRITICAL_MINIMUM_FEATURES = 100
+_MINIMUM_EXPECTED_FEATURES = 10_000
 
 # Fields expected in the MTBS GeoPackage (created by download_national_mtbs.py)
 _YEAR_FIELD = "Year"
@@ -166,10 +170,23 @@ class NationalFireHistoryClient:
             with fiona.open(self._mtbs_gpkg_path, layer="fire_perimeters") as src:
                 count = len(src)
 
-            if count < _MINIMUM_EXPECTED_FEATURES:
+            if count < _CRITICAL_MINIMUM_FEATURES:
+                LOGGER.critical(
+                    "NationalFireHistoryClient: MTBS GeoPackage has only %d features "
+                    "(critical minimum is %d) — dataset is effectively a stub. "
+                    "Client DISABLED; historic_fire_index will be None for all assessments. "
+                    "Run scripts/download_national_mtbs.py to download the full dataset.",
+                    count,
+                    _CRITICAL_MINIMUM_FEATURES,
+                )
+                self.enabled = False
+                return
+            elif count < _MINIMUM_EXPECTED_FEATURES:
                 LOGGER.warning(
                     "NationalFireHistoryClient: MTBS GeoPackage has only %d features "
-                    "(expected >= %d). Re-run scripts/download_national_mtbs.py to refresh.",
+                    "(expected >= %d) — dataset may be a partial download. "
+                    "Fire history scoring will be incomplete for unrepresented regions. "
+                    "Re-run scripts/download_national_mtbs.py to refresh.",
                     count,
                     _MINIMUM_EXPECTED_FEATURES,
                 )

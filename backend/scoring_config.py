@@ -1,10 +1,20 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict
+
+LOGGER = logging.getLogger("wildfire_app.scoring_config")
+
+# Redistribution targets when historic_fire_risk_data_available=false.
+# The 0.14 weight freed from historic_fire_risk is split equally between
+# slope_topography_risk and fuel_proximity_risk (the next most reliably
+# available environmental submodels). This keeps total weights summing to 1.0.
+_HISTORIC_FIRE_DEGRADED_WEIGHT = 0.03
+_HISTORIC_FIRE_REDISTRIBUTION_TARGETS = ("slope_topography_risk", "fuel_proximity_risk")
 
 
 DEFAULT_SCORING_PARAMETERS_PATH = Path("config") / "scoring_parameters.yaml"
@@ -145,6 +155,13 @@ class ScoringConfig:
             "confidence_high_min_observed_fraction": 0.55,
         }
     )
+
+    # When false, historic_fire_risk effective weight is reduced to
+    # _HISTORIC_FIRE_DEGRADED_WEIGHT and the freed weight is redistributed to
+    # slope_topography_risk and fuel_proximity_risk. Set via the YAML config key
+    # historic_fire_risk_data_available. Revert to True after running
+    # scripts/download_national_mtbs.py to restore the full weight allocation.
+    historic_fire_risk_data_available: bool = True
 
     # Derived index parameters used inside the scoring submodel calculations.
     # These control curve shape, blending weights, and distance reference values.
@@ -331,4 +348,51 @@ def load_scoring_config() -> ScoringConfig:
     config.vegetation_index_params = _merge_float_map(
         config.vegetation_index_params, os.getenv("WILDFIRE_VEGETATION_INDEX_PARAMS_JSON")
     )
+
+    data_available_raw = payload.get("historic_fire_risk_data_available")
+    if data_available_raw is not None:
+        config.historic_fire_risk_data_available = bool(data_available_raw)
+
+    if not config.historic_fire_risk_data_available:
+        _apply_historic_fire_weight_redistribution(config)
+
     return config
+
+
+def _apply_historic_fire_weight_redistribution(config: ScoringConfig) -> None:
+    weights = config.submodel_weights
+    base_weight = float(weights.get("historic_fire_risk", 0.0))
+    freed = round(base_weight - _HISTORIC_FIRE_DEGRADED_WEIGHT, 6)
+    if freed <= 0.0:
+        return
+
+    target_base_weights = {k: float(weights.get(k, 0.0)) for k in _HISTORIC_FIRE_REDISTRIBUTION_TARGETS}
+    total_target_weight = sum(target_base_weights.values())
+
+    redistributed: Dict[str, float] = {}
+    if total_target_weight > 0.0:
+        for target, tw in target_base_weights.items():
+            share = round(freed * (tw / total_target_weight), 6)
+            redistributed[target] = share
+            weights[target] = round(float(weights.get(target, 0.0)) + share, 6)
+    else:
+        # Fallback: split evenly if targets have no base weight
+        per_target = round(freed / len(_HISTORIC_FIRE_REDISTRIBUTION_TARGETS), 6)
+        for target in _HISTORIC_FIRE_REDISTRIBUTION_TARGETS:
+            redistributed[target] = per_target
+            weights[target] = round(float(weights.get(target, 0.0)) + per_target, 6)
+
+    weights["historic_fire_risk"] = _HISTORIC_FIRE_DEGRADED_WEIGHT
+
+    redistribution_detail = ", ".join(
+        f"{k} +{v:.4f}→{weights[k]:.4f}" for k, v in redistributed.items()
+    )
+    LOGGER.info(
+        "scoring_config: historic_fire_risk_data_available=false — "
+        "reduced historic_fire_risk weight %.4f→%.4f (freed %.4f), "
+        "redistributed to: %s",
+        base_weight,
+        _HISTORIC_FIRE_DEGRADED_WEIGHT,
+        freed,
+        redistribution_detail,
+    )
