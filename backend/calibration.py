@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import math
 import os
 from datetime import datetime, timezone
@@ -9,6 +10,90 @@ from pathlib import Path
 from typing import Any
 
 from backend.version import SCORING_MODEL_VERSION
+
+LOGGER = logging.getLogger("wildfire_app.calibration")
+
+# Default artifact path — the only artifact currently in the repository.
+_DEFAULT_ARTIFACT_PATH = Path("config") / "public_outcome_calibration.json"
+
+# Minimum quality thresholds an artifact must pass before it may be activated.
+_QUALITY_THRESHOLDS: dict[str, tuple[str, float, str]] = {
+    # (metric_description, required_value, comparison)
+    "roc_auc":      ("ROC-AUC",                     0.65,  ">="),
+    "spearman_r":   ("Spearman r",                  0.25,  ">="),
+    "dataset_size": ("dataset row_count",          1000.0, ">="),
+    "ece":          ("ECE post-calibration",         0.10,  "<="),
+}
+
+# Module-level flag set once at import time by _run_quality_gate().
+# False means the artifact failed at least one threshold and must not be activated.
+CALIBRATION_ARTIFACT_SAFE: bool = False
+
+
+def _extract_quality_metrics(artifact: dict[str, Any]) -> dict[str, float | None]:
+    post = artifact.get("metrics", {}).get("post", {})
+    calib = post.get("calibration", {})
+    dataset = artifact.get("dataset", {})
+    return {
+        "roc_auc":      _safe_float(post.get("roc_auc_probability")),
+        "spearman_r":   _safe_float(post.get("spearman_score_vs_label")),
+        "dataset_size": _safe_float(dataset.get("row_count")),
+        "ece":          _safe_float(calib.get("expected_calibration_error")),
+    }
+
+
+def _check_quality_thresholds(metrics: dict[str, float | None]) -> list[str]:
+    """Return a list of human-readable failure reasons; empty list means all pass."""
+    failures: list[str] = []
+    thresholds = [
+        ("roc_auc",      0.65,   ">=", "ROC-AUC"),
+        ("spearman_r",   0.25,   ">=", "Spearman r"),
+        ("dataset_size", 1000.0, ">=", "dataset row_count"),
+        ("ece",          0.10,   "<=", "ECE post-calibration"),
+    ]
+    for key, required, cmp, label in thresholds:
+        actual = metrics.get(key)
+        if actual is None:
+            failures.append(f"{label}: value missing from artifact")
+            continue
+        if cmp == ">=" and actual < required:
+            failures.append(f"{label}: {actual:.4f} < required {required}")
+        elif cmp == "<=" and actual > required:
+            failures.append(f"{label}: {actual:.4f} > required {required}")
+    return failures
+
+
+def _run_quality_gate() -> bool:
+    """
+    Load the default artifact, check quality thresholds, set CALIBRATION_ARTIFACT_SAFE.
+    Called once at module import time.
+    """
+    global CALIBRATION_ARTIFACT_SAFE  # noqa: PLW0603
+    artifact = _load_json(_DEFAULT_ARTIFACT_PATH)
+    if not artifact:
+        LOGGER.warning(
+            "calibration: default artifact not found at %s — CALIBRATION_ARTIFACT_SAFE=False",
+            _DEFAULT_ARTIFACT_PATH,
+        )
+        CALIBRATION_ARTIFACT_SAFE = False
+        return False
+    metrics = _extract_quality_metrics(artifact)
+    failures = _check_quality_thresholds(metrics)
+    if failures:
+        LOGGER.critical(
+            "calibration: artifact at %s fails minimum quality thresholds — "
+            "CALIBRATION_ARTIFACT_SAFE=False. Failures: %s",
+            _DEFAULT_ARTIFACT_PATH,
+            "; ".join(failures),
+        )
+        CALIBRATION_ARTIFACT_SAFE = False
+        return False
+    LOGGER.info(
+        "calibration: artifact at %s passed all quality thresholds — CALIBRATION_ARTIFACT_SAFE=True",
+        _DEFAULT_ARTIFACT_PATH,
+    )
+    CALIBRATION_ARTIFACT_SAFE = True
+    return True
 
 
 def _safe_float(value: Any) -> float | None:
@@ -33,6 +118,10 @@ def _load_json(path: Path) -> dict[str, Any]:
 @lru_cache(maxsize=8)
 def load_calibration_artifact(path: str) -> dict[str, Any]:
     return _load_json(Path(path))
+
+
+# Run the quality gate at import time so CALIBRATION_ARTIFACT_SAFE is always set.
+_run_quality_gate()
 
 
 def _apply_logistic(score: float, artifact: dict[str, Any]) -> float | None:
@@ -206,6 +295,19 @@ def resolve_public_calibration(
     if not configured_path:
         base["calibration_status"] = "disabled_no_artifact"
         return base
+
+    # Quality gate: if the artifact fails minimum thresholds, never apply it.
+    if not CALIBRATION_ARTIFACT_SAFE:
+        LOGGER.critical(
+            "calibration: WF_PUBLIC_CALIBRATION_ARTIFACT is set but artifact fails minimum "
+            "quality thresholds — calibration will not be applied. Raw score returned unchanged."
+        )
+        base["calibration_status"] = "disabled_quality_gate"
+        base["calibration_limitations"] = [
+            "Artifact blocked by quality gate (ROC-AUC, Spearman r, dataset size, or ECE threshold not met)."
+        ]
+        return base
+
     artifact = load_calibration_artifact(configured_path)
     base["calibration_enabled"] = True
     base["artifact_path"] = configured_path

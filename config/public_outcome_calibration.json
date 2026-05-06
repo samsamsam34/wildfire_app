@@ -1,5 +1,15 @@
 {
   "artifact_version": "2.0.0",
+  "status": "dev_only",
+  "safe_to_enable": false,
+  "reason": "ROC-AUC 0.560 and n=200 event-conditioned dataset insufficient for production use. Re-evaluate when dataset >= 1000 rows with base-rate-corrected sampling.",
+  "enable_requirements": {
+    "roc_auc_min": 0.65,
+    "spearman_r_min": 0.25,
+    "dataset_size_min": 1000,
+    "ece_post_calibration_max": 0.10,
+    "note": "All four thresholds must pass before safe_to_enable may be set to true."
+  },
   "calibrated_semantic_name": "calibrated_adverse_outcome_probability_public",
   "dataset": {
     "adverse_rate": 0.615,

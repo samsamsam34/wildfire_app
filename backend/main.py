@@ -213,6 +213,12 @@ if "*" in ALLOWED_ORIGINS:
     LOGGER.warning("CORS wildcard origin configured — not recommended for production.")
 
 
+@app.on_event("startup")
+def _startup_data_integrity_checks() -> None:
+    from backend.startup_checks import run_data_integrity_checks  # noqa: PLC0415
+    run_data_integrity_checks()
+
+
 def _http_error_class(status_code: int) -> str:
     error_class_map = {
         400: "bad_request",

@@ -625,6 +625,8 @@ def _build_internal_calibration_debug_block(
             "calibration_method": result.calibration_method,
             "calibration_limitations": list(result.calibration_limitations or []),
             "calibration_scope_warning": result.calibration_scope_warning,
+            # calibrated_probability fields must never render when CALIBRATION_ARTIFACT_SAFE=False.
+            # optional_calibration is already None in that case (gated in _optional_public_outcome_calibration_metadata).
             "optional_public_outcome_calibration": optional_calibration,
             "calibrated_damage_likelihood": calibration_prob,
             "empirical_damage_likelihood_proxy": empirical_damage_prob,
@@ -650,6 +652,13 @@ def _build_internal_calibration_debug_block(
 
 
 def _optional_public_outcome_calibration_metadata(result: AssessmentResult) -> dict[str, object] | None:
+    # Guard: never surface calibration probability when the quality gate failed.
+    # CALIBRATION_ARTIFACT_SAFE=False means ROC-AUC, Spearman r, dataset size, or ECE
+    # thresholds were not met — the artifact must not reach any homeowner-facing output.
+    from backend.calibration import CALIBRATION_ARTIFACT_SAFE  # noqa: PLC0415
+    if not CALIBRATION_ARTIFACT_SAFE:
+        return None
+
     status = str(result.calibration_status or "disabled").strip().lower()
     has_payload = bool(
         result.calibration_applied
