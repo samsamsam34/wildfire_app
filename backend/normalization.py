@@ -73,6 +73,26 @@ def normalize_siding_type(value: str | None) -> str | None:
     return cleaned
 
 
+def siding_ignition_proxy(value: str | None) -> float | None:
+    """Ignition risk score for a normalized siding type.
+
+    Returns None for absent/unclassifiable values so weighted_score drops
+    the term and renormalizes, consistent with the roof/vent/window pattern.
+    """
+    if value is None:
+        return None
+    v = value.lower()
+    if "wood" in v:
+        return 65.0
+    if "fiber cement" in v:
+        return 20.0
+    if "stucco" in v or "masonry" in v:
+        return 12.0
+    if "vinyl" in v or "composite" in v:
+        return 30.0
+    return None
+
+
 def normalize_property_attributes(attrs: PropertyAttributes) -> PropertyAttributes:
     return attrs.model_copy(
         update={

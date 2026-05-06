@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Tuple
 
 from backend.models import PropertyAttributes, RiskDrivers
-from backend.normalization import normalize_property_attributes
+from backend.normalization import normalize_property_attributes, siding_ignition_proxy
 from backend.scoring_config import ScoringConfig, load_scoring_config
 from backend.wildfire_data import WildfireContext
 
@@ -618,6 +618,9 @@ class RiskEngine:
             ],
             ember_assumptions,
         )
+        if attrs.outbuilding_within_30ft is True:
+            ember_score = min(100.0, float(ember_score) + 7.0)
+            ember_assumptions.append("Outbuilding within 30 ft adds ember transfer and radiant heat exposure pathways.")
         ember_clamped = clamp_score(ember_score)
         submodels["ember_exposure_risk"] = SubmodelResult(
             score=ember_clamped,
@@ -948,6 +951,8 @@ class RiskEngine:
             else:
                 window_ignition = 58.0
 
+        siding_ignition = siding_ignition_proxy(attrs.siding_type)
+
         def _construction_risk_from_year(year_value: int | float | None) -> float | None:
             if year_value is None:
                 return None
@@ -1027,6 +1032,10 @@ class RiskEngine:
             structure_observed_fields.append("window_type")
         else:
             structure_defaulted_fields.append("window_type")
+        if siding_ignition is not None:
+            structure_observed_fields.append("siding_type")
+        else:
+            structure_defaulted_fields.append("siding_type")
         if attrs.construction_year is not None:
             structure_observed_fields.append("construction_year")
         elif construction_year_from_public_record:
@@ -1037,7 +1046,7 @@ class RiskEngine:
             structure_defaulted_fields.append("construction_year")
 
         structure_completeness_units = float(len(structure_observed_fields)) + (0.5 * float(len(structure_inferred_fields)))
-        structure_data_completeness = max(0.0, min(100.0, (structure_completeness_units / 4.0) * 100.0))
+        structure_data_completeness = max(0.0, min(100.0, (structure_completeness_units / 5.0) * 100.0))
         if len(structure_observed_fields) >= 3 and not structure_defaulted_fields:
             structure_assumption_mode = "observed"
         elif len(structure_observed_fields) == 0 and len(structure_inferred_fields) == 0:
@@ -1070,8 +1079,9 @@ class RiskEngine:
             [
                 (0.30, roof_ignition, "Roof type unavailable for structure vulnerability model."),
                 (0.23, vent_ignition, "Vent type unavailable for structure vulnerability model."),
-                (0.20, construction_risk, "Construction year and building-age proxy unavailable for structure vulnerability model."),
+                (0.15, construction_risk, "Construction year and building-age proxy unavailable for structure vulnerability model."),
                 (0.10, window_ignition, "Window type unavailable for structure vulnerability model."),
+                (0.05, siding_ignition, "Exterior wall material unavailable for structure vulnerability model."),
                 (0.08, structure_density_proxy_index, "Structure-density proxy unavailable for structure vulnerability model."),
                 (0.05, nearest_structure_isolation_index, "Nearest-structure isolation proxy unavailable for structure vulnerability model."),
                 (0.04, clustering_index, "Structure clustering proxy unavailable for structure vulnerability model."),
@@ -1094,6 +1104,7 @@ class RiskEngine:
                 "building_age_proxy_year": building_age_proxy_year,
                 "building_age_material_proxy_risk": building_age_material_proxy_risk,
                 "window_ignition_proxy": window_ignition,
+                "siding_ignition_proxy": siding_ignition,
                 "structure_density_proxy_index": structure_density_proxy_index,
                 "distance_to_nearest_structure_ft": distance_to_nearest_structure_ft,
                 "clustering_index": clustering_index,

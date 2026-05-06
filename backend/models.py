@@ -128,6 +128,7 @@ class PropertyAttributes(BaseModel):
         le=2100,
         description="Year the structure was built. Must be a plausible calendar year.",
     )
+    outbuilding_within_30ft: Optional[bool] = None
     inspection_notes: Optional[str] = None
 
 

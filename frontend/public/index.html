@@ -540,9 +540,11 @@
         const [detailsForm, setDetailsForm] = useState({
           roof_type: "",
           vent_type: "",
+          window_type: "",
           defensible_space_ft: "",
           construction_year: "",
           siding_type: "",
+          outbuilding_within_30ft: "",
         });
 
         useEffect(() => {
@@ -714,6 +716,10 @@
               attributes.vent_type = detailsForm.vent_type;
               confirmed_fields.push("vent_type");
             }
+            if (detailsForm.window_type) {
+              attributes.window_type = detailsForm.window_type;
+              confirmed_fields.push("window_type");
+            }
             if (detailsForm.defensible_space_ft !== "") {
               attributes.defensible_space_ft = Number(detailsForm.defensible_space_ft);
               confirmed_fields.push("defensible_space_ft");
@@ -725,6 +731,10 @@
             if (detailsForm.siding_type) {
               attributes.siding_type = detailsForm.siding_type;
               confirmed_fields.push("siding_type");
+            }
+            if (detailsForm.outbuilding_within_30ft !== "") {
+              attributes.outbuilding_within_30ft = detailsForm.outbuilding_within_30ft === "true";
+              confirmed_fields.push("outbuilding_within_30ft");
             }
 
             const reassessBody = {
@@ -1273,6 +1283,18 @@
                       ],
                     },
                     {
+                      key: "window_type",
+                      label: "Window glazing",
+                      type: "select",
+                      options: [
+                        ["", "Select"],
+                        ["tempered", "Tempered glass"],
+                        ["double_pane", "Double-pane (non-tempered)"],
+                        ["single_pane", "Single-pane"],
+                        ["unknown", "Don't know"],
+                      ],
+                    },
+                    {
                       key: "defensible_space_ft",
                       label: "Vegetation cleared around home (feet)",
                       type: "number",
@@ -1296,6 +1318,16 @@
                         ["masonry", "Brick or masonry"],
                         ["other", "Other"],
                         ["unknown", "Unknown"],
+                      ],
+                    },
+                    {
+                      key: "outbuilding_within_30ft",
+                      label: "Detached structure within 30 ft",
+                      type: "select",
+                      options: [
+                        ["", "Select"],
+                        ["true", "Yes — wood shed, garage, or similar"],
+                        ["false", "No"],
                       ],
                     },
                   ].map((field) => {

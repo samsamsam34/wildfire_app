@@ -186,6 +186,19 @@ def build_mitigation_plan(
             related_factor="historic_fire_risk",
         )
 
+    if attrs.outbuilding_within_30ft is True:
+        add_rec(
+            title="Relocate or harden wood outbuildings within 30 ft of the structure",
+            reason="Combustible outbuildings within 30 ft create ember bridges and direct radiant heat pathways to the main structure.",
+            impacted_submodels=["ember_exposure_risk"],
+            impacted_readiness_factors=["severe_ember_exposure"],
+            risk_band="medium",
+            readiness_band="medium",
+            priority=3,
+            insurer_relevance="recommended",
+            related_factor="ember_exposure_risk",
+        )
+
     if not recommendations:
         add_rec(
             title="Maintain current wildfire hardening and annual vegetation management",
