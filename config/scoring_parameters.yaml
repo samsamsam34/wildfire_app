@@ -1,26 +1,56 @@
 submodel_weights:
-  vegetation_intensity_risk: 0.08
+  # Raised from 0.08 → 0.13 to better reflect near-structure vegetation signal quality
+  # relative to the historic fire index.  Sum of all 8 weights = 1.00.
+  vegetation_intensity_risk: 0.13
   fuel_proximity_risk: 0.09
   slope_topography_risk: 0.09
   ember_exposure_risk: 0.14
   flame_contact_risk: 0.10
-  # This weight assumes a functional national MTBS fire perimeter dataset
-  # (>= 10,000 features). When the dataset is broken or missing, set
-  # historic_fire_risk_data_available: false below to activate a runtime
-  # weight redistribution that moves 0.14 to slope_topography_risk and
-  # fuel_proximity_risk (the next most reliable environmental submodels).
-  # Revert historic_fire_risk_data_available to true after running:
-  #   python scripts/download_national_mtbs.py
-  historic_fire_risk: 0.17
+  # Reduced from 0.17 → 0.12 because the MTBS dataset is incomplete at startup
+  # (3 of ~80,000 expected features present), limiting discriminative value.
+  # When historic_fire_risk_data_available: false, scoring_config further reduces
+  # the effective weight to 0.03 and redistributes the freed 0.09 equally to
+  # slope_topography_risk and fuel_proximity_risk (both rise from 0.09 → 0.135).
+  # Revert to a higher weight after a successful MTBS download and startup check
+  # confirms >= 10,000 features.  Run: python scripts/download_national_mtbs.py
+  historic_fire_risk: 0.12
   structure_vulnerability_risk: 0.23
   defensible_space_risk: 0.10
 
+# ── Re-enable checklist for historic_fire_risk_data_available ──────────────────
 # Set to false when the national MTBS fire history dataset is known broken
-# (< 100 features, empty file, or download not yet run). When false,
-# scoring_config reduces historic_fire_risk effective weight from 0.17 to 0.03
-# and redistributes the remaining 0.14 proportionally to slope_topography_risk
-# and fuel_proximity_risk. Revert to true after a successful MTBS download.
+# (< 100 features, empty file, or download not yet run).  When false,
+# scoring_config reduces historic_fire_risk effective weight from 0.12 to 0.03
+# and redistributes the freed 0.09 proportionally to slope_topography_risk
+# and fuel_proximity_risk.
+#
+# To flip this flag back to true, ALL of the following must hold:
+#   1. python scripts/download_national_mtbs.py completes successfully (no error).
+#   2. Application startup log shows: "MTBS GeoPackage OK — N features" with N >= 10,000.
+#   3. startup_checks.run_data_integrity_checks() returns operational_status != "NO".
+#   4. At least one prepared region has WHP/burn_probability raster available
+#      (see whp_regions_available list below).
+#   5. (Optional) Calibration artifact re-evaluated with >= 1,000 rows and ROC-AUC >= 0.65.
 historic_fire_risk_data_available: false
+
+# ── WHP (Wildfire Hazard Potential / burn_probability) availability ────────────
+# List every region_id that currently has a WHP raster registered in its manifest.
+# Regions NOT in this list will have the burn_probability sub-weight suppressed
+# at assessment time (logged as WARNING per query).
+# Update this list whenever a new region prep includes a WHP raster.
+whp_regions_available:
+  - missoula_pilot
+  - missoula_pilot_backup_prerefresh
+  - winthrop_pilot
+  - winthrop_pilot_backup_prerefresh
+
+# ── Defensible space outer bound ──────────────────────────────────────────────
+# Maximum clearance distance (ft) beyond which the two-segment defensible space
+# formula adds no further benefit.  Segment 1 covers 0-50ft (slope unchanged);
+# segment 2 covers 50-outer_bound ft (shallower slope by continuity = 0 because
+# segment 1 already floors before 50ft).  Raising this bound alongside a
+# shallower segment-1 slope will restore signal for well-cleared parcels.
+defensible_space_outer_bound_ft: 100
 
 risk_blending_weights:
   environmental: 0.45

@@ -663,11 +663,20 @@ class RiskEngine:
         )
         near_structure_continuity = _precision_adjust(near_structure_continuity)
         close_in_zone_nonlinear_penalty = _nonlinear_close_in_vegetation_penalty(close_in_veg_pressure)
-        defensible_component = (
-            max(0.0, min(100.0, 100.0 - defensible_ft * 2.2))
-            if attrs.defensible_space_ft is not None
-            else None
-        )
+        # Two-segment clearance formula: segment 1 (0-50ft) steep slope 2.2; segment 2
+        # (50-100ft) shallower slope derived by continuity (segment 1 floors before 50ft
+        # so slope2=0); beyond outer bound defaults to 0.  Outer bound defined in YAML as
+        # defensible_space_outer_bound_ft.
+        _DS_OUTER_FT = 100.0
+        if attrs.defensible_space_ft is not None:
+            if defensible_ft <= 50.0:
+                defensible_component: float | None = max(0.0, min(100.0, 100.0 - defensible_ft * 2.2))
+            elif defensible_ft <= _DS_OUTER_FT:
+                defensible_component = 0.0
+            else:
+                defensible_component = 0.0
+        else:
+            defensible_component = None
         near_ring_component = None
         near_terms: list[tuple[float, float]] = []
         if close_in_zone_nonlinear_penalty is not None:
@@ -1133,11 +1142,17 @@ class RiskEngine:
         nearest_continuous_pressure = nearest_continuous_vegetation_index
         if immediate_zone_pressure is not None:
             immediate_zone_pressure = _precision_adjust(immediate_zone_pressure)
-        defensible_clearance_component = (
-            max(0.0, min(100.0, 95.0 - defensible_ft * 2.6))
-            if attrs.defensible_space_ft is not None
-            else None
-        )
+        # Two-segment clearance formula: segment 1 (0-50ft) slope 2.6 on 95-point scale;
+        # segment 2 (50-100ft) slope2=0 (segment 1 floors before 50ft); beyond 100ft → 0.
+        if attrs.defensible_space_ft is not None:
+            if defensible_ft <= 50.0:
+                defensible_clearance_component: float | None = max(0.0, min(100.0, 95.0 - defensible_ft * 2.6))
+            elif defensible_ft <= _DS_OUTER_FT:
+                defensible_clearance_component = 0.0
+            else:
+                defensible_clearance_component = 0.0
+        else:
+            defensible_clearance_component = None
         defensible_score = weighted_score(
             [
                 (0.31, defensible_clearance_component, "Defensible space value unavailable for defensible-space model."),

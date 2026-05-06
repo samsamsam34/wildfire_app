@@ -10,9 +10,9 @@ from typing import Dict
 LOGGER = logging.getLogger("wildfire_app.scoring_config")
 
 # Redistribution targets when historic_fire_risk_data_available=false.
-# The 0.14 weight freed from historic_fire_risk is split equally between
-# slope_topography_risk and fuel_proximity_risk (the next most reliably
-# available environmental submodels). This keeps total weights summing to 1.0.
+# The 0.09 weight freed from historic_fire_risk (0.12 base − 0.03 residual)
+# is split proportionally between slope_topography_risk and fuel_proximity_risk
+# (equal base weights → equal 0.045 each). Total weights remain 1.0.
 _HISTORIC_FIRE_DEGRADED_WEIGHT = 0.03
 _HISTORIC_FIRE_REDISTRIBUTION_TARGETS = ("slope_topography_risk", "fuel_proximity_risk")
 

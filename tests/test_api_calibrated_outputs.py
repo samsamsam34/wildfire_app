@@ -6,6 +6,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 import backend.auth as auth
+import backend.calibration as calibration_module
 import backend.main as app_main
 from backend.database import AssessmentStore
 from backend.wildfire_data import WildfireContext
@@ -87,6 +88,10 @@ def test_default_behavior_unchanged_without_opt_in(monkeypatch, tmp_path: Path) 
 
 def test_calibrated_metadata_returned_when_requested(monkeypatch, tmp_path: Path) -> None:
     _setup(monkeypatch, tmp_path)
+    # Quality gate is set at module import from the default artifact (which intentionally
+    # fails). Monkeypatch the flag so this test exercises calibration-application logic,
+    # not the quality gate (which has its own unit tests).
+    monkeypatch.setattr(calibration_module, "CALIBRATION_ARTIFACT_SAFE", True)
     artifact_path = tmp_path / "calibration.json"
     artifact_path.write_text(
         json.dumps(
@@ -118,6 +123,7 @@ def test_calibrated_metadata_returned_when_requested(monkeypatch, tmp_path: Path
 
 def test_request_body_opt_in_supported(monkeypatch, tmp_path: Path) -> None:
     _setup(monkeypatch, tmp_path)
+    monkeypatch.setattr(calibration_module, "CALIBRATION_ARTIFACT_SAFE", True)
     artifact_path = tmp_path / "calibration.json"
     artifact_path.write_text(
         json.dumps(
@@ -142,6 +148,8 @@ def test_request_body_opt_in_supported(monkeypatch, tmp_path: Path) -> None:
 
 def test_missing_or_incompatible_artifact_degrades_gracefully(monkeypatch, tmp_path: Path) -> None:
     _setup(monkeypatch, tmp_path)
+    # Bypass quality gate so the method-compatibility check is exercised independently.
+    monkeypatch.setattr(calibration_module, "CALIBRATION_ARTIFACT_SAFE", True)
     monkeypatch.delenv("WF_PUBLIC_CALIBRATION_ARTIFACT", raising=False)
     no_artifact = client.post("/risk/assess?include_calibrated_outputs=true", json=_payload())
     assert no_artifact.status_code == 200
@@ -173,6 +181,7 @@ def test_missing_or_incompatible_artifact_degrades_gracefully(monkeypatch, tmp_p
 
 def test_calibrated_metadata_with_diagnostics_wrapper(monkeypatch, tmp_path: Path) -> None:
     _setup(monkeypatch, tmp_path)
+    monkeypatch.setattr(calibration_module, "CALIBRATION_ARTIFACT_SAFE", True)
     artifact_path = tmp_path / "calibration.json"
     artifact_path.write_text(
         json.dumps(
