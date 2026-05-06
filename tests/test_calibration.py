@@ -2,10 +2,14 @@ from __future__ import annotations
 
 import json
 
+import backend.calibration as calibration_module
 from backend.calibration import apply_public_calibration, resolve_public_calibration
 
 
-def test_apply_public_calibration_logistic(tmp_path):
+def test_apply_public_calibration_logistic(tmp_path, monkeypatch):
+    # Quality gate is set at import time from the default artifact (intentionally
+    # failing). Patch so this test exercises application logic, not the gate.
+    monkeypatch.setattr(calibration_module, "CALIBRATION_ARTIFACT_SAFE", True)
     artifact_path = tmp_path / "calibration.json"
     artifact_path.write_text(
         json.dumps(
@@ -29,7 +33,8 @@ def test_apply_public_calibration_logistic(tmp_path):
     assert high["calibrated_damage_likelihood"] > low["calibrated_damage_likelihood"]
 
 
-def test_apply_public_calibration_piecewise(tmp_path):
+def test_apply_public_calibration_piecewise(tmp_path, monkeypatch):
+    monkeypatch.setattr(calibration_module, "CALIBRATION_ARTIFACT_SAFE", True)
     artifact_path = tmp_path / "piecewise.json"
     artifact_path.write_text(
         json.dumps(
@@ -52,7 +57,8 @@ def test_apply_public_calibration_missing_artifact_returns_none():
     assert apply_public_calibration(raw_wildfire_score=60.0, artifact_path="") is None
 
 
-def test_resolve_public_calibration_out_of_scope(tmp_path):
+def test_resolve_public_calibration_out_of_scope(tmp_path, monkeypatch):
+    monkeypatch.setattr(calibration_module, "CALIBRATION_ARTIFACT_SAFE", True)
     artifact_path = tmp_path / "calibration_scope.json"
     artifact_path.write_text(
         json.dumps(
