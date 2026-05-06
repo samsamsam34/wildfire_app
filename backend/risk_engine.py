@@ -663,16 +663,19 @@ class RiskEngine:
         )
         near_structure_continuity = _precision_adjust(near_structure_continuity)
         close_in_zone_nonlinear_penalty = _nonlinear_close_in_vegetation_penalty(close_in_veg_pressure)
-        # Two-segment clearance formula: segment 1 (0-50ft) steep slope 2.2; segment 2
-        # (50-100ft) shallower slope derived by continuity (segment 1 floors before 50ft
-        # so slope2=0); beyond outer bound defaults to 0.  Outer bound defined in YAML as
-        # defensible_space_outer_bound_ft.
+        # Flame-contact two-segment clearance component.
+        # Calibrated from IBHS/CAL FIRE zone anchors:
+        #   0ft→100, 30ft→55 (~58 modeled), 50ft→30, 100ft→0
+        # Seg1 (0-50ft):  score = 100 - 1.4·ft  (slope=-1.4, intercept=100)
+        # Seg2 (50-100ft): score = 60 - 0.6·ft   (slope=-0.6, intercept=60, continuous at 50ft)
+        # Params stored in scoring_parameters.yaml defensible_space_formula section.
         _DS_OUTER_FT = 100.0
+        _DS_BREAK_FT = 50.0
         if attrs.defensible_space_ft is not None:
-            if defensible_ft <= 50.0:
-                defensible_component: float | None = max(0.0, min(100.0, 100.0 - defensible_ft * 2.2))
+            if defensible_ft <= _DS_BREAK_FT:
+                defensible_component: float | None = max(0.0, min(100.0, 100.0 - 1.4 * defensible_ft))
             elif defensible_ft <= _DS_OUTER_FT:
-                defensible_component = 0.0
+                defensible_component = max(0.0, 60.0 - 0.6 * defensible_ft)
             else:
                 defensible_component = 0.0
         else:
@@ -1142,13 +1145,17 @@ class RiskEngine:
         nearest_continuous_pressure = nearest_continuous_vegetation_index
         if immediate_zone_pressure is not None:
             immediate_zone_pressure = _precision_adjust(immediate_zone_pressure)
-        # Two-segment clearance formula: segment 1 (0-50ft) slope 2.6 on 95-point scale;
-        # segment 2 (50-100ft) slope2=0 (segment 1 floors before 50ft); beyond 100ft → 0.
+        # Defensible-space clearance two-segment component.
+        # Calibrated from IBHS/CAL FIRE zone anchors:
+        #   0ft→100, 30ft→60 (~61 modeled), 50ft→35, 100ft→0
+        # Seg1 (0-50ft):  score = 100 - 1.3·ft  (slope=-1.3, intercept=100)
+        # Seg2 (50-100ft): score = 70 - 0.7·ft   (slope=-0.7, intercept=70, continuous at 50ft)
+        # Params stored in scoring_parameters.yaml defensible_space_formula section.
         if attrs.defensible_space_ft is not None:
-            if defensible_ft <= 50.0:
-                defensible_clearance_component: float | None = max(0.0, min(100.0, 95.0 - defensible_ft * 2.6))
+            if defensible_ft <= _DS_BREAK_FT:
+                defensible_clearance_component: float | None = max(0.0, min(100.0, 100.0 - 1.3 * defensible_ft))
             elif defensible_ft <= _DS_OUTER_FT:
-                defensible_clearance_component = 0.0
+                defensible_clearance_component = max(0.0, 70.0 - 0.7 * defensible_ft)
             else:
                 defensible_clearance_component = 0.0
         else:

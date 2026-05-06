@@ -44,13 +44,40 @@ whp_regions_available:
   - winthrop_pilot
   - winthrop_pilot_backup_prerefresh
 
-# ── Defensible space outer bound ──────────────────────────────────────────────
-# Maximum clearance distance (ft) beyond which the two-segment defensible space
-# formula adds no further benefit.  Segment 1 covers 0-50ft (slope unchanged);
-# segment 2 covers 50-outer_bound ft (shallower slope by continuity = 0 because
-# segment 1 already floors before 50ft).  Raising this bound alongside a
-# shallower segment-1 slope will restore signal for well-cleared parcels.
+# ── Defensible space formula parameters ───────────────────────────────────────
+# Both the flame-contact and defensible-space submodels compute a clearance
+# component using a two-segment piecewise linear formula calibrated to
+# IBHS Wildfire Prepared Home / CAL FIRE Zone 1-3 guidance.
+#
+# Calibration anchors (used to derive slopes; not fit to outcome data):
+#   Flame contact:      0ft→100, 30ft→55 (~58 modeled), 50ft→30, 100ft→0
+#   Clearance/ember:    0ft→100, 30ft→60 (~61 modeled), 50ft→35, 100ft→0
+#
+# Segment 1 (0 to segment_break_ft):
+#   score = seg1_intercept + seg1_slope * ft
+# Segment 2 (segment_break_ft to outer_bound_ft):
+#   score = seg2_intercept + seg2_slope * ft   (continuous at break)
+# Beyond outer_bound_ft: 0
+#
+# To recalibrate: change anchors above, rederive slopes with:
+#   slope1 = (score_at_break - score_at_0) / break_ft
+#   slope2 = (0 - score_at_break) / (outer_bound - break_ft)
+#   intercept2 = score_at_break - slope2 * break_ft
 defensible_space_outer_bound_ft: 100
+defensible_space_formula:
+  segment_break_ft: 50
+  # Flame-contact clearance component (used in flame_contact_risk submodel)
+  # Anchors: 0ft→100, 50ft→30, 100ft→0
+  flame_seg1_slope: -1.4
+  flame_seg1_intercept: 100.0
+  flame_seg2_slope: -0.6
+  flame_seg2_intercept: 60.0
+  # Defensible-space clearance component (used in defensible_space_risk submodel)
+  # Anchors: 0ft→100, 50ft→35, 100ft→0
+  clearance_seg1_slope: -1.3
+  clearance_seg1_intercept: 100.0
+  clearance_seg2_slope: -0.7
+  clearance_seg2_intercept: 70.0
 
 risk_blending_weights:
   environmental: 0.45
