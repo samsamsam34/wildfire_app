@@ -83,6 +83,20 @@ SPECIFICITY_LABELS = {
     "insufficient_property_identification": "Insufficient property identification",
 }
 
+_CONFIDENCE_TIER_LABELS: dict[str, str] = {
+    "tier_1": "High confidence — full data and structural details provided",
+    "tier_2": "Moderate confidence — some inputs estimated from defaults",
+    "tier_3": "Lower confidence — most inputs based on regional estimates",
+    "high": "High confidence — full data and structural details provided",
+    "moderate": "Moderate confidence — some inputs estimated from defaults",
+    "low": "Lower confidence — most inputs based on regional estimates",
+}
+
+
+def _plain_confidence_tier(raw: str) -> str:
+    return _CONFIDENCE_TIER_LABELS.get(str(raw).lower(), str(raw).capitalize() if raw else "")
+
+
 TEMPLATE_PATH = Path("backend/templates/homeowner_report.html")
 
 
@@ -704,6 +718,7 @@ def prepare_template_context(report: Any) -> dict[str, Any]:
         "generated_at": _safe_text(report_dict.get("generated_at")),
         "overall_score": overall_score,
         "overall_score_text": f"{overall_score:.1f}/100",
+        "home_hardening_readiness_score": round(hardening, 1),
         "risk_level_label": risk_level_label,
         "risk_level_summary": risk_level_summary,
         "risk_level_color": risk_level_color,
@@ -1133,7 +1148,7 @@ def _draw_header(page: _PdfPage, page_no: int) -> None:
     page.text(390, 768, "CONFIDENTIAL RISK ASSESSMENT", font="F1", size=8, color=_hex_to_rgb("#64748b"))
     page.line(48, 764, 560, 764, color=_hex_to_rgb("#e2e8f0"), line_width=1.5)
     page.line(48, 34, 560, 34, color=_hex_to_rgb("#e2e8f0"), line_width=0.8)
-    page.text(495, 46, f"Page {page_no} of 4", font="F1", size=9, color=_hex_to_rgb("#64748b"))
+    page.text(495, 46, f"Page {page_no} of 5", font="F1", size=9, color=_hex_to_rgb("#64748b"))
 
 
 def _add_wrapped(page: _PdfPage, x: float, y: float, text: str, *, font: str = "F1", size: float = 10.0, color: tuple[float, float, float] = (0, 0, 0), width: int = 88, leading: float = 13.0) -> float:
@@ -1146,7 +1161,7 @@ def _add_wrapped(page: _PdfPage, x: float, y: float, text: str, *, font: str = "
 
 
 def _build_pdf_pages(context: dict[str, Any]) -> list[_PdfPage]:
-    pages = [_PdfPage() for _ in range(4)]
+    pages = [_PdfPage() for _ in range(5)]
 
     # Page 1
     p1 = pages[0]
@@ -1202,6 +1217,12 @@ def _build_pdf_pages(context: dict[str, Any]) -> list[_PdfPage]:
     if conf_text_pdf:
         y2 = _add_wrapped(p1, 48, y, conf_text_pdf, font="F1", size=9.5, color=_hex_to_rgb("#64748b"), width=94, leading=11)
         y = min(y - 14, y2 - 3)
+    global_tier_pdf = context.get("global_confidence_tier") or ""
+    if global_tier_pdf:
+        plain_tier = _plain_confidence_tier(global_tier_pdf)
+        if plain_tier and plain_tier.lower() not in conf_text_pdf.lower():
+            y2 = _add_wrapped(p1, 48, y, f"Overall confidence: {plain_tier}.", font="F1", size=9, color=_hex_to_rgb("#64748b"), width=94, leading=11)
+            y = min(y - 12, y2 - 3)
     # Single geometry/specificity limitation note
     spec_note = _get_geometry_note(context)
     if spec_note:
@@ -1210,11 +1231,13 @@ def _build_pdf_pages(context: dict[str, Any]) -> list[_PdfPage]:
     y2 = _add_wrapped(p1, 48, y, context["coverage_note"], font="F1", size=9, color=_hex_to_rgb("#64748b"), width=94, leading=11)
     y = min(y - 11, y2 - 3)
 
-    # Insurability status
+    # Insurability status with numeric readiness score
     ins_status_pdf = context.get("insurability_status") or ""
     if ins_status_pdf:
         y -= 14
-        p1.text(48, y, f"Insurance Readiness: {ins_status_pdf}", font="F2", size=9.5, color=_hex_to_rgb("#0f172a"))
+        readiness_score_pdf = context.get("home_hardening_readiness_score")
+        readiness_num = f" ({readiness_score_pdf:.0f}/100)" if readiness_score_pdf is not None else ""
+        p1.text(48, y, f"Insurance Readiness: {ins_status_pdf}{readiness_num}", font="F2", size=9.5, color=_hex_to_rgb("#0f172a"))
         ins_reasons_pdf = context.get("insurability_status_reasons") or []
         for reason in ins_reasons_pdf[:3]:
             y -= 11
@@ -1440,6 +1463,98 @@ def _build_pdf_pages(context: dict[str, Any]) -> list[_PdfPage]:
         y = _add_wrapped(p4, 48, y, line, size=9.3, width=94, leading=11)
         y -= 3
 
+    # Page 5 — Methodology
+    p5 = pages[4]
+    _draw_header(p5, 5)
+    y = 736
+    p5.text(48, y, "How Your Score Is Calculated", font="F2", size=16, color=_hex_to_rgb("#1e40af"))
+    y -= 22
+
+    p5.text(48, y, "Score Overview", font="F2", size=11, color=_hex_to_rgb("#0f172a"))
+    y -= 14
+    y = _add_wrapped(
+        p5, 48, y,
+        "Your Wildfire Risk Score (0-100) combines three components: Site Hazard, Home Vulnerability, and an Insurance Readiness assessment. "
+        "A higher score indicates greater risk or reduced readiness. "
+        "This report is a heuristic planning tool -- it is not a guarantee of insurability or fire safety.",
+        size=9.5, width=92, leading=12,
+    )
+    y -= 18
+
+    p5.text(48, y, "Score Components", font="F2", size=11, color=_hex_to_rgb("#0f172a"))
+    y -= 14
+
+    component_descs = [
+        (
+            "Site Hazard",
+            "Combines slope steepness, proximity to continuous vegetation, fuel model intensity, burn probability, and historical fire "
+            "perimeters within your region. These are environmental conditions that exist regardless of what your home is made of.",
+        ),
+        (
+            "Home Vulnerability",
+            "Combines roof material, vent screening, window type, wall cladding, construction era, defensible space distance, and whether "
+            "combustible structures are nearby. These factors determine whether embers or flames that reach your home will find ignition "
+            "pathways. Most can be improved through targeted hardening.",
+        ),
+        (
+            "Insurance Readiness",
+            "Reflects whether your property meets common criteria used by wildfire insurers: Class A roof, ember-resistant vents, 30ft+ "
+            "defensible space, and no high-risk structural materials. This is not an insurance guarantee -- it indicates alignment with "
+            "typical underwriting standards.",
+        ),
+    ]
+    for comp_label, comp_text in component_descs:
+        p5.text(54, y, comp_label + ":", font="F2", size=9.5, color=_hex_to_rgb("#1e40af"))
+        y -= 12
+        y = _add_wrapped(p5, 62, y, comp_text, size=9, width=85, leading=11)
+        y -= 10
+
+    y -= 4
+    p5.text(48, y, "Score Interpretation", font="F2", size=11, color=_hex_to_rgb("#0f172a"))
+    y -= 14
+    band_table = [
+        ("0-24",   "Low",      "Property is in a lower-hazard location with limited structural vulnerability."),
+        ("25-44",  "Moderate", "Some environmental or structural risk factors present."),
+        ("45-64",  "Elevated", "Multiple risk factors; mitigation steps likely to be impactful."),
+        ("65-79",  "High",     "Significant hazard or vulnerability; hardening recommended."),
+        ("80-100", "Extreme",  "Severe combined risk; immediate mitigation and insurance review advised."),
+    ]
+    band_colors = {"Low": "#16a34a", "Moderate": "#65a30d", "Elevated": "#d97706", "High": "#ea580c", "Extreme": "#dc2626"}
+    p5.text(54, y, "Score", font="F2", size=8.5, color=_hex_to_rgb("#64748b"))
+    p5.text(100, y, "Risk Level", font="F2", size=8.5, color=_hex_to_rgb("#64748b"))
+    p5.text(180, y, "What It Means", font="F2", size=8.5, color=_hex_to_rgb("#64748b"))
+    y -= 11
+    for band_score, band_label, band_meaning in band_table:
+        p5.text(54, y, band_score, size=9)
+        p5.text(100, y, band_label, font="F2", size=9, color=_hex_to_rgb(band_colors.get(band_label, "#0f172a")))
+        y2 = _add_wrapped(p5, 180, y, band_meaning, size=8.5, width=62, leading=10)
+        y = min(y - 14, y2 - 2)
+
+    y -= 6
+    p5.text(48, y, "Data Sources", font="F2", size=11, color=_hex_to_rgb("#0f172a"))
+    y -= 14
+    data_source_items = [
+        "LANDFIRE fuel model and canopy cover rasters",
+        "USGS elevation and derived slope data",
+        "NIFC historical fire perimeters (MTBS 1984-present)",
+        "USGS Wildfire Hazard Potential (WHP) burn probability rasters",
+        "US Census TIGER / county parcel geocoding",
+        "User-provided property attributes where supplied",
+    ]
+    for item in data_source_items:
+        p5.text(54, y, f"- {item}", size=9, color=_hex_to_rgb("#334155"))
+        y -= 12
+
+    y -= 6
+    p5.text(48, y, "Limitations", font="F2", size=11, color=_hex_to_rgb("#0f172a"))
+    y -= 14
+    y = _add_wrapped(
+        p5, 48, y,
+        "This model uses available public datasets which may be incomplete or outdated for some regions. "
+        "Scores in regions with limited historical fire data or missing burn probability rasters are based primarily on terrain and vegetation inputs. "
+        "Structural scores reflect user-provided information -- attributes not provided are estimated from regional defaults.",
+        size=9, width=92, leading=12,
+    )
 
     return pages
 

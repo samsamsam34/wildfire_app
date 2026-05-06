@@ -156,21 +156,38 @@
         return parts.length > 0 ? parts.join(", ") : "Home details";
       }
 
+      const NATIONAL_MEDIAN_SCORE = 18;
+
+      const SUB_SCORE_INFO = {
+        "Site Hazard": {
+          tooltip: "Environmental risk from slope, vegetation, nearby fuel, and historical fire activity — factors you cannot change.",
+          detail: "Combines slope steepness, proximity to continuous vegetation, fuel model intensity, burn probability, and historical fire perimeters within your region. These are environmental conditions that exist regardless of what your home is made of. A high site hazard score means your location is inherently exposed.",
+        },
+        "Home Vulnerability": {
+          tooltip: "How susceptible your home’s materials and features are to ignition — factors you can improve through hardening.",
+          detail: "Combines roof material, vent screening, window type, wall cladding, construction era, defensible space distance, and whether combustible structures are nearby. These factors determine whether embers or flames that reach your home will find ignition pathways. Most can be improved through targeted hardening.",
+        },
+        "Home Hardening Readiness": {
+          tooltip: "How closely your property’s current or mitigated condition aligns with typical insurer criteria for wildfire coverage.",
+          detail: "Reflects whether your property meets common criteria used by wildfire insurers: Class A roof, ember-resistant vents, 30ft+ defensible space, and no high-risk structural materials. This is not an insurance guarantee — it indicates alignment with typical underwriting standards.",
+        },
+      };
+
       function scoreLevel(score) {
         const value = Number(score ?? 0);
-        if (value < 20) return { label: "LOW", color: "var(--risk-low)" };
-        if (value < 40) return { label: "MODERATE", color: "var(--risk-moderate)" };
-        if (value < 60) return { label: "ELEVATED", color: "var(--risk-elevated)" };
-        if (value < 80) return { label: "HIGH", color: "var(--risk-high)" };
-        return { label: "CRITICAL", color: "var(--risk-critical)" };
+        if (value < 25) return { label: "Low Risk", color: "var(--risk-low)" };
+        if (value < 45) return { label: "Moderate Risk", color: "var(--risk-moderate)" };
+        if (value < 65) return { label: "Elevated Risk", color: "var(--risk-elevated)" };
+        if (value < 80) return { label: "High Risk", color: "var(--risk-high)" };
+        return { label: "Extreme Risk", color: "var(--risk-critical)" };
       }
 
       const RISK_DESCRIPTIONS = {
-        CRITICAL: "Extreme fire danger — immediate action strongly recommended.",
-        HIGH: "Significant risk — several important improvements are needed.",
-        ELEVATED: "Above-average risk — targeted improvements will help.",
-        MODERATE: "Moderate risk — basic precautions are available.",
-        LOW: "Relatively low risk based on available data.",
+        "Extreme Risk": "Extreme fire danger — immediate action strongly recommended.",
+        "High Risk": "Significant risk — several important improvements are needed.",
+        "Elevated Risk": "Above-average risk — targeted improvements will help.",
+        "Moderate Risk": "Moderate risk — basic precautions are available.",
+        "Low Risk": "Relatively low risk based on available data.",
       };
 
       function confidenceBadge(tier) {
@@ -536,6 +553,7 @@
         const [detailsError, setDetailsError] = useState("");
 
         const [showAllActions, setShowAllActions] = useState(false);
+        const [openSubScoreTip, setOpenSubScoreTip] = useState(null);
 
         const [detailsForm, setDetailsForm] = useState({
           roof_type: "",
@@ -962,7 +980,7 @@
                   },
                   React.createElement("p", { className: "text-sm font-semibold", style: { color: "var(--text-muted)" } }, "Overall Wildfire Risk"),
                   React.createElement("p", { className: "mt-1 text-3xl font-bold" }, `${level.label} · ${score.toFixed(1)}`),
-                  React.createElement("p", { className: "mt-1 text-xs", style: { color: "var(--text-muted)" } }, "Scores range 0–100. National median ≈ 18. Higher means greater risk."),
+                  React.createElement("p", { className: "mt-1 text-xs", style: { color: "var(--text-muted)" }, title: "Based on aggregated assessments across WUI (wildland-urban interface) regions." }, `Scores range 0–100. National median ≈ ${NATIONAL_MEDIAN_SCORE}. Higher means greater risk.`),
                   (report?.confidence_summary_text || RISK_DESCRIPTIONS[level.label]) &&
                     React.createElement(
                       "p",
@@ -983,13 +1001,29 @@
                   ].map(([label, value, invert]) => {
                     const pct = Math.max(0, Math.min(100, value));
                     const color = invert ? scoreLevel(100 - pct).color : scoreLevel(pct).color;
+                    const info = SUB_SCORE_INFO[label];
+                    const isTipOpen = openSubScoreTip === label;
                     return React.createElement(
                       "div",
-                      { className: "mb-4", key: label },
+                      { className: "mb-4", key: label, title: info ? info.tooltip : undefined },
                       React.createElement(
                         "div",
                         { className: "mb-1 flex items-center justify-between text-sm" },
-                        React.createElement("span", null, label),
+                        React.createElement(
+                          "span",
+                          { className: "flex items-center gap-1" },
+                          label,
+                          info && React.createElement(
+                            "button",
+                            {
+                              type: "button",
+                              style: { background: "none", border: "none", cursor: "pointer", padding: "0 2px", color: "var(--text-muted)", fontSize: "13px", lineHeight: 1 },
+                              title: info.tooltip,
+                              onClick: () => setOpenSubScoreTip(isTipOpen ? null : label),
+                            },
+                            "ⓘ"
+                          )
+                        ),
                         React.createElement("span", { className: "font-semibold" }, value.toFixed(1))
                       ),
                       React.createElement(
@@ -999,6 +1033,14 @@
                           className: "score-fill",
                           style: { width: `${pct}%`, background: color },
                         })
+                      ),
+                      isTipOpen && React.createElement(
+                        "p",
+                        {
+                          className: "mt-1 rounded-lg border px-2 py-1.5 text-xs",
+                          style: { color: "var(--text-muted)", borderColor: "var(--border)", background: "var(--surface)" },
+                        },
+                        info.detail
                       )
                     );
                   }),
@@ -1122,6 +1164,11 @@
                 style: { borderColor: "var(--border)", boxShadow: "var(--shadow)" },
               },
               React.createElement("h2", { className: "text-lg font-semibold" }, "What you can do to reduce your risk"),
+              React.createElement(
+                "div",
+                { className: "mt-3 mb-1 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900" },
+                "Home hardening — improving roof, vents, and defensible space — is the most effective action you can take to reduce wildfire risk. Environmental factors like slope and vegetation are fixed, but structural improvements directly reduce your Home Vulnerability score."
+              ),
               (() => {
                 const visibleActions = showAllActions ? mitigationActions : mitigationActions.slice(0, 5);
                 const hiddenCount = mitigationActions.length - 5;

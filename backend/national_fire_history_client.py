@@ -390,7 +390,10 @@ class NationalFireHistoryClient:
 
         # burned_within_radius: True if any perimeter intersects the buffer
         # (distance == 0 means the point is inside the perimeter; positive means edge nearby)
-        burned = nearest_dist_m is not None and nearest_dist_m < 1.0
+        # 50m threshold accounts for coordinate uncertainty in NIFC/MTBS perimeter
+        # polygons. Properties within 50m of a perimeter boundary are treated as
+        # burned. Tighten to 10m once MTBS data quality is confirmed.
+        burned = nearest_dist_m is not None and nearest_dist_m < 50.0
 
         return FireHistoryResult(
             burned_within_radius=burned,
